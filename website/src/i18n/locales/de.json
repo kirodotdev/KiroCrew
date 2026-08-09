@@ -6135,6 +6135,8 @@
       "unpin": "Entpinnen"
     },
     "sessionColorSwatches": {
+      "custom_color": "Benutzerdefinierte Farbe",
+      "hex_color_code": "Hex-Farbcode",
       "no_color": "Keine Farbe"
     },
     "sessionGridView": {

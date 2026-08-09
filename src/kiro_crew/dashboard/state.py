@@ -1085,6 +1085,7 @@ class _ChatSlot:
         "_compaction_fail_streak",
         "_compaction_fail_cooldown_until",
         "color_index",
+        "color_hex",
         "color_theme",
         "theme_consent",
         "theme_consent_sha",
@@ -1394,6 +1395,13 @@ class _ChatSlot:
         self._compaction_fail_streak: int = 0
         self._compaction_fail_cooldown_until: float = 0.0
         self.color_index: int | None = None
+        # Custom per-session color (#rrggbb, lowercase). Mutually exclusive
+        # with color_index: the PATCH handler clears one when the other is
+        # set, and the frontend renders color_hex with priority. Unlike
+        # color_index (resolved against the viewer's generated palette, so it
+        # follows theme/palette switches), a custom hex is deliberately
+        # frozen.
+        self.color_hex: str | None = None
         self.color_theme: str = ""
         # Explicit user consent for the active INSTALLED theme's experience
         # layer (persona injection is gated on this; fail-closed default).
@@ -2481,6 +2489,7 @@ class _ChatSlot:
             "pinned": self.pinned,
             "tags": list(self.tags),
             "color_index": self.color_index,
+            "color_hex": self.color_hex,
             "color_theme": self.color_theme,
             "theme_consent": self.theme_consent,
             "theme_consent_sha": self.theme_consent_sha,

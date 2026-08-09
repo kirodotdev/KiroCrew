@@ -1244,7 +1244,7 @@ export const warmSlotCache = createAsyncThunk(
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; color_index?: number | null; project?: string | null; activate?: boolean } | string | undefined,
+  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -1256,6 +1256,7 @@ export const createSlot = createAsyncThunk<
     const clean_mode = typeof opts === 'string' ? undefined : opts?.clean_mode
     const folderId = typeof opts === 'string' ? undefined : opts?.folder_id
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
+    const explicitHex = typeof opts === 'string' ? undefined : opts?.color_hex
     const project = typeof opts === 'string' ? undefined : opts?.project
     // `activate: false` creates the session WITHOUT stealing focus, so a caller
     // that must finish setting the slot up (e.g. scoping it to a worktree) can
@@ -1272,10 +1273,39 @@ export const createSlot = createAsyncThunk<
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
-    const ci = explicitColor != null ? explicitColor : resolveDefaultColor(dashState.sessionDefaultColor, dashState.slots.length)
-    if (ci != null) {
-      slot.color_index = ci
-      api.setSlotColor(slot.key, ci).catch(() => {})
+    // A carried custom hex outranks both: the fields are mutually exclusive
+    // (setting the hex clears the index server-side), so a custom-colored
+    // session must NOT fall through to the palette policy on recreation.
+    if (explicitHex != null) {
+      slot.color_hex = explicitHex
+      // A CARRIED color must land before the caller deletes the source slot
+      // (create-first-then-delete): swallowing this failure would destroy the
+      // only copy of the user's custom color. Await it and, on failure, remove
+      // the half-configured slot and rethrow — the caller then returns without
+      // deleting the original, so the colored session survives. Same contract
+      // as the background project carry below. The default-color policy branch
+      // stays fire-and-forget: nothing is lost if a default fails to apply.
+      try {
+        await api.setSlotColorHex(slot.key, explicitHex)
+      } catch (err) {
+        await api.deleteChatSlot(slot.key).catch(() => {})
+        throw err
+      }
+    } else {
+      const ci = explicitColor != null ? explicitColor : resolveDefaultColor(dashState.sessionDefaultColor, dashState.slots.length)
+      if (ci != null) {
+        slot.color_index = ci
+        if (explicitColor != null) {
+          try {
+            await api.setSlotColor(slot.key, ci)
+          } catch (err) {
+            await api.deleteChatSlot(slot.key).catch(() => {})
+            throw err
+          }
+        } else {
+          api.setSlotColor(slot.key, ci).catch(() => {})
+        }
+      }
     }
     // Folder membership rides the create payload above, so the server files the
     // slot before it broadcasts it. A follow-up PATCH would be too late to

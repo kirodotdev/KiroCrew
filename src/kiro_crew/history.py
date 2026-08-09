@@ -173,6 +173,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "artifact",
         "pinned",
         "color_index",
+        "color_hex",
         "color_theme",
         "tags",
         "forked_from",

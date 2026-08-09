@@ -39,5 +39,22 @@ export function useSessionPalette() {
     [paletteColors, vars.bgAccent, vars.muted, vars.text, vars.textStrong, isDark, intensity],
   )
 
-  return { paletteColors, boost, isDark, colorMode, paletteName, intensity }
+  /** Per-hex boost for CUSTOM session colors (color_hex), memoized across
+   *  rows: a custom hex bypasses the generated palette but must still get the
+   *  same APCA muted-text adaptation, or body text over the tinted row goes
+   *  illegible. The cache resets whenever theme vars or intensity change
+   *  (the useMemo deps), so entries never go stale. */
+  const boostFor = useMemo(() => {
+    const cache = new Map<string, PaletteBoost>()
+    return (hex: string): PaletteBoost => {
+      let b = cache.get(hex)
+      if (!b) {
+        b = computePaletteBoost([hex], vars.bgAccent, vars.muted, vars.text, isDark, intensity, vars.textStrong)
+        cache.set(hex, b)
+      }
+      return b
+    }
+  }, [vars.bgAccent, vars.muted, vars.text, vars.textStrong, isDark, intensity])
+
+  return { paletteColors, boost, boostFor, isDark, colorMode, paletteName, intensity }
 }

@@ -6048,6 +6048,8 @@
       "unpin": "ピン留め解除"
     },
     "sessionColorSwatches": {
+      "custom_color": "カスタムカラー",
+      "hex_color_code": "16進カラーコード",
       "no_color": "色なし"
     },
     "sessionGridView": {

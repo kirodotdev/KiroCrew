@@ -6222,6 +6222,8 @@
       "unpin": "Desafixar"
     },
     "sessionColorSwatches": {
+      "custom_color": "Cor personalizada",
+      "hex_color_code": "Código de cor hexadecimal",
       "no_color": "Sem cor"
     },
     "sessionGridView": {

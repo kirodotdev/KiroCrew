@@ -6309,6 +6309,8 @@
       "unpin": "Открепить"
     },
     "sessionColorSwatches": {
+      "custom_color": "Пользовательский цвет",
+      "hex_color_code": "Шестнадцатеричный код цвета",
       "no_color": "Без цвета"
     },
     "sessionGridView": {

@@ -2034,6 +2034,13 @@ export const api = {
   deleteChatFolder: (id: string) => del('/api/chat/folders/' + encodeURIComponent(id)).then(j),
   setSlotFolder: (slot: string, folderId: string | null) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/folder', { folder_id: folderId || '' }).then(j),
   setSlotColor: (slot: string, colorIndex: number | null) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_index: colorIndex }).then(j),
+  /** Set a custom per-session color (#rrggbb). The backend clears color_index
+   *  when a hex is set and vice versa (mutual exclusion), so callers send one
+   *  or the other, never both. */
+  setSlotColorHex: (slot: string, colorHex: string | null) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_hex: colorHex }).then(j),
+  /** Clear BOTH color fields in one PATCH. The endpoint is in-body-gated, so
+   *  an index-only null would leave a custom hex behind. */
+  clearSlotColor: (slot: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_index: null, color_hex: null }).then(j),
   setSlotPin: (slot: string, pinned: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/pin', { pinned }).then(j),
   setSlotMode: (slot: string, mode: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/mode', { mode }).then(j),
   // Tags

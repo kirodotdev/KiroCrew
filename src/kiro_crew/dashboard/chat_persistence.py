@@ -43,6 +43,13 @@ from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
 
+# Custom session color contract: lowercase-normalized #rrggbb only. Canonical
+# home of the regex (chat_handlers imports it from here to avoid an import
+# cycle). Every persistence read site below re-validates against it because
+# the JSONL metadata line is attacker-writable and this string reaches every
+# client's inline style.
+COLOR_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
 
 # Recognized title-origin values (mirrors chat_title._TITLE_ORIGINS; duplicated
 # here rather than imported to avoid dragging the chat_title import graph into
@@ -576,6 +583,9 @@ def _rehydrate_slot_from_history(
             slot.pinned = True
         if meta.get("color_index") is not None:
             slot.color_index = meta["color_index"]
+        _ch = meta.get("color_hex")
+        if isinstance(_ch, str) and COLOR_HEX_RE.match(_ch):
+            slot.color_hex = _ch.lower()
         raw_tags = meta.get("tags")
         if isinstance(raw_tags, list):
             slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
@@ -939,6 +949,9 @@ def _restore_recent_sessions_steps(
             slot.pinned = True
         if meta.get("color_index") is not None:
             slot.color_index = meta["color_index"]
+        _ch = meta.get("color_hex")
+        if isinstance(_ch, str) and COLOR_HEX_RE.match(_ch):
+            slot.color_hex = _ch.lower()
         if meta.get("color_theme"):
             slot.color_theme = meta["color_theme"]
         raw_tags = meta.get("tags")
@@ -1833,6 +1846,8 @@ def _save_slot_to_history(
                 meta_line["pinned"] = True
             if slot.color_index is not None:
                 meta_line["color_index"] = slot.color_index
+            if slot.color_hex:
+                meta_line["color_hex"] = slot.color_hex
             if slot.color_theme:
                 meta_line["color_theme"] = slot.color_theme
             if slot.tags:

@@ -4258,6 +4258,8 @@
       "tags": "Tags…"
     },
     "sessionColorSwatches": {
+      "custom_color": "Custom color",
+      "hex_color_code": "Hex color code",
       "no_color": "No color"
     },
     "sessionGridView": {

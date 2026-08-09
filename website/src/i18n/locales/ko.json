@@ -6048,6 +6048,8 @@
       "unpin": "고정 해제"
     },
     "sessionColorSwatches": {
+      "custom_color": "사용자 지정 색상",
+      "hex_color_code": "16진수 색상 코드",
       "no_color": "색 없음"
     },
     "sessionGridView": {

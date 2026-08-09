@@ -6135,6 +6135,8 @@
       "unpin": "পিন সরাও"
     },
     "sessionColorSwatches": {
+      "custom_color": "কাস্টম রং",
+      "hex_color_code": "হেক্স রঙের কোড",
       "no_color": "কোনো রঙ নেই"
     },
     "sessionGridView": {

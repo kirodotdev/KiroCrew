@@ -6222,6 +6222,8 @@
       "unpin": "Désépingler"
     },
     "sessionColorSwatches": {
+      "custom_color": "Couleur personnalisée",
+      "hex_color_code": "Code couleur hexadécimal",
       "no_color": "Aucune couleur"
     },
     "sessionGridView": {

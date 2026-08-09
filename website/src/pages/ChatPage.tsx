@@ -6427,6 +6427,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       memory_mode: newMode,
                       folder_id: old?.folder_id ?? null,
                       color_index: old?.color_index ?? null,
+                      color_hex: old?.color_hex ?? null,
                       project: old?.project ?? null,
                     }
                     try { await dispatch(createSlot(opts)).unwrap() } catch { return }
@@ -6442,6 +6443,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       clean_mode: clean,
                       folder_id: old?.folder_id ?? null,
                       color_index: old?.color_index ?? null,
+                      color_hex: old?.color_hex ?? null,
                       project: old?.project ?? null,
                     }
                     try { await dispatch(createSlot(opts)).unwrap() } catch { return }

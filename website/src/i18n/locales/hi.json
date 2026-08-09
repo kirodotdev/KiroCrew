@@ -6135,6 +6135,8 @@
       "unpin": "पिन हटाएँ"
     },
     "sessionColorSwatches": {
+      "custom_color": "कस्टम रंग",
+      "hex_color_code": "हेक्स रंग कोड",
       "no_color": "कोई रंग नहीं"
     },
     "sessionGridView": {

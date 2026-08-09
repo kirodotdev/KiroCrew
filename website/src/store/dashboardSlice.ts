@@ -271,9 +271,20 @@ const dashboardSlice = createSlice({
       const cur = (state.subagentText[slot][id] || '') + sanitizeLlmOutput(text)
       state.subagentText[slot][id] = cur.length > 4096 ? cur.slice(-4096) : cur
     },
-    sseSlotColor(state, action: PayloadAction<{ key: string; color_index: number | null }>) {
+    sseSlotColor(state, action: PayloadAction<{ key: string; color_index?: number | null; color_hex?: string | null }>) {
       const slot = state.slots.find(s => s.key === action.payload.key)
-      if (slot) slot.color_index = action.payload.color_index
+      if (!slot) return
+      // Mirror the backend's mutual exclusion: a non-null value for either
+      // field clears the other, so optimistic updates can't leave a slot
+      // carrying both.
+      if ('color_index' in action.payload) {
+        slot.color_index = action.payload.color_index ?? null
+        if (slot.color_index !== null) slot.color_hex = null
+      }
+      if ('color_hex' in action.payload) {
+        slot.color_hex = action.payload.color_hex ?? null
+        if (slot.color_hex !== null) slot.color_index = null
+      }
     },
     setSessionDefaultColor(state, action: PayloadAction<DefaultColorSetting>) {
       state.sessionDefaultColor = action.payload

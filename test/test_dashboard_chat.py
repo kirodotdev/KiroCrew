@@ -2882,6 +2882,112 @@ class TestSessionColor:
         meta = state.conversation_log._read_metadata("dashboard:s1")
         assert "color_index" not in meta
 
+    @pytest.mark.asyncio
+    async def test_set_color_hex_success_and_lowercased(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_hex": "#A1B2C3"})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["ok"] is True
+            assert data["color_hex"] == "#a1b2c3"
+            assert state._slots["s1"].color_hex == "#a1b2c3"
+            state.push_slots_update.assert_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad", ["#GGGGGG", "#abc", "abcdef", "#abcdef00", 123, True, ["#abcdef"]]
+    )
+    async def test_set_color_hex_malformed_rejected(self, tmp_path, monkeypatch, bad):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_hex": bad})
+            assert resp.status == 400
+            assert state._slots["s1"].color_hex is None
+
+    @pytest.mark.asyncio
+    async def test_color_hex_and_index_mutually_exclusive(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        slot = state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            # Setting a hex clears an existing index.
+            slot.color_index = 4
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_hex": "#112233"})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data == {"ok": True, "color_index": None, "color_hex": "#112233"}
+            assert slot.color_index is None and slot.color_hex == "#112233"
+            # Setting an index clears the hex.
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_index": 2})
+            data = await resp.json()
+            assert data == {"ok": True, "color_index": 2, "color_hex": None}
+            assert slot.color_index == 2 and slot.color_hex is None
+
+    @pytest.mark.asyncio
+    async def test_color_index_only_patch_keeps_existing_hex_when_null(
+        self, tmp_path, monkeypatch
+    ):
+        """An index-only PATCH with null must not silently null a hex (in-body gating)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        slot.color_hex = "#445566"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_index": None})
+            assert resp.status == 200
+            assert slot.color_hex == "#445566"
+
+    @pytest.mark.asyncio
+    async def test_color_hex_null_clears(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        slot.color_hex = "#778899"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_hex": None})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["color_hex"] is None
+            assert slot.color_hex is None
+
+    @pytest.mark.asyncio
+    async def test_color_hex_in_to_dict(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.color_hex = "#0a0b0c"
+        assert slot.to_dict()["color_hex"] == "#0a0b0c"
+
+    @pytest.mark.asyncio
+    async def test_color_hex_persisted_in_history(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.color_hex = "#0a0b0c"
+        slot.append("user", "hello")
+        slot.drain()
+
+        _save_slot_to_history(state, slot, closed=True)
+
+        meta = state.conversation_log._read_metadata("dashboard:s1")
+        assert meta.get("color_hex") == "#0a0b0c"
+
 
 # ── Slash command tests ──
 

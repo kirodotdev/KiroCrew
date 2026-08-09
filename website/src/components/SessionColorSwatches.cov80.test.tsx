@@ -9,13 +9,14 @@ import type { ChatSlot } from '../types'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
-  return { ...mod, api: { ...mod.api, setSlotColor: vi.fn() } }
+  return { ...mod, api: { ...mod.api, setSlotColor: vi.fn(), clearSlotColor: vi.fn() } }
 })
 vi.mock('../hooks/useSessionPalette', () => ({
   useSessionPalette: () => ({ paletteColors: ['#111111', '#222222'] }),
 }))
 
 const setSlotColor = vi.mocked(api.setSlotColor)
+const clearSlotColor = vi.mocked(api.clearSlotColor)
 
 /**
  * The component's optimistic write dispatches through `useAppDispatch` (the
@@ -38,6 +39,8 @@ describe('SessionColorSwatches', () => {
   beforeEach(() => {
     setSlotColor.mockReset()
     setSlotColor.mockResolvedValue(undefined as never)
+    clearSlotColor.mockReset()
+    clearSlotColor.mockResolvedValue(undefined as never)
     seedStore(null)
   })
   afterEach(() => {
@@ -47,7 +50,8 @@ describe('SessionColorSwatches', () => {
   it('renders a no-colour swatch plus one per palette colour', () => {
     render(<SessionColorSwatches slotKey="zzq-slot" />)
     expect(screen.getByLabelText('No color')).toBeInTheDocument()
-    expect(screen.getAllByRole('button')).toHaveLength(3)
+    // no-colour + one per palette colour + the custom-colour trigger
+    expect(screen.getAllByRole('button')).toHaveLength(4)
   })
 
   it('marks the active swatch, and the no-colour one when nothing is set', () => {
@@ -78,7 +82,9 @@ describe('SessionColorSwatches', () => {
     render(<SessionColorSwatches slotKey="zzq-slot" colorIndex={1} />)
     fireEvent.click(screen.getByLabelText('No color'))
     expect(colorOf()).toBeNull()
-    await waitFor(() => expect(setSlotColor).toHaveBeenCalledWith('zzq-slot', null))
+    // Clearing goes through the dedicated endpoint since custom hex landed:
+    // it clears both color_index and color_hex in one PATCH.
+    await waitFor(() => expect(clearSlotColor).toHaveBeenCalledWith('zzq-slot'))
   })
 
   it('a failed write rolls the optimistic colour back', async () => {

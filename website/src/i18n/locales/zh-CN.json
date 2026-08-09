@@ -6048,6 +6048,8 @@
       "unpin": "取消置顶"
     },
     "sessionColorSwatches": {
+      "custom_color": "自定义颜色",
+      "hex_color_code": "十六进制颜色代码",
       "no_color": "无颜色"
     },
     "sessionGridView": {

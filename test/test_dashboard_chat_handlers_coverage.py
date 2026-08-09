@@ -672,7 +672,7 @@ class TestSlotColor:
         slot = _ChatSlot("s1")
         state = _state(slot)
         status, body = await self._patch(state, "s1", {"color_index": 3})
-        assert (status, body) == (200, {"ok": True, "color_index": 3})
+        assert (status, body) == (200, {"ok": True, "color_index": 3, "color_hex": None})
         assert slot.color_index == 3
         assert slot._dirty is True
         state.push_slots_update.assert_called_once()
@@ -682,7 +682,7 @@ class TestSlotColor:
         slot = _ChatSlot("s1")
         slot.color_index = 5
         status, body = await self._patch(_state(slot), "s1", {"color_index": None})
-        assert (status, body) == (200, {"ok": True, "color_index": None})
+        assert (status, body) == (200, {"ok": True, "color_index": None, "color_hex": None})
         assert slot.color_index is None
 
 

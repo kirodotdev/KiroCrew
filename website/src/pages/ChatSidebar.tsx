@@ -506,6 +506,7 @@ interface Slot {
   slack_linked?: boolean
   links?: SessionLink[]
   color_index?: number | null
+  color_hex?: string | null
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
   clean_mode?: boolean
   folder_id?: string
@@ -2456,7 +2457,7 @@ function ChatSidebar({
   })
 
   // Session colors
-  const { paletteColors, boost, colorMode } = useSessionPalette()
+  const { paletteColors, boost, boostFor, colorMode } = useSessionPalette()
 
   // ── Session row (reference-style: color palette, memory_mode, rename on right-click) ──
   // Does any descendant (direct or nested) of `folderId` contain a slot from `slots`?
@@ -2883,9 +2884,18 @@ function ChatSidebar({
         // state that outranks it.
         ? { glyph: <span className="w-2 h-2 rounded-full" style={{ background: 'var(--accent)' }} />, label: i18nT('pages.chatSidebar.agent_finished_your_turn') }
         : null
-    const rowColor = ci != null ? paletteColors[ci] : null
+    // Custom hex (color_hex) wins over the palette index. It is deliberately
+    // theme-independent: palette swatches re-derive from the theme accent,
+    // a custom color is frozen. Muted-text legibility still goes through the
+    // same APCA boost via boostFor.
+    const customHex = typeof s.color_hex === 'string' && s.color_hex ? s.color_hex : null
+    const rowColor = customHex ?? (ci != null ? paletteColors[ci] : null)
     const boostStyle: Record<string, string> = {}
-    if (rowColor && ci != null) {
+    if (customHex) {
+      boostStyle['--session-color'] = customHex
+      const cb = boostFor(customHex)
+      if (cb.mutedColors[0]) boostStyle['--session-muted'] = cb.mutedColors[0]
+    } else if (rowColor && ci != null) {
       boostStyle['--session-color'] = rowColor
       if (boost.mutedColors[ci]) boostStyle['--session-muted'] = boost.mutedColors[ci]
     }
