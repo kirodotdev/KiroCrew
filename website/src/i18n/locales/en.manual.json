@@ -1717,7 +1717,7 @@
       "suggestion_pipeline_status": "Check my pipeline status",
       "suggestion_review_cr": "Review my latest CR",
       "suggestion_search_code": "Search code for usage examples",
-      "suggestion_summarize_slack": "Summarize this week's Slack activity",
+      "suggestion_summarize_chat": "Summarize this week's chat activity",
       "suggestion_triage_tickets": "Triage my on-call tickets",
       "suggestion_write_design_doc": "Help me write a design doc",
       "switch_back_to_default_mode": "Switch back to default mode",

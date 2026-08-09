@@ -8,8 +8,9 @@ open before touching that subsystem: see
 
 ## What this is
 
-Kiro Crew is an open-source personal AI agent: chat from Slack, a web dashboard, or
-the CLI; run multi-step tasks unattended; schedule cron jobs; keep memory across
+Kiro Crew is an open-source personal AI agent: chat from the web dashboard, the
+CLI, or a messaging channel like Slack and Discord; run multi-step tasks
+unattended; schedule cron jobs; keep memory across
 sessions. It drives an LLM through the KiroACP provider (the ACP adapter running
 `kiro-cli` over ACP JSON-RPC) plus MCP tools.
 

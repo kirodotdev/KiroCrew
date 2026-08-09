@@ -378,7 +378,10 @@ original pretty form is preserved as the slot's initial title
 
 Sessions can be linked to Slack threads via `SessionMap` fields
 `slack_thread_ts` and `slack_channel_id`. This enables bidirectional sync
-between dashboard chat and Slack.
+between dashboard chat and Slack. Slack is the legacy special case: other
+channels link through the generic ChannelLink mirror map (see
+[messaging.md](messaging.md)). The `slack_*` fields are retained for backward
+compatibility.
 
 **API:**
 - `SessionManager.set_slack_link(key, thread_ts, channel_id)` — persists to session map

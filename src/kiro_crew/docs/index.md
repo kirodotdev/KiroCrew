@@ -3,7 +3,7 @@
 Kiro Crew is a personal, autonomous AI agent that runs locally on your own
 machine. It is powered by kiro-cli (KiroACP) and reaches tools over the Model
 Context Protocol (MCP). Everything below is the reference for the features you
-can reach from the dashboard, Slack, or the CLI.
+can reach from the dashboard, the CLI, or a connected messaging channel.
 
 ## Quick Start
 
@@ -21,7 +21,7 @@ kirocrew gateway     # → http://localhost:5476
 
 `kiro-cli` must be installed, on your `PATH`, and logged in. See
 [Getting Started](getting-started.md) for the source install, the pip channel
-index, first-time setup, and Slack credentials.
+index, first-time setup, and connecting messaging channels.
 
 ## Core Capabilities
 
@@ -35,7 +35,7 @@ index, first-time setup, and Slack credentials.
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
-| [Slack](slack-integration.md) | DM-based interaction with tool approval, streaming, and channel monitoring |
+| Chat Channels | DM-based chat with tool approval — [Slack](slack-integration.md), [Discord](discord-integration.md), [Telegram](telegram-integration.md), [Teams](teams-integration.md), [Webex](webex-integration.md), [WeCom](wecom-integration.md), [WeChat](weixin-integration.md); per-channel capabilities in each guide |
 | [Agents](agents.md) | Switch between specialized agents per conversation, thread, or cron job |
 | [Skills](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows |
 
@@ -56,12 +56,12 @@ index, first-time setup, and Slack credentials.
 
 ## Chat Channels
 
-Besides the dashboard and Slack, Kiro Crew ships channel integrations for
-[Discord](discord-integration.md), [Telegram](telegram-integration.md),
-[Teams](teams-integration.md), [Webex](webex-integration.md),
-[WeCom](wecom-integration.md), and [Weixin](weixin-integration.md). They share
-one channel-neutral core, described in
-[Messaging Transport](messaging-transport.md).
+Besides the dashboard and CLI, Kiro Crew ships channel integrations for
+[Slack](slack-integration.md), [Discord](discord-integration.md),
+[Telegram](telegram-integration.md), [Teams](teams-integration.md),
+[Webex](webex-integration.md), [WeCom](wecom-integration.md), and
+[Weixin](weixin-integration.md). They share one channel-neutral core, described
+in [Messaging Transport](messaging-transport.md).
 
 ## Guides
 

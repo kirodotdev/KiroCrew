@@ -117,10 +117,16 @@ curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
 Open `http://localhost:5476` and start a conversation. The web dashboard works
-without messaging credentials. Add [Slack](docs/guides/slack-setup.md),
-[Telegram](src/kiro_crew/docs/telegram-integration.md), or
-[WeCom](src/kiro_crew/docs/wecom-integration.md) when you want to continue
-working with the same agent away from the dashboard. These channels connect
+without messaging credentials. Add a messaging channel —
+[Slack](docs/guides/slack-setup.md),
+[Discord](src/kiro_crew/docs/discord-integration.md),
+[Telegram](src/kiro_crew/docs/telegram-integration.md),
+[Teams](src/kiro_crew/docs/teams-integration.md),
+[Webex](src/kiro_crew/docs/webex-integration.md),
+[WeCom](src/kiro_crew/docs/wecom-integration.md), or
+[WeChat](src/kiro_crew/docs/weixin-integration.md) — when you want to continue
+working with the same agent away from the dashboard. Apart from Teams (which
+needs a public HTTPS webhook — see its guide), these channels connect
 outbound, so you do not need to expose the dashboard port publicly.
 
 ### Docker
@@ -208,7 +214,7 @@ The complete inventory is in [Features](src/kiro_crew/docs/index.md) and
 
 ```mermaid
 flowchart TD
-    S["Desktop app · Web dashboard · Slack · Telegram · WeCom · CLI"]
+    S["Desktop app · Web dashboard · CLI · Messaging channels (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat)"]
     G["Gateway<br/>access · sessions · memory · schedules · approvals · apps"]
     A["Agent sessions<br/>ACP runtime · kiro-cli · MCP tools · models"]
     S --> G --> A
@@ -216,9 +222,9 @@ flowchart TD
 
 The Gateway separates where the agent runs from where you work with it. In the
 desktop app or web dashboard, you can work directly through parallel conversations,
-files, task runs, approvals, memory, and apps. From Slack, Telegram, WeCom, or
-the CLI, the Gateway routes your work to managed agent sessions under the same
-memory, tool, approval, and policy services. Apps extend the dashboard and
+files, task runs, approvals, memory, and apps. From the CLI or any connected
+messaging channel, the Gateway routes your work to managed agent sessions under
+the same memory, tool, approval, and policy services. Apps extend the dashboard and
 Gateway APIs with focused workflows.
 
 Each active conversation or background task uses an agent session. Its session
@@ -240,11 +246,11 @@ session state, injects memory and skills, starts scheduled work, coordinates
 subagents, brokers approvals, enforces runtime policy, and exposes activity in
 the dashboard.
 
-**Agent sessions.** A dashboard conversation or Slack thread maps to an isolated
-agent session. Scheduled jobs, task runs, Telegram and WeCom conversations, and
-subagents also use managed sessions. These sessions preserve conversation
-context and can run concurrently before returning results to a parent session or
-configured surface.
+**Agent sessions.** A dashboard conversation, Slack thread, or Discord DM maps to
+an isolated agent session. Scheduled jobs, task runs, other messaging-channel
+conversations, and subagents also use managed sessions. These sessions preserve
+conversation context and can run concurrently before returning results to a
+parent session or configured surface.
 
 **ACP runtime and turns.** Kiro Crew supports both a dedicated `kiro-cli` ACP
 process for a session and a shared ACP runtime that multiplexes multiple session
@@ -261,7 +267,7 @@ logical isolation boundary, not necessarily one OS process.
 | **Slack** | Work from DMs and threads with streaming replies, approvals, notifications, and session links back to the dashboard. |
 | **Telegram** | Reach your agent from private DMs on your phone or laptop, with streaming replies, inline approvals, and commands. |
 | **Discord** | Work from DMs with streaming replies and approvals delivered as message buttons. |
-| **Teams** | Reach your agent from Microsoft Teams chats with streaming replies and approvals. |
+| **Teams** | Reach your agent from Microsoft Teams chats — replies arrive as complete messages, and approvals are answered by typing. |
 | **Webex** | Work from Webex direct messages with streaming replies and inline approvals. |
 | **WeCom** | Chat through an outbound-connected WeCom AI bot with configured user access and streaming replies. |
 | **WeChat (Weixin)** | Reach your agent from WeChat with configured user access and streaming replies. |
@@ -273,7 +279,7 @@ logical isolation boundary, not necessarily one OS process.
 |---|---|---|
 | **Scheduled** | Briefings, audits, backups, and recurring maintenance | `kirocrew cron` or a natural-language request |
 | **Proactive** | Goals that need another pass without waiting for a new user message | AutoNudge and goal-loop skills |
-| **Reactive** | CI alerts, external automation, Slack activity, and other events | Authenticated agent webhooks and messaging events |
+| **Reactive** | CI alerts, external automation, messaging-channel activity, and other events | Authenticated agent webhooks and messaging events |
 | **Task runner** | Bounded projects with explicit steps, tests, review, and checkpoint resume | `kirocrew run TASK.md` |
 | **Subagents** | Independent workstreams that can run concurrently | `kirocrew spawn run "task"` |
 
@@ -300,8 +306,9 @@ the runtime boundary instead of relying only on prompt instructions.
 
 - **Local by default.** The dashboard binds to loopback unless you explicitly
   configure a network URL. Remote dashboards require token authentication.
-- **Interactive approvals.** Review tool requests in the dashboard, Slack, or
-  Telegram. Session-scoped trust can reduce repeated prompts without changing
+- **Interactive approvals.** Review tool requests in the dashboard or a
+  connected messaging channel like Slack, Discord, or Telegram.
+  Session-scoped trust can reduce repeated prompts without changing
   the underlying deny and sensitive-path controls.
 - **OS sandbox.** On Linux and macOS, `kiro-cli` can run inside namespace or
   Seatbelt isolation. Standard, strict, and off modes make the tradeoff
@@ -426,8 +433,8 @@ main configuration with `kirocrew config get`, `set`, and `edit`.
 
 `agent.provider` is fixed to `acp`. Kiro Crew drives `kiro-cli` over the Agent
 Client Protocol. Set the dashboard port with `KIROCREW_PORT` or
-`kirocrew gateway --port <n>`. Slack credentials live in `~/.kiro/crew/.env`
-rather than the JSON config.
+`kirocrew gateway --port <n>`. Messaging-channel credentials (Slack, Discord,
+Telegram, and the rest) live in `~/.kiro/crew/.env` rather than the JSON config.
 
 **Troubleshoot quickly.** Start with `kirocrew doctor`. For an ACP timeout,
 confirm `kiro-cli` is on `PATH` and logged in, then allow extra time for the

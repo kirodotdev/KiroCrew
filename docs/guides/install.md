@@ -257,22 +257,32 @@ in place of `kirocrew`.
 ### What `kirocrew setup` asks
 
 The wizard installs the agent config, then walks through the workspace
-directory, Slack credentials, the slash-command name, timezone, dashboard URL,
-and (on macOS) the desktop app. It does NOT install `@playwright/mcp` or register
-the browser proxy: Browser Mode is a durable toggle you turn on later in
-**Settings → Browser**, and enabling it there is what downloads `@playwright/mcp`
-plus the selected engine's browser binary and registers the compression proxy.
+directory, timezone, dashboard URL, and (on macOS) the desktop app. It does NOT
+configure any messaging channel: pass `--slack` to opt into the guided Slack
+credential and slash-command setup. It also does NOT install `@playwright/mcp`
+or register the browser proxy: Browser Mode is a durable toggle you turn on later
+in **Settings → Browser**, and enabling it there is what downloads
+`@playwright/mcp` plus the selected engine's browser binary and registers the
+compression proxy.
 
-**Answering "n" to "Configure Slack tokens?" leaves Slack disabled and gives you
-dashboard-only mode.** The web dashboard is fully functional without any
-messaging credentials; add Slack later when you want to reach the same agent
-away from your desk.
+**Messaging channels are optional.** The default wizard configures none, and the
+web dashboard is fully functional without any messaging credentials. Connect a
+channel later -- Slack (`kirocrew setup --slack` or
+[slack-setup.md](slack-setup.md)),
+[Discord](../../src/kiro_crew/docs/discord-integration.md),
+[Telegram](../../src/kiro_crew/docs/telegram-integration.md),
+[Teams](../../src/kiro_crew/docs/teams-integration.md),
+[Webex](../../src/kiro_crew/docs/webex-integration.md),
+[WeCom](../../src/kiro_crew/docs/wecom-integration.md), or
+[WeChat](../../src/kiro_crew/docs/weixin-integration.md) --
+when you want to reach the same agent away from your desk.
 
-Two flags narrow the wizard:
+These flags narrow the wizard:
 
 | Flag | Effect |
 |------|--------|
 | `--agent-only` | Install the agent config and stop, skipping the workspace and every credential prompt |
+| `--slack` | Run the guided Slack credential + slash-command setup (opt-in) |
 | `--clean` | Fresh agent config: ignore the existing `kirocrew.json` and regenerate from defaults instead of merging your MCP servers and tools forward |
 | `--electron-only` | Install only the macOS desktop app |
 
@@ -285,9 +295,10 @@ so all user customizations survive.
 
 - Config file: `~/.kiro/crew/config.json`, managed with
   `kirocrew config get/set/edit`.
-- Credentials: `~/.kiro/crew/.env` holding `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`,
-  and `KIROCREW_OWNER_ID`. See [slack-setup.md](slack-setup.md) for creating the
-  Slack app.
+- Credentials: `~/.kiro/crew/.env` holding messaging-channel tokens (for Slack:
+  `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`; other channels use
+  their own keys). See [slack-setup.md](slack-setup.md) for creating the Slack
+  app.
 
 ### Environment variables
 
@@ -351,7 +362,7 @@ loop-stall crash dumps, and connectivity.
 
 ## Running as a service
 
-For always-on operation (Slack bot, cron jobs, background tasks):
+For always-on operation (channel bots, cron jobs, background tasks):
 
 ```bash
 kirocrew service install    # systemd on Linux, launchd on macOS
@@ -639,6 +650,12 @@ sign-off is tracked in
 ## Next steps
 
 - [Slack setup](slack-setup.md): create and configure the Slack app.
+- Other channels: [Discord](../../src/kiro_crew/docs/discord-integration.md),
+  [Telegram](../../src/kiro_crew/docs/telegram-integration.md),
+  [Teams](../../src/kiro_crew/docs/teams-integration.md),
+  [Webex](../../src/kiro_crew/docs/webex-integration.md),
+  [WeCom](../../src/kiro_crew/docs/wecom-integration.md), and
+  [WeChat](../../src/kiro_crew/docs/weixin-integration.md).
 - [Remote and mobile access](remote-and-mobile.md): 24/7 operation on a remote
   host, and reaching the dashboard from a phone.
 - [Architecture overview](../architecture/overview.md): system diagrams and the

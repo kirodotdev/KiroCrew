@@ -1,7 +1,8 @@
 """Persistent session-to-kiro-cli mapping.
 
 Stores ``session_map.json`` mapping session keys to kiro-cli session IDs,
-with Slack thread linkage for bidirectional sync.
+with channel thread linkage (Slack legacy fields; other channels use the
+generic ChannelLink mirror map) for bidirectional sync.
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ class SessionMap:
     """Persistent mapping of session_key → kiro-cli session ID.
 
     Stored as ``~/.kiro/crew/session_map.json``. Atomic write via tmp+rename.
-    Only used for long-lived conversational sessions (Slack DM, dashboard).
+    Only used for long-lived conversational sessions (channel DMs, dashboard).
     Stateless sessions (cron, subagent, taskrunner) are excluded.
 
     Each entry is a dict with keys: ``sid``, ``slack_thread_ts``, ``slack_channel_id``.

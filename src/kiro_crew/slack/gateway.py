@@ -1437,7 +1437,7 @@ class GatewayOrchestrator:
     def _init_services(self) -> None:
         """Initialize memory, skills, hooks, context, history, sessions."""
         if not self._slack_enabled:
-            logger.info("Starting in dashboard-only mode (no Slack credentials)")
+            logger.info("Slack not configured — starting without the Slack gateway")
 
         # Check kiro-cli version (--agent requires >= 1.26)
         try:

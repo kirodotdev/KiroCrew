@@ -12,6 +12,7 @@ system is built, see [../architecture/](../architecture/README.md).
 | [cloud-instance-ssm-vs-ssh.md](cloud-instance-ssm-vs-ssh.md) | How a cloud-launched instance is reached through the Instances hub: the native AWS SSM transport vs the legacy SSH-over-`ProxyCommand` path. |
 | [remote-crew-on-ec2.md](remote-crew-on-ec2.md) | Reaching a Remote Crew gateway on EC2 over SSH or AWS SSM, plus the common EC2 setup gotchas (sandbox backend, linger, port/tunnel matching). |
 | [slack-setup.md](slack-setup.md) | Creating and configuring the Slack app. |
+| — | Other chat channels (Discord, Telegram, Teams, Webex, WeCom, WeChat) are documented in [../../src/kiro_crew/docs/](../../src/kiro_crew/docs/README.md); the channel-neutral transport contract is [messaging.md](../system-specs/modules/messaging.md). |
 
 `assets/` holds the copy-pasteable service unit, launchd plist, and setup script
 that [remote-and-mobile.md](remote-and-mobile.md) refers to, plus an example

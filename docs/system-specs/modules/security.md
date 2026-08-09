@@ -9,14 +9,14 @@ KiroCrew implements defense-in-depth security across multiple layers: OS-level p
 | Threat | Vector | Mitigation |
 |--------|--------|------------|
 | XPIA credential theft | LLM reads `~/.aws`, `~/.ssh` via `fs_read` or `cat` | Hook-layer path blocking + OS sandbox |
-| XPIA data exfiltration | LLM embeds secrets in URLs posted to Slack/dashboard | Output scanning + URL redaction |
+| XPIA data exfiltration | LLM embeds secrets in URLs posted to a chat channel or the dashboard | Output scanning + URL redaction |
 | Cross-origin WebSocket hijack | Malicious page connects to `ws://127.0.0.1:5476/api/ws` | Origin header validation |
 | Cross-origin mutation (CSRF) | Malicious page POSTs to dashboard API | Origin/Referer validation on non-safe methods |
 | DNS rebinding | Attacker domain resolves to `127.0.0.1`; browser sends forged `Host` to the loopback-bound dashboard (incl. GET exfil) | `Host`-header allowlist validation on every method (`check_host` / `host_validation_middleware`), deny-by-default, 403 + SEL audit. Sole exemption: the three `PROBE_PATHS` liveness probes (orchestrators address containers by IP); their handlers strip identity fields via a second `check_host` gate, leaking nothing beyond TCP reachability |
 | Unauthenticated remote access | Dashboard bound to `0.0.0.0` | Loopback-only by default (`127.0.0.1`); when user opts in via `dashboard.url`, token auth middleware requires HMAC-SHA256 signed, IP-pinned, single-use tokens on every request |
 | Unauthenticated remote access (AEA tunnel) | `tunnel.enabled` exposes dashboard via public HTTPS URL | Double auth: Tunnels validates Midway OIDC at edge + KiroCrew token auth middleware. Security gate refuses tunnel start without token auth active. Owner-only access (Tunnels restricts by username). SEL audit on connect/disconnect/denial |
 | Unauthorized dashboard access | No auth on localhost | Token auth middleware on all requests (loopback bypass removed); file-based IPC secret for internal paths |
-| Non-owner Slack interaction | Any workspace member clicks YOLO/approve buttons | 5-layer owner verification |
+| Non-owner channel interaction | Any workspace/server member clicks YOLO/approve buttons | 5-layer owner verification |
 | Fail-open owner lock | `KIROCREW_OWNER_ID` unset → no check | Deny-by-default: refuse connect + reject messages |
 | MCP input injection | Malformed/oversized tool inputs from LLM | Centralized schema validation (`validation.py`) |
 | MCP response DoS | Unbounded tool output fills memory | Response truncation at 100K |

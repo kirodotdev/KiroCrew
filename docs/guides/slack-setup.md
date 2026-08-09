@@ -2,7 +2,7 @@
 
 How to create a Slack app for Kiro Crew and connect it.
 
-> **Dashboard-only mode**: If you don't need Slack, skip this entirely. Leave Slack tokens empty during `kirocrew setup` and the gateway runs the web dashboard without Slack.
+> **Slack is optional**: If you don't need Slack, skip this entirely. The default `kirocrew setup` configures no messaging channels, and the gateway runs the web dashboard without any. When you are ready to connect Slack, run `kirocrew setup --slack` to enter the tokens created below.
 
 Kiro Crew connects to Slack using **Socket Mode**, so it runs entirely from your own machine over an outbound WebSocket: no public URL, no inbound webhooks, and no hosting required. You just need a Slack workspace where you can install an app.
 

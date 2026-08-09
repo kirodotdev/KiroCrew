@@ -1,6 +1,7 @@
-"""Session manager — maps Slack thread_ts to LLM provider sessions.
+"""Session manager — maps conversation session keys to LLM provider sessions.
 
-Each Slack thread gets its own LLMProvider instance. Sessions are
+Each conversation (channel thread, dashboard slot, CLI) gets its own
+LLMProvider instance. Sessions are
 cleaned up after idle timeout (default 30 min).
 
 Warm session pool: ``start_pool()`` pre-spawns kiro-cli processes so
@@ -39,7 +40,7 @@ Circuit breaker: after 5 consecutive failures on a session, the session
 is force-reset instead of retrying forever.
 
 Per-session semaphore: serializes prompts on the same session key so
-concurrent Slack messages on the same thread don't interleave.
+concurrent messages on the same conversation don't interleave.
 
 Process Sweep Architecture
 --------------------------
