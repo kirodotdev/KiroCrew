@@ -5943,7 +5943,10 @@
       "remove_status_flag_from": "Убрать отметку статуса с {{name}}",
       "rename_tag": "Переименовать тег {{name}}",
       "set_color_to_name": "Задать цвет: {{name}}",
-      "status_tag_mutually_exclusive_on_cards_click_to": "Тег статуса (взаимоисключающий на карточках) — нажми, чтобы сделать обычным"
+      "status_tag_mutually_exclusive_on_cards_click_to": "Тег статуса (взаимоисключающий на карточках) — нажми, чтобы сделать обычным",
+      "change_color_for": "Изменить цвет для {{name}}",
+      "choose_color_for": "Выбрать цвет для {{name}}",
+      "choose_color_for_new_tag": "Выбрать цвет для нового тега"
     },
     "terminalCompletion": {
       "command_completions": "Автодополнение команд",

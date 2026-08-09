@@ -5688,7 +5688,10 @@
       "remove_status_flag_from": "移除 {{name}} 的状态标记",
       "rename_tag": "重命名标签 {{name}}",
       "set_color_to_name": "将颜色设为{{name}}",
-      "status_tag_mutually_exclusive_on_cards_click_to": "状态标签（在卡片上互斥）— 点击改为普通标签"
+      "status_tag_mutually_exclusive_on_cards_click_to": "状态标签（在卡片上互斥）— 点击改为普通标签",
+      "change_color_for": "更改 {{name}} 的颜色",
+      "choose_color_for": "选择 {{name}} 的颜色",
+      "choose_color_for_new_tag": "选择新标签的颜色"
     },
     "terminalCompletion": {
       "command_completions": "命令补全",

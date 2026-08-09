@@ -5773,7 +5773,10 @@
       "remove_status_flag_from": "Status-Markierung von {{name}} entfernen",
       "rename_tag": "Tag {{name}} umbenennen",
       "set_color_to_name": "Farbe auf {{name}} setzen",
-      "status_tag_mutually_exclusive_on_cards_click_to": "Status-Tag (auf Karten exklusiv) — klicken, um ihn normal zu machen"
+      "status_tag_mutually_exclusive_on_cards_click_to": "Status-Tag (auf Karten exklusiv) — klicken, um ihn normal zu machen",
+      "change_color_for": "Farbe ändern für {{name}}",
+      "choose_color_for": "Farbe auswählen für {{name}}",
+      "choose_color_for_new_tag": "Farbe für neuen Tag auswählen"
     },
     "terminalCompletion": {
       "command_completions": "Befehlsvervollständigungen",

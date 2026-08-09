@@ -5858,7 +5858,10 @@
       "remove_status_flag_from": "Quitar la marca de estado de {{name}}",
       "rename_tag": "Cambiar el nombre de la etiqueta {{name}}",
       "set_color_to_name": "Establecer color en {{name}}",
-      "status_tag_mutually_exclusive_on_cards_click_to": "Etiqueta de estado (mutuamente excluyente en las tarjetas) — clic para convertirla en normal"
+      "status_tag_mutually_exclusive_on_cards_click_to": "Etiqueta de estado (mutuamente excluyente en las tarjetas) — clic para convertirla en normal",
+      "change_color_for": "Cambiar color de {{name}}",
+      "choose_color_for": "Elegir color para {{name}}",
+      "choose_color_for_new_tag": "Elegir color para la nueva etiqueta"
     },
     "terminalCompletion": {
       "command_completions": "Autocompletado de comandos",

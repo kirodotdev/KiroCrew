@@ -5858,7 +5858,10 @@
       "remove_status_flag_from": "Rimuovi il contrassegno di stato da {{name}}",
       "rename_tag": "Rinomina il tag {{name}}",
       "set_color_to_name": "Imposta il colore su {{name}}",
-      "status_tag_mutually_exclusive_on_cards_click_to": "Tag di stato (mutuamente esclusivo sulle card) — clicca per renderlo normale"
+      "status_tag_mutually_exclusive_on_cards_click_to": "Tag di stato (mutuamente esclusivo sulle card) — clicca per renderlo normale",
+      "change_color_for": "Cambia colore per {{name}}",
+      "choose_color_for": "Scegli il colore per {{name}}",
+      "choose_color_for_new_tag": "Scegli il colore per il nuovo tag"
     },
     "terminalCompletion": {
       "command_completions": "Completamenti dei comandi",

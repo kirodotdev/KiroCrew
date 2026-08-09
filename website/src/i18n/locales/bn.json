@@ -5773,7 +5773,10 @@
       "remove_status_flag_from": "{{name}} থেকে স্টেটাস ফ্ল্যাগ সরাও",
       "rename_tag": "{{name}} ট্যাগের নাম বদলাও",
       "set_color_to_name": "রং {{name}} এ সেট করুন",
-      "status_tag_mutually_exclusive_on_cards_click_to": "স্টেটাস ট্যাগ (কার্ডে একসাথে একটিই) — সাধারণ করতে ক্লিক করো"
+      "status_tag_mutually_exclusive_on_cards_click_to": "স্টেটাস ট্যাগ (কার্ডে একসাথে একটিই) — সাধারণ করতে ক্লিক করো",
+      "change_color_for": "রঙ পরিবর্তন করো: {{name}}",
+      "choose_color_for": "রং বেছে নাও: {{name}}",
+      "choose_color_for_new_tag": "নতুন ট্যাগের রং বেছে নাও"
     },
     "terminalCompletion": {
       "command_completions": "কমান্ড কমপ্লিশন",

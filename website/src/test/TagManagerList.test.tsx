@@ -11,7 +11,7 @@
  * the tag picker is reachable from the list-view row menu too.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -113,66 +113,30 @@ describe('TagManagerList — shared CRUD (both modes)', () => {
     await waitFor(() => expect(api.createChatTag).toHaveBeenCalledWith('Gamma', undefined, undefined))
     expect(input.value).toBe('')
   })
+
+  it('changes an existing tag color from the palette', async () => {
+    renderList({ mode: 'manage' })
+    const row = await screen.findByTestId('tag-row-t1')
+    fireEvent.click(within(row).getByTestId('tag-color-t1'))
+    fireEvent.click(within(row).getByRole('radio', { name: 'Red' }))
+    await waitFor(() => expect(api.updateChatTag).toHaveBeenCalledWith('t1', { color: '#ef4444' }))
+  })
+
+  it('uses the selected palette color when creating a tag', async () => {
+    renderList({ mode: 'manage' })
+    fireEvent.click(screen.getByRole('radio', { name: 'Blue' }))
+    const input = await screen.findByTestId('tag-create') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'Colored' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(api.createChatTag).toHaveBeenCalledWith('Colored', '#3b82f6', undefined))
+  })
 })
 
 describe('TagManagerList — manage mode', () => {
-  it('renders swatches as colour buttons, not filter checkboxes', async () => {
+  it('renders swatches as static chips, not filter checkboxes', async () => {
     renderList({ mode: 'manage' })
     await screen.findByTestId('tag-row-t1')
     expect(screen.queryByRole('checkbox')).toBeNull()
-    expect(screen.getByTestId('tag-color-t1')).toHaveAttribute('aria-expanded', 'false')
-  })
-
-  it('opens the palette from the swatch and PATCHes the picked colour', async () => {
-    renderList({ mode: 'manage' })
-    const swatch = await screen.findByTestId('tag-color-t1')
-    fireEvent.click(swatch)
-    expect(swatch).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByTestId('tag-palette-t1')).toBeInTheDocument()
-    // Pick green from the shared folder palette.
-    fireEvent.click(screen.getByTestId('tag-color-t1-22c55e'))
-    await waitFor(() => expect(api.updateChatTag).toHaveBeenCalledWith('t1', { color: '#22c55e' }))
-    // Palette closes and focus returns to the swatch (not <body>).
-    expect(screen.queryByTestId('tag-palette-t1')).toBeNull()
-    expect(document.activeElement).toBe(swatch)
-  })
-
-  it('marks the tag\'s current colour as pressed in the palette', async () => {
-    renderList({ mode: 'manage' })
-    // t1 is #ff0000 (not in the palette) — nothing pressed.
-    fireEvent.click(await screen.findByTestId('tag-color-t1'))
-    const pressed = screen.getByTestId('tag-palette-t1').querySelectorAll('[aria-pressed="true"]')
-    expect(pressed.length).toBe(0)
-  })
-
-  it('Escape closes the palette without persisting and refocuses the swatch', async () => {
-    renderList({ mode: 'manage' })
-    const swatch = await screen.findByTestId('tag-color-t1')
-    fireEvent.click(swatch)
-    fireEvent.keyDown(screen.getByTestId('tag-palette-t1'), { key: 'Escape' })
-    expect(screen.queryByTestId('tag-palette-t1')).toBeNull()
-    expect(api.updateChatTag).not.toHaveBeenCalled()
-    expect(document.activeElement).toBe(swatch)
-  })
-
-  it('only one palette is open at a time (opening another closes the first)', async () => {
-    renderList({ mode: 'manage' })
-    fireEvent.click(await screen.findByTestId('tag-color-t1'))
-    fireEvent.click(screen.getByTestId('tag-color-t2'))
-    expect(screen.queryByTestId('tag-palette-t1')).toBeNull()
-    expect(screen.getByTestId('tag-palette-t2')).toBeInTheDocument()
-  })
-})
-
-describe('TagManagerList — colour palette isolation', () => {
-  it('column-filter mode never renders the colour trigger or palette', async () => {
-    renderList({ mode: 'column-filter', selectedIds: [], onToggleTag: vi.fn() })
-    await screen.findByTestId('tag-row-t1')
-    expect(screen.queryByTestId('tag-color-t1')).toBeNull()
-    // Clicking the filter checkbox must not open a palette either.
-    fireEvent.click(screen.getByLabelText('Include Alpha in filter'))
-    expect(screen.queryByTestId('tag-palette-t1')).toBeNull()
-    expect(api.updateChatTag).not.toHaveBeenCalled()
   })
 })
 

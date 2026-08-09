@@ -5773,7 +5773,10 @@
       "remove_status_flag_from": "{{name}} से स्टेटस फ़्लैग हटाएँ",
       "rename_tag": "टैग {{name}} का नाम बदलें",
       "set_color_to_name": "रंग {{name}} पर सेट करें",
-      "status_tag_mutually_exclusive_on_cards_click_to": "स्टेटस टैग (कार्ड पर एक समय में एक ही) — सामान्य बनाने के लिए क्लिक करें"
+      "status_tag_mutually_exclusive_on_cards_click_to": "स्टेटस टैग (कार्ड पर एक समय में एक ही) — सामान्य बनाने के लिए क्लिक करें",
+      "change_color_for": "{{name}} का रंग बदलें",
+      "choose_color_for": "{{name}} के लिए रंग चुनें",
+      "choose_color_for_new_tag": "नए टैग के लिए रंग चुनें"
     },
     "terminalCompletion": {
       "command_completions": "कमांड सुझाव",

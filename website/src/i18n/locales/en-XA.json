@@ -5402,7 +5402,10 @@
       "remove_status_flag_from": "[Ŕèɱøṽè şţàţùş ƒĺàğ ƒŕøɱ {{name}} ·················]",
       "rename_tag": "[Ŕèñàɱè ţàğ {{name}} ··········]",
       "set_color_to_name": "[Şèţ çøĺøŕ ţø {{name}} ············]",
-      "status_tag_mutually_exclusive_on_cards_click_to": "[Şţàţùş ţàğ (ɱùţùàĺĺý èẋçĺùşìṽè øñ çàŕðş) — çĺìçķ ţø ɱàķè ŕèğùĺàŕ ······················]"
+      "status_tag_mutually_exclusive_on_cards_click_to": "[Şţàţùş ţàğ (ɱùţùàĺĺý èẋçĺùşìṽè øñ çàŕðş) — çĺìçķ ţø ɱàķè ŕèğùĺàŕ ······················]",
+      "change_color_for": "[Çĥàñğè çøĺøŕ ƒøŕ {{name}} ···············]",
+      "choose_color_for": "[Çĥøøşè çøĺøŕ ƒøŕ {{name}} ···············]",
+      "choose_color_for_new_tag": "[Çĥøøşè çøĺøŕ ƒøŕ ñèẁ ţàğ ·················]"
     },
     "terminalCompletion": {
       "path_completions": "[Þàţĥ çøɱþĺèţìøñş ··············]",

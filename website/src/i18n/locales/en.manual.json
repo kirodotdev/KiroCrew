@@ -1615,7 +1615,10 @@
       "remove_status_flag_from": "Remove status flag from {{name}}",
       "rename_tag": "Rename tag {{name}}",
       "set_color_to_name": "Set color to {{name}}",
-      "status_tag_mutually_exclusive_on_cards_click_to": "Status tag (mutually exclusive on cards) — click to make regular"
+      "status_tag_mutually_exclusive_on_cards_click_to": "Status tag (mutually exclusive on cards) — click to make regular",
+      "change_color_for": "Change color for {{name}}",
+      "choose_color_for": "Choose color for {{name}}",
+      "choose_color_for_new_tag": "Choose color for new tag"
     },
     "terminalCompletion": {
       "use_this_folder": "use this folder",

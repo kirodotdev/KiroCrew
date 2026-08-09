@@ -5858,7 +5858,10 @@
       "remove_status_flag_from": "Remover a marcação de status de {{name}}",
       "rename_tag": "Renomear a tag {{name}}",
       "set_color_to_name": "Definir cor como {{name}}",
-      "status_tag_mutually_exclusive_on_cards_click_to": "Etiqueta de status (mutuamente exclusiva nos cartões) — clique para torná-la comum"
+      "status_tag_mutually_exclusive_on_cards_click_to": "Etiqueta de status (mutuamente exclusiva nos cartões) — clique para torná-la comum",
+      "change_color_for": "Alterar cor de {{name}}",
+      "choose_color_for": "Escolher cor para {{name}}",
+      "choose_color_for_new_tag": "Escolher cor para a nova etiqueta"
     },
     "terminalCompletion": {
       "command_completions": "Sugestões de comando",

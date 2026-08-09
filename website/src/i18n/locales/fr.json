@@ -5858,7 +5858,10 @@
       "remove_status_flag_from": "Retirer l’indicateur de statut de {{name}}",
       "rename_tag": "Renommer l’étiquette {{name}}",
       "set_color_to_name": "Définir la couleur sur {{name}}",
-      "status_tag_mutually_exclusive_on_cards_click_to": "Étiquette d’état (exclusive sur les cartes) — clique pour la rendre normale"
+      "status_tag_mutually_exclusive_on_cards_click_to": "Étiquette d’état (exclusive sur les cartes) — clique pour la rendre normale",
+      "change_color_for": "Changer la couleur de {{name}}",
+      "choose_color_for": "Choisir la couleur de {{name}}",
+      "choose_color_for_new_tag": "Choisir la couleur de la nouvelle étiquette"
     },
     "terminalCompletion": {
       "command_completions": "Complétions de commande",
