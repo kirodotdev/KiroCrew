@@ -201,16 +201,16 @@ class TestGhSetupClassification(unittest.TestCase):
         # The common macOS case: gh IS installed, but the Homebrew path is a
         # symlink under a user-writable prefix, so trust validation rejects it.
         # That must reach the UI as actionable setup guidance, not a raw error.
-        # `_validate_provider_executable` is imported lazily INSIDE _gh_bin, so
-        # it has to be patched on its owning module, not on github_client.
+        # Validation lives on the shared runner (github_runner), so it is
+        # patched on its owning module, not on github_client.
         # The path is a neutral fixture — the point is that ANY rejected
         # override becomes a setup error, not that a specific prefix does.
-        gh._gh_bin_cache = None
+        from kiro_crew import github_runner
+        github_runner.reset_cache()
         try:
             with mock.patch.dict("os.environ", {"KIROCREW_ISSUE_RADAR_GH": "/fake/prefix/bin/gh"}), \
                  mock.patch(
-                     "kiro_crew.dashboard.handlers.source_providers."
-                     "_validate_provider_executable",
+                     "kiro_crew.github_runner.validate_provider_executable",
                      side_effect=ValueError("path must be canonical"),
                  ):
                 with self.assertRaises(gh.GhSetupError) as ctx:
@@ -218,7 +218,7 @@ class TestGhSetupClassification(unittest.TestCase):
             self.assertEqual(ctx.exception.reason, "not_installed")
             self.assertIn("failed validation", str(ctx.exception))
         finally:
-            gh._gh_bin_cache = None
+            github_runner.reset_cache()
 
     # The two tests below cover the CALL SITES, not the helper. Testing
     # `_raise_if_auth_failure` in isolation leaves the tree green even if a

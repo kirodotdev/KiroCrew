@@ -17,6 +17,12 @@ from __future__ import annotations
 
 import re
 
+# RepoUrlError is defined by the shared gh runner (kiro_crew.github_runner),
+# where parse_github_repo_url raises it; re-exported here so both provider
+# clients and all route-level ``except`` clauses keep catching the SAME class.
+# Callers map it to HTTP 400 (bad client input), as distinct from
+# ProviderCliError, which is an upstream problem (502).
+from kiro_crew.github_runner import RepoUrlError  # noqa: F401
 from kiro_crew.security import redact_local_paths
 
 # Public provider endpoints are not host topology: the user is talking to them on
@@ -50,14 +56,6 @@ def sanitize_cli_stderr(text: str) -> str:
         return match.group(0) if host in _PUBLIC_HOSTS else _REDACTED
 
     return _URL_RE.sub(_host, out)
-
-
-class RepoUrlError(ValueError):
-    """Raised when a repo URL is not a well-formed, supported provider URL.
-
-    Callers map this to HTTP 400 (bad client input), as distinct from
-    :class:`ProviderCliError`, which is an upstream problem (502).
-    """
 
 
 class ProviderCliError(RuntimeError):

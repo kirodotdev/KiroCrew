@@ -134,8 +134,9 @@ def list_open_prs(owner: str, repo: str, *, host: str = "github.com",
     if h:
         argv += ["--hostname", h]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True,
-                              timeout=timeout, check=False)
+        # Shared spawn chokepoint: trusted binary, minimal env (no gateway
+        # secrets), SEL audit on success/failure/timeout.
+        proc = discovery._run_gh(argv, timeout=timeout)
     except FileNotFoundError as e:
         raise RuntimeError("the `gh` CLI is not installed on this host") from e
     except subprocess.TimeoutExpired as e:

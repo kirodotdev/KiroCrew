@@ -16,14 +16,15 @@ would be a regression, not a rewrite.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
+
+from kiro_crew import github_runner
 
 from .errors import (
     ProviderCliError,
@@ -70,34 +71,12 @@ GH_TIMEOUT_SEC = 20.0
 # once per refresh, not per view.
 GH_PAGINATE_TIMEOUT_SEC = 120.0
 
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
-def parse_github_repo_url(link: str) -> tuple[str, str]:
-    """Parse ``(owner, repo)`` from a full ``https://github.com/<owner>/<repo>`` URL.
-
-    Deliberately strict (full URL only, per product decision — no bare
-    ``owner/repo`` shorthand): rejects non-github.com hosts (SSRF guard) and
-    constrains owner/repo to a safe charset before either value is ever
-    interpolated into a subprocess argv.
-    """
-    if not link or not isinstance(link, str):
-        raise RepoUrlError("repo link is empty")
-    parsed = urlparse(link.strip())
-    host = (parsed.hostname or "").lower()
-    if host not in {"github.com", "www.github.com"}:
-        raise RepoUrlError(
-            f"not a github.com URL: {link!r} (expected https://github.com/<owner>/<repo>)"
-        )
-    parts = [p for p in (parsed.path or "").split("/") if p]
-    if len(parts) < 2:
-        raise RepoUrlError(f"not a full repo URL: {link!r} (expected .../<owner>/<repo>)")
-    owner, repo = parts[0], re.sub(r"\.git$", "", parts[1])
-    if owner in (".", "..") or repo in (".", "..") or not (
-        _SEGMENT_RE.match(owner) and _SEGMENT_RE.match(repo)
-    ):
-        raise RepoUrlError(f"invalid owner/repo segment in {link!r}")
-    return owner, repo
+# Owner/repo URL parsing lives in the shared runner; re-exported here because
+# this module is its long-standing import location (~26 internal call sites,
+# routes.py, provider.py, and the tests all reach it as
+# ``github_client.parse_github_repo_url``). ``errors.RepoUrlError`` is an alias
+# of the runner's class, so existing ``except`` clauses keep catching it.
+parse_github_repo_url = github_runner.parse_github_repo_url
 
 
 # ── gh spawn hardening ───────────────────────────────────────────────────────
@@ -112,97 +91,38 @@ def parse_github_repo_url(link: str) -> tuple[str, str]:
 # unrelated secrets (AWS/Slack/SSH) can never leak to a substituted or
 # compromised gh.
 
-# gh's own auth + network/TLS vars, forwarded (when present) on top of the
-# platform's minimal safe-key base; everything else in the parent env is dropped.
-_GH_ENV_PASSTHROUGH = (
-    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-    "GH_HOST", "GH_CONFIG_DIR",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-)
-
-_gh_bin_cache: str | None = None
-
-# gh resolution reuses the SAME policy and search order as the Sidebar PR panel
-# (source_providers.provider_executable_candidates) so both panels accept exactly
-# the same gh installs and never drift. Imported lazily inside _gh_bin() (its
-# owning module pulls in dashboard state, so a top-level import here would be
-# circular).
+_GH_OVERRIDE_ENV = "KIROCREW_ISSUE_RADAR_GH"
 
 
 def _gh_bin() -> str:
-    """Absolute path to an acceptable ``gh``, resolved once and cached.
-
-    Resolution and validation are shared with the Sidebar PR panel
-    (``source_providers.provider_executable_candidates`` +
-    ``_validate_provider_executable``): the well-known install dirs first, then
-    the ambient ``PATH``, accepting the user's own install (Homebrew included)
-    while refusing a binary owned by another user, a world-writable one, or one
-    inside the agent-writable project/workspace tree. Set
+    """Absolute path to an acceptable ``gh``, resolved and cached by the shared
+    runner (``github_runner.resolve_gh``): the well-known install dirs first,
+    then the ambient ``PATH``, accepting the user's own install (Homebrew
+    included) while refusing a binary owned by another user, a world-writable
+    one, or one inside the agent-writable project/workspace tree. Set
     ``KIROCREW_ISSUE_RADAR_GH`` to an absolute path to override (still
     validated), or ``KIROCREW_PROVIDER_BIN_STRICT=1`` to require a root-owned
     ``gh``. Raises :class:`GhSetupError` if no acceptable executable is found."""
-    global _gh_bin_cache
-    if _gh_bin_cache:
-        return _gh_bin_cache
     if sys.platform == "win32":
         raise GhCliError(
             "Issue Radar requires a POSIX platform (macOS/Linux); "
             "Windows is not supported — use WSL to run the Kiro Crew gateway"
         )
-
-    from kiro_crew.dashboard.handlers.source_providers import (
-        _validate_provider_executable,
-        provider_executable_candidates,
-    )
-
-    # Operator override — still validated.
-    override = os.environ.get("KIROCREW_ISSUE_RADAR_GH")
-    if override:
-        try:
-            validated = _validate_provider_executable(override)
-            _gh_bin_cache = validated
-            return validated
-        except (ValueError, OSError) as exc:
-            # A host-setup problem the user must fix (wrong path, a binary owned
-            # by another user), not a transient API failure — surface it as a
-            # GhSetupError so the connect dialog offers instructions.
-            raise GhSetupError(
-                f"KIROCREW_ISSUE_RADAR_GH={override!r} failed validation: {exc}",
-                reason="not_installed",
-            ) from exc
-
-    # Well-known install dirs first, then the ambient PATH.
-    last_error = ""
-    for cand in provider_executable_candidates("gh"):
-        if not os.path.isfile(cand):
-            continue
-        try:
-            validated = _validate_provider_executable(cand)
-            _gh_bin_cache = validated
-            return validated
-        except (ValueError, OSError) as exc:
-            last_error = str(exc)
-            continue  # untrusted provenance — skip
-
-    detail = f" (last check: {last_error})" if last_error else ""
-    raise GhSetupError(
-        "the `gh` CLI was not found on this host"
-        f"{detail} — install it (`brew install gh` or your distro's package "
-        "manager) and run `gh auth login`, or set KIROCREW_ISSUE_RADAR_GH to an "
-        "absolute gh path",
-        reason="not_installed",
-    )
+    try:
+        return github_runner.resolve_gh(override_env=_GH_OVERRIDE_ENV)
+    except github_runner.SetupError as exc:
+        # A host-setup problem the user must fix (gh absent, wrong override
+        # path, a binary owned by another user), not a transient API failure —
+        # surface it as a GhSetupError so the connect dialog offers
+        # instructions.
+        raise GhSetupError(str(exc), reason="not_installed") from exc
 
 
 def _gh_env() -> dict[str, str]:
-    """A minimal environment for ``gh``: the platform's safe-key base
-    (PATH/HOME/XDG/…) plus gh's own auth + network/TLS vars when set — NOT the
-    gateway's full environment, so unrelated secrets never reach the child."""
-    from kiro_crew.apps.registry import minimal_env
-
-    return minimal_env(**{k: os.environ[k] for k in _GH_ENV_PASSTHROUGH if k in os.environ})
+    """A minimal environment for ``gh``: the platform's safe-key base plus gh's
+    own auth + network/TLS vars when set — NOT the gateway's full environment.
+    Owned by the shared runner so every gh surface stays in lockstep."""
+    return github_runner.gh_env()
 
 
 def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
@@ -216,44 +136,33 @@ def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
 
 
 def _gh_run(argv: list[str], *, timeout: float, input_text: str | None = None) -> subprocess.CompletedProcess:
-    """Single spawn chokepoint for every ``gh`` call — replaces argv[0] with the
-    trusted canonical gh and passes the minimal env (see the hardening note
-    above). Emits an SEL tool-invocation event on success, failure, and timeout
-    (matching ``source_providers._run_json``)."""
+    """Single Issue Radar chokepoint for every ``gh`` call — delegates to the
+    shared hardened runner (``github_runner.run_gh``): trusted canonical gh as
+    argv[0], minimal env, bounded timeout, and an SEL tool-invocation event on
+    success, failure, and timeout. This wrapper keeps Issue Radar's error
+    taxonomy (GhSetupError/GhCliError) so routes and the connect dialog are
+    untouched."""
     gh = _gh_bin()
-    operation = f"gh {' '.join(argv[1:3])}"  # e.g. "gh api repos/…" (bounded)
     try:
-        proc = subprocess.run(
+        # pin_host: Issue Radar is github.com-only by design (its connect
+        # validation rejects every other host) and its API paths never pass
+        # --hostname, so an ambient GH_HOST must not be able to steer them to
+        # an enterprise instance.
+        return github_runner.run_gh(
             [gh, *argv[1:]],
-            capture_output=True, text=True, timeout=timeout, check=False,
-            input=input_text, env=_gh_env(),
+            timeout=timeout, input_text=input_text, audit_caller="core:issue-radar",
+            pin_host="github.com",
         )
     except FileNotFoundError as exc:  # pragma: no cover — _gh_bin guards first
-        _audit("gh_run", operation, "failure", error="gh not found")
         raise GhSetupError(
             "the `gh` CLI is not installed on this host", reason="not_installed"
         ) from exc
     except subprocess.TimeoutExpired as exc:
-        _audit("gh_run", operation, "failure", error=f"timeout after {timeout}s")
         raise GhCliError(f"`gh` timed out after {timeout}s") from exc
-    if proc.returncode != 0:
-        _audit("gh_run", operation, "failure", error=f"exit {proc.returncode}")
-    else:
-        _audit("gh_run", operation, "ok")
-    return proc
-
-
-def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
-    """SEL event for every gh spawn (reads and writes). Fire-and-forget."""
-    from kiro_crew.sel import sel
-    sel().log_api_access(
-        caller="core:issue-radar",
-        operation=f"issue_radar.{op}",
-        outcome=outcome,
-        source="builtin-app",
-        resources=target[:200],
-        error=error[:200] if error else "",
-    )
+    except github_runner.SetupError as exc:
+        # Audit-or-deny refusal (SEL unavailable): a transient host problem,
+        # not a connect-dialog setup issue — surface as the retryable class.
+        raise GhCliError(str(exc)) from exc
 
 
 def _run_gh_api(path: str, jq_filter: str, *, timeout: float = GH_TIMEOUT_SEC, paginate: bool = True) -> list[dict]:

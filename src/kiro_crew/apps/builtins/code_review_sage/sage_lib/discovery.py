@@ -15,11 +15,11 @@ Two jobs:
    (``data/repos.json``) so the picker opens on the repos they care about instead
    of re-deriving from the feed on every visit.
 
-``gh`` resolution/validation is shared with the dashboard's PR panel
-(``source_providers.provider_executable_candidates`` +
-``_validate_provider_executable``) so Sage accepts exactly the same ``gh``
-installs as every other surface and refuses a binary owned by another user, a
-world-writable one, or one inside the agent-writable project tree.
+``gh`` resolution/validation and the spawn chokepoint are shared with every
+other gh surface via ``kiro_crew.github_runner`` (trusted-binary resolution +
+minimal env + SEL audit), so Sage accepts exactly the same ``gh`` installs and
+refuses a binary owned by another user, a world-writable one, or one inside
+the agent-writable project tree.
 """
 from __future__ import annotations
 
@@ -40,9 +40,9 @@ from sage_lib.store import redact_text as pipeline_redact
 # the standalone path, where `kiro_crew` is not importable. A bare module-level
 # import would turn that into an ImportError at import time.
 try:
-    from kiro_crew.apps.registry import minimal_env
+    from kiro_crew import github_runner
 except ImportError:  # pragma: no cover - standalone fallback
-    minimal_env = None  # type: ignore
+    github_runner = None  # type: ignore
 
 GH_TIMEOUT_SEC = 45.0
 CONTRIB_WINDOW_DAYS = 30
@@ -88,74 +88,49 @@ class GhSetupError(GhError):
     instead of an error toast."""
 
 
-_gh_bin_cache: str | None = None
-
-# Env vars ``gh`` legitimately needs: its own auth/host config plus proxy and TLS
-# settings. Everything else in the gateway's environment (AWS, Slack, SSH agent
-# sockets, …) is withheld — a `gh` subprocess has no business seeing it. Mirrors
-# Issue Radar's passthrough list so the two apps behave identically.
-_GH_ENV_PASSTHROUGH = (
-    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-    "GH_HOST", "GH_CONFIG_DIR",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-)
+_GH_OVERRIDE_ENV = "KIROCREW_SAGE_GH"
 
 
 def gh_env() -> dict[str, str]:
-    """A minimal environment for ``gh``: the platform's safe-key base
-    (PATH/HOME/XDG/…) plus gh's own auth + network/TLS vars when set — never the
-    gateway's full environment."""
-    if minimal_env is None:  # pragma: no cover - standalone fallback
+    """A minimal environment for ``gh``: the platform's safe-key base plus gh's
+    own auth + network/TLS vars when set — never the gateway's full environment.
+    Owned by the shared hardened runner so every gh surface stays in lockstep."""
+    if github_runner is None:  # pragma: no cover - standalone fallback
         raise RuntimeError("gh_env requires the Kiro Crew runtime")
-    return minimal_env(**{k: os.environ[k] for k in _GH_ENV_PASSTHROUGH if k in os.environ})
+    return github_runner.gh_env()
 
 
 def gh_bin() -> str:
-    """Absolute path to an acceptable ``gh``, resolved once and cached.
+    """Absolute path to an acceptable ``gh``, resolved and cached by the shared
+    hardened runner (``github_runner.resolve_gh``).
 
     Set ``KIROCREW_SAGE_GH`` to an absolute path to override (still validated).
     Raises :class:`GhSetupError` when no acceptable executable is found."""
-    global _gh_bin_cache
-    if _gh_bin_cache:
-        return _gh_bin_cache
     if sys.platform == "win32":
         raise GhSetupError(
             "Code Review Sage requires a POSIX platform (macOS/Linux); "
             "run the Kiro Crew gateway under WSL on Windows"
         )
-    # Imported lazily: the owning module pulls in dashboard state, so a top-level
-    # import here would be circular (same reason Issue Radar defers it).
-    from kiro_crew.dashboard.handlers.source_providers import (
-        _validate_provider_executable,
-        provider_executable_candidates,
-    )
+    if github_runner is None:  # pragma: no cover - standalone fallback
+        raise RuntimeError("gh_bin requires the Kiro Crew runtime")
+    try:
+        return github_runner.resolve_gh(override_env=_GH_OVERRIDE_ENV)
+    except github_runner.SetupError as exc:
+        raise GhSetupError(str(exc)) from exc
 
-    override = os.environ.get("KIROCREW_SAGE_GH")
-    if override:
-        try:
-            validated = _validate_provider_executable(override)
-        except (ValueError, OSError) as exc:
-            raise GhSetupError(
-                f"KIROCREW_SAGE_GH={override!r} failed validation: {exc}"
-            ) from exc
-        _gh_bin_cache = validated
-        return validated
 
-    last_err: Exception | None = None
-    for candidate in provider_executable_candidates("gh"):
-        try:
-            validated = _validate_provider_executable(candidate)
-        except (ValueError, OSError) as exc:
-            last_err = exc
-            continue
-        _gh_bin_cache = validated
-        return validated
-    raise GhSetupError(
-        "no usable `gh` CLI found — install GitHub CLI and run `gh auth login`"
-        + (f" (last candidate rejected: {last_err})" if last_err else "")
-    )
+def _run_gh(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess:
+    """Route a resolved-gh argv through the shared spawn chokepoint
+    (``github_runner.run_gh``): minimal env plus an SEL audit event on success,
+    failure, and timeout. Transparent to this module's error mapping —
+    ``FileNotFoundError`` and ``subprocess.TimeoutExpired`` propagate."""
+    if github_runner is None:  # pragma: no cover - standalone fallback
+        raise RuntimeError("gh execution requires the Kiro Crew runtime")
+    try:
+        return github_runner.run_gh(argv, timeout=timeout, audit_caller="core:code-review-sage")
+    except github_runner.SetupError as exc:
+        # Audit-or-deny refusal (SEL unavailable) — transient, retryable.
+        raise GhError(str(exc)) from exc
 
 
 def run_gh_json(path: str, jq: str | None = None, *,
@@ -185,8 +160,7 @@ def run_gh_json(path: str, jq: str | None = None, *,
     if jq:
         argv += ["--jq", jq]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True,
-                              timeout=timeout, check=False, env=gh_env())
+        proc = _run_gh(argv, timeout=timeout)
     except FileNotFoundError as exc:
         raise GhSetupError("the `gh` CLI is not installed on this host") from exc
     except subprocess.TimeoutExpired as exc:
@@ -234,8 +208,7 @@ def current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
     unusable, because "no login" and "no gh" need different UI treatment."""
     argv = [gh_bin(), "api", "user", "--jq", ".login"]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True,
-                              timeout=timeout, check=False, env=gh_env())
+        proc = _run_gh(argv, timeout=timeout)
     except FileNotFoundError as exc:
         raise GhSetupError("the `gh` CLI is not installed on this host") from exc
     except (OSError, subprocess.TimeoutExpired):

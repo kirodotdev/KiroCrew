@@ -196,11 +196,23 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # scrubbed that capability would break the feature it is guarding. Gated
         # behind KIROCREW_DEBUG and reachable only from the CLI.
         "cli_perf.py::_sample_out_of_process",
-        # gh-CLI open-PR enumeration: fixed `gh api` list-argv (no shell=True);
-        # owner/repo are validated to ^[A-Za-z0-9._-]+$ by adapters.parse_repo_url
-        # and only fill the API path (bounded to api.github.com). NOT sandboxed
-        # because gh needs the host's own authenticated credentials.
-        "apps/builtins/code_review_sage/sage_lib/pipeline.py::list_open_prs",
+        # The SINGLE shared gh spawn chokepoint (github_runner.run_gh), serving
+        # Issue Radar (`_gh_run`), Code Review Sage (`run_gh_json`,
+        # `current_login`, `pipeline.list_open_prs`), and any future gh caller.
+        # A fixed `gh api`-style LIST argv (never shell=True): owner/repo
+        # segments are charset-validated (^[A-Za-z0-9._-]+$) plus a github.com
+        # host allowlist by parse_github_repo_url / adapters.parse_repo_ref
+        # before they ever reach the argv; issue numbers are int()-coerced;
+        # write bodies travel as JSON stdin (--input -), never argv; jq filters
+        # are hardcoded module constants. NOT sandbox-routed because gh needs
+        # the host's OWN authenticated session (~/.config/gh + the keychain),
+        # which the sandbox would hide, breaking auth. As defense-in-depth
+        # WITHIN this benign classification, run_gh refuses a non-absolute
+        # argv[0] (binding callers to the validated resolve_gh path, never a
+        # shim on the agent-writable front of PATH), passes a MINIMAL env
+        # (safe-key base + gh's own auth/network/TLS vars — no AWS/Slack/SSH
+        # secrets), and emits an SEL audit event on success/failure/timeout.
+        "github_runner.py::run_gh",
         # TEST-ONLY: spawns `sys.executable -c <literal>` to prove the candidate
         # read-modify-write lock holds across PROCESSES, which is what review
         # workers actually are. A single-process test cannot observe the loss it
@@ -415,47 +427,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/tests/test_profile_capture.py::_git",
         "apps/builtins/auto_improvement/tests/test_runner.py::_git",
         "apps/builtins/auto_improvement/tests/test_runner.py::_tiny_repo",
-        # Code Review Sage repo discovery — same rationale as list_open_prs above
-        # and as Issue Radar's _gh_run: fixed `gh api` list-argv (never
-        # shell=True), bounded to api.github.com, and NOT sandbox-routed because
-        # gh must reach the host's OWN authenticated credentials (~/.config/gh +
-        # the keychain), which the sandbox would hide.
-        #   • run_gh_json — the single `gh api` chokepoint. The only non-constant
-        #     input is the API path, and every caller in this module builds it
-        #     from a module constant plus a URL-encoded login (see below); the jq
-        #     filters are hardcoded module constants.
-        #   • current_login — a wholly FIXED argv (`gh api user --jq .login`) with
-        #     no interpolation at all. It is a separate spawn site only because
-        #     `--jq .login` emits a bare string, which the JSONL dict parser in
-        #     run_gh_json cannot represent.
-        # The login that reaches the events path is what gh itself reported for
-        # the authenticated user (not agent input) and is quoted with
-        # urllib.parse.quote(safe="") before interpolation. The `gh` binary is
-        # resolved through discovery.gh_bin(), which reuses source_providers'
-        # validated resolution, so a shim on the agent-writable front of PATH is
-        # refused rather than executed.
-        "apps/builtins/code_review_sage/sage_lib/discovery.py::current_login",
-        "apps/builtins/code_review_sage/sage_lib/discovery.py::run_gh_json",
-        # Issue Radar GitHub access — same rationale as list_open_prs above.
-        # ALL gh calls funnel through ONE chokepoint, _gh_run: a fixed `gh api`
-        # list-argv (never shell=True). gh supplies the host's OWN authenticated
-        # token, so it CANNOT be sandbox-routed (the sandbox would hide
-        # ~/.config/gh + the keychain, breaking auth). As defense-in-depth WITHIN
-        # this benign classification, _gh_run resolves a trusted canonical `gh`
-        # (never a shim on the agent-writable front of PATH) and passes a MINIMAL
-        # env (PATH/HOME/XDG + gh's own auth/network vars), so unrelated secrets
-        # (AWS/Slack/SSH) never reach the child. The only agent-reachable inputs:
-        #   • owner/repo — validated to ^[A-Za-z0-9._-]+$ + a github.com host
-        #     allowlist by github_client.parse_github_repo_url at /connect, and
-        #     read routes additionally gate on store.is_repo_connected, so only
-        #     an already-validated pair ever reaches the argv;
-        #   • the issue number — coerced via int() before it reaches the path;
-        #   • write bodies (label names / state reasons) — sent as a JSON stdin
-        #     body (--input -), never argv; the DELETE label name is URL-encoded
-        #     into the path.
-        # The jq filters are hardcoded module constants, and `gh api` is bounded
-        # to api.github.com, so no binary/cwd/host is agent-selected.
-        "apps/builtins/issue_radar/backend/github_client.py::_gh_run",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``). This is a TEST helper that drives one
         # in-process aiohttp handler coroutine to completion so the PR-action routes

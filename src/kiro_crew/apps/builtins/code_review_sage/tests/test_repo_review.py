@@ -93,6 +93,28 @@ class TestListOpenPrs(unittest.TestCase):
         self.assertEqual(prs[1]["author"], "")
         self.assertFalse(prs[1]["draft"])
 
+    def test_spawn_carries_the_minimal_env(self):
+        """The bare-subprocess regression class this suite exists to keep out:
+        the spawn must hand the child the shared runner's minimal gh env, never
+        the gateway's full environment (AWS/Slack/SSH secrets included)."""
+        captured = {}
+
+        def fake_run(argv, **kw):
+            captured["kw"] = kw
+            return self._cp(stdout="")
+
+        with unittest.mock.patch.dict(os.environ, {"AWS_SECRET_ACCESS_KEY": "aws-secret",
+                                                   "GH_TOKEN": "gho_token"}), \
+                patch.object(pipeline.discovery, "gh_bin", return_value="/resolved-gh/gh"), \
+                patch.object(pipeline.subprocess, "run", side_effect=fake_run):
+            pipeline.list_open_prs("o", "r")
+        env = captured["kw"].get("env")
+        # A missing env= means the child inherits the FULL parent environment.
+        self.assertIsInstance(env, dict)
+        assert env is not None  # narrow for the type checker
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
+        self.assertEqual(env.get("GH_TOKEN"), "gho_token")
+
     def test_uses_list_argv_no_shell(self):
         captured = {}
 

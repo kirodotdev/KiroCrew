@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import github_runner
 from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.sandbox import spawn_shim_argv
 
@@ -317,8 +318,8 @@ def test_provider_executable_candidates_append_path_hits(monkeypatch, tmp_path) 
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setenv("PATH", f"{user_bin}:/usr/bin")
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {"gh": ("/usr/local/libexec/kirocrew/gh",), "glab": ("/usr/bin/glab",)},
     )
 
@@ -348,8 +349,8 @@ def test_provider_executable_not_found_gives_install_guidance(monkeypatch) -> No
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {"gh": ("/nonexistent-kirocrew/gh",), "glab": ("/nonexistent-kirocrew/glab",)},
     )
 
@@ -369,8 +370,8 @@ def test_provider_executable_strict_mode_asks_for_a_root_owned_copy(monkeypatch)
     monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
     monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {
             "gh": ("/usr/local/libexec/kirocrew/gh",),
             "glab": ("/usr/local/libexec/kirocrew/glab",),
@@ -405,7 +406,7 @@ def test_provider_executable_accepts_user_owned_install(monkeypatch, tmp_path) -
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
     monkeypatch.setenv("KIROCREW_GH_BIN", str(executable))
 
     assert source._resolve_provider_executable("gh") == str(executable.resolve())
@@ -424,7 +425,7 @@ def test_provider_executable_accepts_symlinked_install(monkeypatch, tmp_path) ->
     link = bin_dir / "gh"
     link.symlink_to(target)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
     monkeypatch.setenv("KIROCREW_GH_BIN", str(link))
 
     assert source._resolve_provider_executable("gh") == str(target.resolve())
@@ -464,8 +465,8 @@ def test_provider_executable_refuses_a_root_gateway(monkeypatch, tmp_path) -> No
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
-    monkeypatch.setattr(source.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner.os, "geteuid", lambda: 0)
 
     with pytest.raises(ValueError, match="disabled for a root gateway"):
         source._validate_provider_executable(str(executable))
@@ -478,11 +479,11 @@ def test_provider_executable_rejects_binary_owned_by_another_user(
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
     real_stat = executable.stat()
-    foreign_stat = source.os.stat_result([*list(real_stat)[:4], 4242, *list(real_stat)[5:]])
+    foreign_stat = github_runner.os.stat_result([*list(real_stat)[:4], 4242, *list(real_stat)[5:]])
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
-    monkeypatch.setattr(source, "_path_parents", lambda _path: [])
-    monkeypatch.setattr(source.Path, "stat", lambda _path: foreign_stat)
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [])
+    monkeypatch.setattr(github_runner.Path, "stat", lambda _path: foreign_stat)
 
     with pytest.raises(ValueError, match="owned by another user"):
         source._validate_provider_executable(str(executable))
@@ -493,7 +494,7 @@ def test_provider_executable_rejects_world_writable_binary(monkeypatch, tmp_path
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o777)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
 
     with pytest.raises(ValueError, match="executable is world-writable"):
         source._validate_provider_executable(str(executable))
@@ -507,8 +508,8 @@ def test_provider_executable_rejects_world_writable_parent(monkeypatch, tmp_path
     executable.chmod(0o755)
     parent.chmod(0o777)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
-    monkeypatch.setattr(source, "_path_parents", lambda _path: [parent])
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
 
     with pytest.raises(ValueError, match="executable parent is world-writable"):
         source._validate_provider_executable(str(executable))
@@ -528,8 +529,8 @@ def test_provider_executable_tolerates_a_sticky_world_writable_parent(
     executable.chmod(0o755)
     parent.chmod(0o1777)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
-    monkeypatch.setattr(source, "_path_parents", lambda _path: [parent])
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
 
     assert source._validate_provider_executable(str(executable)) == str(executable.resolve())
 
@@ -544,10 +545,10 @@ def test_provider_executable_strict_mode_rejects_untrusted_ancestor(
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o500)
     executable_stat = executable.stat()
-    root_executable_stat = source.os.stat_result(
+    root_executable_stat = github_runner.os.stat_result(
         [*list(executable_stat)[:4], 0, *list(executable_stat)[5:]]
     )
-    real_stat = source.Path.stat
+    real_stat = github_runner.Path.stat
 
     def fake_stat(path):
         if path == executable:
@@ -555,9 +556,9 @@ def test_provider_executable_strict_mode_rejects_untrusted_ancestor(
         return real_stat(path)
 
     monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
-    monkeypatch.setattr(source, "_path_parents", lambda _path: [parent])
-    monkeypatch.setattr(source.Path, "stat", fake_stat)
-    monkeypatch.setattr(source.os, "access", lambda _path, mode: mode == source.os.X_OK)
+    monkeypatch.setattr(github_runner, "path_parents", lambda _path: [parent])
+    monkeypatch.setattr(github_runner.Path, "stat", fake_stat)
+    monkeypatch.setattr(github_runner.os, "access", lambda _path, mode: mode == github_runner.os.X_OK)
 
     with pytest.raises(ValueError, match="executable parent is not root-owned"):
         source._validate_provider_executable(str(executable))
