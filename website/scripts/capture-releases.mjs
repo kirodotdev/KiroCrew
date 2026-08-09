@@ -7,12 +7,9 @@
  * renderer rather than a hand-mounted panel.
  *
  * The /api/releases bodies are not written by hand and not checked in either:
- * they are produced HERE, at capture time, by running the real backend parser
- * over the repo's real CHANGELOG.md. That is what makes these shots evidence
- * rather than decoration, and it means the payload cannot drift from the
- * changelog the way a committed copy would. (A committed copy also re-adds the
- * changelog's own prose to the diff, which the brand-name gate reads as new
- * misspellings of the product name.)
+ * they are produced at capture time by running the real backend parser over the
+ * repo's real CHANGELOG.md — see scripts/lib/releases-fixtures.mjs, which the
+ * scroll harness shares so the two cannot disagree about the archive.
  *
  * Builds the SPA first: serve-dist serves whatever is on disk, so shooting a
  * UI-only change against a stale dist yields an "after" image identical to
@@ -30,32 +27,13 @@ import { mkdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { serveDist } from './lib/serve-dist.mjs'
 import { installApiFixtures, logPageFailures, json } from './lib/api-fixtures.mjs'
+import { realReleasePayloads } from './lib/releases-fixtures.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/releases'
 const W = 1500
 const H = 950
 
-/** Real `GET /api/releases` bodies, from the real parser over the real CHANGELOG. */
-function realPayloads() {
-  const py = [
-    'import json, pathlib, sys',
-    'sys.path.insert(0, "src")',
-    'from kiro_crew.changelog import build_release_list',
-    'md = pathlib.Path("CHANGELOG.md").read_text()',
-    'out = {}',
-    'for name, ver in (("real", "0.2.0"), ("prerelease", "0.2.0-rc.1"), ("stable", "0.1.2")):',
-    '    rels = build_release_list(md, ver)',
-    '    out[name] = {"current_version": ver, "releases": [r._asdict() for r in rels],',
-    '                 "stale": any(r.in_progress for r in rels)}',
-    'print(json.dumps(out))',
-  ].join('\n')
-  const raw = execFileSync(process.env.PYTHON || 'python3', ['-c', py], {
-    cwd: '..', encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-  })
-  return JSON.parse(raw)
-}
-
-const FIXTURES = realPayloads()
+const FIXTURES = realReleasePayloads()
 
 mkdirSync(OUT, { recursive: true })
 

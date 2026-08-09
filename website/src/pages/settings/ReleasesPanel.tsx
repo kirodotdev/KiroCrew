@@ -132,9 +132,10 @@ export default function ReleasesPanel() {
 
       {/* The archive is read from this install, never the network, so a
           prerelease build shows it as of its branch point. Said out loud
-          instead of letting the list look complete when it is not. */}
+          instead of letting the list look complete when it is not.
+          `shrink-0` so a short window compresses the notes, not this. */}
       {data?.stale && (
-        <p className="rounded-lg bg-bg-accent px-3 py-2 text-xs text-muted">
+        <p className="shrink-0 rounded-lg bg-bg-accent px-3 py-2 text-xs text-muted">
           {i18nT('pages.settings.releases.stale_note', { version: data.current_version })}
         </p>
       )}
@@ -142,7 +143,7 @@ export default function ReleasesPanel() {
       <div className="flex min-h-0 flex-1 gap-5">
         <nav
           aria-label={i18nT('pages.settings.releases.list_label')}
-          className="w-48 shrink-0 space-y-1 overflow-y-auto border-r border-border pr-3"
+          className="w-48 shrink-0 space-y-1 overflow-y-auto border-r border-border pr-3 pb-6"
         >
           {releases.map(r => {
             const isActive = r.version === active?.version
@@ -163,8 +164,18 @@ export default function ReleasesPanel() {
                 <span className="flex items-center gap-1.5">
                   <span className="text-sm font-semibold tabular-nums">{r.version}</span>
                   {r.in_progress && (
-                    <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-accent-fg">
-                      {i18nT('pages.settings.releases.badge_in_progress')}
+                    // OUTLINE, not a solid accent fill. The selected row is
+                    // marked with `bg-accent-subtle` + an accent ring, which is
+                    // accent at 12-20% alpha -- a solid `bg-accent` badge on a
+                    // passive status label therefore outranked the reader's own
+                    // selection in the same hue. A soft `bg-accent/10` fill is
+                    // worse still: on the selected row (the DEFAULT row for a
+                    // prerelease build) it stacks with `accent-subtle` and reads
+                    // as a lighter hole rather than a chip. A hairline reads
+                    // against both. Solid `bg-accent`/`text-accent-fg` at this
+                    // size is this codebase's notification-COUNT idiom.
+                    <span className="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                      {i18nT('pages.settings.releases.badge_unreleased')}
                     </span>
                   )}
                   {r.is_current && !r.in_progress && (
@@ -179,7 +190,11 @@ export default function ReleasesPanel() {
           })}
         </nav>
 
-        <article className="min-w-0 flex-1 overflow-y-auto">
+        {/* The only scroller on this screen once the pane is contained, so the
+            heading and the rail beside it stay put while the notes move. `pb-6`
+            replaces the page wrapper's own bottom padding, which a contained
+            pane does not get. */}
+        <article className="min-w-0 flex-1 overflow-y-auto pb-6">
           <header className="mb-4">
             <h3 className="flex items-center gap-2 text-xl font-semibold">
               {active?.version}

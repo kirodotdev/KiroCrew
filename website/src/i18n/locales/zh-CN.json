@@ -9726,7 +9726,7 @@
         "unavailable": "不可用"
       },
       "releases": {
-        "badge_in_progress": "进行中",
+        "badge_unreleased": "未发布",
         "detail_no_date": "日期未知",
         "detail_on_prerelease": "你正在使用预览版 {{version}}",
         "detail_unreleased": "尚未发布",

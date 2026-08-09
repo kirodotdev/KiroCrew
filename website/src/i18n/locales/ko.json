@@ -9726,7 +9726,7 @@
         "unavailable": "사용 불가"
       },
       "releases": {
-        "badge_in_progress": "진행 중",
+        "badge_unreleased": "미출시",
         "detail_no_date": "날짜 알 수 없음",
         "detail_on_prerelease": "프리릴리스 {{version}}을(를) 사용 중입니다",
         "detail_unreleased": "아직 릴리스되지 않음",

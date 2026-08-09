@@ -160,7 +160,7 @@ def running_release(version: str) -> tuple[str, bool]:
 
     ``is_prerelease`` comes from an actual prerelease MARKER rather than from
     ``base != version``: a bare build/local segment (``0.2.0+abc123``) is not a
-    prerelease, and testing inequality would badge it "In progress".
+    prerelease, and testing inequality would badge it "Unreleased".
     """
     v = version.strip()
     if not v:

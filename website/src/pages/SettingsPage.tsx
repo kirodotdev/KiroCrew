@@ -66,7 +66,11 @@ function buildTabs() {
     // entry after it -- `SidePanelLayout` renders one separator per flagged row,
     // so leaving it on About too would draw two lines and strand this row
     // outside the fence. About stays last, where every platform puts it.
-    { key: 'releases', label: i18nT('settings.tabs.releases.label'), icon: <History size={16} />, dividerBefore: true, description: i18nT('settings.tabs.releases.description') },
+    // The one Settings tab that is contained rather than page-scrolled: it has
+    // its own version rail beside the notes, and letting the page grow scrolled
+    // the rail and the "Releases" heading off the top while the reader was
+    // still inside one release's notes.
+    { key: 'releases', label: i18nT('settings.tabs.releases.label'), icon: <History size={16} />, dividerBefore: true, fixedContent: true, description: i18nT('settings.tabs.releases.description') },
     { key: 'about', label: i18nT('settings.tabs.about.label'), icon: <Info size={16} />, description: i18nT('settings.tabs.about.description') },
   ]
 }

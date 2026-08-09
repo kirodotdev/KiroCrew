@@ -10068,7 +10068,7 @@
         "unavailable": "недоступно"
       },
       "releases": {
-        "badge_in_progress": "В работе",
+        "badge_unreleased": "Не выпущено",
         "detail_no_date": "Дата неизвестна",
         "detail_on_prerelease": "У вас установлен предварительный выпуск {{version}}",
         "detail_unreleased": "Ещё не выпущено",

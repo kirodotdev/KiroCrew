@@ -130,11 +130,52 @@ describe('ReleasesPanel', () => {
     await waitFor(() => expect(screen.getByText(/No release notes are available/)).toBeInTheDocument())
   })
 
+  it('badges an unreleased version with an outline chip, never a solid accent fill', async () => {
+    // The selected row is marked with `bg-accent-subtle` + an accent ring, i.e.
+    // accent at 12-20% alpha. A solid `bg-accent` badge on a PASSIVE status
+    // label therefore outranked the reader's own selection in the same hue, and
+    // a soft `bg-accent/10` fill stacks with `accent-subtle` on the selected row
+    // -- which is the DEFAULT row for a prerelease build. Hence no fill at all.
+    mount(PRERELEASE)
+    const badge = await screen.findByText('Unreleased')
+    expect(badge.className).toContain('border-accent/40')
+    // Catches every fill, including `bg-accent/10` and `bg-accent-subtle`.
+    expect(badge.className).not.toContain('bg-accent')
+    expect(badge.className).not.toContain('text-accent-fg')
+  })
+
   it('separates a failed fetch from an archive with nothing in it', async () => {
     // Both states arrive as zero rows, and "not available in this build" sends
     // the reader hunting a build problem when the gateway simply 500'd.
     mountFailing()
     await waitFor(() => expect(screen.getByText(/Could not load the release notes/)).toBeInTheDocument())
     expect(screen.queryByText(/No release notes are available/)).toBeNull()
+  })
+
+  it('scrolls the notes and nothing else, and keeps the rail full height', async () => {
+    // The panel is contained by its tab (SidePanelTab.fixedContent), so these
+    // classes are what turn that bounded height into "header and rail hold
+    // still, notes move" -- and into a divider that reaches the bottom of the
+    // pane instead of stopping under the last version. Geometry is jsdom's
+    // blind spot, so the real gesture is measured in
+    // website/scripts/capture-releases-scroll.mjs; this guards the wiring.
+    mount(PRERELEASE)
+    const rail = await screen.findByRole('navigation')
+    const notes = document.querySelector('article')!
+    const root = rail.parentElement!.parentElement!
+
+    // Every level has to yield its height or the innermost scroller never engages.
+    expect(root.className).toContain('min-h-0')
+    expect(rail.parentElement!.className).toContain('min-h-0')
+
+    // The rail carries the divider, so it must stretch (no self-sizing) and own
+    // the scroll for a long version list.
+    expect(rail.className).toContain('border-r')
+    expect(rail.className).toContain('overflow-y-auto')
+
+    expect(notes.className).toContain('overflow-y-auto')
+    // Pinned: the caveat is chrome, not content, so a short window compresses
+    // the notes instead of squeezing this out of shape.
+    expect(screen.getByText(/may not include newer entries/).className).toContain('shrink-0')
   })
 })

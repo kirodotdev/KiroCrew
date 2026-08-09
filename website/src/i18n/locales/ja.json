@@ -9726,7 +9726,7 @@
         "unavailable": "利用不可"
       },
       "releases": {
-        "badge_in_progress": "進行中",
+        "badge_unreleased": "未リリース",
         "detail_no_date": "日付不明",
         "detail_on_prerelease": "プレリリース {{version}} を使用しています",
         "detail_unreleased": "未リリース",

@@ -6732,7 +6732,7 @@
         "unavailable": "unavailable"
       },
       "releases": {
-        "badge_in_progress": "In progress",
+        "badge_unreleased": "Unreleased",
         "detail_no_date": "Date unknown",
         "detail_on_prerelease": "You are on the prerelease {{version}}",
         "detail_unreleased": "Not released yet",

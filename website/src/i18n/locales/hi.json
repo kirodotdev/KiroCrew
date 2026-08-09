@@ -9840,7 +9840,7 @@
         "unavailable": "अनुपलब्ध"
       },
       "releases": {
-        "badge_in_progress": "प्रगति पर",
+        "badge_unreleased": "रिलीज़ नहीं",
         "detail_no_date": "तारीख़ अज्ञात",
         "detail_on_prerelease": "तुम प्री-रिलीज़ {{version}} पर हो",
         "detail_unreleased": "अभी रिलीज़ नहीं हुआ",

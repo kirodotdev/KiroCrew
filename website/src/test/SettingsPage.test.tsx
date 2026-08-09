@@ -10,7 +10,7 @@
  * legacy ?tab=slack style deep links remap to ?tab=channels&channel=slack.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -34,6 +34,10 @@ vi.mock('../pages/settings/WebexPanel', () => ({ WebexPanel: () => <div data-tes
 vi.mock('../pages/settings/WeComPanel', () => ({ WeComPanel: () => <div data-testid="wecom-panel" /> }))
 vi.mock('../pages/settings/TeamsPanel', () => ({ TeamsPanel: () => <div data-testid="teams-panel" /> }))
 vi.mock('../pages/settings/DeveloperPanel', () => ({ DeveloperPanel: () => <div data-testid="developer-panel" /> }))
+// Default export, unlike the panels above. Stubbed for the same reason the
+// others are, plus one of its own: the real panel calls api.releases(), which
+// the fixed method set below does not carry.
+vi.mock('../pages/settings/ReleasesPanel', () => ({ default: () => <div data-testid="releases-panel" /> }))
 
 // ChannelsPanel renders real (it owns the remap target) — silence its status
 // queries with deterministic configs so no real fetch fires.
@@ -96,6 +100,18 @@ describe('SettingsPage tabs', () => {
   it('renders the BrowserPanel when the browser tab is active', () => {
     renderAt('/settings?tab=browser')
     expect(screen.getByTestId('browser-panel')).toBeInTheDocument()
+  })
+
+  it('contains the Releases pane, and only that one, instead of scrolling the page', () => {
+    // The archive puts a version rail beside the notes, so a page scroll took
+    // the "Releases" heading and the rail away with it. Every other tab is a
+    // form that should keep growing.
+    renderAt('/settings?tab=releases')
+    expect(screen.getByTestId('releases-panel').parentElement!.className).toContain('min-h-0')
+
+    cleanup()
+    renderAt('/settings?tab=browser')
+    expect(screen.getByTestId('browser-panel').parentElement!.className).toContain('pb-8')
   })
 
   it('lists the Computer Use tab', () => {

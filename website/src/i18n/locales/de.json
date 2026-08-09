@@ -9840,7 +9840,7 @@
         "unavailable": "nicht verfügbar"
       },
       "releases": {
-        "badge_in_progress": "In Arbeit",
+        "badge_unreleased": "Unveröffentlicht",
         "detail_no_date": "Datum unbekannt",
         "detail_on_prerelease": "Sie verwenden die Vorabversion {{version}}",
         "detail_unreleased": "Noch nicht veröffentlicht",

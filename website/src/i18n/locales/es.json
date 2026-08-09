@@ -9954,7 +9954,7 @@
         "unavailable": "no disponible"
       },
       "releases": {
-        "badge_in_progress": "En curso",
+        "badge_unreleased": "Sin publicar",
         "detail_no_date": "Fecha desconocida",
         "detail_on_prerelease": "Tienes la versión preliminar {{version}}",
         "detail_unreleased": "Aún no publicada",

@@ -9598,7 +9598,7 @@
         "no_matches_for_query": "[Ñø ɱàţçĥèş ƒøŕ “{{query}}”. ················]"
       },
       "releases": {
-        "badge_in_progress": "[Ìñ þŕøğŕèşş ··········]",
+        "badge_unreleased": "[Ùñŕèĺèàşèð ···············]",
         "detail_no_date": "[Ðàţè ùñķñøẁñ ···········]",
         "detail_on_prerelease": "[Ýøù àŕè øñ ţĥè þŕèŕèĺèàşè {{version}} ··················]",
         "detail_unreleased": "[Ñøţ ŕèĺèàşèð ýèţ ··············]",
