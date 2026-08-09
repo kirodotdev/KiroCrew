@@ -8175,7 +8175,9 @@
       "crew_mode": "Crew Mode — トピックごとに並列のサブセッションで実行",
       "new_crew_chat": "新しい Crew Mode チャット",
       "autopilot_desc": "1 つの作業を段階的に — まず計画を示し、承認後に段階ごとに実行します。",
-      "crew_desc": "複数の作業を同時に — トピックごとに別のサブセッションで進み、終わり次第返答します。"
+      "crew_desc": "複数の作業を同時に — トピックごとに別のサブセッションで進み、終わり次第返答します。",
+      "collapse_source_links": "表示を減らす",
+      "source_links_expand_failed": "残りを読み込めませんでした。クリックして再試行してください。"
     },
     "connectionsPage": {
       "access": "アクセス",

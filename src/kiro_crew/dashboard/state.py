@@ -877,9 +877,44 @@ def _budgeted_source_links(links: list[dict]) -> list[dict]:
     Budgeting per kind keeps pre-existing pull-request behaviour unchanged and
     makes issues purely additive.
     """
+    changes, issues = _source_links_by_kind(links)
+    return changes[:_SERIALIZED_SOURCE_LINKS_PER_SLOT] + issues[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+
+
+def _source_links_by_kind(links: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split links into (changes, issues), preserving discovery order in each.
+
+    ``kind`` is absent on older payloads and means ``"change"`` there, so the
+    default keeps a pre-``kind`` link rendering as the pull request it always
+    was.
+    """
     changes = [link for link in links if link.get("kind", "change") == "change"]
     issues = [link for link in links if link.get("kind", "change") == "issue"]
-    return changes[:_SERIALIZED_SOURCE_LINKS_PER_SLOT] + issues[:_SERIALIZED_SOURCE_LINKS_PER_SLOT]
+    return changes, issues
+
+
+def _project_source_links(links: list[dict], include_check_status: bool) -> list[dict]:
+    """Attach cached chip status to each link, gated on kind and on the caller.
+
+    The chip-status cache is pull-request-only: it holds a {ci, state}
+    projection of a PR/MR lifecycle. Consulting it for an issue would key on a
+    URL it never stores -- and if a PR and an issue ever normalized to the same
+    key, the issue chip would inherit the PR's CI glyph. Gate on kind.
+
+    Shared by the budgeted slots payload and the unbudgeted overflow-expand
+    read so the two cannot decorate the same link differently.
+    """
+    return [
+        {
+            **link,
+            **(
+                (_cached_check_status(link["url"]) or {})
+                if include_check_status and link.get("kind", "change") == "change"
+                else {}
+            ),
+        }
+        for link in links
+    ]
 
 
 _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
@@ -2493,6 +2528,24 @@ class _ChatSlot:
         self._source_links_cache = (cache_key, links)
         return links
 
+    def source_links_payload(self, *, include_check_status: bool = False) -> dict:
+        """Every source link this slot carries — the unbudgeted read.
+
+        ``to_dict`` serializes at most ``_SERIALIZED_SOURCE_LINKS_PER_SLOT`` per
+        kind, so the sidebar's "+N" overflow chip has nothing on the client to
+        expand into. This is what that expand fetches.
+
+        Ordering repeats the budgeted slice's grouping (changes, then issues) so
+        the chips already on screen keep their positions and the revealed ones
+        append inside their own group instead of shuffling the row.
+        """
+        links = self._pr_source_links()
+        changes, issues = _source_links_by_kind(links)
+        return {
+            "links": _project_source_links(changes + issues, include_check_status),
+            "total": len(links),
+        }
+
     def to_dict(self, *, include_check_status: bool = False) -> dict:
         last_ts = self.messages[-1].get("ts", "") if self.messages else ""
         # Single reverse scan for last_msg, options, and last_activity_ts.
@@ -2701,22 +2754,9 @@ class _ChatSlot:
             "last_ts": last_ts,
             "last_turn_ts": last_turn_ts,
             "last_message": last_msg,
-            "source_links": [
-                {
-                    **link,
-                    # The chip-status cache is pull-request-only: it holds a
-                    # {ci, state} projection of a PR/MR lifecycle. Consulting it
-                    # for an issue would key on a URL it never stores -- and if a
-                    # PR and an issue ever normalized to the same key, the issue
-                    # chip would inherit the PR's CI glyph. Gate on kind.
-                    **(
-                        (_cached_check_status(link["url"]) or {})
-                        if include_check_status and link.get("kind", "change") == "change"
-                        else {}
-                    ),
-                }
-                for link in _budgeted_source_links(source_links)
-            ],
+            "source_links": _project_source_links(
+                _budgeted_source_links(source_links), include_check_status
+            ),
             "source_links_total": len(source_links),
             # Agent TODO list. Absent-vs-empty is load-bearing: None means the
             # agent never used its todo tool (no pill), [] means it cleared the

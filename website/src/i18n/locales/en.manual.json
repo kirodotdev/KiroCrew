@@ -2973,7 +2973,9 @@
       "sort_created_oldest": "Created (Oldest)",
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
-      "clear_named_filter": "Clear {{filter}} filter"
+      "clear_named_filter": "Clear {{filter}} filter",
+      "collapse_source_links": "Show fewer",
+      "source_links_expand_failed": "Could not load the rest. Click to retry."
     },
     "connectionsPage": {
       "access": "Access",

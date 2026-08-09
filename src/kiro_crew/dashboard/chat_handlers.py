@@ -713,6 +713,81 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     return web.json_response(payloads)
 
 
+async def api_chat_slot_source_links(request: web.Request) -> web.Response:
+    """GET /api/chat/slots/{slot}/source-links — every PR/issue link, unbudgeted.
+
+    The slots payload caps chips per kind, so the sidebar's "+N" overflow chip
+    has nothing on the client to expand into. This is the lazy read behind that
+    expand, kept off the slots broadcast on purpose: widening the budget would
+    put up to ``_MAX_SOURCE_LINKS_PER_SLOT`` links per slot on the wire for every
+    row nobody expanded, on every push.
+    """
+    # circular import: source_providers imports chat state helpers, so a
+    # top-level import would close a cycle (same pattern as api_chat_slots'
+    # owner-only check-status gate above).
+    from kiro_crew.dashboard.handlers.source_providers import (
+        ensure_gitlab_hosts_loaded,
+        is_owner_dashboard_request,
+    )
+
+    state: DashboardState = request.app["state"]
+    slot = state._slots.get(request.match_info["slot"])
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # App ownership check (App Kit §5.2): deny-by-default for app tokens. An app
+    # token scoped to /api/chat/slots/* would otherwise name any slot the list
+    # endpoint reveals and read every pull request and issue URL a dashboard or
+    # foreign-app session ever mentioned. Same indistinguishable 404 as the send
+    # path -- SAME error code too, so the response cannot be used to probe which
+    # foreign slots exist.
+    request_app = request.get("app", "")
+    if request_app and request_app != slot._app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat_source_links",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error=(
+                "app cannot access unscoped slots"
+                if not slot._app
+                else "app does not own this slot"
+            ),
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if request_app:
+        # The ALLOW is a permission decision too, and an audit trail that records
+        # only refusals cannot answer which app actually read a slot's links.
+        # Dashboard callers are deliberately not logged here: they are the owner,
+        # and every sidebar expand would otherwise write an event.
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat_source_links",
+            outcome="allowed",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+        )
+
+    # Same warm-up as GET /api/chat/slots: link extraction is synchronous and
+    # cannot load the self-managed GitLab allowlist itself, so a cold expand
+    # would drop every self-hosted MR link from the revealed set.
+    try:
+        await ensure_gitlab_hosts_loaded()
+    except Exception:
+        logger.debug(
+            "GitLab allowlist warm-up failed; expanded chips may lag one round", exc_info=True
+        )
+
+    # Cached status only, owner-gated exactly like the list endpoint. No
+    # schedule_check_refresh here: that pushes a `slots` update, which by
+    # definition cannot carry links outside the budget, so the provider work
+    # would produce a result this response can never show.
+    return web.json_response(
+        slot.source_links_payload(include_check_status=is_owner_dashboard_request(request))
+    )
+
+
 def _finite_number(value: Any) -> float | None:
     """Return *value* as a float when it is a real, finite number, else None.
 

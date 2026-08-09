@@ -1,6 +1,7 @@
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type {
+  ChatSlot,
   IssueSource,
   McpApplyChange,
   PullRequestCheck,
@@ -1969,6 +1970,12 @@ export const api = {
    *  the auto-nudge feature flag is off, so callers need no flag check. */
   autonudgeList: (): Promise<{ enabled: boolean; loops: { slot_key: string; active?: boolean; cycle_count?: number; max_cycles?: number }[] }> =>
     fetch('/api/autonudge').then(j),
+  /** Every pull request / issue link a session carries — the unbudgeted read
+   *  behind the sidebar's expandable "+N" overflow chip. The slots payload caps
+   *  chips per kind, so the links behind that chip are not on the client until
+   *  this is called. */
+  chatSlotSourceLinks: (slot: string): Promise<{ links: NonNullable<ChatSlot['source_links']>; total: number }> =>
+    fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links').then(j),
   chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal) => {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))

@@ -58,6 +58,9 @@ def register(app: web.Application) -> None:
     # Same path, POST: reading a summary must stay free of side effects, so
     # generating one is a separate verb rather than a query flag on the GET.
     app.router.add_post("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary_generate)
+    app.router.add_get(
+        "/api/chat/slots/{slot}/source-links", chat.api_chat_slot_source_links
+    )
     app.router.add_post("/api/chat/slots/{slot}/stop", chat.api_chat_slot_stop)
     app.router.add_post("/api/chat/slots/{slot}/interrupt", chat.api_chat_slot_interrupt)
     app.router.add_post("/api/chat/slots/{slot}/end-wait", chat.api_chat_slot_end_wait)
