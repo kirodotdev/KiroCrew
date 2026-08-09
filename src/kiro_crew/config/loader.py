@@ -480,6 +480,26 @@ def computer_use_state_path() -> Path:
     return config_dir() / "computer_use.json"
 
 
+def oauth_endpoints_path() -> Path:
+    """Return path to oauth_endpoints.json — the operator OAuth-endpoint extension.
+
+    Same KEYSTONE reasoning as :func:`denied_commands_path` and
+    :func:`computer_use_state_path`, and the leaf is on
+    ``security._CREW_SECRET_LEAVES`` for the same reason: each listed endpoint
+    widens the banner-only OAuth entropy carve-out (``security.py``'s
+    ``_OAUTH_AUTHORIZATION_ENDPOINTS``), so an agent that could write this file
+    could exempt an attacker-controlled host from the exfiltration heuristics —
+    it is a trust boundary, not a preference. ``is_sensitive_path`` blocks the
+    tool path and ``is_sensitive_bash_command`` blocks the shell forms.
+
+    Holds ``{"additional_authorization_endpoints": [{"host": …, "path": …}]}``;
+    every read fails soft to an EMPTY extension set (see
+    ``security._load_operator_oauth_endpoints``). There is no dashboard writer:
+    the operator hand-edits the file out-of-band. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "oauth_endpoints.json"
+
+
 def read_local_secret() -> str:
     """Read ``<config_dir>/.local_secret`` (the gateway IPC secret), or ``""``.
 

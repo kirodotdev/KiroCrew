@@ -4143,6 +4143,12 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 #                                 be neither readable nor writable via any shell
 #                                 form (operator edits it out-of-band via the
 #                                 dashboard ``/api/security/…`` endpoints)
+#   oauth_endpoints.json          operator OAuth consent-endpoint extension —
+#                                 each entry widens the banner-only OAuth
+#                                 entropy carve-out, so a writable file would
+#                                 let the agent exempt an attacker host from
+#                                 the exfiltration heuristics (operator edits
+#                                 it out-of-band by hand)
 #   token_signing.key             dashboard access/refresh token signing key
 #   refresh_chains.json           refresh-token chain state
 #   .local_secret                 internal MCP/cron/hook callback auth secret
@@ -4193,6 +4199,19 @@ _CREW_SECRET_LEAVES: list[str] = [
     "profiles",
     "admission_policy.json",
     "denied_commands.json",
+    # The operator's OAuth consent-endpoint extension
+    # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
+    # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
+    # so this is a trust boundary of the same class as ``denied_commands.json``
+    # directly above: an agent that could WRITE it could exempt an
+    # attacker-controlled host from the exfiltration heuristics — widening its
+    # own trust ceiling — and one that could READ it would learn which extra
+    # hosts are exempt and aim there. Read+write blocked on both the tool path
+    # (``is_sensitive_path``) and the shell forms. The only legitimate reader
+    # (``_load_operator_oauth_endpoints`` in this module) opens the file
+    # directly, not through this gate; the operator hand-edits it out-of-band
+    # (there is deliberately no dashboard writer).
+    "oauth_endpoints.json",
     # Which checkout the gateway executes (Dev Fleet "Make live"). The pointer is
     # resolved during startup and exec'd into, so a writable one is arbitrary
     # code execution in the gateway's own identity — the agent must not be able
@@ -5251,6 +5270,231 @@ _OAUTH_QUERY_PARAMS = frozenset(
     }
 )
 
+# ── Operator-owned OAuth endpoint extension (keystone oauth_endpoints.json) ──
+# ``_OAUTH_AUTHORIZATION_ENDPOINTS`` above is deliberately code-owned and
+# exact-match, but that leaves no remedy short of a code release when a user's
+# identity provider (Okta, Auth0, self-hosted OIDC, tenant-scoped Entra) is not
+# in the launch set: its real consent URL routinely exceeds the query-length
+# heuristic and the gate fails closed. The extension below restores an
+# OPERATOR-owned escape hatch without weakening the ceiling for the agent:
+#
+# * the file lives on ``_CREW_SECRET_LEAVES`` (read+write keystone), so the
+#   agent can neither read nor author its own trust widening;
+# * a missing/unreadable/corrupt/non-object file yields the EMPTY set — a
+#   mangled file must never widen trust (same posture as
+#   ``computer_use.enable_state.load_state``);
+# * every entry is strictly validated (exact host+path, no wildcards, no
+#   ports/userinfo/percent-escapes, no ``..``), and invalid entries are
+#   SKIPPED with a warning rather than failing the whole file;
+# * HTTPS-only / no-explicit-port stays enforced by the gate logic at both
+#   call sites and is NOT relaxable via the file;
+# * the exemption granted is identical to the builtin set's: only the
+#   base64-blob/query-length heuristics on known ``_OAUTH_QUERY_PARAMS`` are
+#   skipped — fixed-credential patterns, heavy percent-encoding, userinfo,
+#   fragments, backslashes, and unknown-param heuristics remain unconditional.
+_ENDPOINT_EXTENSION_ENTRIES_KEY = "additional_authorization_endpoints"
+
+# Bounds the accepted set AND the validation walk (the entry list is sliced to
+# this before iteration), so a pathological file cannot amplify into an
+# unbounded parse/warn loop or turn the endpoint check into a large probe.
+_ENDPOINT_EXTENSION_CAP = 50
+
+# Strict DNS-name shape for an operator entry, matched against the
+# lowercase-normalized host: dot-separated LDH labels ending in a letter TLD.
+# The letter-TLD requirement rejects raw IPv4 literals; the character class
+# rejects wildcards, schemes, ports, userinfo, percent-escapes, whitespace,
+# backslashes, and bracketed IPv6. Empty labels reject leading/trailing dots.
+# The lookahead bounds total length to the DNS maximum.
+_OAUTH_EXTENSION_HOST_RE = re.compile(
+    r"\A(?=.{1,253}\Z)"
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
+    r"\.[a-z]{2,}\Z"
+)
+
+# Paths are exact and case-sensitive (same semantics as the builtin set).
+_OAUTH_EXTENSION_PATH_MAX_LEN = 512
+
+# Rejected anywhere in an operator path entry: query/fragment/path-param
+# delimiters and percent-escapes would let one entry smuggle structure the
+# exact-match comparison is not built to normalize, and ``..`` plus backslash
+# invite parser-differential games. The comparison is byte-exact, so a benign
+# provider path never needs any of these.
+_OAUTH_EXTENSION_PATH_BAD = (";", "?", "#", "%", "\\", "..")
+
+
+def _valid_oauth_extension_path(path: str) -> bool:
+    """True when *path* is safe to compare exactly against a consent URL path."""
+    if not path.startswith("/") or len(path) > _OAUTH_EXTENSION_PATH_MAX_LEN:
+        return False
+    if any(marker in path for marker in _OAUTH_EXTENSION_PATH_BAD):
+        return False
+    return not any(ch.isspace() for ch in path)
+
+
+# Memo for the parsed extension file, keyed on the file's identity + stat
+# (path, mtime_ns, size) so a hand-edit takes effect on the next check without
+# a gateway restart, while repeated checks against an unchanged file cost one
+# ``stat`` instead of a read+parse+validate pass. (path, None) memoizes the
+# absent-file case; any stat/read error bypasses the memo and fails soft.
+_OAUTH_EXTENSION_MEMO: dict[
+    tuple[str, tuple[int, int] | None], frozenset[tuple[str, str]]
+] = {}
+
+
+def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
+    """Load the operator's OAuth-endpoint extension set (fail-soft to EMPTY).
+
+    Reads ``<config_dir>/oauth_endpoints.json`` and returns the validated
+    ``(lowercase host, exact path)`` pairs. Absent, unreadable, corrupt, or
+    non-object files — and any entry that fails the strict per-entry
+    validation — yield nothing: a mangled extension file must never widen
+    trust. The ``config.loader`` import stays function-local to keep this
+    module's import graph independent of the loader's: ``config/loader.py``
+    itself imports ``security`` symbols function-locally to avoid a cycle, and
+    a module-level import here would quietly re-arm that cycle the moment the
+    loader hoists its own.
+    """
+    from kiro_crew.config import loader as config_loader
+
+    try:
+        path = config_loader.oauth_endpoints_path()
+        try:
+            stat = path.stat()
+            stat_key: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            stat_key = None
+        memo_key = (str(path), stat_key)
+        cached = _OAUTH_EXTENSION_MEMO.get(memo_key)
+        if cached is not None:
+            return cached
+        if stat_key is None:
+            _OAUTH_EXTENSION_MEMO.clear()
+            _OAUTH_EXTENSION_MEMO[memo_key] = frozenset()
+            return frozenset()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.debug(
+            "oauth_endpoints.json unreadable; ignoring extension file", exc_info=True
+        )
+        return frozenset()
+
+    approved = _validate_operator_oauth_entries(raw)
+    # One live entry per file: the memo never outgrows a handful of keys, but a
+    # test suite that rewrites the file hundreds of times should not accrete.
+    _OAUTH_EXTENSION_MEMO.clear()
+    _OAUTH_EXTENSION_MEMO[memo_key] = approved
+    return approved
+
+
+def _validate_operator_oauth_entries(raw: object) -> frozenset[tuple[str, str]]:
+    """Strictly validate a parsed extension document into ``(host, path)`` pairs."""
+    if not isinstance(raw, dict):
+        logger.warning("oauth_endpoints.json is not a JSON object; ignoring it")
+        return frozenset()
+    entries = raw.get(_ENDPOINT_EXTENSION_ENTRIES_KEY)
+    if not isinstance(entries, list):
+        if entries is not None:
+            logger.warning(
+                "oauth_endpoints.json: %r is not a list; ignoring it",
+                _ENDPOINT_EXTENSION_ENTRIES_KEY,
+            )
+        return frozenset()
+    if len(entries) > _ENDPOINT_EXTENSION_CAP:
+        logger.warning(
+            "oauth_endpoints.json: %d entries exceed the cap (%d); extra entries ignored",
+            len(entries),
+            _ENDPOINT_EXTENSION_CAP,
+        )
+
+    approved: set[tuple[str, str]] = set()
+    for entry in entries[:_ENDPOINT_EXTENSION_CAP]:
+        host = entry.get("host") if isinstance(entry, dict) else None
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(host, str) or not isinstance(path, str):
+            logger.warning(
+                "oauth_endpoints.json: skipping malformed entry (need host+path strings)"
+            )
+            continue
+        host_norm = host.lower()
+        if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(
+            path
+        ):
+            # The host is operator-authored config, not secret material, and
+            # naming it is what makes the warning actionable.
+            logger.warning(
+                "oauth_endpoints.json: skipping invalid endpoint entry host=%r", host[:64]
+            )
+            continue
+        approved.add((host_norm, path))
+    return frozenset(approved)
+
+
+# Per-process dedupe for the extension-used audit event, so repeated checks of
+# the same URL (every banner emit/redraw re-validates) do not spam the SEL.
+_OAUTH_EXTENSION_AUDITED: set[tuple[str, str]] = set()
+
+
+def _emit_oauth_extension_used_event(host: str, path: str) -> None:
+    """SEL-audit that an OPERATOR extension entry approved a consent endpoint.
+
+    Best-effort: an audit failure must not break the user's ability to
+    authorize their MCP server — the operator explicitly allowlisted the
+    endpoint, so the approval stands regardless of audit success.
+    """
+    if (host, path) in _OAUTH_EXTENSION_AUDITED:
+        return
+    _OAUTH_EXTENSION_AUDITED.add((host, path))
+    try:
+        # Function-local for the same loader-cycle reason as
+        # _load_operator_oauth_endpoints.
+        from kiro_crew.config import loader as config_loader
+
+        SecurityEventLog().log(
+            SecurityEvent(
+                event_id=uuid.uuid4().hex[:16],
+                timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                event_type="oauth_endpoint_extension_used",
+                caller_identity="",
+                agent="kirocrew",
+                source="security",
+                operation="oauth_banner_check",
+                outcome="allowed",
+                resources=f"{host}{path}",
+                metadata={
+                    "host": host,
+                    "path": path,
+                    "file": str(config_loader.oauth_endpoints_path()),
+                    "mechanism": "OAUTH_ENDPOINT_EXTENSION",
+                },
+            )
+        )
+    except Exception:
+        logger.debug(
+            "SEL audit failed for oauth_endpoint_extension_used (allow stands)",
+            exc_info=True,
+        )
+
+
+def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
+    """Exact-match endpoint approval for the banner-only OAuth entropy carve-out.
+
+    Union of the code-owned builtin set and the operator's keystone extension,
+    computed at check time so a hand-edited file takes effect without a
+    restart. The builtin set is consulted first so the common providers never
+    touch the disk; an approval that came from an operator entry is SEL-audited
+    (deduped per process). Callers keep enforcing HTTPS-only / no-explicit-port
+    — this helper only answers endpoint identity.
+    """
+    key = (host.lower(), path)
+    if key in _OAUTH_AUTHORIZATION_ENDPOINTS:
+        return True
+    if key in _load_operator_oauth_endpoints():
+        _emit_oauth_extension_used_event(*key)
+        return True
+    return False
+
+
 # S3 presigned URLs contain X-Amz-Signature (a 64-char hex string) that
 # matches the base64-like blob pattern above.  These are intentional
 # time-limited access tokens, not leaked credentials.  Skip the exfil
@@ -5480,7 +5724,7 @@ def _exfil_url_warning(
         allow_oauth_entropy
         and is_https
         and not port
-        and (_dom, path_and_query.split("?", 1)[0]) in _OAUTH_AUTHORIZATION_ENDPOINTS
+        and _approved_oauth_authorization_endpoint(_dom, path_and_query.split("?", 1)[0])
     )
     if _oauth_endpoint:
         # Names are matched literally and case-sensitively; encoded/mixed-case
@@ -6063,7 +6307,7 @@ def oauth_url_contains_credential(url: str) -> bool:
     approved_endpoint = (
         parsed.scheme.lower() == "https"
         and not port
-        and (parsed.hostname.lower(), parsed.path) in _OAUTH_AUTHORIZATION_ENDPOINTS
+        and _approved_oauth_authorization_endpoint(parsed.hostname.lower(), parsed.path)
     )
     scan_target = _oauth_credential_scan_target(
         url,

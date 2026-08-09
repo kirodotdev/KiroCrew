@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
 from kiro_crew.security import (
     apply_resource_limits,
@@ -1728,6 +1729,404 @@ class TestOAuthAuthorizationUrlRedaction:
         cleaned, warnings = redact_exfiltration_urls(url)
         assert cleaned != url
         assert warnings
+
+
+class TestOperatorOAuthEndpointExtension:
+    """The keystone ``oauth_endpoints.json`` extends the OAuth endpoint set.
+
+    The builtin ``_OAUTH_AUTHORIZATION_ENDPOINTS`` is deliberately code-owned;
+    the operator's extension file is the only way to widen it, it fails soft to
+    EMPTY on any defect, and every entry is strictly validated. HTTPS-only /
+    no-explicit-port / exact-match semantics are identical to the builtin set
+    and not relaxable via the file.
+    """
+
+    HOST = "acme.okta.com"
+    PATH = "/oauth2/v1/authorize"
+    CONSENT_URL = (
+        "https://acme.okta.com/oauth2/v1/authorize"
+        "?client_id=0oabcde12345FGHIJ697"
+        "&response_type=code"
+        "&scope=openid%20profile%20email%20offline_access"
+        "&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Zx9yW8vU" * 12)
+    )
+
+    @staticmethod
+    def _write_extension(home: Path, entries: object) -> None:
+        (home / "oauth_endpoints.json").write_text(
+            (
+                json.dumps({"additional_authorization_endpoints": entries})
+                if not isinstance(entries, str)
+                else entries
+            ),
+            encoding="utf-8",
+        )
+
+    @pytest.fixture(autouse=True)
+    def _isolated_extension_state(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> Path:
+        """Fresh home + fresh process-global audit/memo state for EVERY test.
+
+        The dedupe set and the file memo are process-global by design; without
+        a reset, tests exercising the real emit path would depend on execution
+        order.
+        """
+        from kiro_crew import security
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.setattr(security, "_OAUTH_EXTENSION_AUDITED", set())
+        monkeypatch.setattr(security, "_OAUTH_EXTENSION_MEMO", {})
+        return tmp_path
+
+    @pytest.fixture()
+    def ext_home(self, _isolated_extension_state: Path) -> Path:
+        return _isolated_extension_state
+
+    # ── Loader: fail-soft postures ──
+
+    def test_missing_file_yields_empty_set(self, ext_home: Path) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    @pytest.mark.parametrize(
+        "content",
+        ["{not json", "[]", '"just a string"', '{"additional_authorization_endpoints": {}}'],
+        ids=["corrupt", "non-object", "string", "key-not-list"],
+    )
+    def test_defective_file_yields_empty_set(self, ext_home: Path, content: str) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, content)
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    def test_valid_entry_accepted_and_host_lowercased(self, ext_home: Path) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [{"host": "ACME.Okta.com", "path": self.PATH}])
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+
+    def test_hand_edit_takes_effect_without_restart(self, ext_home: Path) -> None:
+        """The check-time re-read contract: no gateway restart, no stale memo."""
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+        # Consult the memoized path once more before the edit.
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+
+        self._write_extension(ext_home, [{"host": "other.idp.example", "path": "/authorize"}])
+        # Force a distinct mtime even on filesystems with coarse timestamps.
+        os.utime(
+            ext_home / "oauth_endpoints.json",
+            ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000),
+        )
+        assert _load_operator_oauth_endpoints() == frozenset(
+            {("other.idp.example", "/authorize")}
+        )
+
+        (ext_home / "oauth_endpoints.json").unlink()
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    # ── Loader: hostile entries are individually SKIPPED ──
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "*.okta.com",
+            "https://acme.okta.com",
+            "acme.okta.com:443",
+            "user@acme.okta.com",
+            "acme.%6fkta.com",
+            "acme .okta.com",
+            "acme.okta.com\t",
+            "acme\\okta.com",
+            ".acme.okta.com",
+            "acme.okta.com.",
+            "192.168.1.1",
+            "[::1]",
+            "nodots",
+            "acme.okta.123",
+            "",
+            "a" * 260 + ".com",
+        ],
+        ids=[
+            "wildcard",
+            "scheme-prefix",
+            "explicit-port",
+            "userinfo",
+            "percent-escape",
+            "whitespace",
+            "trailing-tab",
+            "backslash",
+            "leading-dot",
+            "trailing-dot",
+            "ipv4-literal",
+            "ipv6-literal",
+            "no-dot",
+            "digit-tld",
+            "empty",
+            "over-length",
+        ],
+    )
+    def test_hostile_host_skipped(self, ext_home: Path, host: str) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [{"host": host, "path": self.PATH}])
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "authorize",
+            "/authorize?x=1",
+            "/authorize#frag",
+            "/authorize;p=1",
+            "/autho%72ize",
+            "/auth orize",
+            "/auth\\orize",
+            "/../authorize",
+            "/" + "x" * 513,
+        ],
+        ids=[
+            "no-leading-slash",
+            "query",
+            "fragment",
+            "path-param",
+            "percent-escape",
+            "whitespace",
+            "backslash",
+            "dotdot",
+            "over-length",
+        ],
+    )
+    def test_hostile_path_skipped(self, ext_home: Path, path: str) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [{"host": self.HOST, "path": path}])
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "not-a-dict",
+            {"host": 1, "path": "/a"},
+            {"host": "ok.example.com", "path": None},
+            {"host": "ok.example.com"},
+            {},
+        ],
+        ids=["string-entry", "int-host", "none-path", "missing-path", "empty-dict"],
+    )
+    def test_non_string_entry_skipped(self, ext_home: Path, entry: object) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [entry])
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    def test_one_bad_entry_does_not_poison_the_rest(self, ext_home: Path) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(
+            ext_home,
+            [{"host": "*.evil.example", "path": "/a"}, {"host": self.HOST, "path": self.PATH}],
+        )
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+
+    def test_entry_cap_bounds_both_acceptance_and_iteration(self, ext_home: Path) -> None:
+        from kiro_crew.security import (
+            _ENDPOINT_EXTENSION_CAP,
+            _load_operator_oauth_endpoints,
+        )
+
+        # Over-cap valid entries: only the first CAP are accepted. A valid
+        # entry placed BEYOND the cap must be ignored even when earlier slots
+        # were wasted on invalid entries — the slice bounds the iteration
+        # itself, so a mangled file cannot amplify into an unbounded walk.
+        entries: list[dict] = [
+            {"host": f"idp{i}.example.com", "path": "/authorize"}
+            for i in range(_ENDPOINT_EXTENSION_CAP + 10)
+        ]
+        self._write_extension(ext_home, entries)
+        assert len(_load_operator_oauth_endpoints()) == _ENDPOINT_EXTENSION_CAP
+
+        invalid_padding: list[dict] = [
+            {"host": "*.invalid.example", "path": "/a"}
+        ] * _ENDPOINT_EXTENSION_CAP
+        self._write_extension(
+            ext_home, invalid_padding + [{"host": self.HOST, "path": self.PATH}]
+        )
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    # ── Gate: the extension widens exactly the builtin exemption, nothing more ──
+
+    def test_extended_endpoint_passes_previously_rejected_consent_url(
+        self, ext_home: Path
+    ) -> None:
+        # Fails closed with no file (the pre-extension behavior) …
+        assert oauth_url_contains_credential(self.CONSENT_URL) is True
+        # … and passes once the operator allowlists the exact endpoint.
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+
+    @pytest.mark.parametrize(
+        "credential",
+        ["AKIA" "IOSFODNN7EXAMPLE", "xoxb-1234567890-abcdefghijkl"],
+        ids=["aws-access-key", "slack-token"],
+    )
+    def test_credential_at_extended_endpoint_still_rejected(
+        self, ext_home: Path, credential: str
+    ) -> None:
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        url = self.CONSENT_URL.replace("state=", f"state={credential}", 1)
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda u: u.replace("https://", "http://", 1),
+            lambda u: u.replace("acme.okta.com", "acme.okta.com:443", 1),
+            lambda u: u.replace("acme.okta.com", "other.idp.example", 1),
+            lambda u: u.replace("acme.okta.com", "acme.okta.com.attacker.example", 1),
+            lambda u: u.replace("/oauth2/v1/authorize", "/oauth2/v1/authorize/extra", 1),
+        ],
+        ids=["http-scheme", "explicit-port", "unknown-host", "lookalike-suffix", "path-suffix"],
+    )
+    def test_non_matching_urls_still_fail_closed(self, ext_home: Path, mutate) -> None:
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        assert oauth_url_contains_credential(mutate(self.CONSENT_URL)) is True
+
+    def test_general_redactors_ignore_the_extension(self, ext_home: Path) -> None:
+        # The carve-out stays banner-only: arbitrary model/agent text keeps the
+        # full heuristics even for an operator-approved endpoint.
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        cleaned, warnings = redact_exfiltration_urls(self.CONSENT_URL)
+        assert cleaned != self.CONSENT_URL
+        assert warnings
+        assert scan_exfiltration_urls(self.CONSENT_URL)
+
+    # ── SEL audit ──
+
+    def test_extension_approval_emits_audit_event(
+        self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security
+
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        seen: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            security,
+            "_emit_oauth_extension_used_event",
+            lambda host, path: seen.append((host, path)),
+        )
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+        assert (self.HOST, self.PATH) in seen
+
+    def test_builtin_approval_does_not_emit_audit_event(
+        self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security
+
+        seen: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            security,
+            "_emit_oauth_extension_used_event",
+            lambda host, path: seen.append((host, path)),
+        )
+        url = (
+            "https://github.com/login/oauth/authorize"
+            "?client_id=Iv1.a1b2c3d4e5f6g7h8&state=xyz789randomstring"
+        )
+        assert oauth_url_contains_credential(url) is False
+        assert seen == []
+
+    def test_audit_event_deduped_per_endpoint_but_not_across_endpoints(
+        self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security
+
+        logged: list = []
+
+        class _RecorderLog:
+            def log(self, event: object) -> None:
+                logged.append(event)
+
+        monkeypatch.setattr(security, "SecurityEventLog", lambda: _RecorderLog())
+        security._emit_oauth_extension_used_event(self.HOST, self.PATH)
+        security._emit_oauth_extension_used_event(self.HOST, self.PATH)
+        assert len(logged) == 1
+        event = logged[0]
+        assert event.event_type == "oauth_endpoint_extension_used"
+        assert event.metadata["host"] == self.HOST
+        assert event.metadata["path"] == self.PATH
+        assert event.metadata["file"].endswith("oauth_endpoints.json")
+
+        # A second DISTINCT endpoint still emits: dedupe is per (host, path).
+        security._emit_oauth_extension_used_event("other.idp.example", "/authorize")
+        assert len(logged) == 2
+
+    def test_audit_failure_does_not_break_the_approval(
+        self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security
+
+        class _BrokenLog:
+            def log(self, event: object) -> None:
+                raise RuntimeError("SEL unavailable")
+
+        monkeypatch.setattr(security, "SecurityEventLog", lambda: _BrokenLog())
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+
+    # ── Keystone fence: the agent cannot widen its own trust boundary ──
+
+    @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
+    def test_extension_file_is_sensitive_under_every_home_prefix(self, prefix: str) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        assert is_sensitive_path(f"~/{prefix}/oauth_endpoints.json") is True
+        # The write gate is a superset of the read gate; assert it directly so
+        # the file-edit tool path is pinned too.
+        assert is_sensitive_write_path(f"~/{prefix}/oauth_endpoints.json") is True
+
+    def test_bash_write_and_read_both_blocked(self) -> None:
+        for cmd in (
+            "echo x > ~/.kiro/crew/oauth_endpoints.json",
+            "tee ~/.kiro/crew/oauth_endpoints.json",
+            "cp evil ~/.kiro/crew/oauth_endpoints.json",
+            "cat ~/.kiro/crew/oauth_endpoints.json",
+            "cat ~/.kirocrew/oauth_endpoints.json",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    # ── Corpus contract: operator-extension URLs ──
+
+    @pytest.mark.parametrize(
+        "provider,url,endpoint",
+        OPERATOR_EXTENSION_OAUTH_URLS,
+        ids=[p for p, _, _ in OPERATOR_EXTENSION_OAUTH_URLS],
+    )
+    def test_operator_extension_corpus_default_config_rejects(
+        self, ext_home: Path, provider: str, url: str, endpoint: tuple[str, str]
+    ) -> None:
+        # Without the operator file these endpoints are NOT exempt — this is
+        # what keeps the list out of LEGIT_OAUTH_URLS.
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "provider,url,endpoint",
+        OPERATOR_EXTENSION_OAUTH_URLS,
+        ids=[p for p, _, _ in OPERATOR_EXTENSION_OAUTH_URLS],
+    )
+    def test_operator_extension_corpus_passes_with_allowlisted_endpoint(
+        self, ext_home: Path, provider: str, url: str, endpoint: tuple[str, str]
+    ) -> None:
+        host, path = endpoint
+        self._write_extension(ext_home, [{"host": host, "path": path}])
+        assert oauth_url_contains_credential(url) is False
 
 
 class TestRedactExfiltrationUrls:
