@@ -3817,6 +3817,238 @@ def _cgroup_limits_from_config() -> tuple[int, int, int, int]:
     return max_procs, max_mem_mb, cpu_weight, max_cpu_percent
 
 
+# ── aggregate agent-slice soft ceiling (memory.high on kirocrew-agents.slice) ──
+# Per-scope MemoryMax bounds ONE runaway spawn tree, but scopes are created per
+# spawn: several concurrent agent trees, each legitimately under its own 65%
+# cap, can still sum past physical RAM and livelock a swapless host. memory.high
+# on the slice all agent scopes share throttles-and-reclaims the whole subtree
+# once the SUM of agent memory crosses it, keeping the kernel and the gateway
+# (which lives outside the slice) responsive — a soft layer BELOW the slice's
+# hard aggregate memory.max (ensure_agents_slice_limits), which OOM-kills a
+# scope only when throttling was not enough, while each scope's own memory.max
+# still hard-kills an individual runaway. Same trust model as the scope
+# ceilings: unprivileged, enforced by the user manager, requires the memory
+# controller delegated to the user slice (the existing _probe_cgroup_scope
+# check).
+
+# Fraction of physical RAM used for the default slice memory.high. Higher than
+# the per-scope 65% because it bounds the SUM of all agent scopes, and below
+# the slice's hard 80% memory.max so throttling engages before the kernel
+# OOM-kills, with OS + gateway headroom preserved even while the whole fleet
+# is being throttled.
+_SLICE_MEMORY_HIGH_FRACTION = 0.75
+# Fallback slice memory.high (MB) used only when physical RAM can't be read.
+# The slice path is Linux-only, where SC_PHYS_PAGES exists, so this is a
+# belt-and-suspenders default, not the normal path.
+_SLICE_FALLBACK_MEMORY_HIGH_MB = 12288
+
+# Last MemoryHigh value applied to the slice by THIS process ("24576M" /
+# "infinity"), or None before the first reconcile. The desired value is
+# host-derived and constant for the process's life (no config input), so
+# after the first successful apply every later reconcile reduces to a
+# string compare and no-ops. Kept as a reconcile (rather than a one-shot)
+# so an apply that failed transiently is retried on the next spawn.
+_SLICE_MEMHIGH_APPLIED: str | None = None
+# Process-level kill switch: set after a failed apply so a broken systemctl is
+# warned about ONCE and never hammered on every subsequent spawn.
+_SLICE_MEMHIGH_DISABLED = False
+
+
+def _default_slice_memory_high_mb() -> int:
+    """Return the default slice ``memory.high`` in MB: a fixed fraction
+    (:data:`_SLICE_MEMORY_HIGH_FRACTION`) of physical RAM, falling back to
+    :data:`_SLICE_FALLBACK_MEMORY_HIGH_MB` if host RAM can't be determined.
+    """
+    try:
+        total_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        mb = int(total_bytes * _SLICE_MEMORY_HIGH_FRACTION) // (1024 * 1024)
+        if mb > 0:
+            return mb
+    except (ValueError, OSError, AttributeError):
+        pass
+    return _SLICE_FALLBACK_MEMORY_HIGH_MB
+
+
+def _ensure_agent_slice_memory_high() -> None:
+    """Reconcile ``MemoryHigh`` on :data:`_CGROUP_AGENTS_SLICE` with the host default.
+
+    The slice is UID-GLOBAL: every gateway instance under this user (live,
+    dev-backend, pods with delegation) parents scopes into the same slice, so
+    the ceiling is deliberately NOT config-driven — a per-instance config key
+    would let one instance (e.g. a dev gateway configured permissively) lift
+    or lower the ceiling that protects the others. The value is always the
+    host-derived default (:func:`_default_slice_memory_high_mb`).
+
+    Runs ``systemctl --user set-property --runtime`` — unprivileged: the user
+    manager owns the slice, and the memory controller is delegated wherever the
+    caller's probe passed. ``--runtime`` is deliberate: the drop-in lives under
+    ``$XDG_RUNTIME_DIR`` and vanishes with the login session, so no persistent
+    unit files accumulate under ``~/.config`` and a stale ceiling can never
+    outlive the login session that set it.
+
+    Never raises: agent spawns must not fail because the ceiling could not be
+    applied. On failure it logs one loud warning and disarms for the rest of
+    the process.
+    """
+    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED
+    if _SLICE_MEMHIGH_DISABLED:
+        return
+    desired = f"{_default_slice_memory_high_mb()}M"
+    if desired == _SLICE_MEMHIGH_APPLIED:
+        return
+    try:
+        systemctl = platform_compat.trusted_system_bin("systemctl")
+        if systemctl is None:
+            raise FileNotFoundError("systemctl not found in trusted system dirs")
+        proc = subprocess.run(
+            [
+                systemctl,
+                "--user",
+                "set-property",
+                "--runtime",
+                _CGROUP_AGENTS_SLICE,
+                f"MemoryHigh={desired}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "").strip() or "non-zero exit")
+    except Exception as exc:
+        _SLICE_MEMHIGH_DISABLED = True
+        logger.warning(
+            "SECURITY: could not apply MemoryHigh=%s to %s (%s); the AGGREGATE "
+            "agent memory ceiling is NOT enforced on this host — per-scope "
+            "MemoryMax still applies. See "
+            "docs/architecture/resource-protection.md.",
+            desired,
+            _CGROUP_AGENTS_SLICE,
+            exc,
+        )
+        return
+    _SLICE_MEMHIGH_APPLIED = desired
+    logger.info("agent slice %s: MemoryHigh=%s applied", _CGROUP_AGENTS_SLICE, desired)
+
+
+# Last observed value of the slice's memory.events `high` counter, or None
+# before the first successful read. The first read only baselines — the
+# counter is monotonic for the slice cgroup's lifetime, so a nonzero value
+# may predate this process — and climbs are judged against it.
+_SLICE_MEMHIGH_EVENTS_SEEN: int | None = None
+# True while inside a climbing episode that has already been warned about, so
+# sustained throttling logs once per episode instead of on every spawn. Reset
+# when an observation finds the counter stable (episode over) or lower (slice
+# cgroup recreated).
+_SLICE_MEMHIGH_CLIMB_WARNED = False
+
+
+def _slice_memory_events_high() -> int | None:
+    """Return the ``high`` counter from the slice cgroup's ``memory.events``.
+
+    The slice directory comes from :func:`_agents_slice_cgroup_dir`, which
+    understands systemd's dash-hierarchy (``kirocrew-agents.slice`` nests
+    under ``kirocrew.slice`` in the user manager's subtree). ``None`` when it
+    cannot be read: not Linux, no cgroup v2, the slice cgroup not currently
+    materialized (systemd releases an empty slice), or unparseable content.
+    """
+    slice_dir = _agents_slice_cgroup_dir()
+    if slice_dir is None:
+        return None
+    return _read_cgroup_counters(slice_dir / "memory.events").get("high")
+
+
+def _check_slice_memory_pressure() -> None:
+    """Warn when the slice's ``memory.events`` ``high`` counter climbs.
+
+    Past ``memory.high`` the kernel throttles-and-reclaims the subtree
+    SILENTLY — agents just slow down; nothing kills and nothing alerts, since
+    per-scope ``MemoryMax`` never fired. The ``high`` counter climbing is the
+    kernel's only signal that the aggregate ceiling is throttling, and
+    surfacing it makes "agents mysteriously slow" diagnosable from the
+    gateway log as ceiling throttling rather than a hang.
+
+    Warned once per climbing episode: the first observed increase logs, later
+    increases stay silent until an observation finds the counter stable,
+    which closes the episode. A DECREASE means the slice cgroup was recreated
+    (an empty slice is released and its counters reset) — re-baseline
+    silently, never warn.
+    """
+    global _SLICE_MEMHIGH_EVENTS_SEEN, _SLICE_MEMHIGH_CLIMB_WARNED
+    current = _slice_memory_events_high()
+    if current is None:
+        return
+    previous = _SLICE_MEMHIGH_EVENTS_SEEN
+    _SLICE_MEMHIGH_EVENTS_SEEN = current
+    if previous is None or current <= previous:
+        # First read, counter stable, or slice cgroup recreated: (re)baseline
+        # and close any open episode.
+        _SLICE_MEMHIGH_CLIMB_WARNED = False
+        return
+    if _SLICE_MEMHIGH_CLIMB_WARNED:
+        return
+    _SLICE_MEMHIGH_CLIMB_WARNED = True
+    logger.warning(
+        "agent slice %s: memory.events high counter climbed %d -> %d — "
+        "aggregate agent memory crossed the slice MemoryHigh ceiling and the "
+        "kernel is throttling the whole agent subtree; agents run slowly "
+        "(not hung) until aggregate memory drops. See "
+        "docs/architecture/resource-protection.md.",
+        _CGROUP_AGENTS_SLICE,
+        previous,
+        current,
+    )
+
+
+# Serializes reconciliation workers. Deliberately a plain blocking mutex held
+# for the whole reconcile body: every schedule spawns its own short-lived
+# worker and workers queue on the mutex, so concurrent spawns never interleave
+# systemctl calls and a failed apply is retried by the next spawn's worker.
+# The desired value is host-derived and process-constant (no config input) —
+# the mutex guards the apply/retry handoff, not value freshness. Redundant
+# workers are near-free (the applied-value check reduces them to a string
+# compare), and thread count is bounded by concurrent agent spawns.
+_SLICE_MEMHIGH_MUTEX = threading.Lock()
+
+
+def _reconcile_slice_memory_high_off_thread() -> None:
+    """Reconcile ``MemoryHigh`` and check slice throttling in a daemon thread.
+
+    The reconciliation reads config and shells out to ``systemctl`` (up to
+    10s), and its caller sits on the agent-spawn path, which runs on the
+    gateway event loop — so it must never execute inline. Fire-and-forget is
+    semantically safe: ``MemoryHigh`` set on a slice applies to members that
+    are already running, so a reconciliation that lands moments after the
+    spawn still bounds it, and every later spawn re-reconciles. The worker
+    also runs :func:`_check_slice_memory_pressure`, so throttle visibility
+    shares the reconcile cadence (per spawn) and its kill switch.
+    """
+    global _SLICE_MEMHIGH_DISABLED
+    if _SLICE_MEMHIGH_DISABLED:
+        return
+
+    def _worker() -> None:
+        with _SLICE_MEMHIGH_MUTEX:
+            _ensure_agent_slice_memory_high()
+            _check_slice_memory_pressure()
+
+    try:
+        threading.Thread(
+            target=_worker, name="agent-slice-memhigh", daemon=True
+        ).start()
+    except RuntimeError as exc:
+        # Thread exhaustion. This sits on the agent-spawn path, so it must
+        # never abort the spawn. Disarm like any other reconciliation
+        # failure: per-scope MemoryMax still applies.
+        _SLICE_MEMHIGH_DISABLED = True
+        logger.warning(
+            "SECURITY: could not start the MemoryHigh reconciliation thread "
+            "(%s); the AGGREGATE agent memory ceiling is NOT enforced on this "
+            "host — per-scope MemoryMax still applies.",
+            exc,
+        )
+
+
 def cgroup_scope_argv(argv: list[str]) -> list[str]:
     """Wrap *argv* in a transient systemd --user --scope with cgroup v2 limits.
 
@@ -3833,6 +4065,13 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     the returned argv's eventual PID is the real child — parent PID tracking,
     ``killpg``, and descendant scans are unaffected.
 
+    Every scope is parented under :data:`_CGROUP_AGENTS_SLICE`, and the
+    slice-level soft ceiling (``MemoryHigh``, see
+    :func:`_ensure_agent_slice_memory_high`) — a host-derived constant (75%
+    of RAM) — is ensured before each wrap, throttling the SUM of all
+    concurrent agent trees before the slice's hard ``MemoryMax``
+    (:func:`ensure_agents_slice_limits`) OOM-kills a scope.
+
     Layers OUTSIDE the OS-level sandbox: callers pass the already-``wrap_argv``-ed
     argv here so the child is filesystem-isolated AND cgroup-bounded.
 
@@ -3845,6 +4084,11 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     if not available:
         _warn_cgroup_unavailable(reason)
         return argv
+    # Reconcile the slice-level aggregate ceiling off-thread: this call site
+    # runs on the gateway event loop during agent spawn, and reconciliation
+    # does config reads + a systemctl subprocess. MemoryHigh on a slice
+    # applies to already-running members, so the spawn need not wait for it.
+    _reconcile_slice_memory_high_off_thread()
     max_procs, max_mem_mb, cpu_weight, max_cpu_percent = _cgroup_limits_from_config()
     props = [
         "-p",
@@ -4036,6 +4280,13 @@ def ensure_agents_slice_limits() -> bool:
     return True
 
 
+# cgroup v2 directory of the systemd user manager's subtree (transient
+# --user units always live under user@<uid>.service on the unified
+# hierarchy); ``{uid}`` is filled at resolve time. Module-level so tests can
+# point the resolver at a fabricated tree.
+_USER_MANAGER_CGROUP_BASE = "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service"
+
+
 def _agents_slice_cgroup_dir() -> Path | None:
     """Resolve the agents slice's cgroup directory, or None when absent.
 
@@ -4048,8 +4299,7 @@ def _agents_slice_cgroup_dir() -> Path | None:
     """
     if sys.platform != "linux":
         return None
-    uid = os.getuid()
-    base = Path(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service")
+    base = Path(_USER_MANAGER_CGROUP_BASE.format(uid=os.getuid()))
     direct = base / "kirocrew.slice" / _CGROUP_AGENTS_SLICE
     if direct.is_dir():
         return direct

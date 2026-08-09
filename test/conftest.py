@@ -631,6 +631,37 @@ def _isolate_message_entry_cache():
 
 
 @pytest.fixture(autouse=True)
+def _disarm_agent_slice_memory_high():
+    """Disarm the agent-slice ``MemoryHigh`` reconcile for every test.
+
+    ``cgroup_scope_argv`` reconciles ``MemoryHigh`` on the shared agent slice
+    via a real ``systemctl --user set-property`` before wrapping a spawn. On a
+    Linux host WITH cgroup delegation the probe passes for real, so any test
+    that reaches ``cgroup_scope_argv`` (spawn-audit, the real pids.max
+    enforcement test, integration paths) would mutate the developer's live
+    user manager — exactly the class of side effect the root conftest's
+    host-service guard refuses (``set-property`` is a mutating verb), turning
+    those tests into guard failures. Pre-disarm via the module's own kill
+    switch and restore all four state globals after, so tests of the
+    reconciler itself can re-arm explicitly in their own body.
+    """
+    import kiro_crew.sandbox as _sb
+
+    saved_disabled = _sb._SLICE_MEMHIGH_DISABLED
+    saved_applied = _sb._SLICE_MEMHIGH_APPLIED
+    saved_events_seen = _sb._SLICE_MEMHIGH_EVENTS_SEEN
+    saved_climb_warned = _sb._SLICE_MEMHIGH_CLIMB_WARNED
+    _sb._SLICE_MEMHIGH_DISABLED = True
+    try:
+        yield
+    finally:
+        _sb._SLICE_MEMHIGH_DISABLED = saved_disabled
+        _sb._SLICE_MEMHIGH_APPLIED = saved_applied
+        _sb._SLICE_MEMHIGH_EVENTS_SEEN = saved_events_seen
+        _sb._SLICE_MEMHIGH_CLIMB_WARNED = saved_climb_warned
+
+
+@pytest.fixture(autouse=True)
 def _reset_options_control_state():
     """Clear the per-message OPTIONS registries between tests.
 

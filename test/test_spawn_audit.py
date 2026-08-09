@@ -767,6 +767,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # would be circular: it constructs the cgroup boundary agent spawns
         # are confined by.
         "sandbox.py::ensure_agents_slice_limits",
+        # The agent-slice MemoryHigh reconciler. Fixed argv: `systemctl --user
+        # set-property --runtime kirocrew-agents.slice MemoryHigh=<value>`, where
+        # the binary is resolved with shutil.which (never a caller-supplied PATH)
+        # and <value> is derived from host RAM, never from agent input.
+        # Sandboxing it would also be circular: it CONFIGURES the cgroup
+        # containment that agent spawns are wrapped in.
+        "sandbox.py::_ensure_agent_slice_memory_high",
         # The chokepoint wrapper itself. It spawns whatever argv it is handed, so
         # it cannot route on its own behalf — its CALLERS are the ones this audit
         # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here
