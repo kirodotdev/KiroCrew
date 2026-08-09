@@ -1099,7 +1099,13 @@ async def _run_process(
                 extra_visible_dirs=extra_visible_dirs,
             )
             if spawn_argv and not os.path.isabs(spawn_argv[0]):
-                resolved_wrapper = shutil.which(spawn_argv[0], path=os.defpath)
+                # Off the loop: a miss walks the whole ``PATH`` once per name to
+                # report where the tool actually is, so a stalled network mount
+                # anywhere on it would otherwise freeze the gateway rather than
+                # just this probe.
+                resolved_wrapper = await asyncio.to_thread(
+                    platform_compat.trusted_system_bin, spawn_argv[0]
+                )
                 if not resolved_wrapper:
                     raise OSError(f"sandbox wrapper is unavailable: {spawn_argv[0]}")
                 spawn_argv[0] = resolved_wrapper

@@ -628,9 +628,12 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
    that does not resolve there counts as absent rather than falling back.
    `listening_pid_tool_available()` performs the same pinned resolution, so it
    distinguishes "no listener" from "lookup tool missing" without disagreeing
-   with the lookup it describes. A host that installs the tool outside those
-   directories (NixOS, a Homebrew or conda prefix) therefore reads as not having
-   it; `trusted_system_bin()` logs a warning once per name when the tool is on
+   with the lookup it describes. The pinned set is the FHS directories plus
+   `/run/current-system/sw/bin`, which is root-owned and rewritten only by a
+   system rebuild. A tool installed anywhere else — a Homebrew or conda prefix —
+   still reads as absent, and deliberately so: those prefixes are writable by the
+   invoking user, which is the exposure the pin exists to close.
+   `trusted_system_bin()` logs a warning once per name when the tool is on
    `PATH` but not resolvable under the pin, and `tool_outside_trusted_dirs()`
    lets `stop` name where the tool actually is rather than tell an operator who
    already has it to install it. That case carries SEL

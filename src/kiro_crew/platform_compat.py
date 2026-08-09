@@ -710,7 +710,7 @@ def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> l
     return result
 
 
-_TRUSTED_SYSTEM_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+_TRUSTED_SYSTEM_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin")
 
 # Windows argv carries a bare name (``taskkill``) while the file on disk carries
 # an extension (``taskkill.exe``), so a trusted lookup must try the suffixes the

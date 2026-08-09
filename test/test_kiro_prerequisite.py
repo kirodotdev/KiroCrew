@@ -2339,9 +2339,8 @@ class TestKiroPrerequisiteWorkflow:
         ) -> tuple[list[str], dict[str, str], None]:
             return [wrapper, *argv], {"PATH": "/trusted/bin"}, None
 
-        def which(executable: str, *, path: str | None = None) -> str:
-            assert executable == wrapper
-            assert path == os.defpath
+        def trusted(name: str) -> str:
+            assert name == wrapper
             return f"/usr/bin/{wrapper}"
 
         async def spawn(*argv: str, **_kwargs: Any) -> _Process:
@@ -2349,7 +2348,11 @@ class TestKiroPrerequisiteWorkflow:
             return _Process()
 
         monkeypatch.setattr(prerequisite_module, "sandboxed_spawn_argv", sandbox)
-        monkeypatch.setattr(prerequisite_module.shutil, "which", which)
+        monkeypatch.setattr(
+            prerequisite_module.platform_compat,
+            "trusted_system_bin",
+            trusted,
+        )
         monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
 
         result = await _run_process(
@@ -2364,6 +2367,102 @@ class TestKiroPrerequisiteWorkflow:
         # fragment, then the resolved sandbox wrapper.
         wrapper_index = 4 + len(prerequisite_module.resource_limit_supervisor_argv())
         assert captured["spawn_argv"][wrapper_index] == f"/usr/bin/{wrapper}"
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS,
+        reason="Windows does not wrap the probe in the POSIX sandbox launcher",
+    )
+    @pytest.mark.asyncio
+    async def test_probe_reports_an_unresolvable_sandbox_wrapper(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A wrapper the pin cannot resolve fails with a named cause rather than
+        # falling back to whatever PATH offers.
+
+        def sandbox(
+            argv: list[str],
+            **_kwargs: Any,
+        ) -> tuple[list[str], dict[str, str], None]:
+            return ["systemd-run", *argv], {"PATH": "/trusted/bin"}, None
+
+        spawn = AsyncMock(side_effect=OSError("an unresolvable wrapper was spawned"))
+        monkeypatch.setattr(prerequisite_module, "sandboxed_spawn_argv", sandbox)
+        monkeypatch.setattr(
+            prerequisite_module.platform_compat,
+            "trusted_system_bin",
+            lambda _name: None,
+        )
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+        result = await _run_process(
+            "/fixed/kiro-cli",
+            ["--version"],
+            env={"PATH": "/trusted/bin"},
+            timeout_secs=1,
+        )
+
+        assert result.ok is False
+        assert result.error == "sandbox wrapper is unavailable: systemd-run"
+        spawn.assert_not_awaited()
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS,
+        reason="Windows does not wrap the probe in the POSIX sandbox launcher",
+    )
+    @pytest.mark.asyncio
+    async def test_wrapper_resolution_does_not_block_event_loop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A miss walks the whole PATH to report where the tool is, so the lookup
+        # has to run off the loop or a stalled mount freezes the gateway.
+        lookup_started = threading.Event()
+        release_lookup = threading.Event()
+
+        def sandbox(
+            argv: list[str],
+            **_kwargs: Any,
+        ) -> tuple[list[str], dict[str, str], None]:
+            return ["systemd-run", *argv], {"PATH": "/trusted/bin"}, None
+
+        def slow_lookup(_name: str) -> str | None:
+            lookup_started.set()
+            assert release_lookup.wait(timeout=1)
+            return "/usr/bin/systemd-run"
+
+        monkeypatch.setattr(prerequisite_module, "sandboxed_spawn_argv", sandbox)
+        monkeypatch.setattr(
+            prerequisite_module.platform_compat,
+            "trusted_system_bin",
+            slow_lookup,
+        )
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            AsyncMock(side_effect=OSError("spawn is not the subject here")),
+        )
+
+        process_task = asyncio.create_task(
+            _run_process(
+                "/fixed/kiro-cli",
+                ["--version"],
+                env={"PATH": "/trusted/bin"},
+                timeout_secs=1,
+            )
+        )
+        assert await asyncio.to_thread(lookup_started.wait, 1)
+        ticked_during_lookup = False
+
+        async def tick_lookup() -> None:
+            nonlocal ticked_during_lookup
+            await asyncio.sleep(0)
+            ticked_during_lookup = True
+
+        await tick_lookup()
+        assert ticked_during_lookup
+        release_lookup.set()
+        assert (await process_task).ok is False
 
     @pytest.mark.skipif(
         platform_compat.IS_WINDOWS,

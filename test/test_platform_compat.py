@@ -2333,6 +2333,32 @@ def test_trusted_system_bin_rejects_a_name_not_in_system_dirs(tmp_path, monkeypa
     assert platform_compat.trusted_system_bin("ps") is not None
 
 
+def test_trusted_system_bin_dirs_are_not_limited_to_fhs():
+    # A distribution may keep ps/lsof/systemd-run outside /usr/{s}bin; an
+    # FHS-only pin resolves nothing at all there.
+    from kiro_crew import platform_compat
+
+    fhs = {"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+    assert set(platform_compat._TRUSTED_SYSTEM_BIN_DIRS) - fhs
+
+
+def test_trusted_system_bin_resolves_outside_fhs(tmp_path, monkeypatch):
+    # A tool reachable only through a non-FHS pinned directory still resolves.
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    system_dir = tmp_path / "sw" / "bin"
+    system_dir.mkdir(parents=True)
+    tool = system_dir / "definitely-not-a-system-tool"
+    tool.write_text("#!/bin/sh\nexit 0\n")
+    tool.chmod(0o755)
+
+    monkeypatch.setattr(platform_compat, "_TRUSTED_SYSTEM_BIN_DIRS", (str(system_dir),))
+    assert platform_compat.trusted_system_bin("definitely-not-a-system-tool") == str(tool)
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason=(
