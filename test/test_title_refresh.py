@@ -308,6 +308,55 @@ class TestRefreshPrompt:
         assert "BCP-47 tag ja" in prompt
 
 
+# ── the manual regenerate endpoint windows the recent tail ────────────────────
+class TestManualRegenerateWindow:
+    @pytest.mark.asyncio
+    async def test_manual_regenerate_prompts_from_the_recent_tail(self, monkeypatch):
+        """Regenerating the title of a long session must build the prompt from
+        the LAST conversational messages, mirroring the refresh window: the
+        user reaches for the control when the current name no longer fits, and
+        the recent tail is where the current topic lives. The trailing run of
+        tool/status rows a tool-heavy turn appends must not starve the window
+        — the slice is taken over conversational rows, not raw rows. Without
+        the endpoint-side tail slice the prompt builder's head window rebuilds
+        the opening-topic title."""
+        captured: dict[str, str] = {}
+
+        async def _capture_oneliner(_sessions, prompt, **_kw):
+            captured["prompt"] = prompt
+            return "Tail topic title"
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(chat_title, "run_bg_oneliner", _capture_oneliner)
+        monkeypatch.setattr(chat_title, "_persist_title", _noop)
+        monkeypatch.setattr(chat_title, "_ui_language", lambda: "")
+
+        slot = _ChatSlot("chat-1-1")
+        slot.messages = [
+            {"role": "user", "content": f"topic-{i} discussion"} for i in range(30)
+        ]
+        # A tool-heavy final turn: the raw tail is entirely non-conversational
+        # rows, which the prompt builder filters out.
+        slot.messages += [{"role": "tool", "content": f"tool-row-{i}"} for i in range(12)]
+        state = _fake_state()
+        state._slots = {slot.key: slot}
+        request = MagicMock()
+        request.app = {"state": state}
+        request.match_info = {"slot": slot.key}
+
+        response = await chat_title.api_chat_slot_generate_title(request)
+
+        assert response.status == 200
+        prompt = captured["prompt"]
+        assert "topic-29" in prompt
+        assert "topic-20" in prompt
+        assert "topic-0 " not in prompt, "old head must be windowed out"
+        assert "tool-row" not in prompt
+        assert slot.title == "Tail topic title"
+
+
 # ── origin recording on the write paths ──────────────────────────────────────
 class TestOriginRecording:
     @pytest.mark.asyncio

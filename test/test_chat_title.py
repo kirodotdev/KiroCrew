@@ -332,6 +332,18 @@ def test_real_titles_accepted(reply):
     assert not _looks_like_prose(reply)
 
 
+def test_prompt_windows_the_opening_head():
+    """Initial titling reads the OPENING turns — the head slice is the other
+    half of the invariant _TITLE_PROMPT_WINDOW asserts (the refresh prompt and
+    the manual regenerate endpoint read the tail)."""
+    messages = [{"role": "user", "content": f"topic-{i} discussion"} for i in range(30)]
+    prompt = _build_title_prompt(messages)
+    assert prompt is not None
+    assert "topic-0 " in prompt
+    assert "topic-9 " in prompt
+    assert "topic-29" not in prompt, "recent tail must be windowed out"
+
+
 def test_empty_reply_is_not_treated_as_prose():
     """Empty/whitespace replies are already handled by the SKIP branch; the
     prose guard must not claim them."""

@@ -46,6 +46,19 @@ _TITLE_ORIGINS = frozenset({_TITLE_ORIGIN_AUTO, _TITLE_ORIGIN_USER})
 # consumed mark is persisted so restarts cannot re-spend it.
 _TITLE_REFRESH_MILESTONES: tuple[int, ...] = (8, 24)
 
+# Transcript window for every title prompt, in messages. The initial prompt
+# reads the FIRST window (a session's opening turns state its topic), while the
+# refresh prompt and the manual regenerate endpoint read the LAST window (both
+# exist to name the topic the session has drifted TO). One constant keeps the
+# three slice sites in lock-step so the windows cannot drift apart silently.
+_TITLE_PROMPT_WINDOW = 10
+
+# The message roles that carry conversational content. ``_prompt_lines`` keeps
+# only these, and a caller that windows the raw message list BEFORE prompting
+# must filter to them first — the raw list interleaves tool/permission/status
+# rows, so a raw window over a tool-heavy stretch can hold zero usable lines.
+_TITLE_PROMPT_ROLES = ("user", "assistant")
+
 # Only a small amount of user text can influence a 200-character title prompt.
 # Allow enough bounded source for every dashboard attachment to precede it, then
 # cap the retained text separately after generated references are removed.
@@ -542,9 +555,9 @@ def _ui_language() -> str:
 def _prompt_lines(messages: list[dict[str, Any]]) -> list[str]:
     """Shape messages into bounded ``role: text`` transcript lines.
 
-    The 200-char per-line cap is the token ceiling for BOTH title prompts: ten
-    lines of at most 200 chars keeps a titling call around half a KB of
-    transcript regardless of how large the conversation is.
+    The 200-char per-line cap is the token ceiling for BOTH title prompts:
+    ``_TITLE_PROMPT_WINDOW`` lines of at most 200 chars keeps a titling call
+    around half a KB of transcript regardless of how large the conversation is.
     """
     lines: list[str] = []
     for m in messages:
@@ -552,7 +565,7 @@ def _prompt_lines(messages: list[dict[str, Any]]) -> list[str]:
         content = _title_text(
             m.get("content", ""), _message_attachment_paths(m), substitute_labels=True
         )
-        if role in ("user", "assistant") and content:
+        if role in _TITLE_PROMPT_ROLES and content:
             lines.append(f"{role}: {content[:200]}")
     return lines
 
@@ -568,7 +581,7 @@ def _build_title_prompt(
     directive is placed OUTSIDE the delimited transcript, so a message that
     quotes it cannot restate it as data.
     """
-    lines = _prompt_lines(messages[:10])
+    lines = _prompt_lines(messages[:_TITLE_PROMPT_WINDOW])
     if not lines:
         return None
     language = _TITLE_LANGUAGE_TEMPLATE.format(lang=ui_language) if ui_language else ""
@@ -580,12 +593,13 @@ def _build_refresh_prompt(
 ) -> str | None:
     """Build the title REFRESH prompt (see ``maybe_refresh_title``).
 
-    Windows the LAST ten messages where the initial prompt takes the first ten:
-    a refresh exists to catch the topic the session has drifted TO, and the
-    recent tail is where that lives. Same per-line bounds as the initial
-    prompt, so a refresh call costs the same as an initial titling call.
+    Windows the LAST ``_TITLE_PROMPT_WINDOW`` messages where the initial
+    prompt takes the first window: a refresh exists to catch the topic the
+    session has drifted TO, and the recent tail is where that lives. Same
+    per-line bounds as the initial prompt, so a refresh call costs the same
+    as an initial titling call.
     """
-    lines = _prompt_lines(messages[-10:])
+    lines = _prompt_lines(messages[-_TITLE_PROMPT_WINDOW:])
     if not lines:
         return None
     language = _TITLE_LANGUAGE_TEMPLATE.format(lang=ui_language) if ui_language else ""
@@ -1121,7 +1135,18 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
     logger.info("Manual title generation requested for slot %s", name)
     fallback_is_placeholder = False
     try:
-        title = await _generate_title_via_kiro(state, slot.messages)
+        # Window the RECENT conversational tail: the user reaches for
+        # "Regenerate title" when the current name no longer fits, so the
+        # prompt must be built from what the session is about NOW, not its
+        # opening turns. Filter to the roles the prompt builder keeps BEFORE
+        # slicing — the raw list interleaves tool/permission/status rows, so
+        # a raw tail over a tool-heavy turn could window every usable line
+        # out and leave the click a silent no-op. The prompt builder's head
+        # slice is a no-op on this pre-windowed tail, so the initial
+        # auto-title path (which passes the full list and wants the opening
+        # messages) is unaffected.
+        convo = [m for m in slot.messages if m.get("role") in _TITLE_PROMPT_ROLES]
+        title = await _generate_title_via_kiro(state, convo[-_TITLE_PROMPT_WINDOW:])
     except Exception:
         logger.debug("Title generation failed for slot %s", name, exc_info=True)
         title = _fallback_title_from_messages(slot.messages)
