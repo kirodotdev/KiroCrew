@@ -263,7 +263,7 @@ class WeixinDispatcher:
             self._conv.clear_awaiting(user_id)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction(timeout=120.0)
+                await provider.wait_for_compaction()
                 await self._say(user_id, "🗜️ 上下文接近上限，已自动压缩。")
             except Exception:
                 logger.debug("weixin hard-threshold compaction failed", exc_info=True)
@@ -288,7 +288,7 @@ class WeixinDispatcher:
                 await self._say(user_id, "ℹ️ 当前没有可压缩的对话。")
                 return
             await provider.compact()
-            await provider.wait_for_compaction(timeout=120.0)
+            await provider.wait_for_compaction()
             await self._say(user_id, "🗜️ 已压缩上下文。")
         except Exception:
             logger.exception("weixin /compact failed for %s", session_key)

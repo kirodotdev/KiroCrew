@@ -253,7 +253,7 @@ class WebexDispatcher:
             self._conv.clear_awaiting(email)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction(timeout=120.0)
+                await provider.wait_for_compaction()
                 await self.client.send_message(
                     inbound.room_id,
                     "🗜️ Context was near its limit, so it was compacted automatically.",
@@ -295,7 +295,7 @@ class WebexDispatcher:
                 )
                 return
             await provider.compact()
-            await provider.wait_for_compaction(timeout=120.0)
+            await provider.wait_for_compaction()
             await self.client.send_message(inbound.room_id, "🗜️ Context compacted.")
         except Exception:
             logger.exception("Webex /compact failed for %s", session_key)

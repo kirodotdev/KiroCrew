@@ -91,6 +91,7 @@ from kiro_crew.acp.types import (
     TurnUsage,
 )
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -686,7 +687,9 @@ class AcpSessionHandle:
                     "summary": event.title or "",
                 }
 
-    async def wait_for_compaction(self, timeout: float = 120.0) -> dict[str, str]:
+    async def wait_for_compaction(
+        self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS
+    ) -> dict[str, str]:
         """Wait for compaction completed/failed event from the session queue.
 
         Returns {"type": "completed"|"failed"|"timeout", "summary": "..."}.

@@ -34,6 +34,7 @@ from kiro_crew.acp.client import (
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 
@@ -472,7 +473,9 @@ class AcpSessionProvider(LLMProvider):
         """Trigger context compaction."""
         await self._guarded(self._handle.compact(context))
 
-    async def wait_for_compaction(self, timeout: float = 120.0) -> dict[str, str]:
+    async def wait_for_compaction(
+        self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS
+    ) -> dict[str, str]:
         """Wait for compaction completed/failed event."""
         return await self._guarded(self._handle.wait_for_compaction(timeout))
 

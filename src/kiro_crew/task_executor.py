@@ -607,7 +607,7 @@ async def execute_task(
             )
             try:
                 await client.compact()
-                compact_result = await client.wait_for_compaction(timeout=120)
+                compact_result = await client.wait_for_compaction()
                 if compact_result.get("type") == "completed":
                     logger.info("Task %d: compaction succeeded", task.index)
                 else:

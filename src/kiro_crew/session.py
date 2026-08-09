@@ -101,6 +101,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     normalize_agent_model,
 )
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
 from kiro_crew.messaging.link import (
@@ -328,14 +329,32 @@ HEARTBEAT_KEY = "_hb"
 _CONTEXT_WARN_PCT = 70.0
 _CONTEXT_COMPACT_PCT = 80.0
 
-# Hard timeout for an in-place /compact under the session semaphore. A stuck
-# compact would otherwise block all concurrent gets on the same session.
-_COMPACT_TIMEOUT_SECS = 300.0
+# Reserve subtracted from the remaining ``COMPACT_WAIT_TIMEOUT_SECS`` budget
+# when the kiro-cli in-place path waits for the async
+# ``_kiro.dev/compaction/status`` result. It keeps the inner wait's graceful
+# "no result" diagnostic landing before the outer ``asyncio.wait_for`` fires.
+_COMPACT_RESULT_WAIT_MARGIN_SECS = 5.0
 
-# How long the kiro-cli in-place path waits for the async
-# ``_kiro.dev/compaction/status`` result after issuing /compact. Matches the
-# budget the dashboard's manual /compact and Slack's !compact already use.
-_COMPACT_RESULT_WAIT_SECS = 120.0
+# Minimum inner status wait even when the /compact prompt turn has consumed
+# nearly the whole budget — never zero or negative, and long enough to drain
+# a status notification that is already sitting in the queue.
+_COMPACT_RESULT_WAIT_FLOOR_SECS = 5.0
+
+
+def _compact_result_wait_secs(elapsed: float) -> float:
+    """Inner deadline for the async compaction-status wait.
+
+    Derived from what remains of the shared ``COMPACT_WAIT_TIMEOUT_SECS``
+    budget after ``elapsed`` seconds, minus a small margin so the inner
+    timeout fires before the outer ``asyncio.wait_for`` and its diagnostic
+    ("compaction reported no result") survives, clamped to a floor so the
+    wait can never be zero or negative.
+    """
+    return max(
+        _COMPACT_RESULT_WAIT_FLOOR_SECS,
+        COMPACT_WAIT_TIMEOUT_SECS - elapsed - _COMPACT_RESULT_WAIT_MARGIN_SECS,
+    )
+
 
 # After a failed compact, suppress auto-compaction for this many seconds so a
 # broken /compact does not fire on every subsequent turn.
@@ -3019,12 +3038,12 @@ class SessionManager:
                         await claude_session.provider.compact()
 
                 try:
-                    await asyncio.wait_for(_run_compact(), timeout=_COMPACT_TIMEOUT_SECS)
+                    await asyncio.wait_for(_run_compact(), timeout=COMPACT_WAIT_TIMEOUT_SECS)
                 except (Exception, asyncio.TimeoutError) as exc:
                     if isinstance(exc, asyncio.TimeoutError):
                         logger.error(
                             "Compact timed out after %.0fs for %s",
-                            _COMPACT_TIMEOUT_SECS,
+                            COMPACT_WAIT_TIMEOUT_SECS,
                             key,
                         )
                     else:
@@ -3058,7 +3077,7 @@ class SessionManager:
                 logger.warning(
                     "Session %s compaction deferred — turn still active after %.0fs",
                     key,
-                    _COMPACT_TIMEOUT_SECS,
+                    COMPACT_WAIT_TIMEOUT_SECS,
                 )
         except Exception:
             logger.exception("Session compaction/recycle failed for %s", key)
@@ -3107,7 +3126,7 @@ class SessionManager:
         - ``"ok"``: compaction completed; session (and its process) survives.
           The success callback has been fired and the cooldown cleared.
         - ``"busy"``: the turn semaphore could not be acquired within
-          ``_COMPACT_TIMEOUT_SECS`` — a turn is still running. Nothing was
+          ``COMPACT_WAIT_TIMEOUT_SECS`` — a turn is still running. Nothing was
           attempted; the caller must NOT recycle (no mid-turn kill).
         - ``"recycled"``: the compact was attempted and failed (or timed out,
           or the provider has no native compaction — base
@@ -3128,17 +3147,19 @@ class SessionManager:
         hangs holding the semaphore until the 2h prompt timeout, and the
         recycle that would have rescued it gives up at its own acquire
         timeout. Observed in production 2026-08-05: a ``/compact`` reported
-        ``completed`` 161s in, 41s after the 120s async wait had already
-        declared timeout.
+        ``completed`` 161s in, 41s after the async wait (then a fixed 120s)
+        had already declared timeout.
         """
         try:
-            await asyncio.wait_for(session.semaphore.acquire(), timeout=_COMPACT_TIMEOUT_SECS)
+            await asyncio.wait_for(session.semaphore.acquire(), timeout=COMPACT_WAIT_TIMEOUT_SECS)
         except asyncio.TimeoutError:
             return "busy"
         started = time.monotonic()
+        result_wait_used: float | None = None
         try:
 
             async def _run() -> None:
+                nonlocal result_wait_used
                 # Lazy import: kiro_crew.acp.__init__ eagerly pulls client/
                 # runtime; a module-level import here would recreate the
                 # providers<->session cycle this file avoids everywhere else.
@@ -3162,21 +3183,25 @@ class SessionManager:
                 if status is None:
                     # No terminal status mid-turn (a "started" may have
                     # streamed) — the result arrives async after end_turn.
+                    # Spend the REST of the shared budget on the wait instead
+                    # of a fixed slice, so a compaction that outlives the
+                    # prompt turn is not abandoned with budget left unused.
+                    result_wait_used = _compact_result_wait_secs(time.monotonic() - started)
                     result = await session.provider.wait_for_compaction(
-                        timeout=_COMPACT_RESULT_WAIT_SECS
+                        timeout=result_wait_used
                     )
                     status = result.get("type") if isinstance(result, dict) else None
                 if status != "completed":
                     raise RuntimeError(f"compaction reported {status or 'no result'}")
 
-            await asyncio.wait_for(_run(), timeout=_COMPACT_TIMEOUT_SECS)
+            await asyncio.wait_for(_run(), timeout=COMPACT_WAIT_TIMEOUT_SECS)
         except (Exception, asyncio.TimeoutError):
             logger.warning(
                 "Session %s in-place /compact failed after %.0fs — recycling "
-                "(semaphore held; async wait budget %.0fs)",
+                "(semaphore held; async status wait %s)",
                 key,
                 time.monotonic() - started,
-                _COMPACT_RESULT_WAIT_SECS,
+                "never reached" if result_wait_used is None else f"{result_wait_used:.0f}s",
                 exc_info=True,
             )
             # Recycle NOW, still holding the semaphore — see the docstring.

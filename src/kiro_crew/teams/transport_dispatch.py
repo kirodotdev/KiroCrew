@@ -257,7 +257,7 @@ class TeamsDispatcher:
             self._conv.clear_awaiting(email)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction(timeout=120.0)
+                await provider.wait_for_compaction()
                 await self.client.send_message(
                     inbound.conversation_id,
                     "🗜️ Context was near its limit, so it was compacted automatically.",
@@ -302,7 +302,7 @@ class TeamsDispatcher:
                 )
                 return
             await provider.compact()
-            await provider.wait_for_compaction(timeout=120.0)
+            await provider.wait_for_compaction()
             await self.client.send_message(
                 inbound.conversation_id, "🗜️ Context compacted.", inbound.service_url
             )

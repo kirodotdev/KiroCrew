@@ -44,6 +44,14 @@ DATA_WARNING = (
 # work, not a "this turn took too long" guard.
 CHAT_TURN_TIMEOUT = 7200.0
 
+# How long any caller waits for a compaction to report completed/failed —
+# the default of ``LLMProvider.wait_for_compaction`` and the cap on the
+# automatic context-threshold compaction in ``session.py``. Manual (/compact,
+# !compact) and automatic compaction deliberately share this single budget:
+# the operation is identical, so a shorter manual budget only reports
+# "timed out" on work that is still running and subsequently succeeds.
+COMPACT_WAIT_TIMEOUT_SECS = 300.0
+
 
 # ── Canonical "[OPTIONS: a | b | c]" trailer parsers ────────────────────────
 # The agent emits a trailing ``[OPTIONS: choice1 | choice2 | ...]`` marker that

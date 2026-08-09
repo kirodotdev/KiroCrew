@@ -28,6 +28,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     EVENT_TOOL_RESULT,
 )
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -127,7 +128,7 @@ class LLMProvider(ABC):
     async def compact(self, context: str = "") -> None:
         """Trigger context compaction. No-op for providers without native support."""
 
-    async def wait_for_compaction(self, timeout: float = 120.0) -> dict:
+    async def wait_for_compaction(self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS) -> dict:
         """Wait for compaction completed/failed. Returns ``{'type': 'timeout'}`` by default."""
         return {"type": "timeout"}
 

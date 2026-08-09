@@ -1348,9 +1348,9 @@ class TestCompactCallback:
     @pytest.mark.asyncio
     async def test_compact_session_defers_when_turn_never_drains(self, cfg, caplog, monkeypatch):
         """A still-running turn (semaphore held) must NEVER be killed for
-        compaction: after _COMPACT_TIMEOUT_SECS the attempt is deferred —
+        compaction: after COMPACT_WAIT_TIMEOUT_SECS the attempt is deferred —
         session intact, no callback — and re-triggered at the next turn end."""
-        monkeypatch.setattr("kiro_crew.session._COMPACT_TIMEOUT_SECS", 0.1)
+        monkeypatch.setattr("kiro_crew.session.COMPACT_WAIT_TIMEOUT_SECS", 0.1)
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # Hold the semaphore and never release -> simulates a long-running turn.
         provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
@@ -3313,7 +3313,7 @@ class TestCompactTimeout:
 
         with (
             patch("kiro_crew.session._is_claude_backend", return_value=True),
-            patch("kiro_crew.session._COMPACT_TIMEOUT_SECS", 0.05),
+            patch("kiro_crew.session.COMPACT_WAIT_TIMEOUT_SECS", 0.05),
         ):
             await mgr._compact_session("k1", 92.0)
 

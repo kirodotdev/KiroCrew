@@ -5194,7 +5194,7 @@ async def _run_chat(
                 )
                 # kiro-cli fires compaction asynchronously after EVENT_COMPLETE —
                 # just wait for the result without sending another prompt.
-                compaction_result = await client.wait_for_compaction(timeout=120.0)
+                compaction_result = await client.wait_for_compaction()
                 logger.info("Deferred compaction result: %s", compaction_result)
                 if compaction_result["type"] == "completed":
                     summary, _ = redact_credentials(compaction_result.get("summary", ""))

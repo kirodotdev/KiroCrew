@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.effort import (
     EFFORT_LEVELS,
     effort_settings_key,
@@ -1169,7 +1170,7 @@ class AcpProvider(LLMProvider):
         """True when the inner client supports mid-turn steer."""
         return bool(getattr(self._client, "supports_steer", False))
 
-    async def wait_for_compaction(self, timeout: float = 120.0) -> dict:
+    async def wait_for_compaction(self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS) -> dict:
         """Wait for compaction completed/failed after stream ends.
 
         Consumes the result compact() captured mid-turn if there is one

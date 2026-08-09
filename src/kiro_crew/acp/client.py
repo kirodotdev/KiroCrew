@@ -99,7 +99,11 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.config.paths import kiro_sessions_dir
-from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.constants import (
+    COMPACT_WAIT_TIMEOUT_SECS,
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+)
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import (
@@ -5270,7 +5274,7 @@ class AcpClient:
         elif s_type == "completed":
             self.last_prompt_stats.reset_after_compaction()
 
-    async def wait_for_compaction(self, timeout: float = 120.0) -> dict:
+    async def wait_for_compaction(self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS) -> dict:
         """Read messages until compaction completed/failed arrives. Returns status dict.
 
         On ``completed``, keeps draining for a short grace window: kiro-cli
