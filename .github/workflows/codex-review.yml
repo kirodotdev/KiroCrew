@@ -261,8 +261,9 @@ jobs:
           adding anything. A finding that meets WHAT BLOCKS is always
           in-scope, because reverting the offending hunk is a valid minimal fix.
 
-          BUDGET: at most 2 BLOCKING findings per review. If you have more, you
-          are almost certainly mislabeling — re-examine and drop the weakest.
+          BUDGET: at most 5 BLOCKING findings per review. Report ALL that
+          genuinely meet WHAT BLOCKS so the author can fix them in one pass,
+          rather than discovering them one-by-one across multiple pushes.
 
           CALIBRATION: most PRs in this repo are correct. "No findings." is the
           EXPECTED output for a typical PR, not a failure of the review. You are
@@ -375,7 +376,7 @@ jobs:
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         env:
           AWS_REGION: us-east-1
-          DISCOVERY_OUTPUT_MAX_BYTES: "12000"
+          DISCOVERY_OUTPUT_MAX_BYTES: "50000"
         # Pass 1 generates candidates. Pass 2 tries to KILL them, then emits the
         # only verdict the comment and gate consume. Pass 1's output is never
         # posted or gated directly.
