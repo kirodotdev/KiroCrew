@@ -501,6 +501,187 @@ async def test_claim_first_frame_connection_acked(monkeypatch: pytest.MonkeyPatc
     assert writer.frames[0]["updated"] == 0  # nothing registered under _PID
 
 
+# --- PID-recycle guard (claim start-token verification) ----------------------
+
+
+def _fake_sel(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    sel_calls: list[dict[str, Any]] = []
+
+    class _FakeSEL:
+        def log_api_access(self, **kwargs: Any) -> None:
+            sel_calls.append(kwargs)
+
+    monkeypatch.setattr(gw, "SecurityEventLog", _FakeSEL)
+    return sel_calls
+
+
+def _indexed_conn(pid: int, token: Optional[str], session_key: str = "") -> gw._StubConn:
+    """Register-shaped connection: indexed under ``pid`` with a recorded
+    start token, carrying an optional existing caller identity."""
+    caller = None
+    if session_key:
+        caller = gw._caller_from_register(_claim(pid, session_key))
+    conn = gw._StubConn("rt-stub", [pid], "rt-pool", caller, {pid: token})
+    gw._conn_index_add(conn)
+    return conn
+
+
+def _claim_with_token(pid: int, session_key: str, token: Optional[str]) -> dict[str, Any]:
+    frame = _claim(pid, session_key)
+    frame["pid_start_id"] = token
+    return frame
+
+
+def test_claim_skips_recycled_pid(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The core defect scenario: the register-time owner of PID P exited, the
+    OS recycled P to a different session's runtime, and the claim for the NEW
+    process must not retarget the STALE connection — previously it silently
+    re-attributed every call (issue #1018). Definite token mismatch → skip,
+    WARN, denied audit."""
+    sel = _fake_sel(monkeypatch)
+    conn = _indexed_conn(_PID, "111", "dashboard:original-owner")
+    with caplog.at_level("WARNING", logger="kiro_crew.mcp_gateway.gatewayd"):
+        ack = gw._apply_claim(_claim_with_token(_PID, "dashboard:new-owner", "222"))
+    assert ack == {"type": "claimed", "updated": 0, "connections": 1, "skipped": 1}
+    assert conn.caller is not None
+    assert conn.caller.session_key == "dashboard:original-owner"  # unchanged
+    assert any("recycled" in r.message for r in caplog.records)
+    denied = [e for e in _claim_events(sel) if e["outcome"] == "denied"]
+    assert len(denied) == 1
+    assert "recycled" in denied[0]["error"]
+
+
+def test_claim_applies_on_matching_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same token on both sides — the register-time process is still alive —
+    keeps the existing replace behavior."""
+    sel = _fake_sel(monkeypatch)
+    conn = _indexed_conn(_PID, "111", "dashboard:old-session")
+    ack = gw._apply_claim(_claim_with_token(_PID, "dashboard:new-session", "111"))
+    assert ack == {"type": "claimed", "updated": 1, "connections": 1, "skipped": 0}
+    assert conn.caller is not None and conn.caller.session_key == "dashboard:new-session"
+    events = _claim_events(sel)
+    assert len(events) == 1 and events[0]["outcome"] == "allowed"
+
+
+@pytest.mark.parametrize(
+    ("frame_token", "recorded_token"),
+    [
+        (None, None),  # neither side knows — Windows both ends / legacy frame
+        (None, "111"),  # legacy claim frame without the field
+        ("111", None),  # register-time token unreadable (Windows, /proc denied)
+        ("111", "111"),  # both known and equal
+    ],
+)
+def test_claim_unknown_token_is_match(
+    monkeypatch: pytest.MonkeyPatch,
+    frame_token: Optional[str],
+    recorded_token: Optional[str],
+) -> None:
+    """``None`` on either side means "identity unknown" and MUST be treated
+    as a match — otherwise Windows (where get_process_start_id is always
+    None) and legacy claim frames would reject every claim."""
+    _fake_sel(monkeypatch)
+    conn = _indexed_conn(_PID, recorded_token)
+    ack = gw._apply_claim(_claim_with_token(_PID, "dashboard:chat-TOK-1", frame_token))
+    assert ack["updated"] == 1 and ack["skipped"] == 0
+    assert conn.caller is not None
+    assert conn.caller.session_key == "dashboard:chat-TOK-1"
+
+
+def test_claim_mixed_bucket_retargets_only_matching_conn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Index buckets stay keyed on the raw int PID, so a bucket may mix a
+    stale (pre-recycle) connection with a live one — the per-connection token
+    check is what disambiguates: only the matching conn is retargeted."""
+    sel = _fake_sel(monkeypatch)
+    stale = _indexed_conn(_PID, "111", "dashboard:original-owner")
+    live = _indexed_conn(_PID, "222")
+    ack = gw._apply_claim(_claim_with_token(_PID, "dashboard:new-owner", "222"))
+    assert ack == {"type": "claimed", "updated": 1, "connections": 2, "skipped": 1}
+    assert stale.caller is not None
+    assert stale.caller.session_key == "dashboard:original-owner"
+    assert live.caller is not None and live.caller.session_key == "dashboard:new-owner"
+    outcomes = sorted(e["outcome"] for e in _claim_events(sel))
+    assert outcomes == ["allowed", "denied"]
+
+
+def test_claim_non_string_token_treated_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A garbage (non-string) ``pid_start_id`` never becomes a mismatch: it is
+    normalized to "unknown" so a malformed field cannot deny valid claims."""
+    _fake_sel(monkeypatch)
+    conn = _indexed_conn(_PID, "111")
+    frame = _claim(_PID, "dashboard:chat-G-1")
+    frame["pid_start_id"] = 12345  # wrong type
+    ack = gw._apply_claim(frame)
+    assert ack["updated"] == 1 and ack["skipped"] == 0
+    assert conn.caller is not None and conn.caller.session_key == "dashboard:chat-G-1"
+
+
+def test_stubconn_legacy_constructor_defaults_to_empty_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-guard constructor shape (no ``pid_start_ids``) keeps working:
+    the mapping defaults to empty, every lookup is "unknown", and claims
+    still apply."""
+    _fake_sel(monkeypatch)
+    conn = gw._StubConn("legacy-stub", [_PID], "legacy-pool", None)
+    assert conn.pid_start_ids == {}
+    gw._conn_index_add(conn)
+    ack = gw._apply_claim(_claim_with_token(_PID, "dashboard:chat-L-1", "999"))
+    assert ack["updated"] == 1 and ack["skipped"] == 0
+    assert conn.caller is not None and conn.caller.session_key == "dashboard:chat-L-1"
+
+
+@pytest.mark.asyncio
+async def test_register_records_start_tokens_and_claim_verifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full wiring through the register handler: tokens are snapshotted for
+    every indexed PID at register time, and a later claim carrying a
+    different token for that PID is skipped."""
+    fb, sel = _patch_env(monkeypatch)
+    monkeypatch.setattr(gw, "_get_process_start_id", lambda _pid: "111")
+    reader = _QueueReader()
+    reader.feed(_register(""))
+    reader.feed(_CALL)
+    task = asyncio.create_task(_handle(reader, _RecordingWriter()))
+    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    (conn,) = gw._CONN_INDEX[_PID]
+    assert conn.pid_start_ids == {p: "111" for p in _ANCESTORS}
+
+    ack = gw._apply_claim(_claim_with_token(_PID, "dashboard:chat-W-1", "222"))
+    assert ack["updated"] == 0 and ack["skipped"] == 1
+
+    fb.forwarded.clear()
+    reader.feed(_CALL)
+    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    reader.feed({"type": "unregister"})
+    await task
+    assert fb.callers == [None, None]  # identity never misattributed
+    denied = [e for e in _claim_events(sel) if e["outcome"] == "denied"]
+    assert len(denied) == 1
+
+
+def test_build_claim_frame_includes_pid_start_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sender resolves the claimed runtime's start token and puts it on
+    the frame verbatim (including None passthrough on platforms without a
+    token)."""
+    monkeypatch.setattr(pc, "get_process_start_id", lambda pid: f"tok-{pid}")
+    frame = claim_mod.build_claim_frame(777, "dashboard:chat-F-1", None)
+    assert frame["pid_start_id"] == "tok-777"
+
+    monkeypatch.setattr(pc, "get_process_start_id", lambda _pid: None)
+    frame = claim_mod.build_claim_frame(777, "dashboard:chat-F-1", None)
+    assert frame["pid_start_id"] is None
+
+
 @pytest.mark.asyncio
 async def test_conn_index_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
     """Register indexes the connection under EVERY ancestor PID; teardown

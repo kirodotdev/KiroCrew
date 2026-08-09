@@ -75,6 +75,7 @@ from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.peer_resolve import resolve_peer_identity
+from kiro_crew.platform_compat import get_process_start_id as _get_process_start_id
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import SecurityEventLog
 
@@ -1219,9 +1220,16 @@ class _StubConn:
     warm-pool stubs) and is replaced by ``recaller`` frames (stub-initiated,
     deny-by-default) or ``claim`` frames (gateway-initiated, replace-allowed).
     Single event loop — no locking needed.
+
+    ``pid_start_ids`` maps each indexed PID to its register-time process
+    start token (``platform_compat.get_process_start_id``), the PID-recycle
+    guard: a later ``claim`` naming a PID whose token no longer matches is
+    targeting a DIFFERENT process that recycled the number, and must not
+    retarget this connection. ``None`` means "identity unknown" (Windows,
+    unreadable /proc) and never counts as a mismatch.
     """
 
-    __slots__ = ("stub_uuid", "ancestor_pids", "pool_label", "caller")
+    __slots__ = ("stub_uuid", "ancestor_pids", "pool_label", "caller", "pid_start_ids")
 
     def __init__(
         self,
@@ -1229,11 +1237,13 @@ class _StubConn:
         ancestor_pids: list[int],
         pool_label: str,
         caller: Optional[CallerContext],
+        pid_start_ids: Optional[dict[int, Optional[str]]] = None,
     ) -> None:
         self.stub_uuid = stub_uuid
         self.ancestor_pids = ancestor_pids
         self.pool_label = pool_label
         self.caller = caller
+        self.pid_start_ids = pid_start_ids if pid_start_ids is not None else {}
 
 
 #: Live stub connections indexed by every ancestor PID of the kiro-cli
@@ -1474,7 +1484,11 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
     Returns the ack frame. Validation is deny-by-default: a non-integer or
     out-of-range pid, or an empty/malformed caller, updates nothing and is
     audited as denied. A valid claim REPLACES existing identities (gateway-
-    trusted; this is what keeps callers correct across warm-pool re-claims).
+    trusted; this is what keeps callers correct across warm-pool re-claims) —
+    except on a connection whose register-time start token for the PID
+    definitively differs from the frame's ``pid_start_id`` (the PID was
+    recycled to a different process); those are skipped and audited as
+    denied rather than silently misattributed.
     """
     raw_pid = frame.get("pid")
     pid = raw_pid if isinstance(raw_pid, int) and not isinstance(raw_pid, bool) else 0
@@ -1506,7 +1520,34 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
         )
         return {"type": "claim-noop", "updated": 0, "connections": 0}
     updated = 0
+    skipped = 0
+    # PID-recycle guard: the frame's token identifies the process the gateway
+    # actually claimed; the recorded token identifies the process that owned
+    # the PID at register time. Skip a connection only on a DEFINITE mismatch
+    # (both tokens known and unequal) — ``None`` on either side means
+    # "identity unknown" (Windows, unreadable /proc, legacy claim frames) and
+    # MUST count as a match, otherwise every claim on those platforms would
+    # be rejected.
+    raw_token = frame.get("pid_start_id")
+    claim_token = raw_token if isinstance(raw_token, str) else None
     for conn in conns:
+        recorded_token = conn.pid_start_ids.get(pid)
+        if claim_token is not None and recorded_token is not None and claim_token != recorded_token:
+            skipped += 1
+            reason = (
+                f"pid {pid} recycled: claim start-token {claim_token} != "
+                f"register-time token {recorded_token} — refusing to retarget "
+                f"stub {conn.stub_uuid}"
+            )
+            logger.warning("claim skipped stale connection: %s", reason)
+            _audit_caller_claimed(
+                conn.caller.session_key if conn.caller is not None else "",
+                updated_caller.session_key,
+                conn.pool_label,
+                "denied",
+                reason,
+            )
+            continue
         old_key = conn.caller.session_key if conn.caller is not None else ""
         if old_key == updated_caller.session_key:
             continue  # already correct — idempotent re-claim
@@ -1520,7 +1561,7 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
             updated_caller.session_type,
             old_key or "<none>",
         )
-    return {"type": "claimed", "updated": updated, "connections": len(conns)}
+    return {"type": "claimed", "updated": updated, "connections": len(conns), "skipped": skipped}
 
 
 def _audit_abort_applied(
@@ -1911,7 +1952,24 @@ async def _handle_connection(
     stub_pids = _register_pids(register)
     indexed_pids = stub_pids + [p for p in peer_host_pids if p not in stub_pids]
 
-    conn = _StubConn(stub_uuid, indexed_pids, pool_key.human_readable(), caller)
+    # PID-recycle guard: snapshot each indexed PID's start token NOW, while
+    # the register-time process tree is still alive. A later claim carries
+    # the claimed runtime's own token; a definite mismatch means the OS
+    # recycled the PID to a different process and the claim must not land
+    # here. Computed server-side so old stubs are covered with no wire
+    # change. subprocess_executor: a /proc read can wedge on a D-state
+    # target, so keep it off the event loop, matching the
+    # _resolve_peer_identity walk above.
+    try:
+        pid_start_ids: dict[int, Optional[str]] = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            lambda: {p: _get_process_start_id(p) for p in indexed_pids},
+        )
+    except Exception:  # graceful degradation: unknown tokens never deny claims
+        logger.exception("pid start-id snapshot failed for stub %s", stub_uuid)
+        pid_start_ids = {}
+
+    conn = _StubConn(stub_uuid, indexed_pids, pool_key.human_readable(), caller, pid_start_ids)
     _conn_index_add(conn)
 
     # Register this connection for the keepalive probe. Scoped to the handler's

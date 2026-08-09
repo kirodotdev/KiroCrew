@@ -56,12 +56,23 @@ Push (new): gateway rekey() ─────────────────�
 3. **The gateway pushes a claim on rekey** (`claim.py`, hooked into
    `AcpClient.rekey` and `SessionHandle.rekey`): a one-shot connection to the
    gatewayd socket sends
-   `{"type": "claim", "pid": P, "caller": {...}}` and reads one ack frame.
+   `{"type": "claim", "pid": P, "pid_start_id": T, "caller": {...}}` and
+   reads one ack frame. `pid_start_id` is the claimed runtime's process start
+   token (`platform_compat.get_process_start_id`; `None` where unavailable).
    Fire-and-forget (`schedule_claim`), bounded at 5 s, no-ops cleanly when
    preconditions are missing.
 4. **gatewayd applies the claim** (`_apply_claim`): every indexed connection
    under P gets the new caller, each change SEL-audited
    (`mcp-gateway.caller-claim`). Idempotent re-claims (same key) are silent.
+   Because `_CONN_INDEX` is keyed on the raw int PID, a bucket can mix a
+   stale connection (register-time owner of P exited, stub transport still
+   open) with a live one after the OS recycles P. gatewayd therefore records
+   `get_process_start_id` for every indexed PID at register time
+   (`_StubConn.pid_start_ids`) and skips a connection on a DEFINITE token
+   mismatch — both tokens known and unequal — auditing the skip as denied
+   and reporting it in the ack (`skipped`). `None` on either side means
+   "identity unknown" (Windows, unreadable /proc, legacy frames) and counts
+   as a match, so platforms without a token keep the pre-guard behavior.
 
 ## Trust model
 
@@ -74,6 +85,10 @@ Push (new): gateway rekey() ─────────────────�
   the caller always tracks the *current* owning session.
 - Malformed claims (non-int pid, pid ≤ 1, empty/missing session key) update
   nothing and are audited as denied.
+- A claim naming a **recycled PID** never lands on the pre-recycle
+  connection: the per-connection start-token check above is the guard. This
+  is a correctness/attribution boundary, not a uid boundary — the socket's
+  0700 gate already limits claims to the same user.
 
 ## Fallback
 

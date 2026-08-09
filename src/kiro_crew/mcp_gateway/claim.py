@@ -26,10 +26,12 @@ but claim-push is the primary, event-driven path.
 
 Import-light on purpose: imported from ``acp/client.py`` and
 ``acp/session_provider.py`` (hot paths) and must not pull in config loading.
-The only non-stdlib import is ``mcp_gateway.transport``, whose whole chain
-is ``transport -> platform_compat -> executors`` and reaches no config
-loader; it is needed because the endpoint is a unix socket on POSIX and a
-named pipe on Windows, and this module must not know which.
+The only non-stdlib imports are ``platform_compat`` (process start tokens for
+the PID-recycle guard), ``executors`` (offloads the /proc token read from the
+event loop), and ``mcp_gateway.transport`` — all already in the
+``transport -> platform_compat -> executors`` chain, which reaches no config
+loader; transport is needed because the endpoint is a unix socket on POSIX
+and a named pipe on Windows, and this module must not know which.
 """
 
 from __future__ import annotations
@@ -40,6 +42,8 @@ import logging
 import os
 from typing import Optional
 
+from kiro_crew import platform_compat
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway import transport
 
 logger = logging.getLogger(__name__)
@@ -64,10 +68,19 @@ def classify_session_type(session_key: str) -> str:
 
 
 def build_claim_frame(pid: int, session_key: str, channel_id: Optional[str]) -> dict:
-    """Assemble the one-shot claim frame sent to gatewayd."""
+    """Assemble the one-shot claim frame sent to gatewayd.
+
+    ``pid_start_id`` is the claimed runtime's process start token
+    (``platform_compat.get_process_start_id``) — gatewayd compares it against
+    the token it recorded at register time so a claim can never land on a
+    connection whose PID was recycled to a different process. ``None`` means
+    "identity unknown" (Windows, unreadable /proc) and is treated by gatewayd
+    as a match, preserving legacy behavior.
+    """
     return {
         "type": "claim",
         "pid": pid,
+        "pid_start_id": platform_compat.get_process_start_id(pid),
         "caller": {
             "session_key": session_key,
             "session_type": classify_session_type(session_key),
@@ -86,7 +99,13 @@ async def _send_claim_inner(
     channel_id: Optional[str],
 ) -> bool:
     """Unbounded socket round-trip; ``send_claim`` enforces the time budget."""
-    frame = build_claim_frame(pid, session_key, channel_id)
+    # build_claim_frame resolves the runtime's start token from /proc; a
+    # /proc read can wedge on a D-state target, so keep it off the event
+    # loop (a leaked worker thread on a wedge is survivable; a frozen loop
+    # is not). send_claim's aggregate wait_for still bounds this await.
+    frame = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), build_claim_frame, pid, session_key, channel_id
+    )
     reader, writer = await transport.connect(socket_path)
     try:
         writer.write(json.dumps(frame).encode("utf-8") + b"\n")
