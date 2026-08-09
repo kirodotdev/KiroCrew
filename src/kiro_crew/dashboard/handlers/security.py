@@ -221,11 +221,21 @@ async def _pinned_ids_for_snapshot_async() -> set:
 def build_denied_commands_snapshot() -> dict:
     """Compute the full snapshot returned by every endpoint.
 
-    ``enabled = pinned OR (not disable_all AND id not in disabled_ids)``;
-    ``governance_locked = len(pinned_builtin_command_ids()) > 0``;
+    ``enabled = pinned OR floor-enforced OR (not disable_all AND id not in
+    disabled_ids)``; ``governance_locked = len(pinned_builtin_command_ids()) > 0``;
     ``effective_count = #enabled builtins + #enabled user_added``.
+
+    Each builtin carries an additive ``lock_reason`` discriminator so the UI can
+    say WHY a rule is locked: ``"floor"`` (enforced by an always-on floor,
+    never opt-out-able), ``"policy"`` (governance-pinned), or ``None``
+    (freely toggleable). ``pinned`` keeps its existing governance-only meaning
+    for current consumers.
     """
-    from kiro_crew.security import builtin_denied_rules, pinned_builtin_command_ids_for_snapshot
+    from kiro_crew.security import (
+        builtin_denied_rules,
+        floor_enforced_builtin_command_ids,
+        pinned_builtin_command_ids_for_snapshot,
+    )
 
     state = _denied_state(_read_denied_data())
     disable_all = state["disable_all"]
@@ -235,12 +245,20 @@ def build_denied_commands_snapshot() -> dict:
     # gate uses the ctx-scoped pinned_builtin_command_ids + bound-profile plane,
     # so this display-only union does not widen enforcement.
     pinned = pinned_builtin_command_ids_for_snapshot()
+    floor_ids = floor_enforced_builtin_command_ids()
 
     builtins: list[dict] = []
     for rule in builtin_denied_rules():
         rid = rule["id"]
         is_pinned = rid in pinned
-        enabled = is_pinned or (not disable_all and rid not in disabled_ids)
+        is_floor = rid in floor_ids
+        # Floor-enforced rules render forced-on even when the id somehow sits in
+        # disabled_ids (state persisted before the toggle rejected it): the floor
+        # consults no opt-out state, so honesty requires enabled=true.
+        enabled = is_pinned or is_floor or (not disable_all and rid not in disabled_ids)
+        # "floor" wins over "policy": the floor holds even if every governance
+        # pin were removed, so it is the stronger (and always-true) reason.
+        lock_reason = "floor" if is_floor else ("policy" if is_pinned else None)
         builtins.append(
             {
                 "id": rid,
@@ -249,6 +267,7 @@ def build_denied_commands_snapshot() -> dict:
                 "description": rule["description"],
                 "enabled": enabled,
                 "pinned": is_pinned,
+                "lock_reason": lock_reason,
             }
         )
 
@@ -417,7 +436,7 @@ async def api_denied_commands_list(request: web.Request) -> web.Response:
 
 async def api_denied_command_builtin_toggle(request: web.Request) -> web.Response:
     """PATCH /api/security/denied-commands/builtins/{id} — {enabled: bool}."""
-    from kiro_crew.security import builtin_denied_rules
+    from kiro_crew.security import builtin_denied_rules, floor_enforced_builtin_command_ids
 
     op = "security.denied_commands.builtin_toggle"
     rule_id = request.match_info["id"]
@@ -438,6 +457,20 @@ async def api_denied_command_builtin_toggle(request: web.Request) -> web.Respons
     if rule_id not in {r["id"] for r in builtin_denied_rules()}:
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=unknown")
         return web.json_response({"error": "unknown builtin rule"}, status=404)
+
+    # Floor-enforced rules (always-on git-publish floor) are never opt-out-able:
+    # a disable must be rejected here, before any state write, or disabled_ids
+    # records an id nothing ever reads (silent no-op opt-out). Re-enabling stays
+    # a no-op success below. Pure set lookup — no FS, safe on the event loop.
+    if not enabled and rule_id in floor_enforced_builtin_command_ids():
+        _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=floor_enforced")
+        return web.json_response(
+            {
+                "error": "rule is enforced by an always-on security floor and cannot be disabled",
+                "code": "floor_enforced",
+            },
+            status=409,
+        )
 
     # Snapshot-scoped (all-profile union) to match what the UI renders locked:
     # a rule shown pinned must reject a disable with 409, not silently 200.

@@ -9880,6 +9880,7 @@
         "nothing_allowed": "허용된 항목 없음",
         "off": "꺼짐",
         "other_surfaces_have_their_own_profiles": "자체 프로필이 있는 표면은 호스트가 허용하지 않는 것을 허용할 수 있습니다: {{surfaces}}.",
+        "enforced_by_floor": "Kiro Crew에 내장된 상시 활성 보호 기능으로 적용됨",
         "pinned_by_policy": "조직의 보안 정책으로 적용됨",
         "pinned_for_the_host_surface": "호스트 표면 프로필에서 설정되었습니다. 이는 프로세스 내 호스트 작업에만 적용되는 상한입니다 — 다른 표면은 자체 프로필이 있으며 이를 허용할 수 있습니다.",
         "policy": "정책",

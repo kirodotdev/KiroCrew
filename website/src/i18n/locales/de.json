@@ -9994,6 +9994,7 @@
         "nothing_allowed": "Nichts erlaubt",
         "off": "aus",
         "other_surfaces_have_their_own_profiles": "Eine Surface mit eigenem Profil kann erlauben, was der Host nicht kann: {{surfaces}}.",
+        "enforced_by_floor": "Durch einen immer aktiven, in Kiro Crew integrierten Schutz erzwungen",
         "pinned_by_policy": "Durch die Sicherheitsrichtlinie deiner Organisation erzwungen",
         "pinned_for_the_host_surface": "Vom Profil der Host-Surface gesetzt. Das ist die Obergrenze nur für In-Process-Host-Aktionen — andere Surfaces haben eigene Profile und erlauben dies möglicherweise.",
         "policy": "Richtlinie",

@@ -335,6 +335,11 @@ export interface DeniedCommandRule {
   description: string
   enabled: boolean
   pinned: boolean
+  /** Why the rule is locked (forced-on, non-toggleable): 'floor' = enforced by
+   *  an always-on floor built into Kiro Crew; 'policy' = governance-pinned;
+   *  null/absent = freely toggleable. Additive — `pinned` keeps its
+   *  governance-only meaning. */
+  lock_reason?: 'floor' | 'policy' | null
 }
 
 /** A user-authored denied-command pattern. */

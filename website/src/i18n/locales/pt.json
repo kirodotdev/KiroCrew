@@ -10108,6 +10108,7 @@
         "nothing_allowed": "Nada permitido",
         "off": "desativado",
         "other_surfaces_have_their_own_profiles": "Uma superfície com o seu próprio perfil pode permitir o que o host não pode: {{surfaces}}.",
+        "enforced_by_floor": "Aplicado por uma proteção sempre ativa integrada ao Kiro Crew",
         "pinned_by_policy": "Aplicado pela política de segurança da sua organização",
         "pinned_for_the_host_surface": "Definido pelo perfil da superfície host. É o limite apenas para as ações do host em processo — outras superfícies têm os seus próprios perfis e podem permitir isto.",
         "policy": "política",

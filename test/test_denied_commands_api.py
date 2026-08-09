@@ -102,9 +102,24 @@ def _read_hooks(config_file: Path) -> dict:
 
 
 def _a_builtin_id() -> str:
-    from kiro_crew.security import builtin_denied_rules
+    """A freely-toggleable builtin id (never a floor-enforced one)."""
+    from kiro_crew.security import builtin_denied_rules, floor_enforced_builtin_command_ids
 
-    return builtin_denied_rules()[0]["id"]
+    floor = floor_enforced_builtin_command_ids()
+    return next(r["id"] for r in builtin_denied_rules() if r["id"] not in floor)
+
+
+def _a_floor_id() -> str:
+    """A floor-enforced (always-on, non-opt-out-able) builtin id."""
+    from kiro_crew.security import floor_enforced_builtin_command_ids
+
+    return sorted(floor_enforced_builtin_command_ids())[0]
+
+
+def _floor_n() -> int:
+    from kiro_crew.security import floor_enforced_builtin_command_ids
+
+    return len(floor_enforced_builtin_command_ids())
 
 
 # ── snapshot helpers ──
@@ -123,9 +138,18 @@ def test_snapshot_shape_and_defaults(home: Path):
     assert snap["governance_locked"] is False
     assert len(snap["builtins"]) == _CATALOG_N
     b = snap["builtins"][0]
-    assert set(b.keys()) == {"id", "pattern", "category", "description", "enabled", "pinned"}
+    assert set(b.keys()) == {
+        "id",
+        "pattern",
+        "category",
+        "description",
+        "enabled",
+        "pinned",
+        "lock_reason",
+    }
     assert b["enabled"] is True
     assert b["pinned"] is False
+    assert b["lock_reason"] is None
     assert snap["effective_count"] == _CATALOG_N
 
 
@@ -142,12 +166,17 @@ def test_disabled_id_lowers_effective_count(home: Path, config_file: Path):
     assert disabled and disabled[0]["enabled"] is False
 
 
-def test_disable_all_zeroes_builtins(home: Path, config_file: Path):
+def test_disable_all_zeroes_builtins_except_floor(home: Path, config_file: Path):
+    # disable_all turns off every toggleable builtin, but the floor-enforced
+    # git-publish rules stay forced-on: their always-on floor consults no
+    # opt-out state, so rendering them off would be the no-op lie this
+    # surface exists to avoid.
     _seed(config_file, {"disable_all": True})
     snap = build_denied_commands_snapshot()
     assert snap["disable_all"] is True
-    assert all(b["enabled"] is False for b in snap["builtins"])
-    assert snap["effective_count"] == 0
+    for b in snap["builtins"]:
+        assert b["enabled"] is (b["lock_reason"] == "floor")
+    assert snap["effective_count"] == _floor_n()
 
 
 def test_pin_forces_enabled_under_disable_all(home: Path, config_file: Path):
@@ -158,7 +187,8 @@ def test_pin_forces_enabled_under_disable_all(home: Path, config_file: Path):
     assert snap["governance_locked"] is True
     pinned = [b for b in snap["builtins"] if b["id"] == rid]
     assert pinned and pinned[0]["enabled"] is True and pinned[0]["pinned"] is True
-    assert snap["effective_count"] == 1
+    assert pinned[0]["lock_reason"] == "policy"
+    assert snap["effective_count"] == 1 + _floor_n()
 
 
 def test_corrupt_config_tolerated_for_snapshot(home: Path, config_file: Path):
@@ -184,6 +214,49 @@ def test_snapshot_disable_all_string_false_is_not_truthy(home: Path, config_file
     snap = build_denied_commands_snapshot()
     assert snap["disable_all"] is False
     assert snap["effective_count"] == _CATALOG_N
+
+
+def test_snapshot_marks_floor_rules_locked_and_forced_on(home: Path, config_file: Path):
+    # Every git-publish rule is floor-enforced: forced enabled and lock-flagged,
+    # even when its id was persisted into disabled_ids by an older build.
+    rid = _a_floor_id()
+    _seed(config_file, {"disabled_ids": [rid]})
+    snap = build_denied_commands_snapshot()
+    floor_rules = [b for b in snap["builtins"] if b["category"] == "git-publish"]
+    assert len(floor_rules) == _floor_n() > 0
+    for b in floor_rules:
+        assert b["enabled"] is True
+        assert b["lock_reason"] == "floor"
+        # `pinned` keeps its governance-only meaning; no governance here.
+        assert b["pinned"] is False
+    # Floor lock does NOT masquerade as governance at the panel level.
+    assert snap["governance_locked"] is False
+    assert snap["effective_count"] == _CATALOG_N
+
+
+def test_floor_lock_reason_wins_over_policy(home: Path):
+    # A rule that is BOTH governance-pinned and floor-enforced reports "floor":
+    # the floor holds even if the pin were removed, so it is the stronger reason.
+    rid = _a_floor_id()
+    with patch("kiro_crew.security.pinned_builtin_command_ids", return_value={rid}):
+        snap = build_denied_commands_snapshot()
+    row = next(b for b in snap["builtins"] if b["id"] == rid)
+    assert row["pinned"] is True
+    assert row["lock_reason"] == "floor"
+
+
+def test_floor_ids_are_derived_from_the_category():
+    # Guard: the accessor derives from the catalog category, so a newly added
+    # git-publish rule is locked without a code change. A hand-maintained id
+    # list would fail this the moment the catalog gains one.
+    from kiro_crew.security import (
+        BUILTIN_DENIED_RULES,
+        floor_enforced_builtin_command_ids,
+    )
+
+    expected = {r.id for r in BUILTIN_DENIED_RULES if r.category == "git-publish"}
+    assert expected, "catalog must carry git-publish rules"
+    assert floor_enforced_builtin_command_ids() == expected
 
 
 # ── GET ──
@@ -277,6 +350,36 @@ async def test_builtin_toggle_enable_pinned_is_200_noop(config_file: Path, mock_
                 f"/api/security/denied-commands/builtins/{rid}", json={"enabled": True}
             )
     assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_builtin_toggle_disable_floor_is_409(config_file: Path, mock_sel):
+    rid = _a_floor_id()
+    async with _client() as client:
+        resp = await client.patch(
+            f"/api/security/denied-commands/builtins/{rid}", json={"enabled": False}
+        )
+        assert resp.status == 409
+        body = await resp.json()
+    assert body["code"] == "floor_enforced"
+    # Nothing persisted: the keystone file must not record the no-op opt-out.
+    assert not config_file.exists()
+    args = mock_sel.log_api_access.call_args.kwargs
+    assert args["outcome"] == "denied"
+    assert args["resources"] == f"{rid}=floor_enforced"
+
+
+@pytest.mark.asyncio
+async def test_builtin_toggle_enable_floor_is_200_noop(config_file: Path, mock_sel):
+    rid = _a_floor_id()
+    _seed(config_file, {"disabled_ids": [rid]})
+    async with _client() as client:
+        resp = await client.patch(
+            f"/api/security/denied-commands/builtins/{rid}", json={"enabled": True}
+        )
+    assert resp.status == 200
+    # Re-enable clears a stale persisted id (state from before the 409 existed).
+    assert rid not in _read_hooks(config_file).get("disabled_ids", [])
 
 
 # ── disable-all ──

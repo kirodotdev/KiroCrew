@@ -551,7 +551,18 @@ and an add-your-own field for custom patterns. Built-ins are never deletable —
 only disableable. Disabling a built-in (or the disable-all toggle) requires an
 explicit acknowledgment in a confirm modal and writes a SEL audit entry
 recording the weakened state. A governance-pinned rule renders locked (forced-on)
-and cannot be toggled off. When *any* rule is governance-pinned
+and cannot be toggled off. The seven `git-publish` category rules render the same
+lock treatment for a different reason: their enforcement is the always-on
+verb-anchored floor (`_is_git_publish` / `_is_push_to_protected_branch`), which
+consults no opt-out state, so the snapshot forces them `enabled` and marks them
+with `lock_reason: "floor"` (governance pins carry `lock_reason: "policy"`;
+`pinned` keeps its governance-only meaning). `floor_enforced_builtin_command_ids()`
+derives the set from the rule category — never a hand-maintained id list — and is
+display/API-only: nothing in the enforcement path reads it. A `PATCH` disable for
+a floor-enforced id is rejected with the same 409 shape as a governance pin
+(`code: "floor_enforced"`, SEL-audited as denied with `=floor_enforced`) and
+never persists into `disabled_ids`; re-enabling stays a no-op success. When *any*
+rule is governance-pinned
 (`governance_locked`), the **disable-all** toggle stays available and functional
 (it shows the pinned-policy tooltip alongside the still-live control): the
 backend keeps pinned rules enforced under `disable_all` via
@@ -571,8 +582,11 @@ consistency).
 
 **Defense-in-depth nuance** — ~45 of the 130 rules overlap an independent,
 always-on keystone control (sensitive-file reads, IMDS, git-publish, cred-env
-dumps). All 130 rules are disableable, but disabling a rule does **not** disable
+dumps). Most rules are disableable, but disabling a rule does **not** disable
 its keystone control — such a command stays blocked by defense-in-depth. The
+`git-publish` rules go one step further: the floor is their *only* enforcement
+(their ReDoS-prone patterns never reach the regex tier), so they are not
+disableable at all and the Settings surface locks them (see above). The
 ~85 purely-opinionated destructive rules (AWS delete/mutate, `cdk`/`terraform`/
 `pulumi destroy`, `rm -rf`, `DROP DATABASE`, kill-kirocrew, reverse shells) have
 no keystone backup, so disabling those fully unblocks them (the actual user ask).

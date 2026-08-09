@@ -1510,9 +1510,36 @@ _RULE_ID_BY_PATTERN: dict[str, str] = {r.pattern: r.id for r in BUILTIN_DENIED_R
 # always-on floor already covers every case these patterns would (protected
 # targets denied, feature branches allowed), so skipping them loses no coverage.
 _GIT_PUBLISH_RULE_CATEGORY = "git-publish"
-_GIT_PUBLISH_RULE_PATTERNS: frozenset[str] = frozenset(
-    r.pattern for r in BUILTIN_DENIED_RULES if r.category == _GIT_PUBLISH_RULE_CATEGORY
+# Single filtered view of the catalog so the pattern set and the id set below
+# cannot drift apart (both must cover exactly the git-publish rules).
+_GIT_PUBLISH_RULES: tuple[DeniedCommandRule, ...] = tuple(
+    r for r in BUILTIN_DENIED_RULES if r.category == _GIT_PUBLISH_RULE_CATEGORY
 )
+_GIT_PUBLISH_RULE_PATTERNS: frozenset[str] = frozenset(r.pattern for r in _GIT_PUBLISH_RULES)
+
+# Catalog rules whose ENFORCEMENT is an always-on floor rather than the
+# configurable regex tier.  Derived from the category (never a hand-maintained
+# id list) so a future git-publish rule is covered automatically.
+_FLOOR_ENFORCED_RULE_IDS: frozenset[str] = frozenset(r.id for r in _GIT_PUBLISH_RULES)
+
+
+def floor_enforced_builtin_command_ids() -> frozenset[str]:
+    """Built-in rule ids enforced by an always-on floor (not opt-out-able).
+
+    These rules exist in the catalog for display parity, but their enforcement
+    is the unconditional verb-anchored git-publish floor (``_is_git_publish`` /
+    ``_is_push_to_protected_branch``) evaluated before the configurable tiers,
+    which consults no opt-out state.  Persisting one of these ids into
+    ``disabled_ids`` therefore changes nothing — the Settings surface must
+    render them locked/forced-on and the toggle API must reject a disable, or
+    the opt-out is a silent no-op (UI reports success, the floor still denies).
+
+    DISPLAY/API accessor only: nothing in the enforcement path reads it, so it
+    cannot weaken the floor.  Pure and deterministic (module-scope derivation
+    from the catalog category), safe to call from any thread.
+    """
+    return _FLOOR_ENFORCED_RULE_IDS
+
 
 # The two self-protection rules whose enforcement lives in the argv-structural
 # floor (``_is_credential_mint`` / ``_is_self_kill``) rather than in the regex

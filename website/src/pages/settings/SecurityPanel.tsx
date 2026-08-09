@@ -114,6 +114,13 @@ const CODE_BASE = POSTURE_CODE_BASE
  *  of its three render sites for the reason above: at module scope `i18nT()` would
  *  resolve once at boot. */
 const PINNED_TOOLTIP_KEY = 'pages.settings.securityPanel.pinned_by_policy'
+const FLOOR_TOOLTIP_KEY = 'pages.settings.securityPanel.enforced_by_floor'
+
+/** A rule is locked (forced-on, non-toggleable) when governance pins it or an
+ *  always-on floor enforces it. `lock_reason` picks the tooltip wording. */
+function isRuleLocked(rule: DeniedCommandRule): boolean {
+  return rule.pinned || rule.lock_reason === 'floor'
+}
 
 /** Icon per posture-control key. A control the server registers that has no entry
  *  here still renders — with a generic shield — so a new backend control is never
@@ -230,11 +237,13 @@ function BuiltinDenyRow({ rule, dimmed, onToggle }: { rule: DeniedCommandRule; d
           <Chevron size={14} />
         </button>
         <span className="flex-1 min-w-0 text-[13px] text-text">{rule.description}</span>
-        {rule.pinned ? (
+        {isRuleLocked(rule) ? (
           <span className="flex items-center gap-1.5 shrink-0">
             <Lock size={13} className="text-muted" />
-            <InfoTip text={i18nT(PINNED_TOOLTIP_KEY)} />
-            <Toggle checked disabled onChange={() => { /* pinned — forced on */ }} label={rule.description} />
+            {/* Two literal i18nT call sites (not one with a computed key) so the
+                static key checker keeps verifying both catalog keys. */}
+            <InfoTip text={rule.lock_reason === 'floor' ? i18nT(FLOOR_TOOLTIP_KEY) : i18nT(PINNED_TOOLTIP_KEY)} />
+            <Toggle checked disabled onChange={() => { /* locked — forced on */ }} label={rule.description} />
           </span>
         ) : (
           <span className={`shrink-0 ${dimmed ? 'opacity-50' : ''}`}>
@@ -283,8 +292,8 @@ function CategoryGroup({
   const Chevron = open ? ChevronDown : ChevronRight
   const counted = allRules ?? rules
   const enabled = counted.filter(r => r.enabled).length
-  const pinned = counted.some(r => r.pinned)
-  // "off" when every non-pinned rule in the group is disabled.
+  const locked = counted.some(isRuleLocked)
+  // "off" when every non-locked rule in the group is disabled.
   const allOff = enabled === 0
   return (
     <div className="border-t border-border first:border-t-0">
@@ -302,9 +311,9 @@ function CategoryGroup({
           <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted group-hover:text-text transition-colors">
             {categoryLabel(category)}
           </span>
-          {pinned && <Lock size={12} className="shrink-0 text-muted" />}
+          {locked && <Lock size={12} className="shrink-0 text-muted" />}
           <span className="flex-1" />
-          {allOff && !pinned && (
+          {allOff && !locked && (
             <span className="text-[11px] text-warn">{i18nT('pages.settings.securityPanel.off')}</span>
           )}
           <Badge variant="muted" className="tabular-nums">{enabled}/{counted.length}</Badge>
@@ -314,9 +323,9 @@ function CategoryGroup({
           <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted">
             {categoryLabel(category)}
           </span>
-          {pinned && <Lock size={12} className="shrink-0 text-muted" />}
+          {locked && <Lock size={12} className="shrink-0 text-muted" />}
           <span className="flex-1" />
-          {allOff && !pinned && (
+          {allOff && !locked && (
             <span className="text-[11px] text-warn">{i18nT('pages.settings.securityPanel.off')}</span>
           )}
           <Badge variant="muted" className="tabular-nums">{enabled}/{counted.length}</Badge>
@@ -328,7 +337,7 @@ function CategoryGroup({
             <BuiltinDenyRow
               key={rule.id}
               rule={rule}
-              dimmed={disableAll && !rule.pinned}
+              dimmed={disableAll && !isRuleLocked(rule)}
               onToggle={next => onRuleToggle(rule, next)}
             />
           ))}
@@ -1266,6 +1275,10 @@ function DeniedCommandsSection({ draft, onDraftChange }: { draft: string; onDraf
   const toggleBuiltin = useMutation({
     mutationFn: (v: { id: string; enabled: boolean }) => api.toggleBuiltinDeniedCommand(v.id, v.enabled),
     onSuccess: applySnapshot,
+    // A rejected toggle (409 on a pinned or floor-enforced rule — reachable
+    // from a stale cached bundle) must repaint the true locked state instead
+    // of leaving the optimistic-looking switch position on screen.
+    onError: () => qc.invalidateQueries({ queryKey: ['denied-commands'] }),
   })
   const setDisableAll = useMutation({
     mutationFn: (value: boolean) => api.setDeniedCommandsDisableAll(value),

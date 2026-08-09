@@ -9880,6 +9880,7 @@
         "nothing_allowed": "許可されていません",
         "off": "オフ",
         "other_surfaces_have_their_own_profiles": "独自のプロファイルを持つサーフェスは、ホストが許可しないものを許可できます：{{surfaces}}",
+        "enforced_by_floor": "Kiro Crew に組み込まれた常時有効な保護機能によって強制されています",
         "pinned_by_policy": "組織のセキュリティポリシーで強制されています",
         "pinned_for_the_host_surface": "ホストサーフェスプロファイルで設定されています。これはインプロセスホストアクション専用の上限です。他のサーフェスは独自のプロファイルを持っており、これを許可する場合があります。",
         "policy": "ポリシー",

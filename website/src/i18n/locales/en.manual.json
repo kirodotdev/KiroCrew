@@ -3449,6 +3449,7 @@
         "gov_scope_tools": "Tools",
         "layer_auth": "Auth",
         "layer_n": "Layer {{n}}",
+        "enforced_by_floor": "Enforced by an always-on protection built into Kiro Crew",
         "pinned_by_policy": "Enforced by your organization's security policy",
         "pinned_for_the_host_surface": "Set by the host-surface profile. This is the ceiling for in-process host actions only — other surfaces have their own profiles and may allow this.",
         "yolo_duration_title": "How long auto-approve stays on",
