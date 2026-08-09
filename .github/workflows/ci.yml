@@ -136,6 +136,27 @@ jobs:
         # a coupling. --no-history: git-history rewrite is a separate task.
         run: ./scripts/scrub-lint.sh --no-history
 
+  vendor-manifest:
+    name: Vendored Tree Integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Deliberately NOT gated behind the `changes` job's surface outputs:
+    # everything under src/kiro_crew/_vendor is excluded from semgrep and the
+    # AI reviewers' diff, so this checksum gate is the only content review the
+    # vendored tree gets. Hashing the ~26MB tree takes seconds, and an
+    # always-on job cannot be dodged by a path-filter edge case.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify _vendor tree against the committed sha256 manifest
+        # Blocking gate: fails on any modified, missing, or added file under
+        # src/kiro_crew/_vendor relative to scripts/vendor_manifest.sha256.
+        # Legitimate vendored bumps regenerate the manifest with --write (see
+        # src/kiro_crew/_vendor/README.md) so the change lands as a reviewable
+        # manifest diff. No setup-python step: ubuntu-latest ships Python 3,
+        # same as the other stdlib-only lint jobs in this file.
+        run: python3 scripts/verify_vendor_manifest.py
+
   brand-lint:
     name: Brand Name Gate
     runs-on: ubuntu-latest

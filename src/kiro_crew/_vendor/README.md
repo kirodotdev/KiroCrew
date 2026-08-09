@@ -105,3 +105,29 @@ same closure (`libllama` + `libggml*` + vendored `libgomp` on Linux; top-level
 dylibs on macOS), replace `llama_cpp/` with the new wheel's Python code (minus
 `lib/` and `server/`), and re-run the embedding smoke test in
 `test/test_embeddings.py`.
+
+### Updating the vendored tree (checksum manifest)
+
+Everything under `_vendor/` is excluded from source-level content review
+(semgrep, the AI reviewers' diff, and the lint/format configs all skip it), so
+CI verifies the tree's CONTENT against a committed checksum manifest instead:
+`scripts/vendor_manifest.sha256` pins the SHA-256 of every file here, and the
+`vendor-manifest` job in `.github/workflows/ci.yml` fails any PR whose
+`_vendor/` contents differ from it — modified, missing, or added files alike.
+
+After a legitimate vendored bump:
+
+1. Verify the downloaded upstream wheel/sdist sha256s against the source
+   table above before extracting anything.
+2. Regenerate the manifest and commit its diff alongside the vendored
+   changes (CI fails otherwise):
+
+   ```
+   python scripts/verify_vendor_manifest.py --write
+   python scripts/verify_vendor_manifest.py          # confirm a green --check
+   ```
+
+The manifest lives outside `_vendor/` on purpose: a manifest change shows up
+in the reviewable diff, which is the whole point of the gate. It is
+`sha256sum`-compatible, so `sha256sum -c scripts/vendor_manifest.sha256` from
+the repository root verifies it independently.
