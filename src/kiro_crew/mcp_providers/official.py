@@ -25,6 +25,7 @@ from typing import Any
 
 import aiohttp
 
+from kiro_crew import net_utils
 from kiro_crew.mcp_providers.base import (
     McpInstallPlan,
     McpSearchResult,
@@ -48,6 +49,9 @@ _USER_AGENT = "KiroCrew/1.0 (mcp-discovery)"
 # Maximum response body size (5 MiB) — a search page or single server doc
 # is a few KB; anything bigger is malformed or hostile.
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+# Chunk size for reading HTTP responses (64 KB).
+_HTTP_READ_CHUNK_BYTES = 65536
 
 # _meta key under which the registry reports official status metadata.
 _META_OFFICIAL = "io.modelcontextprotocol.registry/official"
@@ -88,10 +92,10 @@ async def _fetch_json(url: str) -> Any | None:
                 if resp.status != 200:
                     raise ProviderUnavailableError(f"registry returned HTTP {resp.status}")
                 # Bound the read — resp.text() would buffer unbounded.
-                body = await resp.content.read(_MAX_RESPONSE_BYTES + 1)
-                if len(body) > _MAX_RESPONSE_BYTES:
+                raw = await net_utils.read_bounded(resp.content, _MAX_RESPONSE_BYTES, _HTTP_READ_CHUNK_BYTES)
+                if len(raw) > _MAX_RESPONSE_BYTES:
                     raise ProviderUnavailableError("registry response too large")
-                return json.loads(body.decode("utf-8"))
+                return json.loads(raw.decode("utf-8", errors="replace"))
     except ProviderUnavailableError:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, OSError) as exc:

@@ -17,7 +17,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import shutdown_event
+from kiro_crew import net_utils, shutdown_event
 from kiro_crew.beacon import distribution
 from kiro_crew.changelog import Release, build_release_list
 from kiro_crew.config.loader import (
@@ -579,7 +579,7 @@ async def _fetch_feed_bytes(url: str) -> tuple[int, bytes]:
             # truncated into a parse error. Mirrors the installer's
             # --max-filesize on this very document, and is enforced against
             # RECEIVED bytes rather than a Content-Length claim.
-            return resp.status, await resp.content.read(_FEED_MAX_BYTES + 1)
+            return resp.status, await net_utils.read_bounded(resp.content, _FEED_MAX_BYTES)
 
 
 async def _check_release_feed(install_kind: str) -> None:

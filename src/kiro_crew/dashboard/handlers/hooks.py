@@ -13,7 +13,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-from kiro_crew import webhooks
+from kiro_crew import net_utils, webhooks
 from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import run_in_embed_pool
@@ -95,7 +95,11 @@ async def api_hooks(request: web.Request) -> web.Response:
 @_store_failure_guard
 async def api_kiro_hooks(request: web.Request) -> web.Response:
     """GET /api/kiro-hooks — read-only view of kiro-cli agent hooks from kirocrew.json."""
-    from kiro_crew.agent import _VALID_HOOK_EVENTS, _shipped_defaults, kiro_agents_dir_path
+    from kiro_crew.agent import (
+        _VALID_HOOK_EVENTS,
+        _shipped_defaults,
+        kiro_agents_dir_path,
+    )
     from kiro_crew.platform import redact_via_context as redact
 
     agent_cfg = kiro_agents_dir_path() / "kirocrew.json"
@@ -408,15 +412,12 @@ async def _read_hook_body(request: web.Request) -> bytes:
             raise _HookBodyTooLarge
         return body
 
-    body = bytearray()
-    while True:
-        remaining = _HOOK_BODY_MAX_BYTES + 1 - len(body)
-        chunk = await request.content.read(min(_HOOK_READ_CHUNK_BYTES, remaining))
-        if not chunk:
-            return bytes(body)
-        body.extend(chunk)
-        if len(body) > _HOOK_BODY_MAX_BYTES:
-            raise _HookBodyTooLarge
+    body = await net_utils.read_bounded(
+        request.content, max_bytes=_HOOK_BODY_MAX_BYTES, chunk_size=_HOOK_READ_CHUNK_BYTES
+    )
+    if len(body) > _HOOK_BODY_MAX_BYTES:
+        raise _HookBodyTooLarge
+    return body
 
 
 def _read_hook_registrations() -> dict[str, dict]:
