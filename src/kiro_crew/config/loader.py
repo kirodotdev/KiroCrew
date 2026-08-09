@@ -1250,6 +1250,16 @@ class SessionConfig:
             "Max age in seconds for pooled processes. Stale processes are discarded at claim time. 0 disables.",
         ),
     )
+    eager_spawn: bool = field(
+        default=True,
+        metadata=_meta(
+            "Eager Session Spawn",
+            "Speculatively create a chat slot's session when the slot is created, "
+            "its agent is switched, or its project directory changes, instead of "
+            "on first message. Hides the multi-second session handshake behind "
+            "user think-time.",
+        ),
+    )
     archive_retention_days: int = field(
         default=30,
         metadata=_meta(
@@ -4861,6 +4871,7 @@ class KiroCrewConfig:
                 pool_size=_safe_int(session_data.get("pool_size", 2), 2),
                 pool_agent=str(session_data.get("pool_agent", "")),
                 pool_ttl_secs=_safe_int(session_data.get("pool_ttl_secs", 1800), 1800),
+                eager_spawn=bool(session_data.get("eager_spawn", True)),
                 archive_retention_days=_archive_retention_days(session_data),
                 watchdog_rss_max_mb=_safe_int(session_data.get("watchdog_rss_max_mb", 0), 0),
             ),

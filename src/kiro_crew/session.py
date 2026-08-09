@@ -460,6 +460,18 @@ class SessionClosingError(RuntimeError):
     """
 
 
+class SpeculativeResumeRefused(RuntimeError):
+    """Raised by ``get_or_create(speculative=True)`` on a resumable key.
+
+    A speculative caller must never be the one that resumes a persisted
+    session: the real first turn needs to observe ``resumed=True`` to make its
+    history-injection decision, and existing-session reuse reports
+    ``resumed=False``. Raised on the same session-map read that would drive
+    the resume, so there is no window for a mapping to appear between a
+    caller-side check and the create.
+    """
+
+
 def _provider_has_active_turn(provider: LLMProvider) -> bool:
     """True only if ``provider`` reports a real in-flight turn.
 
@@ -1014,9 +1026,7 @@ class SessionManager:
             return
         async with self._lock:
             if BACKGROUND_KEY not in self._sessions:
-                sess = _Session(
-                    provider=provider, is_new=False, agent=BACKGROUND_AGENT
-                )
+                sess = _Session(provider=provider, is_new=False, agent=BACKGROUND_AGENT)
                 self._sessions[BACKGROUND_KEY] = sess
                 logger.info("Background session created")
             else:
@@ -1992,11 +2002,7 @@ class SessionManager:
                 # cannot be displayed as an age directly, so project it back
                 # onto the wall clock the consumer subtracts from.
                 spawn = getattr(runtime, "_spawn_monotonic", None)
-                created = (
-                    now_wall - (now_mono - spawn)
-                    if isinstance(spawn, (int, float))
-                    else None
-                )
+                created = now_wall - (now_mono - spawn) if isinstance(spawn, (int, float)) else None
                 rows.append(
                     {
                         "key": label,
@@ -2260,6 +2266,7 @@ class SessionManager:
         model: str | None = None,
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
+        speculative: bool = False,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
@@ -2283,6 +2290,17 @@ class SessionManager:
                 value like ``"auto"``, in which case it stays ``None`` to let
                 the backend resolve from the agent's own JSON config.  Flows
                 through to the provider factory as the ``model_override`` kwarg.
+            speculative: The caller is pre-creating the session ahead of a real
+                first turn (eager spawn) rather than running one.  Three atomic
+                consequences, all inside this method so no caller-side
+                check-then-act window exists: the one-shot first-turn flag is
+                never consumed (a speculative creator registers the session
+                with it still armed; a speculative claimant leaves it as-is);
+                a key with a resume mapping raises
+                :class:`SpeculativeResumeRefused` instead of resuming, because
+                the real first turn must be the one that observes
+                ``resumed=True``; and the returned ``is_new`` reflects the
+                flag's state without consuming it.
         """
         # Fast path: existing session — hold lock only briefly
         # Fold bare/canonical Slack key aliases FIRST: the SessionMap thread
@@ -2292,7 +2310,7 @@ class SessionManager:
         # cold-starts a context-free duplicate (thread split).
         key = self._fold_key(key)
         stale_provider = None
-        _claimed: "tuple[_Session, bool] | None" = None
+        _claimed: "_Session | None" = None
         try:
             async with self._lock:
                 # Refuse to start OR resume any turn once teardown has begun.
@@ -2356,8 +2374,13 @@ class SessionManager:
                         # per spawn so a key collision with a different agent
                         # cannot happen in practice.
                         sess.last_used = time.monotonic()
-                        was_new = sess.is_new
-                        sess.is_new = False
+                        # The one-shot first-turn flag is NOT touched here: it
+                        # is read and consumed below, only after this caller
+                        # actually acquires the session semaphore. Consuming at
+                        # claim time destroys the flag when the claimant is
+                        # cancelled while waiting, or when a queued won-race
+                        # caller acquires first — ownership of the flag must
+                        # follow semaphore acquisition order.
                         # Lazy-save CC session_id: init event fires after
                         # registration, so the first get_or_create that finds
                         # a live session with a populated session_id persists it.
@@ -2379,7 +2402,7 @@ class SessionManager:
                         # _bg ACP process) would otherwise pin self._lock and
                         # freeze get_or_create for EVERY session. Acquire below,
                         # after the lock is released, then re-validate.
-                        _claimed = (sess, was_new)
+                        _claimed = sess
 
                 if _claimed is None:
                     if not self._provider_factory:
@@ -2400,8 +2423,17 @@ class SessionManager:
         # acquiring: another coroutine may have recycled/removed this session
         # while we waited on the semaphore — if so, fall through to cold-start.
         if _claimed is not None:
-            sess, was_new = _claimed
+            sess = _claimed
             if await self._reacquire_and_validate(key, sess):
+                # Consume the one-shot first-turn flag HERE, as the semaphore
+                # owner — not at claim time under self._lock. A claimant
+                # cancelled while waiting must not destroy the flag, and when
+                # several callers queue on an armed (speculatively created)
+                # session, the flag belongs to whichever real caller acquires
+                # first. A speculative claimant reads without consuming.
+                was_new = sess.is_new
+                if not speculative:
+                    sess.is_new = False
                 return sess.provider, was_new, False
             # Stale between claim and acquire — the semaphore has already been
             # released by the re-validate. If the entry is still ours but the
@@ -2450,6 +2482,13 @@ class SessionManager:
         ) and not self._is_continuable_key(key)
         if not is_stateless:
             resume_sid = self._session_map.get(key)
+        # A speculative caller must never be the one that resumes: the real
+        # first turn needs to observe resumed=True to make its history-injection
+        # decision, and the existing-session fast path reports resumed=False.
+        # Checked HERE, on the same map read that would drive the resume, so no
+        # check-then-act window exists for a mapping to appear in between.
+        if speculative and resume_sid:
+            raise SpeculativeResumeRefused(key)
 
         # Try warm pool first (no resume — pooled processes have no prior session)
         logger.info(
@@ -2529,7 +2568,9 @@ class SessionManager:
                         else:
                             _switch_model = model_registry.to_acp_id(model)
                             _cmp_pool = (
-                                model_registry.to_acp_id(_pool_model) if _pool_model else _pool_model
+                                model_registry.to_acp_id(_pool_model)
+                                if _pool_model
+                                else _pool_model
                             )
                         if _pool_model and _switch_model != _cmp_pool:
                             # This is an INHERITED value (the slot's persisted
@@ -2553,9 +2594,7 @@ class SessionManager:
                                 )
                             else:
                                 await provider.client.set_model(_switch_model)
-                                logger.info(
-                                    "Pool post-claim: switched model to %s", _switch_model
-                                )
+                                logger.info("Pool post-claim: switched model to %s", _switch_model)
                 logger.info(
                     "Claimed warm-pool process for %s (agent=%s)", key, agent or self._pool_agent
                 )
@@ -2651,6 +2690,20 @@ class SessionManager:
                 resumed = provider.client.resumed
 
             async with self._lock:
+                # Re-check _closing: the entry gate ran BEFORE the multi-second
+                # provider.start(), so close_all() can begin (and finish its
+                # drain + kill snapshot) while the handshake is in flight. A
+                # session registered here after that snapshot is invisible to
+                # the shutdown loop — the kiro-cli process would outlive the
+                # gateway holding the persisted session lock, breaking the
+                # next startup's session/load. Raising sends us to the
+                # except-BaseException below, which kills the provider.
+                if self._closing:
+                    raise SessionClosingError(
+                        "SessionManager began closing during provider startup; "
+                        "refusing to register a session behind the shutdown "
+                        "snapshot"
+                    )
                 # Re-check: another coroutine may have created this key while we
                 # were starting the provider (race on same key). In-place
                 # compaction (kiro-cli and claude) leaves the existing entry
@@ -2683,7 +2736,14 @@ class SessionManager:
                 else:
                     sess = _Session(
                         provider=provider,
-                        is_new=False,
+                        # A real creator consumes the first-turn flag itself
+                        # (is_new=True goes back to it in `result`); a
+                        # speculative creator leaves it ARMED for the first
+                        # real turn, which claims it via the fast path or the
+                        # won-race path. Set atomically at registration, under
+                        # self._lock — this is what replaces the racy
+                        # rearm-after-release design.
+                        is_new=bool(speculative),
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
@@ -2753,7 +2813,18 @@ class SessionManager:
                         "Failed to shut down duplicate provider for %s", key, exc_info=True
                     )
             if await self._reacquire_and_validate(key, _won_race_sess):
-                return _won_race_sess.provider, False, False
+                # Mirror the fast path's flag handling: when the race winner
+                # was a SPECULATIVE creator it registered the session with the
+                # first-turn flag still armed, and this loser may be the first
+                # real turn — hardcoding False here would strand the flag and
+                # skip first-turn context injection (then fire it, late, on a
+                # later message). Both-real races are unchanged: the real
+                # winner consumed its own flag at registration, so was_new
+                # reads False exactly as before.
+                was_new = _won_race_sess.is_new
+                if not speculative:
+                    _won_race_sess.is_new = False
+                return _won_race_sess.provider, was_new, False
             # Stale winner: the semaphore has already been released by the
             # re-validate; retry from the top (cold-starts cleanly). Bounded so
             # a pathological recycle race can't recurse without limit.
@@ -2771,6 +2842,7 @@ class SessionManager:
                 model=model,
                 cwd=cwd,
                 extra_env=extra_env,
+                speculative=speculative,
                 _won_race_retries=_won_race_retries + 1,
                 **extra_factory_kwargs,
             )
@@ -3190,9 +3262,7 @@ class SessionManager:
                     # of a fixed slice, so a compaction that outlives the
                     # prompt turn is not abandoned with budget left unused.
                     result_wait_used = _compact_result_wait_secs(time.monotonic() - started)
-                    result = await session.provider.wait_for_compaction(
-                        timeout=result_wait_used
-                    )
+                    result = await session.provider.wait_for_compaction(timeout=result_wait_used)
                     status = result.get("type") if isinstance(result, dict) else None
                 if status != "completed":
                     raise RuntimeError(f"compaction reported {status or 'no result'}")
@@ -3402,19 +3472,13 @@ class SessionManager:
                     try:
                         await waiter(timeout=timeout)
                     except asyncio.TimeoutError:
-                        logger.debug(
-                            "drain_active_turns: post-cancel wait_turn_done timed out"
-                        )
+                        logger.debug("drain_active_turns: post-cancel wait_turn_done timed out")
                     except Exception:
-                        logger.debug(
-                            "drain_active_turns: wait_turn_done failed", exc_info=True
-                        )
+                        logger.debug("drain_active_turns: wait_turn_done failed", exc_info=True)
 
         try:
             await asyncio.wait_for(
-                asyncio.gather(
-                    *[_drain_one(p) for p in unfinished], return_exceptions=True
-                ),
+                asyncio.gather(*[_drain_one(p) for p in unfinished], return_exceptions=True),
                 # A hair above the per-session budget so an internally-bounded
                 # cancel resolves as its own timeout rather than the gather being
                 # cancelled out from under it.
@@ -3753,11 +3817,7 @@ class SessionManager:
         key = self._fold_key(key)
         session = self._sessions.get(key)
         if session:
-            if (
-                cleanup
-                and key.startswith(_SUBAGENT_PREFIX)
-                and not self._is_continuable_key(key)
-            ):
+            if cleanup and key.startswith(_SUBAGENT_PREFIX) and not self._is_continuable_key(key):
                 try:
                     session_id = session.provider.session_id
                     if session_id:
@@ -4018,9 +4078,7 @@ class SessionManager:
         accepts_inbound: bool = False,
     ) -> list[str]:
         """Sessions that must stop *key* from binding *link*, or [] if it is free."""
-        return self._session_map.mirror_claim_blockers(
-            key, link, accepts_inbound=accepts_inbound
-        )
+        return self._session_map.mirror_claim_blockers(key, link, accepts_inbound=accepts_inbound)
 
     def clear_mirror_link(self, key: str) -> bool:
         """Remove a session's outbound mirror binding. Returns True iff present."""

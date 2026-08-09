@@ -195,6 +195,10 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     # 0.5ms..60s, which covers both without flooring the tail percentiles.
     "kirocrew.telegram.api.duration": _FAST_BUCKETS_MS,
     "kirocrew.session.startup.duration": _STARTUP_BUCKETS_MS,
+    # User message → first visible token. Warm turns land at 1-5s (model
+    # latency), a cold first message adds the 5-25s spawn/handshake — the same
+    # shape and range as startup, whose family is densest exactly there.
+    "kirocrew.chat.first_token.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.mcp.lazy_load.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.gateway.boot.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.turn.duration": _TURN_BUCKETS_MS,

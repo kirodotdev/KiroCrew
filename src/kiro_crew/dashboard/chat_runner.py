@@ -180,7 +180,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
-from kiro_crew.session import SessionClosingError
+from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_user_question
@@ -2140,6 +2140,165 @@ async def _consume_pending_reset(state: DashboardState, slot: _ChatSlot) -> None
         )
 
 
+# Debounce before a speculative spawn. Absorbs rapid consecutive signals
+# (slot create immediately followed by a project set, or a user re-picking
+# the project) so only the settled state spawns a session.
+_EAGER_SPAWN_DEBOUNCE_SECS = 1.5
+
+# Global cap on concurrent speculative spawns. Bounds the process/RSS burst
+# when many slots fire signals at once (bulk restore, slot surfing); a spawn
+# that cannot get a permit simply skips — the first message cold-starts as
+# it does today, so the cap only ever degrades back to current behavior.
+_EAGER_SPAWN_MAX_CONCURRENT = 2
+_eager_spawn_sem = asyncio.Semaphore(_EAGER_SPAWN_MAX_CONCURRENT)
+
+
+def schedule_eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Speculatively create *slot*'s session ahead of its first message.
+
+    Fire-and-forget: called from the slot-create and project-set handlers so
+    the multi-second ACP handshake (spawn + session/new, or session/load for
+    a resumable slot) overlaps with the user's think-time instead of being
+    paid on the first send. No-op unless ``session.eager_spawn`` is enabled.
+
+    At most one pending task per slot: a newer signal cancels the older task,
+    so the spawn always reflects the slot's settled agent/model/project.
+    """
+    try:
+        cfg = KiroCrewConfig.load()
+        if not cfg.session.eager_spawn:
+            return
+    except Exception:
+        return
+    prev = getattr(slot, "_eager_spawn_task", None)
+    if prev is not None and not prev.done():
+        prev.cancel()
+    slot._eager_spawn_task = asyncio.create_task(_eager_spawn(state, slot))
+
+
+async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
+    """Debounce, re-validate, then create the slot's session and release it.
+
+    Ordering is load-bearing:
+
+    1. The turn-in-flight bail (``slot.running``) MUST precede the pending-
+       reset consume. The project-set endpoint is reachable from inside the
+       kiro-cli process group via the ``set_project`` MCP tool, and consuming
+       the reset kills that session's process group — mid-turn that would
+       kill the caller, which is exactly what the deferred-reset design
+       exists to prevent. When a turn is running, its own end-of-turn path
+       consumes the reset instead.
+    2. ``get_or_create`` acquires the per-session semaphore; it is released
+       immediately below because no turn follows. A first message arriving
+       mid-handshake blocks on that same semaphore and then reuses the
+       created session — the per-key serialization in ``get_or_create`` is
+       what makes the eager call and the real call converge on one session.
+    """
+    try:
+        await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS)
+        sessions = getattr(state, "sessions", None)
+        if sessions is None:
+            return
+        if state.get_slot(slot.key) is not slot:
+            return  # slot deleted or replaced while debouncing
+        if slot.running:
+            return  # a real turn owns session creation (and the pending reset)
+        if _eager_spawn_sem.locked():
+            logger.info("Eager spawn: concurrency cap reached, skipping slot %s", slot.key)
+            return
+        async with _eager_spawn_sem:
+            await _consume_pending_reset(state, slot)
+            session_key = effective_session_key(slot)
+            # Snapshot the bindings the handshake is about to bake in. A
+            # switch handler (workspace, model, reasoning effort) that fires
+            # mid-handshake resets the session key — but the reset no-ops
+            # because nothing is registered yet, so without this check the
+            # eager task would register a session carrying the OLD bindings
+            # and the first real turn would silently reuse it (e.g. run tools
+            # in the wrong workspace). Agent/project changes re-arm through
+            # schedule_eager_spawn and cancel this task, but the other
+            # switches don't — the snapshot covers them all uniformly.
+            _bound = (slot.agent, slot.model, slot.project, slot.reasoning_effort)
+            kiro_agent: str | None = None
+            agent_model = ""
+            try:
+                cfg = KiroCrewConfig.load()
+                bindings = resolve_agent_bindings(cfg, slot.agent or None)
+                kiro_agent = bindings.kiro_agent
+                agent_model = normalize_agent_model(bindings.model)
+            except Exception:
+                logger.warning(
+                    "Eager spawn: failed to resolve agent bindings for slot %s",
+                    slot.key,
+                    exc_info=True,
+                )
+            _t0 = time.monotonic()
+            try:
+                # speculative=True keeps the one-shot first-turn flag armed for
+                # the real first message (atomically, at registration) and
+                # refuses resumable keys — the real turn must be the one that
+                # observes resumed=True. See get_or_create's docstring.
+                _, is_new, resumed = await sessions.get_or_create(
+                    session_key,
+                    agent=kiro_agent or slot.agent or None,
+                    model=slot.model or agent_model or None,
+                    cwd=slot.project or None,
+                    speculative=True,
+                    reasoning_effort_override=slot.reasoning_effort or None,
+                )
+            except SpeculativeResumeRefused:
+                logger.info("Eager spawn: %s is resumable, leaving to first turn", session_key)
+                return
+            sessions.release(session_key)
+            # The cleanup below may only tear down a session THIS task created.
+            # is_new=False means another creator won the same-key race (or the
+            # claim attached to an already-registered session): a real turn
+            # owns that runtime, may have finished its turn already, and may
+            # have background work (subagents) still attached — removing it
+            # here would terminate the winner's session out from under it. The
+            # winner registered with its own current bindings, so the stale-
+            # bindings hazard these guards exist for does not apply to it.
+            if not is_new:
+                logger.info(
+                    "Eager spawn: another creator won %s, leaving session alone", session_key
+                )
+                return
+            # The slot can be deleted while the handshake ran; the delete
+            # handler's sessions.remove() may have executed before this task
+            # registered the session, which would leave an orphan that a
+            # recreated slot with the same key would silently reuse with THIS
+            # slot's (now stale) agent/cwd bindings. Tear it down.
+            if state.get_slot(slot.key) is not slot:
+                logger.info(
+                    "Eager spawn: slot %s vanished mid-handshake, removing session", slot.key
+                )
+                await sessions.remove(session_key)
+                return
+            # Same shape for a binding change: a switch handler's reset ran
+            # before registration and found nothing, so the session we just
+            # registered carries stale bindings. Remove it — the first real
+            # message cold-starts with the current bindings, exactly as if
+            # eager spawn never ran.
+            if (slot.agent, slot.model, slot.project, slot.reasoning_effort) != _bound:
+                logger.info(
+                    "Eager spawn: slot %s bindings changed mid-handshake, removing session",
+                    slot.key,
+                )
+                await sessions.remove(session_key)
+                return
+            logger.info(
+                "Eager spawn: session ready for %s in %.0fms (new=%s resumed=%s)",
+                session_key,
+                (time.monotonic() - _t0) * 1000.0,
+                is_new,
+                resumed,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
+
+
 async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
     """Handle the ``/goal`` slash command (v0 self-verdict loop).
 
@@ -2501,6 +2660,34 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
         refresh_task.add_done_callback(state._background_tasks.discard)
 
 
+def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: bool) -> None:
+    """Emit the user-message → first-visible-token latency histogram.
+
+    Best-effort, one point per top-level user prompt. ``first_turn`` splits the
+    cold-path population eager spawn targets (the slot's first message) from
+    steady-state turns, and ``resumed`` separates ``session/load`` costs — the
+    same attribution axes as the startup metric, so the two histograms can be
+    read side by side.
+    """
+    try:
+        # circular import: metrics.provider -> config.loader -> ... (same
+        # reason _emit_kiro_startup_metric imports lazily).
+        from kiro_crew.metrics.provider import get_recorder
+
+        get_recorder().histogram(
+            "kirocrew.chat.first_token.duration",
+            (time.monotonic() - t0) * 1000.0,
+            unit="ms",
+            attrs={
+                "channel": telemetry_channel_of(session_key),
+                "first_turn": bool(is_new),
+                "resumed": bool(resumed),
+            },
+        )
+    except Exception:
+        logger.debug("TTFT metric emission failed", exc_info=True)
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
@@ -2514,6 +2701,15 @@ async def _run_chat(
 
     session_key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
+
+    # Time-to-first-token clock: starts when the user's message reaches the
+    # runner, stops at the first visible model output (text OR thinking chunk).
+    # This is the end-to-end latency eager spawn / warm pooling exist to cut —
+    # startup.duration only covers the handshake slice, so without this the
+    # user-perceived win is not measurable. Top-level user prompts only:
+    # synthetic payloads and nested prompts are runner-authored, and mixing
+    # them in would skew the distribution the feature is judged by.
+    _ttft_t0 = time.monotonic() if (_prompt_depth == 0 and not _synthetic_payload) else None
 
     # Inherit Slack link: if this dashboard session mirrors a Slack thread,
     # copy the link so every exit path, including an auth failure, can reply on
@@ -2614,9 +2810,8 @@ async def _run_chat(
     # execution turn driven by _stage_loop. Only planning turns detect/arm a
     # plan; stage-execution turns must never re-arm (that corrupted the stage
     # total). `_in_stage_execution` is set by _stage_loop around its _run_chat.
-    _orch_planning = (
-        getattr(slot, "mode", "") == "orchestrator"
-        and not getattr(slot, "_in_stage_execution", False)
+    _orch_planning = getattr(slot, "mode", "") == "orchestrator" and not getattr(
+        slot, "_in_stage_execution", False
     )
     # Rolling-buffer redactor for the live chat_chunk wire stream. Per-chunk
     # redaction misses a credential split across streaming boundaries;
@@ -3027,9 +3222,7 @@ async def _run_chat(
         withheld_pin = False
         if not slot.model:
             slot.model = _backfill_canonical_model(client, provider_name) or slot.model
-        elif (is_new or resumed) and _pinned_model_withheld(
-            client, slot.model, provider_name
-        ):
+        elif (is_new or resumed) and _pinned_model_withheld(client, slot.model, provider_name):
             withheld_pin = True
             # The session just advertised what this account can run, and the pin
             # is not on the list — the spawn withheld it, so this session runs on
@@ -3530,9 +3723,11 @@ async def _run_chat(
                 {
                     "slot": slot.key,
                     "kind": "context",
-                    "text": f"Injected {ctx_len:,} chars of context ({_named})"
-                    if _named
-                    else f"Injected {ctx_len:,} chars of context",
+                    "text": (
+                        f"Injected {ctx_len:,} chars of context ({_named})"
+                        if _named
+                        else f"Injected {ctx_len:,} chars of context"
+                    ),
                 },
             )
 
@@ -3615,6 +3810,11 @@ async def _run_chat(
             if time.time() - last_heartbeat > 5:
                 state.broadcast_ws("heartbeat", {"slot": slot.key, "ts": time.time()})
                 last_heartbeat = time.time()
+
+            # First visible model output for this user prompt — emit TTFT once.
+            if _ttft_t0 is not None and event.kind in (EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK):
+                _emit_ttft_metric(_ttft_t0, session_key, is_new=is_new, resumed=resumed)
+                _ttft_t0 = None
 
             # Security: tool_call_id originates from LLM — redact before any use
             if hasattr(event, "tool_call_id") and event.tool_call_id:
@@ -3737,7 +3937,9 @@ async def _run_chat(
                     "tool_call",
                     _tool_payload,
                 )
-                slot.append("tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_meta(event))
+                slot.append(
+                    "tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_meta(event)
+                )
                 sel().log_tool_invocation(
                     session_key=session_key,
                     agent=slot.agent or "kirocrew",
@@ -5251,9 +5453,7 @@ async def _run_chat(
                 # frontend drops its stale counts and the meter self-corrects on
                 # the next turn. On failure/timeout `used` is unchanged and still
                 # valid, so the same call re-sends the real counts as-is.
-                state.broadcast_context_usage(
-                    slot.key, _context_usage_payload(slot.key, client)
-                )
+                state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
 
         if assistant_text:
             # ── Plan format validation (planning turn only) ─────
@@ -5592,8 +5792,7 @@ async def _run_chat(
                     )
                     if _mirror_ts:
                         _owner = (
-                            state.sessions.get_session_for_thread(_mirror_thread)
-                            or session_key
+                            state.sessions.get_session_for_thread(_mirror_thread) or session_key
                             if getattr(state, "sessions", None)
                             else session_key
                         )
@@ -5816,9 +6015,7 @@ async def _run_chat(
                     # which of the two happened, so the continuation must
                     # agree with it rather than pick one.
                     cause=(
-                        ResetCause.CONNECTION_LOST
-                        if _is_pipe_death
-                        else ResetCause.SESSION_BUSY
+                        ResetCause.CONNECTION_LOST if _is_pipe_death else ResetCause.SESSION_BUSY
                     ),
                     message_is_synthetic=_is_synthetic,
                 )
@@ -6028,9 +6225,7 @@ async def _run_chat(
             # conversation" and "backend-wide outage/throttle" is done by the
             # CANARY PROBE below, not by classifying the error.
             _prestream_exhausted = (
-                not _turn_emitted
-                and not _turn_thought
-                and acp_error_is_transient(exc)
+                not _turn_emitted and not _turn_thought and acp_error_is_transient(exc)
             )
             if _prestream_exhausted:
                 slot._prestream_exhausted_cycles += 1
@@ -6081,9 +6276,7 @@ async def _run_chat(
                 # or rejection raises instead of degrading). No readable
                 # model ⇒ the probe cannot be trusted ⇒ inconclusive ⇒ no
                 # discard.
-                _session_model = str(
-                    getattr(client, "served_model", "") or ""
-                ).strip()
+                _session_model = str(getattr(client, "served_model", "") or "").strip()
                 if _session_model:
                     try:
                         _canary_text = await run_bg_oneliner(
@@ -6302,7 +6495,14 @@ async def _run_chat(
         # here would skip the steer requeue and queue drain below, silently
         # stranding queued work at the end of an otherwise successful turn.
         try:
+            _had_pending_reset = bool(slot._pending_reset_history_key)
             await _consume_pending_reset(state, slot)
+            # The consume tore down the session for a mid-turn project change;
+            # without a respawn the NEXT message pays the full cold start the
+            # eager path exists to hide. Only when a reset was actually
+            # consumed — an ordinary turn end must not spawn anything.
+            if _had_pending_reset:
+                schedule_eager_spawn(state, slot)
         except Exception:
             logger.debug("_consume_pending_reset failed", exc_info=True)
         # ── Requeue unconsumed steers ──

@@ -43,6 +43,7 @@ from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
     _run_chat,
     _start_next_queued_turn,
+    schedule_eager_spawn,
 )
 from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
@@ -1022,6 +1023,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # origin and the background refresh may rewrite the pin.
     if folder_id or title:
         await save_slot_off_loop(state, slot, force=True)
+    # Speculative session creation: overlap the ACP handshake with the user's
+    # think-time before their first message. No-op unless session.eager_spawn.
+    schedule_eager_spawn(state, slot)
     return web.json_response(state.serialize_slot(slot))
 
 
@@ -1925,6 +1929,13 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     # ask_question holds an MCP worker on a blocked HTTP request, and the slot
     # is going away, so nobody will ever answer its card.
     _unblock_pending_waits(state, slot)
+    # Cancel any pending speculative session creation. Without this, an
+    # eager task mid-debounce or mid-handshake outlives the slot; combined
+    # with the task's own post-create liveness re-check this closes both
+    # halves of the delete/recreate race.
+    _eager = getattr(slot, "_eager_spawn_task", None)
+    if _eager is not None and not _eager.done():
+        _eager.cancel()
     if slot.running and slot.task is not None:
         slot.task.cancel()
         try:
@@ -2126,6 +2137,10 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # Reset session so next message uses the new agent
     logger.info("Slot %s agent switched to %r, resetting session", name, agent_name or "kirocrew")
     await _reset_slot_session(state, slot, _history_key_for(name))
+    # The reset destroyed any eagerly created session; picking an agent is
+    # itself a strong first-message intent signal (it also resets the
+    # project), so re-arm the speculative spawn for the new bindings.
+    schedule_eager_spawn(state, slot)
     # Persist the new agent so the session resumes under the correct agent
     # after a gateway restart.  Written after reset succeeds so we never
     # advertise an agent we couldn't actually switch to.
@@ -2622,6 +2637,11 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     # inline reset would killpg() the caller. Consumed in chat_runner.
     if project != old_project:
         slot._pending_reset_history_key = _history_key_for(name)
+        # Speculatively re-create the session rooted at the new project so the
+        # cwd change is paid during think-time. The eager task consumes the
+        # deferred reset itself, but only when no turn is running — the
+        # same killpg constraint that deferred the reset applies to it.
+        schedule_eager_spawn(state, slot)
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})
 

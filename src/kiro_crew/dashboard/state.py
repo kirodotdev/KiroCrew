@@ -843,6 +843,7 @@ class _ChatSlot:
         "_stop_event_id",
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
+        "_eager_spawn_task",
         "_dirty_flag",
         "_dirty_gen",
         "_orch_tracker",
@@ -1014,6 +1015,10 @@ class _ChatSlot:
         # inline because the endpoint can be reached from inside the kiro-cli
         # process group via the set_project MCP tool.
         self._pending_reset_history_key: str | None = None
+        # Debounced speculative session-creation task (session.eager_spawn).
+        # At most one per slot: scheduling a new one cancels the previous, so
+        # rapid signals (create + project set) collapse into a single spawn.
+        self._eager_spawn_task: asyncio.Task[None] | None = None
         self._dirty_flag: bool = False  # True when messages changed since last flush
         # Bumped by the _dirty setter on every True. Lets the periodic flush tell
         # "the True I started this save under" from "a NEW True set during it".
