@@ -711,9 +711,22 @@ function ChatSidebar({
   // Ephemeral: reset on every query change so a fresh search shows all groups.
   const [collapsedHistoryGroups, setCollapsedHistoryGroups] = useState<Set<string>>(() => new Set())
   useEffect(() => { setCollapsedHistoryGroups(new Set()) }, [historyFilter])
-  const slotSearchKeys = useDebouncedSessionSearch(
+  // Backend relevance rank per slot key (0 = best). A Map instead of a Set so
+  // `filteredSlots` can ORDER matches by the backend's ranking (title matches
+  // carry a strong field boost server-side) rather than re-sorting them by
+  // date, which buries a title match below every fresher session that merely
+  // mentions the query in its body. First-wins on canonical-key collisions so
+  // a duplicate file cannot demote the better-ranked entry.
+  const slotSearchRanks = useDebouncedSessionSearch(
     slotFilter,
-    sessions => new Set(sessions.map(s => s.key.replace(/^dashboard_/, ''))),
+    sessions => {
+      const ranks = new Map<string, number>()
+      sessions.forEach((s, i) => {
+        const key = s.key.replace(/^dashboard_/, '')
+        if (!ranks.has(key)) ranks.set(key, i)
+      })
+      return ranks
+    },
   )
   const [renamingSlot, setRenamingSlot] = useState<string | null>(null)
   // In board view a multi-tag chat renders once per matching column, so
@@ -987,7 +1000,7 @@ function ChatSidebar({
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
   // O(1) lookup set for the filter predicate (mirrors the `pinned` and
-  // `slotSearchKeys` patterns elsewhere in this file).
+  // `slotSearchRanks` patterns elsewhere in this file).
   const unreadSet = useMemo(() => new Set(unreadSlots), [unreadSlots])
   // Heartbeat that re-evaluates recency even when nothing else re-renders.
   // Sidebar interactions (new messages, status changes, opening the menu) all
@@ -1468,19 +1481,23 @@ function ChatSidebar({
 
   const filteredSlots = useMemo(() => {
     const activeFilterDefs = SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
+    // Active content search: order by the backend's relevance ranking instead
+    // of the sidebar sort (mirrors the Older Sessions lane and the command
+    // palette). Pinning stays a reachability promise for browsing, not a
+    // ranking hint inside explicit search results.
+    const searchRanked = slotFilter.trim().length >= SEARCH_MIN_CHARS ? slotSearchRanks : null
     return enrichedSlots
       .filter(slot => {
         if (activeFilterDefs.length > 0 && !activeFilterDefs.some(filterDef => slot[filterDef.key])) return false
         if (!slotFilter) return true
-        if (slotFilter.trim().length >= SEARCH_MIN_CHARS) {
-          if (slotSearchKeys) return slotSearchKeys.has(slot.key)
-          return ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(slotFilter.toLowerCase())
-        }
+        if (searchRanked) return searchRanked.has(slot.key)
         return ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(slotFilter.toLowerCase())
       })
-      .sort((a, b) => comparePinnedThenSort(a, b, sortKey, pinned))
+      .sort((a, b) => searchRanked
+        ? (searchRanked.get(a.key) ?? Infinity) - (searchRanked.get(b.key) ?? Infinity)
+        : comparePinnedThenSort(a, b, sortKey, pinned))
   },
-    [enrichedSlots, slotFilter, slotSearchKeys, pinned, sortKey, activeFilters]
+    [enrichedSlots, slotFilter, slotSearchRanks, pinned, sortKey, activeFilters]
   )
 
   // Folder IDs whose sessions are excluded from the flat lane because the
