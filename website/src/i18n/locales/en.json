@@ -4059,6 +4059,8 @@
       "not_connected": "not connected",
       "send_a_copy_to": "Send a copy to",
       "sent": "Sent",
+      "sent_transcript_only": "Sent (transcript only)",
+      "transcript_only_hint": "That instance could not restore the full conversation context, so this copy resumes from the transcript alone.",
       "unknown_error": "Unknown error"
     },
     "sessionActionsMenu": {

@@ -1251,6 +1251,8 @@ export const api = {
       instance: string
       remote_key: string
       messages: number
+      // '' when the peer is too old to report it — treated as unknown.
+      resume_mode?: 'session_load' | 'prefix' | ''
     }>,
   // Memory
   memoryPreferences: () => fetch('/api/memory/preferences').then(j),

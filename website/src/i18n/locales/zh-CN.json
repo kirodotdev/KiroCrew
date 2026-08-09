@@ -5502,6 +5502,8 @@
       "not_connected": "未连接",
       "send_a_copy_to": "发送副本到",
       "sent": "已发送",
+      "sent_transcript_only": "已发送（仅对话记录）",
+      "transcript_only_hint": "该实例无法恢复完整的对话上下文，因此此副本仅从对话记录继续。",
       "unknown_error": "未知错误"
     },
     "sessionActionsMenu": {

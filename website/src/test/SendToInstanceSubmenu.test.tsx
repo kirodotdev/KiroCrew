@@ -156,8 +156,23 @@ describe('InstanceSendItems', () => {
     expect(screen.getByTestId('row')).toBeDisabled()
   })
 
-  it('reports success on the row itself', () => {
+  it('distinguishes a transcript-only copy from a full one', () => {
+    // The whole point of the feature is that context survives the hop. A copy
+    // that degraded to the transcript must NOT read as a plain "Sent", or the
+    // user walks to the other machine and discovers the loss mid-task.
     render(
+      <InstanceSendItems
+        instances={[inst({ id: 'devdesk' })]}
+        states={{ devdesk: { kind: 'sent', transcriptOnly: true } }}
+        onSend={vi.fn()}
+        Item={StubItem}
+      />,
+    )
+    expect(screen.getByText('Sent (transcript only)')).toBeTruthy()
+    expect(screen.queryByText('Sent')).toBeNull()
+  })
+
+  it('reports success on the row itself', () => {    render(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
         states={{ devdesk: { kind: 'sent' } }}

@@ -545,5 +545,11 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
             "instance": instance_id,
             "remote_key": payload.get("key", ""),
             "messages": len(bundle.get("messages", [])),
+            # Forwarded from the peer so the row can distinguish a full-fidelity
+            # copy from one that degraded to the transcript-only prefix. Without
+            # it a lossy transfer shows the same "Sent" as a resumable one -- the
+            # silent degradation this feature exists to remove. Older peers omit
+            # it; "" means unknown, which the UI treats as plain "Sent".
+            "resume_mode": payload.get("resume_mode", ""),
         }
     )

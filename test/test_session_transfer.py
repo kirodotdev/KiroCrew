@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +54,9 @@ def _slot(messages, *, title="My session", titled=True, agent="", dirty=False, p
         _pending_rewrite=False,
         _dirty_gen=0,
         memory_mode="persistent",
+        # Idle by default: Layer B only travels when no turn is in flight.
+        running=False,
+        _in_stage_execution=False,
     )
 
 
@@ -1157,9 +1161,13 @@ async def test_import_creates_a_new_slot_with_no_project(monkeypatch):
 
     state = SimpleNamespace(
         _slots={},
+        _slots_under_construction=set(),
         get_or_create_slot=_get_or_create,
         push_slots_update=lambda: None,
     )
+    state.live_slot_count = lambda: len(state._slots) + len(state._slots_under_construction)
+    state.begin_slot_construction = state._slots_under_construction.add
+    state.end_slot_construction = state._slots_under_construction.discard
 
     async def _save(*_a, **_k):
         return None
@@ -1206,7 +1214,7 @@ async def test_import_response_never_carries_a_credential(monkeypatch):
     resp = await _run_import(st, monkeypatch, _valid())
     body = json.loads(resp.body)
 
-    assert set(body) == {"ok", "key", "title", "messages"}
+    assert set(body) == {"ok", "key", "title", "messages", "resume_mode"}
     assert "token" not in json.dumps(body).lower()
 
 
@@ -1337,6 +1345,934 @@ async def test_import_does_not_yield_for_a_small_bundle(monkeypatch):
     assert yields == 0
 
 
+# ── Layer B (kiro-cli context) ──────────────────────────────────────────
+
+
+def _sessions(sid):
+    """A stand-in for the live SessionManager's resume-lookup surface.
+
+    Used with ``_resolve_layer_b_sid``, which runs ON THE LOOP -- ``resumable_sid``
+    self-prunes the session map, so it must never be reached from a worker thread.
+    """
+    return SimpleNamespace(resumable_sid=lambda _k: sid)
+
+
+def test_layer_b_bundle_carries_the_context_when_the_session_has_one(monkeypatch, tmp_path):
+    """Layer B is what makes an imported session RESUME instead of replaying a
+    lossy transcript prefix, so it must ride along when the session has one."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "11111111-2222-3333-4444-555555555555"
+    (tmp_path / f"{sid}.json").write_text(
+        json.dumps({"session_id": sid, "cwd": "/Users/src/proj"}), encoding="utf-8"
+    )
+    (tmp_path / f"{sid}.jsonl").write_text('{"kind":"Prompt"}\n', encoding="utf-8")
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    got = st._read_layer_b(sid)
+
+    assert got is not None
+    assert got["sid"] == sid
+    assert got["envelope"]["session_id"] == sid
+    assert "Prompt" in got["events"]
+
+
+def test_layer_b_is_absent_when_the_session_has_no_kiro_context(monkeypatch, tmp_path):
+    """A brand-new slot (or a pruned map entry) has no Layer B; the transfer must
+    degrade to transcript-only rather than fail."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    assert st._read_layer_b("") is None
+
+
+def test_layer_b_absent_when_the_files_were_pruned(monkeypatch, tmp_path):
+    """A map entry can outlive its files; a missing pair is not an error."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    assert st._read_layer_b("no-such-sid") is None
+
+
+def test_events_jsonl_loadable_accepts_valid_and_rejects_truncated():
+    """Structural check only -- it must never rewrite what it inspects."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    blob = (
+        json.dumps({"kind": "Prompt", "data": {"content": "hi", "n": 1}})
+        + "\n"
+        + json.dumps({"kind": "AssistantMessage", "data": {"text": "ok"}})
+        + "\n"
+    )
+
+    assert st._events_jsonl_is_loadable(blob) is True
+    assert st._events_jsonl_is_loadable("not json at all\n") is False
+    # One bad record poisons the blob even when others are fine.
+    assert st._events_jsonl_is_loadable(json.dumps({"kind": "Prompt"}) + "\ntruncated {\n") is False
+    # Empty and blank-only are structurally fine.
+    assert st._events_jsonl_is_loadable("") is True
+    assert st._events_jsonl_is_loadable("\n\n") is True
+
+
+@pytest.mark.asyncio
+async def test_unparseable_layer_b_degrades_to_transcript_only(monkeypatch, tmp_path):
+    """End-to-end on the send side: a crash-truncated source blob must produce a
+    bundle with no Layer B rather than one the peer cannot load."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "eeeeeeee-1111-2222-3333-555555555555"
+    (tmp_path / f"{sid}.json").write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    (tmp_path / f"{sid}.jsonl").write_text('{"kind":"Prompt"}\ntruncated {\n', encoding="utf-8")
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    assert st._read_layer_b(sid) is None
+
+
+@pytest.mark.asyncio
+async def test_import_refuses_unparseable_layer_b_from_the_peer(monkeypatch, tmp_path):
+    """The sender is not trusted: an unparseable blob must not be installed."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    assert st._write_layer_b_files({"envelope": {}, "events": "truncated {\n"}, "") is None
+    assert not list(tmp_path.glob("*.json")), "nothing may be written for a refused blob"
+
+
+def test_events_jsonl_handles_empty_and_blank():
+    from kiro_crew.dashboard import session_transfer as st
+
+    assert st._events_jsonl_is_loadable("") is True
+    assert st._events_jsonl_is_loadable("\n\n") is True
+
+
+# The shape of a REAL kiro-cli thinking block, which earlier revisions of this
+# feature corrupted. ``signature`` is a cryptographic signature over the thinking
+# content; the provider validates it when the conversation is replayed, so any
+# rewrite of a covered byte makes the peer's NEXT turn fail -- long after the
+# import reported success. Every Layer B test below uses this shape rather than an
+# empty ``{}`` envelope, because an empty envelope cannot catch that class of bug.
+_THINKING_ENVELOPE = {
+    "session_id": "src-sid",
+    "cwd": "/Users/someone/work/project",
+    "session_state": {
+        "version": "v1",
+        "agent_name": "sender-agent",
+        "permissions": {"filesystem": {"allowed_read_paths": ["/Users/someone/work"]}},
+        "conversation_metadata": {
+            "user_turn_metadatas": [
+                {
+                    "result": {
+                        "Ok": {
+                            "content": [
+                                {
+                                    "kind": "thinking",
+                                    "data": {
+                                        "modelId": "some-model",
+                                        "text": "let me think about the plan",
+                                        "redactedContent": None,
+                                        # base64-shaped, like the real signature
+                                        "signature": "Ci8KCEFTU0lTVEFOVBIhCgt0aGlua2luZ19zaWc",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+    },
+}
+
+
+def test_layer_b_leaves_the_conversation_byte_exact_on_egress(monkeypatch, tmp_path):
+    """Layer B ships verbatim. Redacting it and transplanting it cannot both hold:
+    the thinking-block signature covers the content, so a scrub invalidates the
+    conversation the transfer exists to carry."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    events = json.dumps({"kind": "AssistantMessage", "data": {"text": "ok"}}) + "\n"
+    (tmp_path / f"{sid}.json").write_text(json.dumps(_THINKING_ENVELOPE), encoding="utf-8")
+    (tmp_path / f"{sid}.jsonl").write_text(events, encoding="utf-8")
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    got = st._read_layer_b(sid)
+
+    assert got is not None
+    assert got["events"] == events, "the events blob was rewritten"
+    assert got["envelope"] == _THINKING_ENVELOPE, "the envelope was rewritten"
+
+
+@pytest.mark.asyncio
+async def test_layer_b_is_skipped_while_a_turn_is_in_flight(monkeypatch):
+    """Layer A records the prompt on submit; kiro-cli writes Layer B only when the
+    turn persists. A mid-turn bundle would therefore pair a transcript that SHOWS
+    the prompt with a context that lacks it, and the peer would resume the model
+    behind its own visible transcript. Degrade to transcript-only instead."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    msgs = [{"role": "user", "content": "hi", "ts": ""}]
+    slot = _slot(msgs)
+    slot.running = True
+    resolved: list[str] = []
+    monkeypatch.setattr(
+        st, "_resolve_layer_b_sid", lambda *a: (resolved.append("called"), "sid")[1]
+    )
+
+    bundle = await st.build_transfer_bundle_async(_state(msgs), slot, origin="mac")
+
+    assert "layer_b" not in bundle
+    assert bundle["bundle_version"] == 2
+    assert resolved == [], "the sid must not even be resolved mid-turn"
+
+
+@pytest.mark.asyncio
+async def test_layer_b_is_skipped_between_stages_of_a_staged_plan(monkeypatch):
+    """``running`` reads False between stages, so the staged-plan flag is checked
+    too (chat_handlers documents that gap)."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    msgs = [{"role": "user", "content": "hi", "ts": ""}]
+    slot = _slot(msgs)
+    slot.running = False
+    slot._in_stage_execution = True
+    monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *a: "sid")
+
+    bundle = await st.build_transfer_bundle_async(_state(msgs), slot, origin="mac")
+
+    assert "layer_b" not in bundle
+
+
+@pytest.mark.asyncio
+async def test_layer_b_travels_when_the_slot_is_idle(monkeypatch, tmp_path):
+    """The positive case: an idle slot still carries its context."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "cccccccc-1111-2222-3333-444444444444"
+    (tmp_path / f"{sid}.json").write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    (tmp_path / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *a: sid)
+
+    msgs = [{"role": "user", "content": "hi", "ts": ""}]
+    slot = _slot(msgs)
+    slot.running = False
+
+    bundle = await st.build_transfer_bundle_async(_state(msgs), slot, origin="mac")
+
+    assert bundle["layer_b"]["envelope"]["session_id"] == sid
+
+
+@pytest.mark.asyncio
+async def test_layer_b_eligibility_is_recomputed_on_snapshot_retry(monkeypatch):
+    """Regression: a prompt starting DURING the threaded read forces a retry, and
+    that retry re-reads Layer A with the new prompt. If eligibility were computed
+    once up front, the retry would ship the new prompt alongside the pre-turn
+    Layer B — the exact skew the mid-turn check exists to prevent, reintroduced
+    through the retry path."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    msgs = [{"role": "user", "content": "persisted", "ts": ""}]
+    slot = _slot(msgs)
+    slot.running = False
+    monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *a: "the-sid")
+
+    calls = {"n": 0}
+    real_to_thread = st.asyncio.to_thread
+
+    async def _turn_starts_midway(fn, *args):
+        result = fn(*args)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A prompt lands while we are off the loop: Layer A grows AND the slot
+            # goes busy. Both must be seen by the retry.
+            slot.messages = slot.messages + [{"role": "user", "content": "new prompt", "ts": ""}]
+            slot.running = True
+        return result
+
+    st.asyncio.to_thread = _turn_starts_midway  # type: ignore[assignment]
+    try:
+        bundle = await st.build_transfer_bundle_async(_state(msgs), slot, origin="mac")
+    finally:
+        st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
+
+    assert calls["n"] >= 2, "expected a retry once the slot changed"
+    # The retry saw the running slot, so Layer B must be dropped even though the
+    # first attempt was eligible.
+    assert "layer_b" not in bundle
+    assert [m["content"] for m in bundle["messages"]] == ["persisted", "new prompt"]
+
+
+@pytest.mark.asyncio
+async def test_imported_tab_is_marked_when_it_arrived_transcript_only(monkeypatch):
+    """The sender's row is ephemeral (component state in a menu that closes), but
+    the consequence is felt later on the RECEIVING machine. The tab title is the
+    surface that persists and sits where the loss will be discovered."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
+    slot = await _run_import(
+        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}), return_slot=True
+    )
+
+    assert slot.title.endswith("— transcript only"), slot.title
+
+
+@pytest.mark.asyncio
+async def test_imported_tab_is_not_marked_when_layer_b_landed(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "sid")
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
+    slot = await _run_import(
+        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}), return_slot=True
+    )
+
+    assert "transcript only" not in slot.title
+
+
+@pytest.mark.asyncio
+async def test_a_v1_import_is_not_marked_transcript_only(monkeypatch):
+    """A v1 bundle carries no context by construction — the copy is exactly what
+    was sent, so flagging it would cry wolf."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    slot = await _run_import(st, monkeypatch, _valid(bundle_version=1), return_slot=True)
+
+    assert "transcript only" not in slot.title
+
+
+def test_read_layer_b_takes_a_sid_not_the_live_manager():
+    """Regression guard: ``resumable_sid`` -> ``SessionMap.get`` SELF-PRUNES, so it
+    is a map mutation and must stay on the event loop (same contract as the
+    join). The threaded reader therefore takes an immutable sid and has no way to
+    reach the map."""
+    import inspect
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    params = inspect.signature(st._read_layer_b).parameters
+    assert list(params) == ["sid"]
+    assert "sessions" not in params
+    # ...and the assemble step the thread runs carries only the sid too.
+    assert "sessions" not in inspect.signature(st._read_and_assemble).parameters
+
+
+def test_resolve_layer_b_sid_is_the_loop_side_lookup():
+    from kiro_crew.dashboard import session_transfer as st
+
+    assert st._resolve_layer_b_sid(_sessions("the-sid"), "dashboard:slot-1") == "the-sid"
+    assert st._resolve_layer_b_sid(_sessions(None), "dashboard:slot-1") == ""
+    assert st._resolve_layer_b_sid(None, "dashboard:slot-1") == ""
+
+
+def test_resolve_layer_b_sid_swallows_lookup_failure():
+    from kiro_crew.dashboard import session_transfer as st
+
+    def _boom(_k):
+        raise RuntimeError("map unreadable")
+
+    assert st._resolve_layer_b_sid(SimpleNamespace(resumable_sid=_boom), "k") == ""
+
+
+def test_layer_b_envelope_rewrite_neutralises_the_source_host():
+    """The conversation state (what makes resume work) is kept verbatim; only the
+    fields that reference the SOURCE host are rewritten."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    env = {
+        "session_id": "old-sid",
+        "cwd": "/Volumes/workplace/only-on-my-mac",
+        "title": "leaky title",
+        "session_state": {
+            "conversation_metadata": {"user_turn_metadatas": [{"keep": "me"}]},
+            "agent_name": "source-agent",
+            "permissions": {
+                "filesystem": {
+                    "allowed_read_paths": ["/Volumes/workplace/only-on-my-mac"],
+                    "allowed_write_paths": ["/Volumes/workplace/only-on-my-mac"],
+                }
+            },
+        },
+    }
+
+    out = st._rewrite_layer_b_envelope(env, "fresh-sid", "target-agent")
+
+    # Fresh identity keeps copy-never-move: a repeat send cannot collide.
+    assert out["session_id"] == "fresh-sid"
+    # Unscoped on arrival, matching the deliberate decision to drop `project`.
+    assert out["cwd"] == ""
+    assert out["session_state"]["permissions"]["filesystem"]["allowed_read_paths"] == []
+    assert out["session_state"]["permissions"]["filesystem"]["allowed_write_paths"] == []
+    assert out["session_state"]["agent_name"] == "target-agent"
+    assert out["title"] is None
+    # The resumable context itself survives untouched — that is the whole point.
+    assert out["session_state"]["conversation_metadata"] == {
+        "user_turn_metadatas": [{"keep": "me"}]
+    }
+    # The source path must not survive anywhere in the envelope.
+    assert "only-on-my-mac" not in json.dumps(out)
+    # The caller's dict is not mutated.
+    assert env["session_id"] == "old-sid"
+
+
+def test_layer_b_rewrite_tolerates_a_minimal_envelope():
+    """A peer on a different kiro-cli build may omit whole subtrees."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    out = st._rewrite_layer_b_envelope({}, "fresh-sid", "")
+
+    assert out["session_id"] == "fresh-sid"
+    assert out["session_state"]["agent_name"] is None
+
+
+def test_write_layer_b_files_writes_a_fresh_sid_and_never_touches_the_map(
+    monkeypatch, tmp_path
+):
+    """File writes run in a worker thread, so they must NOT touch the session
+    map: ``SessionMap.set`` mutates a shared dict and serialises the whole file,
+    which races the event loop's own map writes."""
+    import inspect
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    new_sid = st._write_layer_b_files(
+        {"envelope": {"session_id": "peer-sid", "cwd": "/peer/path"}, "events": '{"k":1}\n'},
+        "my-agent",
+    )
+
+    # Fresh sid, NOT the peer's — copy semantics.
+    assert new_sid and new_sid != "peer-sid"
+    written = json.loads((tmp_path / f"{new_sid}.json").read_text(encoding="utf-8"))
+    assert written["session_id"] == new_sid
+    assert written["cwd"] == ""
+    assert written["session_state"]["agent_name"] == "my-agent"
+    # Events are re-serialised per record by the redactor, so compare PARSED
+    # content, not bytes: JSON spacing is normalised (`{"k":1}` -> `{"k": 1}`),
+    # which is semantically identical for a consumer that parses it.
+    written_events = (tmp_path / f"{new_sid}.jsonl").read_text(encoding="utf-8")
+    assert [json.loads(ln) for ln in written_events.split("\n") if ln.strip()] == [{"k": 1}]
+    # No map access from the thread half — asserted structurally: the function
+    # takes no ``sessions`` handle, so it cannot reach the live map at all.
+    # (A source-text scan is wrong here: the docstring names the hazard on
+    # purpose.)
+    assert "sessions" not in inspect.signature(st._write_layer_b_files).parameters
+
+
+def test_write_layer_b_files_returns_none_on_failure(monkeypatch, tmp_path):
+    from kiro_crew.dashboard import session_transfer as st
+
+    def _boom():
+        raise OSError("no dir")
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", _boom)
+
+    assert st._write_layer_b_files({"envelope": {}, "events": ""}, "") is None
+
+
+def test_join_layer_b_goes_through_the_live_manager():
+    """Regression guard for the review finding: constructing ``SessionMap()``
+    writes a correct file that the live map then clobbers, because its ``_data``
+    is a startup snapshot and every ``set`` rewrites the whole file.
+
+    Asserted by absence of the IMPORT — if the name is not bound in the module it
+    cannot be constructed, and the body's own comments legitimately mention the
+    hazard they prevent.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    assert not hasattr(st, "SessionMap"), "session_transfer must not import SessionMap"
+    recorded: dict = {}
+    live = SimpleNamespace(
+        seed_conversation=lambda key, sid, *, provider="", cwd="": recorded.update(
+            {"key": key, "sid": sid, "provider": provider}
+        )
+    )
+
+    assert st._join_layer_b(live, "dashboard:imported-1", "new-sid") is True
+    assert recorded == {"key": "dashboard:imported-1", "sid": "new-sid", "provider": "acp"}
+
+
+def test_join_layer_b_without_a_live_manager_is_a_clean_no():
+    from kiro_crew.dashboard import session_transfer as st
+
+    assert st._join_layer_b(None, "k", "sid") is False
+
+
+def test_join_layer_b_is_best_effort():
+    """A join failure must NOT fail an already-persisted import — the session
+    still opens as the transcript-only copy."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    def _boom(*_a, **_k):
+        raise OSError("map write failed")
+
+    assert st._join_layer_b(SimpleNamespace(seed_conversation=_boom), "k", "sid") is False
+
+
+def test_bundle_includes_layer_b_when_present():
+    from kiro_crew.dashboard import session_transfer as st
+
+    msgs = [{"role": "user", "content": "hi", "ts": ""}]
+    bundle = st._assemble_bundle(
+        msgs, "t", "", "mac", {"sid": "s", "envelope": {"session_id": "s"}, "events": "e"}
+    )
+
+    assert bundle["bundle_version"] == 2
+    assert bundle["layer_b"]["envelope"]["session_id"] == "s"
+    # The sid is NOT sent: the importer allocates its own.
+    assert "sid" not in bundle["layer_b"]
+
+
+def test_bundle_omits_layer_b_when_the_session_has_none():
+    from kiro_crew.dashboard import session_transfer as st
+
+    bundle = st._assemble_bundle([{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", None)
+
+    assert "layer_b" not in bundle
+
+
+def test_validate_accepts_a_v1_bundle_without_layer_b():
+    """A v1 sender (transcript-only) must still be able to send us a copy."""
+    bundle, err = _validate_bundle(_valid(bundle_version=1))
+
+    assert err is None
+    assert "layer_b" not in bundle
+
+
+def test_validate_accepts_a_v2_bundle_with_layer_b():
+    bundle, err = _validate_bundle(
+        _valid(layer_b={"envelope": {"session_id": "s"}, "events": '{"k":1}\n'})
+    )
+
+    assert err is None
+    assert bundle["layer_b"]["events"] == '{"k":1}\n'
+
+
+@pytest.mark.parametrize(
+    "layer_b,code",
+    [
+        ("not a dict", "transfer_layer_b_not_object"),
+        ({"envelope": "nope", "events": ""}, "transfer_layer_b_bad_envelope"),
+        ({"envelope": {}, "events": 5}, "transfer_layer_b_bad_events"),
+        ({"envelope": {}, "events": "x" * 40_000_001}, "transfer_layer_b_too_large"),
+    ],
+)
+def test_validate_rejects_a_malformed_layer_b(layer_b, code):
+    """Layer B is untrusted peer input and is bounded BEFORE anything is written."""
+    _, err = _validate_bundle(_valid(layer_b=layer_b))
+
+    assert err is not None
+    assert json.loads(err.body)["code"] == code
+
+
+@pytest.mark.asyncio
+async def test_import_materialises_layer_b_so_the_session_resumes(monkeypatch):
+    """End-to-end on the receiving side: a v2 bundle must land a joined Layer B."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    calls: dict = {}
+
+    def _fake(layer_b, agent):
+        calls.update({"layer_b": layer_b, "agent": agent})
+        return "new-sid"
+
+    monkeypatch.setattr(st, "_write_layer_b_files", _fake)
+    monkeypatch.setattr(
+        st, "_join_layer_b", lambda _s, k, _sid: calls.update({"sm_key": k}) or True
+    )
+    resp = await _run_import(
+        st, monkeypatch, _valid(layer_b={"envelope": {"session_id": "s"}, "events": "e"})
+    )
+
+    assert resp.status == 200
+    assert calls["layer_b"]["events"] == "e"
+    # Joined under the SESSION key (what turns run on), which is what the resume
+    # path reads — not the raw slot key.
+    assert calls["sm_key"]
+
+
+@pytest.mark.asyncio
+async def test_import_still_succeeds_when_layer_b_cannot_be_materialised(monkeypatch):
+    """Best-effort: the transcript copy already persisted, so a Layer B failure
+    must not turn a landed import into an error."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
+    resp = await _run_import(
+        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
+    )
+
+    assert resp.status == 200
+    assert json.loads(resp.body)["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_import_of_a_v1_bundle_does_not_touch_layer_b(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    called = {"n": 0}
+
+    def _count(*_a, **_k):
+        called["n"] += 1
+        return True
+
+    monkeypatch.setattr(st, "_write_layer_b_files", _count)
+    resp = await _run_import(st, monkeypatch, _valid(bundle_version=1))
+
+    assert resp.status == 200
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_import_reports_session_load_when_layer_b_landed(monkeypatch):
+    """The sender must be able to tell a full copy from a degraded one — without
+    this the feature's own failure mode (a silently lossy copy) shows the same
+    green "Sent" as a successful resume."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
+    resp = await _run_import(
+        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
+    )
+
+    assert json.loads(resp.body)["resume_mode"] == "session_load"
+
+
+@pytest.mark.asyncio
+async def test_import_reports_prefix_when_layer_b_failed(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
+    resp = await _run_import(
+        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
+    )
+
+    assert json.loads(resp.body)["resume_mode"] == "prefix"
+
+
+@pytest.mark.asyncio
+async def test_import_reports_prefix_for_a_v1_bundle(monkeypatch):
+    """A v1 bundle carries no context by construction, so "prefix" is the honest
+    answer rather than an error."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    resp = await _run_import(st, monkeypatch, _valid(bundle_version=1))
+
+    assert json.loads(resp.body)["resume_mode"] == "prefix"
+
+
+@pytest.mark.asyncio
+async def test_send_bundle_downgrades_to_v1_when_the_peer_refuses_v2():
+    """Gaining Layer B must not REMOVE the ability to send to a not-yet-upgraded
+    peer: an older peer refuses bundle_version 2 outright, so retry once with the
+    transcript-only v1 shape it has always accepted."""
+    from kiro_crew.instances.ssh_tunnel_manager import (
+        SshTunnelManager,
+        TunnelState,
+        TunnelStatus,
+    )
+
+    mgr = SshTunnelManager.__new__(SshTunnelManager)
+    mgr._tokens = {"peer": "tok"}
+    mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
+        instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
+    )
+
+    seen: list[dict] = []
+
+    class _Resp:
+        def __init__(self, status, payload):
+            self.status = status
+            self._payload = payload
+
+        async def json(self):
+            return self._payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, json=None, headers=None):
+            seen.append(dict(json))
+            if json.get("bundle_version") == 2:
+                return _Resp(400, {"code": "transfer_version_unsupported"})
+            return _Resp(200, {"key": "remote-1", "resume_mode": "prefix"})
+
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
+    try:
+        ok, payload = await mgr.send_session_bundle(
+            "peer",
+            {"bundle_version": 2, "messages": [], "layer_b": {"envelope": {}, "events": "e"}},
+        )
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is True, payload
+    assert len(seen) == 2
+    # The retry drops Layer B and re-tags as v1 — same conversation, v1 fidelity.
+    assert seen[0]["bundle_version"] == 2 and "layer_b" in seen[0]
+    assert seen[1]["bundle_version"] == 1 and "layer_b" not in seen[1]
+
+
+@pytest.mark.asyncio
+async def test_send_bundle_downgrades_only_once():
+    """A peer that refuses BOTH versions must surface an error, not spin."""
+    from kiro_crew.instances.ssh_tunnel_manager import (
+        SshTunnelManager,
+        TunnelState,
+        TunnelStatus,
+    )
+
+    mgr = SshTunnelManager.__new__(SshTunnelManager)
+    mgr._tokens = {"peer": "tok"}
+    mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
+        instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
+    )
+    posts = {"n": 0}
+
+    class _Resp:
+        status = 400
+
+        async def json(self):
+            return {"code": "transfer_version_unsupported"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, json=None, headers=None):
+            posts["n"] += 1
+            return _Resp()
+
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
+    try:
+        ok, payload = await mgr.send_session_bundle(
+            "peer", {"bundle_version": 2, "layer_b": {"envelope": {}, "events": "e"}}
+        )
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is False
+    assert payload["code"] == "transfer_version_unsupported"
+    assert posts["n"] == 2, "one downgrade retry, then stop"
+
+
+@pytest.mark.asyncio
+async def test_layer_b_lands_before_the_transcript_is_persisted(monkeypatch):
+    """Ordering guard: the slot is registered in ``state._slots`` synchronously
+    and handlers enumerate that dict directly, so it is GET-reachable before the
+    awaits finish. A prompt landing while the join is missing cold-starts a FRESH
+    context and the later join binds to nothing — the silent context loss this
+    feature exists to prevent. So the join must be written FIRST.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    order: list[str] = []
+
+    def _mat(*_a, **_k):
+        order.append("layer_b")
+        return "new-sid"
+
+    async def _save(*_a, **_k):
+        order.append("save")
+
+    monkeypatch.setattr(st, "_write_layer_b_files", _mat)
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
+    resp = await _run_import(
+        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}), save=_save
+    )
+
+    assert resp.status == 200
+    assert order == ["layer_b", "save"], order
+
+
+@pytest.mark.asyncio
+async def test_failed_save_rolls_back_the_layer_b_join(monkeypatch):
+    """Because the join now precedes the save, a rollback has to undo it — else
+    the map keeps an entry for a tab that no longer exists and the
+    ``<sid>.{json,jsonl}`` pair lingers until a prune sweeps it."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    forgotten: list[str] = []
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        st, "_forget_layer_b_join", lambda _s, key: (forgotten.append(key), "")[1]
+    )
+
+    async def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    resp = await _run_import(
+        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}), save=_boom
+    )
+
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "transfer_import_save_failed"
+    assert forgotten, "the join must be dropped when the import is refused"
+
+
+def test_unlink_layer_b_files_removes_the_pair(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "dddddddd-eeee-ffff-0000-111111111111"
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    (tmp_path / f"{sid}.json").write_text("{}", encoding="utf-8")
+    (tmp_path / f"{sid}.jsonl").write_text("", encoding="utf-8")
+
+    st._unlink_layer_b_files(sid)
+
+    assert not (tmp_path / f"{sid}.json").exists()
+    assert not (tmp_path / f"{sid}.jsonl").exists()
+
+
+def test_forget_layer_b_join_returns_the_sid_for_file_cleanup():
+    from kiro_crew.dashboard import session_transfer as st
+
+    dropped: list[str] = []
+    live = SimpleNamespace(
+        forget_conversation=lambda key: (dropped.append(key), "old-sid")[1]
+    )
+
+    assert st._forget_layer_b_join(live, "dashboard:imported-1") == "old-sid"
+    assert dropped == ["dashboard:imported-1"]
+
+
+def test_forget_layer_b_join_is_silent_without_a_live_manager():
+    from kiro_crew.dashboard import session_transfer as st
+
+    assert st._forget_layer_b_join(None, "k") == ""  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_slot_is_unreachable_until_construction_finishes(monkeypatch):
+    """``get_or_create_slot`` registers the slot in ``state._slots`` AND calls
+    ``push_slots_update()`` before returning, so without retracting it the tab is
+    visible and GET-reachable while its transcript is empty and its Layer B
+    unjoined — a prompt then cold-starts a fresh context the later join can never
+    attach to. The slot must be absent from ``_slots`` for the whole build and
+    present exactly once at the end.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    seen: list[bool] = []
+    state = _stub_state(st, monkeypatch)
+    slot = state._imported_slot
+
+    def _probe(*_a, **_k):
+        # Sampled from inside the build, standing in for a concurrent GET.
+        seen.append(slot.key in state._slots)
+        return "new-sid"
+
+    monkeypatch.setattr(st, "_write_layer_b_files", _probe)
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
+
+    resp = await st.api_chat_slot_import(
+        _make_request(state, _valid(layer_b={"envelope": {}, "events": "e"}))
+    )
+
+    assert resp.status == 200
+    assert seen == [False], "the slot must be unreachable while it is being built"
+    # ...and reachable once, after everything landed.
+    assert state._slots.get(slot.key) is slot
+
+
+@pytest.mark.asyncio
+async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
+    """A session with no kiro-cli context ships v2 with NO ``layer_b`` key. Gating
+    the downgrade on Layer B presence would skip exactly those transfers and fail
+    them against a v1 peer, so the gate is the VERSION."""
+    from kiro_crew.instances.ssh_tunnel_manager import (
+        SshTunnelManager,
+        TunnelState,
+        TunnelStatus,
+    )
+
+    mgr = SshTunnelManager.__new__(SshTunnelManager)
+    mgr._tokens = {"peer": "tok"}
+    mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
+        instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
+    )
+    seen: list[dict] = []
+
+    class _Resp:
+        def __init__(self, status, payload):
+            self.status = status
+            self._payload = payload
+
+        async def json(self):
+            return self._payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, json=None, headers=None):
+            seen.append(dict(json))
+            if json.get("bundle_version") == 2:
+                return _Resp(400, {"code": "transfer_version_unsupported"})
+            return _Resp(200, {"key": "remote-1"})
+
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
+    try:
+        # No "layer_b" key at all — the context-free case.
+        ok, payload = await mgr.send_session_bundle(
+            "peer", {"bundle_version": 2, "messages": [{"role": "user", "content": "hi"}]}
+        )
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is True, payload
+    assert len(seen) == 2, "a context-free v2 bundle must still downgrade"
+    assert seen[1]["bundle_version"] == 1
+
+
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
@@ -1355,7 +2291,7 @@ def _make_request(state, body, *, raw: str | None = None):
     )
 
 
-def _stub_state(st, monkeypatch):
+def _stub_state(st, monkeypatch, save=None):
     class _Slot:
         def __init__(self):
             self.key = "imported-1"
@@ -1377,19 +2313,33 @@ def _stub_state(st, monkeypatch):
     async def _save(*_a, **_k):
         return None
 
-    monkeypatch.setattr(st, "save_slot_off_loop", _save)
+    monkeypatch.setattr(st, "save_slot_off_loop", save or _save)
     monkeypatch.setattr(st, "_sync_dashboard_slots", lambda _s: None)
     state = SimpleNamespace(
         _slots={},
+        # Mirrors DashboardState's construction accounting: a slot retracted
+        # while it is built is absent from _slots but still counts against every
+        # cap, so the stub has to model both halves or the handler's cap check
+        # and its release would not be exercised at all.
+        _slots_under_construction=set(),
         get_or_create_slot=lambda **_k: slot,
         push_slots_update=lambda: None,
+        # The live SessionManager surface the Layer B path threads through.
+        sessions=SimpleNamespace(
+            seed_conversation=lambda *a, **k: None,
+            forget_conversation=lambda _k: "",
+            resumable_sid=lambda _k: None,
+        ),
     )
+    state.live_slot_count = lambda: len(state._slots) + len(state._slots_under_construction)
+    state.begin_slot_construction = state._slots_under_construction.add
+    state.end_slot_construction = state._slots_under_construction.discard
     state._imported_slot = slot
     return state
 
 
-async def _run_import(st, monkeypatch, body, *, return_slot=False, created=None):
-    state = _stub_state(st, monkeypatch)
+async def _run_import(st, monkeypatch, body, *, return_slot=False, created=None, save=None):
+    state = _stub_state(st, monkeypatch, save=save)
     if created is not None:
         slot = state._imported_slot
 
@@ -1412,3 +2362,422 @@ def _async_value(value):
         return value
 
     return _inner
+
+
+# ── Layer B resource + permission bounds ─────────────────────────────────
+
+
+def test_layer_b_cap_is_checked_before_the_file_is_read(monkeypatch, tmp_path):
+    """The cap must bound the ALLOCATION, not merely the result.
+
+    A post-read ``len()`` check also returns ``None`` for an oversized log, so
+    "returns None" proves nothing on its own -- by then the multi-gigabyte blob
+    is already resident and the gateway has already OOMed. The only observable
+    difference is that the bytes are never read, which is what this pins.
+    """
+    from pathlib import Path as _Path
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "oversized"
+    (tmp_path / f"{sid}.json").write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    (tmp_path / f"{sid}.jsonl").write_text("x" * 500, encoding="utf-8")
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(st, "_MAX_LAYER_B_CHARS", 100)
+
+    reads: list[str] = []
+    real_read_text = _Path.read_text
+
+    def _spy(self, *a, **k):
+        reads.append(self.name)
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_text", _spy)
+
+    assert st._read_layer_b(sid) is None
+    assert f"{sid}.jsonl" not in reads, "the oversized log was read despite the cap"
+
+
+def test_layer_b_cap_also_covers_the_envelope_read(monkeypatch, tmp_path):
+    """``.json`` is read on the same path and was unbounded too."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "big-envelope"
+    (tmp_path / f"{sid}.json").write_text(
+        json.dumps({"session_id": sid, "pad": "x" * 500}), encoding="utf-8"
+    )
+    (tmp_path / f"{sid}.jsonl").write_text('{"kind":"Prompt"}\n', encoding="utf-8")
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(st, "_MAX_LAYER_B_CHARS", 100)
+
+    assert st._read_layer_b(sid) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits; Windows uses ACLs")
+def test_imported_layer_b_is_owner_only(monkeypatch, tmp_path):
+    """Layer B is the model's whole context window -- every user turn and tool
+    result. Default umask 022 would publish the imported copy at 0644 for any
+    other local user to read.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    d = tmp_path / "cli"  # absent, so this call is the one that creates it
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: d)
+
+    new_sid = st._write_layer_b_files(
+        {"envelope": {"session_id": "old"}, "events": '{"kind":"Prompt"}\n'}, "agent"
+    )
+
+    assert new_sid
+    for suffix in (".json", ".jsonl"):
+        mode = (d / f"{new_sid}{suffix}").stat().st_mode & 0o777
+        assert mode == 0o600, f"{suffix} landed at {oct(mode)}, not owner-only"
+    assert d.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits; Windows uses ACLs")
+def test_import_does_not_repermission_kiro_clis_existing_dir(monkeypatch, tmp_path):
+    """Hardening is scoped to the directory this code creates.
+
+    This is kiro-cli's own sessions dir; silently tightening a pre-existing one
+    would mutate posture on a directory the feature does not own. The FILES are
+    owner-only either way, which is what actually contains the context.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    d = tmp_path / "cli"
+    d.mkdir()
+    # A deliberately GROUP/OTHER-READABLE fixture: the whole point is to hand the
+    # code a directory laxer than what it would choose, so "did not re-permission"
+    # is observable. Asserting on an already-0700 tmp dir would pass even if the
+    # code did chmod it. Test-only fixture state, never a shipped permission.
+    # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- see above  # noqa: E501
+    os.chmod(d, 0o755)  # separate from mkdir: mkdir's mode is umask-masked
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: d)
+
+    new_sid = st._write_layer_b_files(
+        {"envelope": {"session_id": "old"}, "events": '{"kind":"Prompt"}\n'}, "agent"
+    )
+
+    assert new_sid
+    assert d.stat().st_mode & 0o777 == 0o755, "pre-existing dir was re-permissioned"
+    assert (d / f"{new_sid}.jsonl").stat().st_mode & 0o777 == 0o600
+
+
+def test_layer_b_write_leaves_no_temp_file_behind(monkeypatch, tmp_path):
+    """The shared helper allocates its temp via ``mkstemp`` rather than a
+    deterministic ``<name>.tmp``, which is what made concurrent writers race to
+    ENOENT. Pin that only the two real files remain.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    new_sid = st._write_layer_b_files(
+        {"envelope": {"session_id": "old"}, "events": '{"kind":"Prompt"}\n'}, "agent"
+    )
+
+    assert new_sid
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        f"{new_sid}.json",
+        f"{new_sid}.jsonl",
+    ]
+
+
+def test_validate_carries_the_skipped_flag_through():
+    """The marker branches on this flag, so it must survive normalisation.
+
+    ``_validate_bundle`` builds a fresh dict, so a field it does not copy reads
+    as absent downstream no matter what the sender put on the wire.
+    """
+    bundle, err = _validate_bundle(_valid(layer_b_skipped=True))
+    assert err is None
+    assert bundle["layer_b_skipped"] is True
+    # Coerced, not passed through: it arrives from an untrusted peer.
+    bundle, _ = _validate_bundle(_valid(layer_b_skipped="yes"))
+    assert bundle["layer_b_skipped"] is True
+    bundle, _ = _validate_bundle(_valid())
+    assert bundle["layer_b_skipped"] is False
+
+
+def test_mid_turn_bundle_announces_that_it_withheld_context():
+    """An absent ``layer_b`` is ambiguous on the wire; the sender disambiguates."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    skipped = st._assemble_bundle([], "t", "", "mac", None, True)
+    never_had = st._assemble_bundle([], "t", "", "mac", None, False)
+
+    assert skipped["layer_b_skipped"] is True
+    assert "layer_b" not in skipped
+    assert "layer_b_skipped" not in never_had
+
+
+@pytest.mark.asyncio
+async def test_imported_tab_is_marked_when_the_sender_withheld_layer_b(monkeypatch):
+    """The gap: a mid-turn source ships NO ``layer_b``, so gating the marker on
+    that key silenced the tab in exactly the case the sender's own row was
+    reporting as transcript-only.
+
+    The two negatives are covered elsewhere: a v1 bundle by
+    ``test_a_v1_import_is_not_marked_transcript_only``, and a v2 session that
+    never had a context by ``test_import_creates_a_new_slot_with_no_project``
+    (plain ``_valid()``, no flag -> no suffix).
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    bundle = _valid(layer_b_skipped=True)
+    bundle.pop("layer_b", None)
+
+    slot = await _run_import(st, monkeypatch, bundle, return_slot=True)
+
+    assert slot.title.endswith("— transcript only"), slot.title
+
+
+# ── slot-cap accounting across the construction window ───────────────────
+
+
+def test_retracted_import_slot_still_counts_against_the_cap():
+    """A slot retracted for construction is unreachable but ALLOCATED.
+
+    The cap is sampled before creation and reads the live count, so if a
+    retracted slot stopped counting, concurrent imports would each sample a
+    total that excluded every other import in flight -- and all of them would be
+    waved past a cap that was already full.
+    """
+    from kiro_crew.dashboard.state import DashboardState
+
+    state = DashboardState.__new__(DashboardState)
+    state._slots = {"chat-1": object()}
+    state._slots_under_construction = set()
+
+    assert state.live_slot_count() == 1
+
+    state.begin_slot_construction("chat-2")
+    assert state.live_slot_count() == 2, "an in-flight slot vanished from the cap"
+
+    # Idempotent, and releasing restores the count.
+    state.end_slot_construction("chat-2")
+    state.end_slot_construction("chat-2")
+    assert state.live_slot_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_import_releases_the_construction_count_on_every_exit(monkeypatch):
+    """A leaked construction key inflates the cap for the process lifetime --
+    every later import would be refused with the cap never actually reached.
+
+    Drives the failure path (the durable save refuses, which returns 503 from
+    inside the ``try``) and asserts the release happened anyway.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("disk gone")
+
+    state = _stub_state(st, monkeypatch, save=_boom)
+    resp = await st.api_chat_slot_import(_make_request(state, _valid()))
+
+    assert resp.status == 503
+    assert state._slots_under_construction == set(), "construction count leaked"
+    # And the slot was not published either -- a refused import leaves no tab.
+    assert state._slots == {}
+
+
+@pytest.mark.asyncio
+async def test_import_releases_the_construction_count_on_success(monkeypatch):
+    """The success path publishes the slot and stops counting it separately, so
+    the total does not double-count a landed import."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _stub_state(st, monkeypatch)
+    resp = await st.api_chat_slot_import(_make_request(state, _valid()))
+
+    assert resp.status == 200
+    assert state._slots_under_construction == set()
+    assert state.live_slot_count() == 1
+
+
+def test_a_mapped_but_unreadable_layer_b_is_reported_as_withheld(monkeypatch):
+    """Absence and LOSS are different wires.
+
+    A mapped sid whose files will not read (pruned, over the cap, unparseable)
+    is context the session had and is giving up, so the peer must hear about it
+    -- otherwise the imported tab looks like a complete copy with no resumable
+    context behind it. An empty sid stays silent: there was nothing to carry.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_read_chained_history", lambda *_a, **_k: [])
+    monkeypatch.setattr(st, "_read_layer_b", lambda _sid: None)
+
+    lost = st._read_and_assemble(
+        None, "k", [{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", "mapped-sid"
+    )
+    never_had = st._read_and_assemble(
+        None, "k", [{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", ""
+    )
+
+    assert lost["layer_b_skipped"] is True
+    assert "layer_b_skipped" not in never_had
+
+
+def test_layer_b_is_discarded_when_owner_lockdown_fails(monkeypatch, tmp_path):
+    """Fail CLOSED, and leave nothing behind.
+
+    On Windows the ``mode=0o600`` on the write is a no-op, so the DACL call is the
+    only thing making the file owner-only -- if it raises, the context is readable
+    by other local accounts on a shared machine. Refusing costs only resume
+    fidelity (the import lands transcript-only), so it is the cheaper side of the
+    trade. Both files must go: the pair is useless alone and the ``.json`` carries
+    context too.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+
+    def _refuse(_path):
+        raise OSError("cannot resolve the invoking user's SID")
+
+    monkeypatch.setattr(st, "restrict_to_owner", _refuse)
+
+    got = st._write_layer_b_files(
+        {"envelope": {"session_id": "old"}, "events": '{"kind":"Prompt"}\n'}, "agent"
+    )
+
+    assert got is None, "returned a sid for context it could not protect"
+    leftovers = [p.name for p in tmp_path.iterdir()]
+    assert leftovers == [], f"left unprotected context on disk: {leftovers}"
+
+
+def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path):
+    """THE regression test for this feature's worst failure mode.
+
+    An earlier revision redacted Layer B on both boundaries. Measured against 704
+    real sessions on a developer machine, that rewrote a thinking-block
+    ``signature`` in 41% of them -- and the provider validates that signature when
+    it replays the conversation, so the peer's ``session/load`` succeeded and its
+    very NEXT turn was rejected. Every test in the suite passed, because they all
+    used ``{"envelope": {}}``.
+
+    Asserts on the byte-level file content, not on the in-memory dict, because the
+    file is what kiro-cli reads.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    sig = _THINKING_ENVELOPE["session_state"]["conversation_metadata"][
+        "user_turn_metadatas"
+    ][0]["result"]["Ok"]["content"][0]["data"]["signature"]
+
+    new_sid = st._write_layer_b_files(
+        {"envelope": _THINKING_ENVELOPE, "events": '{"kind":"Prompt"}\n'}, "target-agent"
+    )
+
+    assert new_sid
+    written = json.loads((tmp_path / f"{new_sid}.json").read_text(encoding="utf-8"))
+    landed = written["session_state"]["conversation_metadata"]["user_turn_metadatas"][0]
+    block = landed["result"]["Ok"]["content"][0]
+    assert block["data"]["signature"] == sig, "the thinking signature was rewritten"
+    assert block["data"]["text"] == "let me think about the plan"
+    # The events blob lands byte-for-byte.
+    assert (tmp_path / f"{new_sid}.jsonl").read_text(encoding="utf-8") == '{"kind":"Prompt"}\n'
+    # Host-naming fields ARE still neutralised -- byte-exact applies to the
+    # conversation, not to the fields that point at the sender's machine.
+    assert written["session_id"] == new_sid
+    assert written["cwd"] == ""
+    assert written["session_state"]["agent_name"] == "target-agent"
+    assert written["session_state"]["permissions"]["filesystem"]["allowed_read_paths"] == []
+
+
+# ── failure-path hygiene found by review on ff205cba1 ────────────────────
+
+
+def test_layer_b_write_leaves_no_half_pair_when_the_second_write_fails(monkeypatch, tmp_path):
+    """The pair is written one file at a time. A failure on the SECOND write left
+    the first behind: an orphan no join references, that ``_read_layer_b`` will not
+    load (it needs both), and that nothing else cleans up."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    real_write = st.atomic_write
+    calls = {"n": 0}
+
+    def _fail_on_second(path, text, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("no space left on device")
+        return real_write(path, text, **kw)
+
+    monkeypatch.setattr(st, "atomic_write", _fail_on_second)
+
+    got = st._write_layer_b_files(
+        {"envelope": _THINKING_ENVELOPE, "events": '{"kind":"Prompt"}\n'}, ""
+    )
+
+    assert got is None
+    assert calls["n"] == 2, "expected the second write to be the failing one"
+    leftovers = sorted(p.name for p in tmp_path.iterdir())
+    assert leftovers == [], f"half-pair left on disk: {leftovers}"
+
+
+@pytest.mark.asyncio
+async def test_import_rolls_back_layer_b_on_cancellation(monkeypatch):
+    """``CancelledError`` is a BaseException, so the ordinary ``except Exception``
+    never saw it -- a shutdown after the join left an orphaned map entry and files
+    behind a slot that never publishes."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    forgotten: list[str] = []
+    unlinked: list[str] = []
+
+    async def _cancel(*_a, **_k):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(st, "save_slot_off_loop", _cancel)
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "lb-sid")
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        st, "_forget_layer_b_join", lambda _s, k: (forgotten.append(k), "lb-sid")[1]
+    )
+    monkeypatch.setattr(st, "_unlink_layer_b_files", lambda sid: unlinked.append(sid))
+
+    state = _stub_state(st, monkeypatch, save=_cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await st.api_chat_slot_import(
+            _make_request(state, _valid(layer_b={"envelope": {}, "events": "e"}))
+        )
+
+    assert forgotten, "the join was not rolled back on cancellation"
+    assert unlinked == ["lb-sid"], f"files were not removed: {unlinked}"
+    assert state._slots == {}
+    assert state._slots_under_construction == set()
+
+
+@pytest.mark.asyncio
+async def test_slot_cap_is_rechecked_after_the_pre_creation_awaits(monkeypatch):
+    """The first cap test is necessary but not sufficient: body parsing and agent
+    resolution both await, so concurrent imports near the cap all clear it before
+    any of them allocates. The second test sits with no await before creation.
+
+    Simulated by filling the map DURING the awaited agent resolution -- exactly
+    what a sibling request would do.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _stub_state(st, monkeypatch)
+
+    async def _resolve_then_fill(*_a, **_k):
+        # A concurrent import lands while this one is awaiting.
+        state._slots.update({f"s{i}": object() for i in range(500)})
+        return ""
+
+    monkeypatch.setattr(st, "asyncio", asyncio)
+    monkeypatch.setattr(st, "_resolve_agent", lambda hint: "")
+    monkeypatch.setattr(asyncio, "to_thread", _resolve_then_fill)
+
+    resp = await st.api_chat_slot_import(_make_request(state, _valid(agent="some-agent")))
+
+    assert resp.status == 429
+    assert json.loads(resp.body)["code"] == "transfer_slot_cap"
+    # Nothing was allocated by the request that lost the race.
+    assert "imported-1" not in state._slots

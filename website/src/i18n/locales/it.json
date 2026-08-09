@@ -5670,6 +5670,8 @@
       "not_connected": "non connesso",
       "send_a_copy_to": "Invia una copia a",
       "sent": "Inviato",
+      "sent_transcript_only": "Inviato (solo trascrizione)",
+      "transcript_only_hint": "Quell'istanza non ha potuto ripristinare il contesto completo della conversazione, quindi questa copia riprende solo dalla trascrizione.",
       "unknown_error": "Errore sconosciuto"
     },
     "sessionActionsMenu": {

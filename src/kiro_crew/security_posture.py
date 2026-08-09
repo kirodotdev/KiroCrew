@@ -155,8 +155,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "transcript written before the redactors existed (or carried in from a "
         "channel) can still hold a raw credential on disk, and relying on the "
         "receiving instance to scrub it would send the secret across the boundary "
-        "first. The importer redacts again — idempotent, and it must not assume a "
-        "well-behaved sender.",
+        "first. This covers **Layer A only** — the display transcript, plus the "
+        "title and origin label. The Layer B kiro-cli context is deliberately "
+        "forwarded BYTE-EXACT and is NOT scrubbed: its thinking blocks carry a "
+        "provider signature over their own content, so any rewrite invalidates the "
+        "conversation and the peer's next turn is rejected (measured: a leaf-string "
+        "pass altered a signature in 41% of one developer machine's 704 sessions). "
+        "Redacting that artifact and transplanting it are mutually exclusive. What "
+        "bounds the exposure is the destination rather than the payload — a send "
+        "goes to the OPERATOR'S OWN peer instance over a tunnel they authenticated, "
+        "and the peer stores it 0600 — so Layer B never leaves the operator's own "
+        "trust boundary. Inbound Layer B is validated structurally (parse-only, "
+        "never rewritten) and refused whole if any record does not parse.",
     ),
     (
         "Profile artifact",

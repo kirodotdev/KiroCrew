@@ -5586,6 +5586,8 @@
       "not_connected": "nicht verbunden",
       "send_a_copy_to": "Kopie senden an",
       "sent": "Gesendet",
+      "sent_transcript_only": "Gesendet (nur Transkript)",
+      "transcript_only_hint": "Diese Instanz konnte den vollständigen Gesprächskontext nicht wiederherstellen; diese Kopie setzt nur auf dem Transkript fort.",
       "unknown_error": "Unbekannter Fehler"
     },
     "sessionActionsMenu": {

@@ -5670,6 +5670,8 @@
       "not_connected": "não conectado",
       "send_a_copy_to": "Enviar uma cópia para",
       "sent": "Enviado",
+      "sent_transcript_only": "Enviado (apenas transcrição)",
+      "transcript_only_hint": "Essa instância não conseguiu restaurar o contexto completo da conversa, então esta cópia retoma apenas a partir da transcrição.",
       "unknown_error": "Erro desconhecido"
     },
     "sessionActionsMenu": {

@@ -16,7 +16,7 @@ import { i18nT } from '../i18n/t'
 type SendState =
   | { kind: 'idle' }
   | { kind: 'sending' }
-  | { kind: 'sent' }
+  | { kind: 'sent'; transcriptOnly?: boolean }
   | { kind: 'error'; message: string }
 
 interface SendToInstanceSubmenuProps {
@@ -105,7 +105,16 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
             {st.kind === 'sending' && (
               <Loader2 size={13} className="ml-auto shrink-0 animate-spin text-muted" />
             )}
-            {st.kind === 'sent' && (
+            {st.kind === 'sent' && st.transcriptOnly && (
+              <span
+                className="ml-auto flex items-center gap-1 text-[10px] text-warn shrink-0"
+                title={i18nT('components.sendToInstanceSubmenu.transcript_only_hint')}
+              >
+                <AlertCircle size={12} />
+                {i18nT('components.sendToInstanceSubmenu.sent_transcript_only')}
+              </span>
+            )}
+            {st.kind === 'sent' && !st.transcriptOnly && (
               <span className="ml-auto flex items-center gap-1 text-[10px] text-ok shrink-0">
                 <Check size={12} />
                 {i18nT('components.sendToInstanceSubmenu.sent')}
@@ -142,7 +151,16 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
   const sendMutation = useMutation({
     mutationFn: ({ id }: { id: string }) => api.sendSessionToInstance(id, slotKey),
     onMutate: ({ id }) => { setStates(s => ({ ...s, [id]: { kind: 'sending' } })) },
-    onSuccess: (_res, { id }) => { setStates(s => ({ ...s, [id]: { kind: 'sent' } })) },
+    onSuccess: (res, { id }) => {
+      // A peer that materialised Layer B reports 'session_load'; 'prefix' means
+      // the copy landed but only as a transcript, so it must NOT read as a plain
+      // "Sent" -- that is the silent degradation this feature removes. '' (an
+      // older peer that cannot report) stays plain "Sent".
+      setStates(s => ({
+        ...s,
+        [id]: { kind: 'sent', transcriptOnly: res?.resume_mode === 'prefix' },
+      }))
+    },
     onError: (e, { id }) => {
       setStates(s => ({
         ...s,

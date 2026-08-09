@@ -5670,6 +5670,8 @@
       "not_connected": "non connecté",
       "send_a_copy_to": "Envoyer une copie à",
       "sent": "Envoyé",
+      "sent_transcript_only": "Envoyé (transcription seule)",
+      "transcript_only_hint": "Cette instance n'a pas pu restaurer le contexte complet de la conversation ; cette copie reprend uniquement à partir de la transcription.",
       "unknown_error": "Erreur inconnue"
     },
     "sessionActionsMenu": {

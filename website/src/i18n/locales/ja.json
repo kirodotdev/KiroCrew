@@ -5502,6 +5502,8 @@
       "not_connected": "未接続",
       "send_a_copy_to": "コピーを送信",
       "sent": "送信しました",
+      "sent_transcript_only": "送信しました（記録のみ）",
+      "transcript_only_hint": "そのインスタンスが会話コンテキスト全体を復元できなかったため、このコピーは記録のみから再開します。",
       "unknown_error": "不明なエラー"
     },
     "sessionActionsMenu": {

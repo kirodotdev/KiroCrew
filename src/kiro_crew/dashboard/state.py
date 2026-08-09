@@ -2166,6 +2166,13 @@ class DashboardState:
         # applied at the delivery sink so the bus stays pure.
         self.notification_channel_settings = ChannelSettings()
         self._slots: dict[str, _ChatSlot] = {}
+        # Slot keys that EXIST but are deliberately absent from ``_slots`` while
+        # they are being built (see ``session_transfer``'s import path, which
+        # retracts a slot so it is unreachable until its transcript and context
+        # are in place). They still consume memory, so every cap must count them:
+        # ``len(_slots)`` alone undercounts by however many imports are in flight,
+        # and each concurrent import would then be waved past a full-slot cap.
+        self._slots_under_construction: set[str] = set()
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
         #
@@ -3510,6 +3517,28 @@ class DashboardState:
                 )
         self.push_slots_update()
         return slot
+
+    def live_slot_count(self) -> int:
+        """Slots that occupy memory: published PLUS still under construction.
+
+        The number every slot cap must test. A slot retracted for construction is
+        missing from ``_slots`` but is fully allocated, so a cap reading
+        ``len(self._slots)`` directly undercounts and lets concurrent creators
+        each slip past a cap that is already full.
+        """
+        return len(self._slots) + len(self._slots_under_construction)
+
+    def begin_slot_construction(self, key: str) -> None:
+        """Mark *key* as allocated-but-unpublished.
+
+        Pair with :meth:`end_slot_construction` in a ``finally`` -- a leaked key
+        inflates every slot cap for the lifetime of the process.
+        """
+        self._slots_under_construction.add(key)
+
+    def end_slot_construction(self, key: str) -> None:
+        """Drop *key* from the under-construction set. Idempotent."""
+        self._slots_under_construction.discard(key)
 
     def reseed_slot_counter(self) -> None:
         """Advance ``_slot_counter`` past the highest index among live slots.

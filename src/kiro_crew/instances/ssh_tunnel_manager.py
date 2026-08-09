@@ -1446,12 +1446,18 @@ class SshTunnelManager:
         # bare ``mc_token`` is never read and would 403 every transfer.
         cookie_name = f"mc_token_{int(local_port)}"
         timeout = aiohttp.ClientTimeout(total=_TRANSFER_TIMEOUT)
-        # One re-mint retry on a rejected credential. A retained credential can go
-        # stale while the tunnel stays CONNECTED — the same condition
-        # ``token_validates`` exists for (a failed self-heal re-mint, or a remote
-        # restart that invalidates credentials). Retrying once with a fresh mint
-        # turns that into a transparent success instead of a spurious rejection.
-        for attempt in range(2):
+        # Two INDEPENDENT one-shot retries, tracked by flag rather than by loop
+        # index so neither consumes the other's budget:
+        #  * ``reminted`` -- a retained credential can go stale while the tunnel
+        #    stays CONNECTED (the condition ``token_validates`` exists for: a
+        #    failed self-heal re-mint, or a remote restart that invalidates
+        #    credentials). One fresh mint turns that into a transparent success.
+        #  * ``downgraded`` -- an older peer refuses bundle_version 2; resend the
+        #    transcript-only v1 shape it has always accepted.
+        # Bounded at 3 attempts so at most one of each can fire plus the original.
+        reminted = False
+        downgraded = False
+        for _attempt in range(3):
             token = self._tokens.get(instance_id, "")
             if not token:
                 return False, {
@@ -1470,7 +1476,8 @@ class SshTunnelManager:
                         if 200 <= resp.status < 300:
                             return True, payload if isinstance(payload, dict) else {}
                         if resp.status in (401, 403):
-                            if attempt == 0 and await self.refresh_token(instance_id):
+                            if not reminted and await self.refresh_token(instance_id):
+                                reminted = True
                                 continue  # retry once with the fresh credential
                             return False, {
                                 "error": "peer rejected the credential",
@@ -1480,6 +1487,35 @@ class SshTunnelManager:
                         # mismatch or an oversized bundle is actionable, and
                         # rewriting it here would erase that.
                         code = payload.get("code") if isinstance(payload, dict) else None
+                        # An OLDER peer refuses bundle_version 2 outright, even
+                        # though its Layer B is purely additive. Downgrade once
+                        # and resend the transcript-only v1 shape that peer has
+                        # always handled: without this, gaining Layer B would
+                        # REMOVE the ability to send to a peer that has not been
+                        # upgraded yet.
+                        #
+                        # Gated on the VERSION, not on Layer B presence: a
+                        # context-free session ships a v2 bundle with NO
+                        # ``layer_b`` key at all, and a presence check would skip
+                        # the downgrade for exactly those transfers and fail them
+                        # against a v1 peer. Dropping ``layer_b`` below stays
+                        # unconditional because it is simply absent in that case.
+                        if (
+                            code == "transfer_version_unsupported"
+                            and not downgraded
+                            and bundle.get("bundle_version") == 2
+                        ):
+                            downgraded = True
+                            bundle = {
+                                k: v for k, v in bundle.items() if k != "layer_b"
+                            }
+                            bundle["bundle_version"] = 1
+                            logger.info(
+                                "Session transfer to %s: peer refused v2; "
+                                "retrying transcript-only at v1",
+                                instance_id,
+                            )
+                            continue
                         return False, {
                             "error": (
                                 payload.get("error")

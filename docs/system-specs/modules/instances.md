@@ -797,12 +797,55 @@ A session is a portable JSONL transcript (`<data-home>/sessions/<key>.jsonl`:
 a metadata line then `{role, content, ts}` records) and the receiving side
 already knows how to turn one into a live tab — that is what
 `chat_persistence` does on every gateway restart. So a transfer reuses two
-things that exist: the tunnel from §4 and the rehydrate path. **Arrival fidelity
-equals a local gateway restart**, which is the behaviour users already have.
+things that exist: the tunnel from §4 and the rehydrate path.
 
 The gateway binds loopback unconditionally (`dashboard/urls.py:is_local_only`
 always returns `True` in the public build), so an instance tunnel is the only
 sanctioned way to reach a peer. Nothing here opens a socket.
+
+### 14.1a Two layers — and why Layer B is what makes resume real
+
+The transcript above is only the **display** copy (*Layer A*). The context the
+model actually holds — the compaction/turn state, keyed by a kiro-cli session id
+— lives in a **second store outside the crew home**:
+`kiro_sessions_dir()/<sid>.json` + `<sid>.jsonl`, joined to a slot through
+`session_map.json`. Call it *Layer B*.
+
+This split is the whole fidelity story. Ship Layer A alone and the peer has a
+browsable history but no resumable context: `SessionMap.get` finds no usable sid
+and the next turn falls back to `_build_history_prefix()`, a condensed ~8K-char
+text prefix — no tool state, no real context window. Ship Layer B too and the
+peer resumes through `session/load` under its own fresh sid, which is the same
+fidelity a local gateway restart gives.
+
+So `bundle_version` 2 carries an optional `layer_b`. It is **optional by
+design**: a v1 sender, or a session that never opened a kiro-cli context, ships
+Layer A only and the peer degrades to the prefix. Both versions stay accepted so
+a newer instance can still receive from an older one.
+
+On import Layer B's **host-naming fields** are rewritten — a fresh `sid`
+(so copy-never-move holds and a repeat send cannot collide), `cwd` and the
+filesystem `allowed_*_paths` cleared (matching the `project` decision below —
+the session arrives unscoped), `agent_name` set to the target-resolved agent —
+while the **conversation payload travels byte-exact**. That distinction is
+forced, not stylistic: thinking blocks inside `conversation_metadata` carry a
+provider `signature` over their own content, which is validated when the
+conversation is replayed, so rewriting any covered byte makes the peer's *next
+turn* fail — long after the import reported success. An earlier revision scrubbed
+Layer B on both boundaries and, measured against one developer machine's 704 real
+sessions, altered a signature in **41%** of them. Redacting this artifact and
+transplanting it cannot both hold; what bounds the exposure is the destination
+(the operator's own peer, over a tunnel they authenticated, stored `0600`), not a
+scrub of the payload. **Layer A keeps its redaction** — that text is rendered and
+re-read as context. Inbound Layer B is validated structurally (parse-only, never
+rewritten) and refused whole if any record fails to parse. Materialisation is
+**best-effort**: if it fails, the import still succeeds as the transcript-only
+copy rather than failing an already-persisted session.
+
+Sub-agent conversations deliberately do **not** travel. Their results were
+already injected into the parent conversation, so they are inside Layer B
+already; only `spawn_continue` against one specific sub-agent is lost on the
+peer.
 
 ### 14.2 Copy, never move
 
@@ -819,7 +862,10 @@ existing session, on either side. Consequences worth stating:
 
 | Field | Travels? | Why |
 |---|---|---|
-| transcript (`user` / `assistant` turns) | yes | The portable part. Tool and system frames are dropped — they reference local tool state. |
+| transcript (`user` / `assistant` turns) | yes | Layer A — the portable display copy. Tool and system frames are dropped from it: they reference local tool state. |
+| **`layer_b`** (kiro-cli context: envelope + events) | **yes (v2)** | Layer B — the real context window, so the session RESUMES rather than replaying a lossy ~8K prefix. Only host-naming fields are rewritten on arrival (fresh `sid`, cleared `cwd`/`allowed_*_paths`, target agent); the conversation payload travels **byte-exact and unredacted**, because its thinking-block signatures are validated on replay. Optional, and best-effort on import. |
+| sub-agent conversations | no | Their results are already inside Layer B as injected context. Only `spawn_continue` on one specific sub-agent is lost. |
+| memory (preferences, semantic KV, lessons) | no | A workspace's memory is a per-instance scope, and copying it across hosts is the risky, hard-to-undo part of a transfer. The peer keeps its own. |
 | `title` | yes | Prefixed `⇄ ` and suffixed `(from <origin>)` on arrival, so a transferred tab is never mistaken for a locally-born one. The prefix is stripped before re-bundling so a session bounced back and forth does not accumulate one prefix per hop. |
 | `agent` | hint only | Applied only if the target has an agent by that name, else dropped. An agent template is a local object; carrying the name blindly would leave the slot pointing at nothing. |
 | **`project`** | **no** | The headline decision. The source's checkout path almost never exists on the target (a Mac worktree path on a Linux dev desk), and a slot pointing at a missing directory scopes file search and steering to nothing. The session arrives **unscoped** and the user re-picks a project. |
@@ -827,9 +873,10 @@ existing session, on either side. Consequences worth stating:
 | `workspace` | no | Workspaces are per-instance memory scopes; a matching name still means a different memory. |
 | `folder_id`, `tags`, `pinned`, `artifact`, `app`, `linked_session_key`, `forked_from` | no | Local-graph references that would dangle. |
 
-`bundle_version` is refused when unknown rather than best-effort parsed: the two
-ends are independently-updated installs, and a silently misread field would land
-as corrupted conversation.
+`bundle_version` is refused when **outside the supported set** (`{1, 2}`) rather
+than best-effort parsed: the two ends are independently-updated installs, and a
+silently misread field would land as corrupted conversation. Accepting both
+versions is what lets a v2 instance still receive a copy from a v1 one.
 
 ### 14.4 API
 
