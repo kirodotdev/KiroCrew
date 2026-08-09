@@ -805,7 +805,7 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
             if rate > 0:
                 growth = round(rate, 2)
                 remaining = _COMPACTION_PCT - seg[-1][1]
-                to_90 = int(remaining / rate) if remaining > 0 else 0
+                to_90 = math.ceil(remaining / rate) if remaining > 0 else 0
         convo_rows.append(
             {
                 "slot": c["slot"],
