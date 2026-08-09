@@ -355,23 +355,52 @@ class TestPreparePrPreSubmitReview:
 
 
 class TestClaudeReviewCodeOnlyScope:
-    """The Claude reviewer is CODE-ONLY and fast-by-scope: it fetches the diff
-    via `gh pr diff` (diff only, no prose), cannot pull PR title/description or
-    comments, and scales re-scanning to the diff size."""
+    """The Claude reviewer reads the diff via `gh pr diff` plus the PR's stated
+    purpose as UNTRUSTED, nonce-fenced data written to a file by a pre-step. It
+    still cannot pull comment threads or arbitrary PR data, and it scales
+    re-scanning to the diff size."""
 
-    def test_reviewer_is_code_only_and_cannot_fetch_pr_prose(self) -> None:
+    def test_reviewer_cannot_fetch_arbitrary_pr_data_itself(self) -> None:
         workflow = _workflow("claude-review.yml")
 
         # Scope the tool check to the --allowedTools line (other steps use gh api).
         tools = _line_containing(workflow, "--allowedTools")
         assert "Read,Grep,Glob" in tools
-        assert "gh pr diff" in tools  # diff-only source (no prose)
-        assert "gh pr comment" not in tools  # revoked: gate+summary read structured output
-        assert "gh pr view" not in tools  # must NOT fetch title/description/comments
-        assert "gh api" not in tools  # must NOT fetch arbitrary PR data
-        # Prompt states the code-only input discipline explicitly.
-        assert "review the CODE only" in workflow
-        assert "OUT OF SCOPE" in workflow
+        assert "gh pr diff" in tools  # diff-only source
+        assert "gh pr comment" not in tools  # revoked: gate+summary read the transcript
+        # The reviewer must not fetch prose ITSELF -- a trusted pre-step hands it
+        # over as a file, so the model never has an unbounded PR-read tool.
+        assert "gh pr view" not in tools
+        assert "gh api" not in tools
+
+    def test_pr_intent_is_supplied_as_untrusted_fenced_data(self) -> None:
+        workflow = _workflow("claude-review.yml")
+
+        # A pre-step fetches title/body and writes it to a file the model Reads.
+        assert "Fetch PR intent" in workflow
+        assert ".review-pr-intent.txt" in workflow
+        assert "PR_INTENT_BEGIN::" in workflow
+        assert "PR_INTENT_END::" in workflow
+        # Nonce-fenced so author text can never be mistaken for prompt structure.
+        assert "openssl rand -hex 16" in workflow
+        # The prompt must frame it as untrusted and non-waiving.
+        assert "UNTRUSTED, author-controlled DATA" in workflow
+        assert "never waive" in workflow or "NEVER waive" in workflow
+
+    def test_intent_is_not_interpolated_into_prompt_or_shell(self) -> None:
+        """Actions expression-injection guard.
+
+        The PR body is attacker-controlled on a public repo. It must reach the
+        model as a FILE, never through a `${{ }}` expression in a run/prompt
+        block -- that is the classic script-injection vector.
+        """
+        workflow = _workflow("claude-review.yml")
+        for forbidden in (
+            "${{ github.event.pull_request.body }}",
+            "${{ github.event.pull_request.title }}",
+            "${{ steps.intent.outputs.body }}",
+        ):
+            assert forbidden not in workflow, f"untrusted interpolation: {forbidden}"
 
     def test_reviewer_gets_the_diff_from_gh_pr_diff(self) -> None:
         workflow = _workflow("claude-review.yml")
@@ -386,7 +415,7 @@ class TestClaudeReviewCodeOnlyScope:
         # falsification effort is reserved for security/data-integrity paths.
         assert "EFFORT: ONE pass over the diff" in workflow
         assert "PHASE A (DISCOVER, generous recall)" in workflow
-        assert "PHASE B (FALSIFY, strict precision)" in workflow
+        assert "PHASE B (FALSIFY & CLASSIFY, strict precision)" in workflow
         assert "Spend extra falsification effort ONLY where" in workflow
 
     def test_verdict_is_gated_on_sha_scoped_markers_not_structured_output(self) -> None:
@@ -397,6 +426,63 @@ class TestClaudeReviewCodeOnlyScope:
         assert "--json-schema" not in _line_containing(workflow, "--allowedTools")
         assert "[OPUS-REVIEWED] $HEAD" in workflow
         assert "[BLOCK-MERGE] $HEAD" in workflow
+
+
+class TestClaudeReviewQualityDimensions:
+    """The reviewer covers logic/quality, not just the AUTOSDE security rules --
+    but broadening what it LOOKS AT must not broaden what BLOCKS."""
+
+    def test_all_seven_dimensions_present(self) -> None:
+        workflow = _workflow("claude-review.yml")
+        # The "WHAT TO LOOK FOR" section enumerates the semantic areas
+        # (non-exhaustive) that the reviewer covers.
+        assert "WHAT TO LOOK FOR" in workflow
+        assert "correctness & regression" in workflow
+        assert "resource & lifecycle" in workflow
+        assert "scope & description fidelity" in workflow
+
+    def test_consequence_chain_is_the_bar(self) -> None:
+        workflow = _workflow("claude-review.yml")
+        assert "CHAIN OF CONSEQUENCES" in workflow
+        assert "cause -> mechanism -> user/system consequence" in workflow
+        # A finding that cannot complete the chain must be dropped, not downgraded.
+        assert "DROP THE FINDING" in workflow
+
+    def test_quality_dimensions_are_advisory_only(self) -> None:
+        """The blocking set is closed: only WHAT BLOCKS items gate merges.
+
+        Everything else that passes the consequence-chain bar is advisory FINDING.
+        """
+        workflow = _workflow("claude-review.yml")
+        # Two-level system: BLOCKING meets criteria, FINDING does not.
+        assert "passes the bar, does not meet WHAT BLOCKS. Advisory." in workflow
+        # The blocking criteria are enumerated and closed.
+        assert "WHAT BLOCKS (exhaustive" in workflow
+        assert "Nothing else blocks." in workflow
+
+    def test_finding_budget_is_capped(self) -> None:
+        workflow = _workflow("claude-review.yml")
+        assert "at most 5 BLOCKING findings" in workflow
+        assert "At most 6 advisory FINDINGs" in workflow
+
+    def test_output_stays_terse_with_dimension_tag(self) -> None:
+        workflow = _workflow("claude-review.yml")
+        assert "State the issue and the fix; do NOT teach" in workflow
+        # Output format: FINDING — file:line (no dimension tag needed)
+        assert "FINDING — file:line" in workflow
+        assert "NO rationale paragraphs" in workflow
+
+    def test_no_contradictory_linter_exclusion(self) -> None:
+        """The old blanket 'never report dead code' banned dimension 6.
+
+        The exclusion must now draw the line at MECHANICAL vs SEMANTIC, or the
+        prompt contradicts itself and the model resolves it arbitrarily.
+        """
+        workflow = _workflow("claude-review.yml")
+        assert "The line is MECHANICAL vs SEMANTIC" in workflow
+        # The specific contradictions must be gone from the exclusion list.
+        exclusion = _line_containing(workflow, "NEVER report anything those tools own")
+        assert "dead code" not in exclusion
         assert "steps.review.outputs.execution_file" in workflow
 
 
