@@ -206,15 +206,15 @@ class DiscordSessionResume:
                     self.conv_log.search_sessions, query, _SEARCH_FETCH_LIMIT
                 )
                 if not rows and len(normalized_query.split()) > 1:
-                    # search_sessions matches the query as ONE phrase
-                    # (``needle = query.casefold()``), so out-of-order words miss:
-                    # "specific link" does not match "Link to a Specific Session".
-                    # Fall back to an all-words TITLE match so a remembered-but-
-                    # reordered title still resolves. Deliberately last-resort and
-                    # only on zero hits, so the shared search stays authoritative
-                    # and we are not running two rankers in parallel. The proper
-                    # home for multi-word support is search_sessions itself, which
-                    # would fix the dashboard too -- tracked as a follow-up.
+                    # search_sessions now matches multi-word queries token-wise
+                    # (all tokens must appear, in the title or the content), so
+                    # out-of-order words like "specific link" DO resolve
+                    # "Link to a Specific Session". What it still cannot reach is
+                    # a session older than its _SEARCH_SCAN_WINDOW most-recent
+                    # cap, so keep this unbounded all-words TITLE match as the
+                    # last resort for a long-lived install. Only on zero hits, so
+                    # the shared search stays authoritative and we are not
+                    # running two rankers in parallel.
                     listed = await asyncio.to_thread(self.conv_log.list_sessions)
                     words = normalized_query.split()
                     rows = [
