@@ -17,7 +17,7 @@ weeks in the open.
   you and recovers on its own — enabling it never errors out — and the agent can
   also serve browser work from the native embedded view.
 
-### Four new built-in apps
+### Eight new built-in apps
 
 - **Spec Builder** — a spec-driven development surface: shape requirements into
   a spec, then hand it to the agent to implement.
@@ -26,6 +26,18 @@ weeks in the open.
 - **Crew Companion** — a desk companion that reflects what your agent is doing.
 - **Auto-Improvement** — measurement-first self-improvement that proposes,
   lands, and verifies its own changes GitHub-natively.
+- **Meetings** — transcribes a live meeting, keeps structured notes and diagrams
+  as it goes, and extracts action items you can review afterwards. Recordings
+  and notes can now be deleted from the app.
+- **Papyrus** — a LaTeX paper editor with a split-pane view, live PDF preview,
+  and an AI co-author.
+- **Mochi** — a desktop companion that lives on your screen in its own panel,
+  watches pages and feeds for you, and plans its day around your schedule.
+- **PPTX Maker** — describe the deck you want in chat and get a real `.pptx`
+  back, by way of an agent that interviews you and writes a brief, an outline,
+  and an art direction first.
+- Every one of these is **opt-in**: install it from the App Store and enable it
+  before it does anything.
 - Installed apps are searchable and launchable from the command palette, and
   third-party apps now run under **per-app trust grants**, with a denial that
   tells you exactly what to do about it.
@@ -34,6 +46,9 @@ weeks in the open.
 - **Connections** gained a provider registry, so an integration declares what it
   is asking for and its consent URL is validated before you are sent to it.
 - Code Review Sage works against **GitHub Enterprise Server** hosts.
+- An MCP server that authenticates with OAuth now receives the scope list and
+  client id in the fields kiro-cli actually reads, so those connections
+  authorize instead of silently failing.
 
 ### Windows, properly
 
@@ -70,6 +85,8 @@ weeks in the open.
   relevance order, and the chat action footer grows to 40px targets on touch
   devices.
 - Bold, italic, and strikethrough now render correctly in **CJK prose**.
+- While the agent is waiting on something, the wait shows a **live countdown**
+  with a button to end it early instead of leaving you guessing.
 
 ### Channels, and setup that no longer assumes Slack
 
