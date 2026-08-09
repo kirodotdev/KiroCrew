@@ -869,7 +869,14 @@ async def _run_json(
         # in glab's own config (reachable via GLAB_CONFIG_DIR), which is scoped to
         # the host it was created for.
         allowed_env_keys = allowed_env_keys - {"GITLAB_TOKEN"}
-    base_env = {key: value for key, value in os.environ.items() if key in allowed_env_keys}
+    # Matching follows the shared convention (exact on POSIX, case-folded on
+    # Windows — see platform_compat.env_key_allowed) so the filter never
+    # depends on the allowlist's casing agreeing with what os.environ yields.
+    base_env = {
+        key: value
+        for key, value in os.environ.items()
+        if platform_compat.env_key_allowed(key, allowed_env_keys)
+    }
     base_env.update(
         {
             "GH_PAGER": "cat",

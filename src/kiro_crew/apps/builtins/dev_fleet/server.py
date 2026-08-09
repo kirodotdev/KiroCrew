@@ -2092,30 +2092,19 @@ _WINDOWS_SAFE_ENV_KEYS = (
 _SAFE_ENV_KEYS = _POSIX_SAFE_ENV_KEYS + (
     _WINDOWS_SAFE_ENV_KEYS if platform_compat.IS_WINDOWS else ()
 )
-_SAFE_ENV_KEYS_FOLDED = frozenset(name.upper() for name in _SAFE_ENV_KEYS)
 
 
 def _is_safe_env_key(key: str) -> bool:
     """Whether *key* is allowlisted, honoring Windows' case-insensitive env.
 
-    On Windows, environment names are case-INSENSITIVE and CPython's
-    ``os.environ`` upper-cases every key, so ``os.environ.items()`` yields
-    ``SYSTEMROOT`` — never the ``SystemRoot`` spelling Microsoft documents and
-    that these allowlists write. A literal membership test therefore drops
-    exactly the variables the allowlist was extended to carry, and the failure
-    is silent at the boundary and only surfaces in the child as an unrelated
-    error: without ``SystemRoot`` a spawned ``git`` cannot initialize Winsock,
-    so a fetch dies with ``getaddrinfo() thread failed to start``.
-
-    Folding on Windows only, rather than upper-casing the lists, keeps POSIX
-    exact: ``PATH`` and ``Path`` are genuinely different variables there, and a
-    case-insensitive match would let a lookalike through. Mirrors
-    ``apps.registry._is_safe_env_key`` and
-    ``kiro_prerequisite._allowlisted_env``.
+    Thin wrapper binding this module's allowlist to the shared matching
+    convention — exact on POSIX, case-folded on Windows. The rationale (why a
+    literal membership test silently drops ``SystemRoot`` on Windows, so a
+    spawned ``git`` cannot initialize Winsock and a fetch dies with
+    ``getaddrinfo() thread failed to start``, and why POSIX must stay exact)
+    lives on :func:`platform_compat.env_key_allowed`.
     """
-    if platform_compat.IS_WINDOWS:
-        return key.upper() in _SAFE_ENV_KEYS_FOLDED
-    return key in _SAFE_ENV_KEYS
+    return platform_compat.env_key_allowed(key, _SAFE_ENV_KEYS)
 
 
 def _build_env(*, with_credentials: bool = False) -> dict:

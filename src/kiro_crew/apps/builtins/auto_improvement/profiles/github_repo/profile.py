@@ -80,6 +80,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
 
+from kiro_crew import platform_compat
 from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 
 from ...spine import agent_discovery
@@ -401,10 +402,14 @@ def _measure_env(tree: Path) -> dict[str, str]:
     # credentials to agent-authored test code. Raised by review of this branch.
     #
     # A few HOST variables are still required for a subprocess to run at all (PATH) or to
-    # behave like a normal user session (HOME, TMPDIR, locale). Those are copied through
-    # by NAME, so the set is auditable and cannot silently grow to include a credential.
+    # behave like a normal user session (HOME, TMPDIR, locale). Those are matched against
+    # the named allowlist above via the shared convention (exact on POSIX, case-folded on
+    # Windows — see platform_compat.env_key_allowed), so the set is auditable and cannot
+    # silently grow to include a credential.
     env: dict[str, str] = {
-        name: os.environ[name] for name in _MEASURE_ENV_PASSTHROUGH if name in os.environ
+        name: value
+        for name, value in os.environ.items()
+        if platform_compat.env_key_allowed(name, _MEASURE_ENV_PASSTHROUGH)
     }
     env["PYTHONHASHSEED"] = "0"
     env["PYTHONDONTWRITEBYTECODE"] = "1"

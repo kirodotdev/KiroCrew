@@ -172,29 +172,15 @@ _SAFE_ENV_KEYS = frozenset(
 )
 
 
-#: Case-folded view of the allowlist, for the Windows match below.
-_SAFE_ENV_KEYS_FOLDED = frozenset(k.upper() for k in _SAFE_ENV_KEYS)
-
-
 def _is_safe_env_key(key: str) -> bool:
     """Whether *key* is allowlisted, honoring Windows' case-insensitive env.
 
-    On Windows, environment variable names are case-INSENSITIVE and CPython's
-    ``os.environ`` upper-cases every key, so ``os.environ.items()`` yields
-    ``SYSTEMROOT`` — never the ``SystemRoot`` spelling Microsoft documents and that
-    this allowlist (and ``kiro_prerequisite``'s) writes. A literal membership test
-    therefore dropped exactly the variables it was extended to carry, and the
-    failure is silent at the boundary and fatal in the child: a Windows process
-    without ``SystemRoot`` cannot resolve side-by-side assemblies and dies before
-    ``main()``.
-
-    Folding on Windows only, rather than upper-casing the list, keeps POSIX exact:
-    ``PATH`` and ``Path`` are genuinely different variables there, and a
-    case-insensitive match would let a lookalike through.
+    Thin wrapper binding this module's allowlist to the shared matching
+    convention — exact on POSIX, case-folded on Windows. The rationale (why a
+    literal membership test silently drops ``SystemRoot`` on Windows, and why
+    POSIX must stay exact) lives on :func:`platform_compat.env_key_allowed`.
     """
-    if platform_compat.IS_WINDOWS:
-        return key.upper() in _SAFE_ENV_KEYS_FOLDED
-    return key in _SAFE_ENV_KEYS
+    return platform_compat.env_key_allowed(key, _SAFE_ENV_KEYS)
 
 
 def minimal_env(**extra: str) -> dict[str, str]:

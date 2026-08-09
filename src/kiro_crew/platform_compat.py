@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import ctypes.util
 import errno
+import functools
 import io
 import logging
 import os
@@ -786,6 +787,41 @@ def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> l
                 result.append(child_pid)
                 frontier.append(child_pid)
     return result
+
+
+@functools.lru_cache(maxsize=None)
+def _folded_env_allowlist(allowed: frozenset[str] | tuple[str, ...]) -> frozenset[str]:
+    """Upper-cased view of *allowed*, cached per allowlist constant."""
+    return frozenset(name.upper() for name in allowed)
+
+
+def env_key_allowed(key: str, allowed: frozenset[str] | tuple[str, ...]) -> bool:
+    """Whether env-var *key* is in *allowed*, honoring Windows' case-insensitive env.
+
+    On Windows, environment variable names are case-INSENSITIVE and CPython's
+    ``os.environ`` upper-cases every key, so ``os.environ.items()`` yields
+    ``SYSTEMROOT`` — never the ``SystemRoot`` spelling Microsoft documents and
+    that env allowlists are written in. A literal membership test therefore
+    drops exactly the variables the allowlist was extended to carry, and the
+    failure is silent at the boundary and only surfaces in the spawned child as
+    an unrelated-looking error: a Windows process without ``SystemRoot`` cannot
+    resolve side-by-side assemblies or initialize Winsock, so it dies before
+    ``main()`` or fails a fetch with ``getaddrinfo() thread failed to start``.
+
+    Folding on Windows only, rather than upper-casing the allowlists, keeps
+    POSIX exact: ``PATH`` and ``Path`` are genuinely different variables there,
+    and a case-insensitive match would let a lookalike through.
+
+    This is the single shared membership predicate for subprocess env
+    allowlists. Each caller keeps its own *allowed* set — the sets are
+    deliberately different trust boundaries — and only the matching convention
+    is shared, so correctness never depends on an individual allowlist's
+    casing. *allowed* must be hashable (a frozenset or tuple); the folded view
+    is cached per distinct allowlist value.
+    """
+    if IS_WINDOWS:
+        return key.upper() in _folded_env_allowlist(allowed)
+    return key in allowed
 
 
 _TRUSTED_SYSTEM_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin")

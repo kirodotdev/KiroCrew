@@ -809,24 +809,18 @@ def _allowlisted_env(
 ) -> dict[str, str]:
     """Filter *environ* down to *allowed*, honoring Windows' case-insensitive env.
 
-    Windows environment names are case-INSENSITIVE and CPython upper-cases every
-    key, so ``os.environ.items()`` yields ``SYSTEMROOT`` — never the
-    ``SystemRoot`` spelling Microsoft documents and these allowlists write. A
-    literal membership test therefore drops exactly the variables it was
-    extended to carry, and the failure is silent at the boundary and fatal in the
-    child: a Windows process launched without ``SystemRoot`` cannot load system
-    DLLs, so probe and sign-in spawns die with an unrelated-looking error.
-
-    Folding on Windows only, rather than upper-casing the lists, keeps POSIX
-    exact: ``PATH`` and ``Path`` are genuinely different variables there, and a
-    case-insensitive match would let a lookalike through. Mirrors
-    ``apps.registry._is_safe_env_key``.
+    Thin wrapper binding this module's allowlists to the shared matching
+    convention — exact on POSIX, case-folded on Windows. The rationale (why a
+    literal membership test silently drops ``SystemRoot`` on Windows, killing
+    probe and sign-in spawns with an unrelated-looking error, and why POSIX
+    must stay exact) lives on :func:`platform_compat.env_key_allowed`.
     """
 
-    if not platform_compat.IS_WINDOWS:
-        return {key: value for key, value in environ.items() if key in allowed}
-    folded = {name.upper() for name in allowed}
-    return {key: value for key, value in environ.items() if key.upper() in folded}
+    return {
+        key: value
+        for key, value in environ.items()
+        if platform_compat.env_key_allowed(key, allowed)
+    }
 
 
 def _probe_env(environ: MutableMapping[str, str], search_path: str) -> dict[str, str]:
