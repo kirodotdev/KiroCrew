@@ -46,7 +46,7 @@ class LLMProvider(ABC):
     # Optional (have defaults):
     async def stream_command(command: str) -> AsyncIterator[LLMEvent]
     async def compact(context: str = "") -> None
-    async def wait_for_compaction(timeout: float = 120.0) -> dict
+    async def wait_for_compaction(timeout: float = COMPACT_WAIT_TIMEOUT_SECS) -> dict
     async def cancel(*, wait_ack_timeout: float = 0.0) -> CancelOutcome
     def is_alive() -> bool
     def touch_activity() -> None

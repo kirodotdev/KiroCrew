@@ -329,10 +329,12 @@ HEARTBEAT_KEY = "_hb"
 _CONTEXT_WARN_PCT = 70.0
 _CONTEXT_COMPACT_PCT = 80.0
 
-# Reserve subtracted from the remaining ``COMPACT_WAIT_TIMEOUT_SECS`` budget
-# when the kiro-cli in-place path waits for the async
-# ``_kiro.dev/compaction/status`` result. It keeps the inner wait's graceful
-# "no result" diagnostic landing before the outer ``asyncio.wait_for`` fires.
+# Headroom ADDED to the outer ``asyncio.wait_for`` cap around the kiro-cli
+# in-place compact, so the inner status wait can spend the FULL remaining
+# ``COMPACT_WAIT_TIMEOUT_SECS`` budget and its graceful "no result"
+# diagnostic still lands before the outer cap fires. Subtracting it from the
+# inner wait instead would cut short a compaction completing in the final
+# seconds of the shared budget.
 _COMPACT_RESULT_WAIT_MARGIN_SECS = 5.0
 
 # Minimum inner status wait even when the /compact prompt turn has consumed
@@ -344,15 +346,16 @@ _COMPACT_RESULT_WAIT_FLOOR_SECS = 5.0
 def _compact_result_wait_secs(elapsed: float) -> float:
     """Inner deadline for the async compaction-status wait.
 
-    Derived from what remains of the shared ``COMPACT_WAIT_TIMEOUT_SECS``
-    budget after ``elapsed`` seconds, minus a small margin so the inner
-    timeout fires before the outer ``asyncio.wait_for`` and its diagnostic
-    ("compaction reported no result") survives, clamped to a floor so the
-    wait can never be zero or negative.
+    The FULL remainder of the shared ``COMPACT_WAIT_TIMEOUT_SECS`` budget
+    after ``elapsed`` seconds — never less, so a compaction completing in the
+    final seconds of the budget is not abandoned early. The outer
+    ``asyncio.wait_for`` carries ``_COMPACT_RESULT_WAIT_MARGIN_SECS`` of
+    headroom on top, keeping this wait's graceful "no result" diagnostic
+    reachable. Clamped to a floor so the wait can never be zero or negative.
     """
     return max(
         _COMPACT_RESULT_WAIT_FLOOR_SECS,
-        COMPACT_WAIT_TIMEOUT_SECS - elapsed - _COMPACT_RESULT_WAIT_MARGIN_SECS,
+        COMPACT_WAIT_TIMEOUT_SECS - elapsed,
     )
 
 
@@ -3147,7 +3150,7 @@ class SessionManager:
         hangs holding the semaphore until the 2h prompt timeout, and the
         recycle that would have rescued it gives up at its own acquire
         timeout. Observed in production 2026-08-05: a ``/compact`` reported
-        ``completed`` 161s in, 41s after the async wait (then a fixed 120s)
+        ``completed`` 161s in, 41s after the async wait
         had already declared timeout.
         """
         try:
@@ -3194,7 +3197,13 @@ class SessionManager:
                 if status != "completed":
                     raise RuntimeError(f"compaction reported {status or 'no result'}")
 
-            await asyncio.wait_for(_run(), timeout=COMPACT_WAIT_TIMEOUT_SECS)
+            # Margin headroom on top of the shared budget: the inner status
+            # wait spends the full remaining budget, so this outer backstop
+            # must land strictly AFTER it for the graceful "no result"
+            # diagnostic to stay reachable.
+            await asyncio.wait_for(
+                _run(), timeout=COMPACT_WAIT_TIMEOUT_SECS + _COMPACT_RESULT_WAIT_MARGIN_SECS
+            )
         except (Exception, asyncio.TimeoutError):
             logger.warning(
                 "Session %s in-place /compact failed after %.0fs — recycling "

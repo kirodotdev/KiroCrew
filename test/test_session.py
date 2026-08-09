@@ -1350,6 +1350,9 @@ class TestCompactCallback:
         """A still-running turn (semaphore held) must NEVER be killed for
         compaction: after COMPACT_WAIT_TIMEOUT_SECS the attempt is deferred —
         session intact, no callback — and re-triggered at the next turn end."""
+        # Only the outer cap is scaled: the inner status wait clamps to
+        # _COMPACT_RESULT_WAIT_FLOOR_SECS (5s) — patch that too if a test
+        # needs the inner wait itself to time out quickly.
         monkeypatch.setattr("kiro_crew.session.COMPACT_WAIT_TIMEOUT_SECS", 0.1)
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # Hold the semaphore and never release -> simulates a long-running turn.
@@ -3313,6 +3316,8 @@ class TestCompactTimeout:
 
         with (
             patch("kiro_crew.session._is_claude_backend", return_value=True),
+            # Only the outer cap is scaled — see _COMPACT_RESULT_WAIT_FLOOR_SECS
+            # note above if the inner wait must time out quickly.
             patch("kiro_crew.session.COMPACT_WAIT_TIMEOUT_SECS", 0.05),
         ):
             await mgr._compact_session("k1", 92.0)

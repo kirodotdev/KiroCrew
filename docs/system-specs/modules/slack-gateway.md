@@ -314,7 +314,7 @@ Triggers in-place ACP `/compact` on the current thread's session:
 
 1. Adds ♻️ reaction, posts "Compacting context…"
 2. Streams `/compact` command, waits for `compaction_status` event
-3. Falls back to `wait_for_compaction(timeout=120s)` if no inline status
+3. Falls back to `wait_for_compaction()` (shared `COMPACT_WAIT_TIMEOUT_SECS` budget) if no inline status
 4. Posts result (✅/❌) + timing footer
 5. On failure: removes session to force clean restart
 

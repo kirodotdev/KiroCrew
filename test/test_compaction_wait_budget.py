@@ -12,8 +12,8 @@ they keep holding if the budget is later tuned.
 
 from __future__ import annotations
 
+import ast
 import inspect
-import re
 from pathlib import Path
 
 import pytest
@@ -65,37 +65,42 @@ def test_inner_status_wait_spends_the_remaining_shared_budget():
     """The in-place path's async status wait derives from what remains of the
     shared budget — no fixed slice may strand budget while a still-running
     compaction is abandoned and its session recycled."""
-    from kiro_crew.session import (
-        _COMPACT_RESULT_WAIT_MARGIN_SECS,
-        _compact_result_wait_secs,
-    )
+    from kiro_crew.session import _compact_result_wait_secs
 
-    assert (
-        _compact_result_wait_secs(0.0)
-        == COMPACT_WAIT_TIMEOUT_SECS - _COMPACT_RESULT_WAIT_MARGIN_SECS
-    )
+    assert _compact_result_wait_secs(0.0) == COMPACT_WAIT_TIMEOUT_SECS
     # Shrinks as the /compact prompt turn consumes the budget.
     assert _compact_result_wait_secs(30.0) < _compact_result_wait_secs(0.0)
 
 
-def test_inner_status_wait_fires_before_the_outer_cap():
-    """The margin keeps the inner timeout landing strictly before the outer
-    ``asyncio.wait_for``, so the graceful "no result" diagnostic stays
-    reachable at every elapsed point where the budget is not nearly spent."""
+def test_inner_status_wait_spends_the_full_remaining_budget():
+    """The inner wait never truncates the shared budget: at every elapsed
+    point it gets AT LEAST the remaining budget, so a compaction completing
+    in the final seconds is not abandoned early."""
+    from kiro_crew.session import _compact_result_wait_secs
+
+    step = COMPACT_WAIT_TIMEOUT_SECS / 20
+    elapsed = 0.0
+    while elapsed < COMPACT_WAIT_TIMEOUT_SECS:
+        remaining = COMPACT_WAIT_TIMEOUT_SECS - elapsed
+        assert _compact_result_wait_secs(elapsed) >= remaining
+        elapsed += step
+
+
+def test_inner_status_wait_lands_before_the_outer_cap():
+    """The outer ``asyncio.wait_for`` carries the margin as headroom, so the
+    inner timeout lands strictly before it and the graceful "no result"
+    diagnostic stays reachable while the prompt phase is within budget."""
     from kiro_crew.session import (
-        _COMPACT_RESULT_WAIT_FLOOR_SECS,
         _COMPACT_RESULT_WAIT_MARGIN_SECS,
         _compact_result_wait_secs,
     )
 
     assert _COMPACT_RESULT_WAIT_MARGIN_SECS > 0
+    outer_cap = COMPACT_WAIT_TIMEOUT_SECS + _COMPACT_RESULT_WAIT_MARGIN_SECS
     step = COMPACT_WAIT_TIMEOUT_SECS / 20
     elapsed = 0.0
-    while True:
-        remaining = COMPACT_WAIT_TIMEOUT_SECS - elapsed
-        if remaining <= _COMPACT_RESULT_WAIT_FLOOR_SECS + _COMPACT_RESULT_WAIT_MARGIN_SECS:
-            break
-        assert _compact_result_wait_secs(elapsed) < remaining
+    while elapsed < COMPACT_WAIT_TIMEOUT_SECS:
+        assert elapsed + _compact_result_wait_secs(elapsed) < outer_cap
         elapsed += step
 
 
@@ -112,18 +117,36 @@ def test_inner_status_wait_never_below_floor_or_non_positive():
         assert _compact_result_wait_secs(elapsed) == _COMPACT_RESULT_WAIT_FLOOR_SECS
 
 
-def test_no_hardcoded_120s_wait_reappears():
-    """Regression guard for issue #2183: no call site may re-pin the old
-    120-second wait. Call sites inherit the shared default instead of
-    restating the budget."""
-    pattern = re.compile(r"wait_for_compaction\(\s*timeout\s*=\s*120(?:\.0?)?\s*\)")
-    offenders = [
-        f"{path.relative_to(_SRC_ROOT.parent.parent)}:{i}"
-        for path in sorted(_SRC_ROOT.rglob("*.py"))
-        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if pattern.search(line)
-    ]
+def test_no_call_site_pins_a_shorter_wait():
+    """Regression guard for issue #2183: no production call site may pass an
+    explicit numeric-literal timeout below the shared budget — keyword or
+    positional, int or float. Call sites inherit the
+    shared default instead of restating the budget. Non-literal arguments
+    (e.g. session.py's remaining-budget variable) are intentionally exempt:
+    they are derived from the shared budget and covered by the tests above.
+    """
+    offenders: list[str] = []
+    for path in sorted(_SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name != "wait_for_compaction":
+                continue
+            args = list(node.args[:1]) + [kw.value for kw in node.keywords if kw.arg == "timeout"]
+            for arg in args:
+                try:
+                    value = ast.literal_eval(arg)
+                except (ValueError, SyntaxError):
+                    continue  # non-literal (derived) timeouts are exempt
+                if isinstance(value, (int, float)) and value < COMPACT_WAIT_TIMEOUT_SECS:
+                    offenders.append(
+                        f"{path.relative_to(_SRC_ROOT.parent.parent)}:{node.lineno}"
+                        f" (timeout={value})"
+                    )
     assert not offenders, (
-        "Hardcoded 120s compaction wait reintroduced (delete the timeout "
-        f"argument so the shared default applies): {offenders}"
+        "Compaction wait shorter than the shared budget reintroduced (delete "
+        f"the timeout argument so the shared default applies): {offenders}"
     )
