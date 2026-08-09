@@ -19,6 +19,44 @@ export function poolableRowLocked(srv: McpPoolableServer): boolean {
   return srv.denylisted || srv.transport !== 'stdio' || (srv.entry_poolable && !srv.in_allowlist)
 }
 
+/** The servers whose poolable flag this UI is allowed to write. */
+export function poolableEligible(servers: McpPoolableServer[]): McpPoolableServer[] {
+  return servers.filter(srv => !poolableRowLocked(srv))
+}
+
+/**
+ * State of the "toggle all" switch.
+ *
+ * Only the eligible rows count: locked rows can never be written from here, so
+ * including them would leave the toggle-all switch permanently off (and its click
+ * permanently a no-op) on any install with one denylisted or HTTP server. With
+ * no eligible rows at all the switch reads off — there is nothing to turn on.
+ */
+export function toggleAllChecked(servers: McpPoolableServer[]): boolean {
+  const eligible = poolableEligible(servers)
+  return eligible.length > 0 && eligible.every(srv => srv.poolable)
+}
+
+/**
+ * Names the switch has to write to reach `next` — the eligible rows that
+ * disagree with it. Already-correct rows are excluded so a half-on list costs
+ * one write for the difference rather than a rewrite of every row.
+ */
+export function toggleAllTargets(servers: McpPoolableServer[], next: boolean): string[] {
+  return poolableEligible(servers).filter(srv => srv.poolable !== next).map(srv => srv.name)
+}
+
+/**
+ * Rows that are pooled but sit outside the count's denominator — the
+ * `poolable:true` agent-JSON escape hatch, which is locked here.
+ *
+ * They are why the count needs to say so out loud: without it the subline can
+ * read "0 of 3 pooled" directly above a row whose switch is visibly on.
+ */
+export function pooledViaAgentConfig(servers: McpPoolableServer[]): number {
+  return servers.filter(srv => poolableRowLocked(srv) && srv.poolable).length
+}
+
 function Chip({ kind, children }: { kind: 'blocked' | 'http'; children: ReactNode }) {
   const cls =
     kind === 'blocked'
@@ -46,9 +84,14 @@ export function McpPoolableServers() {
 
   const gatewayEnabled = statusQ.data?.enabled ?? false
   const [pending, setPending] = useState<Set<string>>(new Set())
+  const [bulkPending, setBulkPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const servers = serversQ.data?.servers ?? []
+  const eligible = poolableEligible(servers)
+  const allChecked = toggleAllChecked(servers)
+  const pooledCount = eligible.filter(srv => srv.poolable).length
+  const viaAgentConfig = pooledViaAgentConfig(servers)
 
   const toggle = async (srv: McpPoolableServer, next: boolean) => {
     setError(null)
@@ -63,6 +106,26 @@ export function McpPoolableServers() {
     } finally {
       // Clear only this server's flag — concurrent toggles each track their own.
       setPending(s => { const s2 = new Set(s); s2.delete(srv.name); return s2 })
+    }
+  }
+
+  const toggleAll = async (next: boolean) => {
+    const names = toggleAllTargets(servers, next)
+    setError(null)
+    // Nothing disagrees with `next` — no request, but still re-render the switch
+    // from server state rather than leaving it mid-gesture.
+    if (names.length === 0) return
+    setBulkPending(true)
+    try {
+      await api.mcpGatewaySetPoolableMany(names, next)
+      qc.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
+      qc.invalidateQueries({ queryKey: ['mcpGatewayMetrics'] })
+    } catch {
+      // The write is all-or-nothing server-side, so this reports the whole set —
+      // no row is left claiming a state the config does not have.
+      setError(i18nT('pages.settings.mcpPoolableServers.could_not_update_all_try_again'))
+    } finally {
+      setBulkPending(false)
     }
   }
 
@@ -85,6 +148,43 @@ export function McpPoolableServers() {
           <div className="text-[13px] text-muted py-2">{i18nT('pages.settings.mcpPoolableServers.no_mcp_servers_configured')}</div>
         ) : (
           <div className="flex flex-col">
+            {eligible.length > 0 && (
+              <div className="flex items-center justify-between py-2 border-b border-border">
+                <div className="flex-1 min-w-0 mr-4">
+                  <div className="text-[13px] font-semibold text-text">
+                    {i18nT('pages.settings.mcpPoolableServers.toggle_all')}
+                  </div>
+                  <div id="mcp-pool-toggle-all-count" className="text-[12px] text-muted mt-0.5">
+                    {viaAgentConfig > 0
+                      ? i18nT('pages.settings.mcpPoolableServers.n_of_m_pooled_plus_agent', {
+                          on: pooledCount,
+                          total: eligible.length,
+                          extra: viaAgentConfig,
+                        })
+                      : i18nT('pages.settings.mcpPoolableServers.n_of_m_pooled', {
+                          on: pooledCount,
+                          total: eligible.length,
+                        })}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {bulkPending && <Loader2 size={14} className="animate-spin text-accent" />}
+                  <Toggle
+                    checked={allChecked}
+                    onChange={next => toggleAll(next)}
+                    // A single row's write in flight holds this one: the two would
+                    // race the same allowlist. Emptiness is handled by not
+                    // rendering the row at all.
+                    disabled={bulkPending || pending.size > 0}
+                    label={i18nT('pages.settings.mcpPoolableServers.toggle_all')}
+                    // The switch position alone cannot say how many rows are already
+                    // pooled, and a mixed list reads off. Pointing at the count makes an
+                    // AT user hear the real state before acting on it.
+                    describedBy="mcp-pool-toggle-all-count"
+                  />
+                </div>
+              </div>
+            )}
             {servers.map(srv => {
               const isStdio = srv.transport === 'stdio'
               // Denylisted / HTTP servers can never be pooled — show their state read-only.
@@ -115,7 +215,7 @@ export function McpPoolableServers() {
                     <Toggle
                       checked={srv.poolable}
                       onChange={next => toggle(srv, next)}
-                      disabled={locked || rowPending}
+                      disabled={locked || rowPending || bulkPending}
                       label={i18nT('pages.settings.mcpPoolableServers.pool', { name: srv.name })}
                     />
                   </div>

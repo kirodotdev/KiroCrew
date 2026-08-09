@@ -9835,14 +9835,18 @@
       "mcpPoolableServers": {
         "blocked": "blockiert",
         "could_not_load_mcp_servers": "MCP-Server konnten nicht geladen werden.",
+        "could_not_update_all_try_again": "Server konnten nicht aktualisiert werden. Es wurden keine Änderungen vorgenommen. Versuche es erneut.",
         "could_not_update_try_again": "{{name}} konnte nicht aktualisiert werden. Versuche es erneut.",
         "loading_mcp_servers": "MCP-Server werden geladen…",
+        "n_of_m_pooled": "{{on}} von {{total}} poolfähigen Servern im Pool",
+        "n_of_m_pooled_plus_agent": "{{on}} von {{total}} poolfähigen Servern im Pool, +{{extra}} über die Agent-Konfiguration",
         "no_mcp_servers_configured": "Keine MCP-Server konfiguriert.",
         "pool": "{{name}} in den Pool aufnehmen",
         "poolable_mcp_servers": "Poolfähige MCP-Server",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "Das Pooling wird wirksam, wenn das gemeinsame MCP-Gateway aktiviert ist. Sie können hier in jedem Fall vorab konfigurieren, welche\n            Server poolfähig sind.",
         "shared": "· gemeinsam",
+        "toggle_all": "Alle umschalten",
         "used_by": "verwendet von"
       },
       "notificationsPanel": {

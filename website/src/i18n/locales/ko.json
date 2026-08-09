@@ -9721,14 +9721,18 @@
       "mcpPoolableServers": {
         "blocked": "차단됨",
         "could_not_load_mcp_servers": "MCP 서버를 불러올 수 없습니다.",
+        "could_not_update_all_try_again": "서버를 업데이트할 수 없습니다. 변경된 사항은 없습니다. 다시 시도하세요.",
         "could_not_update_try_again": "{{name}}을(를) 업데이트할 수 없습니다. 다시 시도하세요.",
         "loading_mcp_servers": "MCP 서버를 불러오는 중…",
+        "n_of_m_pooled": "풀링 가능한 {{total}}개 중 {{on}}개 풀링",
+        "n_of_m_pooled_plus_agent": "풀링 가능한 {{total}}개 중 {{on}}개 풀링, agent 설정을 통한 {{extra}}개 추가",
         "no_mcp_servers_configured": "설정된 MCP 서버가 없습니다.",
         "pool": "{{name}} 풀링",
         "poolable_mcp_servers": "풀링 가능한 MCP 서버",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "풀링은 공유 MCP 게이트웨이를 활성화하면 적용됩니다. 어느 경우든 어떤 서버를\n 풀링할지 미리 설정할 수 있습니다.",
         "shared": "· 공유",
+        "toggle_all": "전체 전환",
         "used_by": "사용 중:"
       },
       "notificationsPanel": {

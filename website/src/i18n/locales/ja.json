@@ -9721,14 +9721,18 @@
       "mcpPoolableServers": {
         "blocked": "ブロック済み",
         "could_not_load_mcp_servers": "MCP サーバーを読み込めませんでした。",
+        "could_not_update_all_try_again": "サーバーを更新できませんでした。変更は反映されていません。もう一度お試しください。",
         "could_not_update_try_again": "{{name}} を更新できませんでした。もう一度お試しください。",
         "loading_mcp_servers": "MCP サーバーを読み込み中…",
+        "n_of_m_pooled": "プール可能な {{total}} 件中 {{on}} 件をプール",
+        "n_of_m_pooled_plus_agent": "プール可能な {{total}} 件中 {{on}} 件をプール、agent 設定によるものが {{extra}} 件",
         "no_mcp_servers_configured": "MCP サーバーが設定されていません。",
         "pool": "{{name}} をプール",
         "poolable_mcp_servers": "プール可能な MCP サーバー",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "共有 MCP ゲートウェイが有効になるとプーリングが有効になります。ここで\n            プール可能なサーバーを事前に設定できます。",
         "shared": "· 共有",
+        "toggle_all": "すべて切り替え",
         "used_by": "使用者:"
       },
       "notificationsPanel": {

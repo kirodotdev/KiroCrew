@@ -1511,6 +1511,9 @@ export const api = {
   mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; sessions: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
   mcpGatewayServers: () => fetch('/api/mcp-gateway/servers').then(j) as Promise<{ servers: McpPoolableServer[] }>,
   mcpGatewaySetPoolable: (name: string, poolable: boolean) => post('/api/mcp-gateway/servers/poolable', { name, poolable }).then(j) as Promise<{ ok: boolean; name: string; poolable: boolean; enabled?: boolean; applied?: boolean; poolable_servers?: string[] }>,
+  // Batch form of the above — one config write + one pool re-apply for the whole
+  // set, so "toggle all" can't land the allowlist half-flipped.
+  mcpGatewaySetPoolableMany: (names: string[], poolable: boolean) => post('/api/mcp-gateway/servers/poolable', { names, poolable }).then(j) as Promise<{ ok: boolean; names: string[]; poolable: boolean; enabled?: boolean; applied?: boolean; poolable_servers?: string[] }>,
   // Agent config
   agentConfig: () => fetch('/api/agent/config').then(j),
   saveAgentConfig: (config: object) => put('/api/agent/config', { config }).then(j),

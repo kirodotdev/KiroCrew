@@ -9835,14 +9835,18 @@
       "mcpPoolableServers": {
         "blocked": "अवरोधित",
         "could_not_load_mcp_servers": "MCP सर्वर लोड नहीं हो सके।",
+        "could_not_update_all_try_again": "सर्वर अपडेट नहीं हो सके। कोई बदलाव नहीं हुआ। फिर कोशिश करो।",
         "could_not_update_try_again": "{{name}} अपडेट नहीं हो सका। फिर कोशिश करो।",
         "loading_mcp_servers": "MCP सर्वर लोड हो रहे हैं…",
+        "n_of_m_pooled": "{{total}} पूल करने योग्य सर्वर में से {{on}} पूल में",
+        "n_of_m_pooled_plus_agent": "{{total}} पूल करने योग्य सर्वर में से {{on}} पूल में, agent कॉन्फ़िग से {{extra}} और",
         "no_mcp_servers_configured": "कोई MCP सर्वर कॉन्फ़िगर नहीं है।",
         "pool": "{{name}} को पूल करो",
         "poolable_mcp_servers": "पूल करने योग्य MCP सर्वर",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "पूलिंग तब प्रभावी होती है जब साझा MCP गेटवे सक्षम हो। किसी भी स्थिति में आप यहाँ पहले से तय कर सकते हैं कि कौन-से\n            सर्वर पूल करने योग्य हैं।",
         "shared": "· साझा",
+        "toggle_all": "सभी टॉगल करो",
         "used_by": "इनके द्वारा उपयोग में:"
       },
       "notificationsPanel": {

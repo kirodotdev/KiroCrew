@@ -1208,6 +1208,159 @@ class TestGatewaySetPoolable:
         assert "error" in outcomes
 
 
+# ── the batch ("toggle all") form of the same endpoint ──────────────────
+
+
+class TestGatewaySetPoolableBatch:
+    """``{"names": [...]}`` writes the allowlist once for the whole set."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body,expected",
+        [
+            ({"names": "a-mcp", "poolable": True}, "names must be a list of strings"),
+            (
+                {"names": ["a-mcp", 7], "poolable": True},
+                "names must be a list of strings",
+            ),
+            ({"names": [], "poolable": True}, "names is required"),
+            ({"names": ["  "], "poolable": True}, "names is required"),
+            ({"names": ["../evil"], "poolable": True}, "invalid server name"),
+            ({"names": ["a-mcp"]}, "poolable must be a boolean"),
+        ],
+    )
+    async def test_validation_matrix_is_400(
+        self, monkeypatch: pytest.MonkeyPatch, body: dict, expected: str
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        resp = await mcp_mod.api_mcp_gateway_set_poolable(
+            _request(body, state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert expected in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_oversized_batch_is_400(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        names = [f"srv{i}-mcp" for i in range(mcp_mod._MAX_POOLABLE_BATCH + 1)]
+        resp = await mcp_mod.api_mcp_gateway_set_poolable(
+            _request({"names": names, "poolable": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert "at most" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_non_object_body_is_400(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        resp = await mcp_mod.api_mcp_gateway_set_poolable(
+            _request(["a-mcp"], state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert "object" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_adds_every_name_in_one_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mcp_gateway": {"poolable_servers": ["kept-mcp"]}}),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_poolable(
+            _request(
+                {"names": ["b-mcp", "a-mcp", "a-mcp"], "poolable": True},
+                state=SimpleNamespace(),
+            )
+        )
+        assert resp.status == 200
+        # The batch form answers with `names`, never a single `name`.
+        assert _payload(resp) == {
+            "ok": True,
+            "names": ["b-mcp", "a-mcp", "a-mcp"],
+            "poolable": True,
+            "applied": False,
+        }
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["mcp_gateway"]["poolable_servers"] == [
+            "a-mcp",
+            "b-mcp",
+            "kept-mcp",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_removes_every_name_and_leaves_the_rest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"mcp_gateway": {"poolable_servers": ["a-mcp", "b-mcp", "kept-mcp", 7]}}
+            ),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_poolable(
+            _request(
+                # A name that is not in the allowlist must not fail the batch.
+                {"names": ["a-mcp", "b-mcp", "absent-mcp"], "poolable": False},
+                state=SimpleNamespace(),
+            )
+        )
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["mcp_gateway"]["poolable_servers"] == ["kept-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_re_applies_the_pool_once_for_the_whole_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N names must not mean N re-links — that is the point of the form."""
+        sel = MagicMock()
+        monkeypatch.setattr(mcp_mod, "sel", lambda: sel)
+        apply_cb = AsyncMock(return_value={"applied": True, "sessions_relinked": 3})
+        state = SimpleNamespace(_mcp_gateway_apply_poolable=apply_cb)
+        resp = await mcp_mod.api_mcp_gateway_set_poolable(
+            _request({"names": ["a-mcp", "b-mcp"], "poolable": True}, state=state)
+        )
+        assert resp.status == 200
+        assert _payload(resp)["sessions_relinked"] == 3
+        apply_cb.assert_awaited_once_with()
+        # The audit names every server the request touched, not just the first.
+        audited = [c.kwargs.get("resources") for c in sel.log_api_access.call_args_list]
+        assert any("names=a-mcp,b-mcp" in (r or "") for r in audited)
+
+    @pytest.mark.asyncio
+    async def test_single_name_form_still_answers_with_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`names` absent keeps the pre-existing single-server contract."""
+        sel = MagicMock()
+        monkeypatch.setattr(mcp_mod, "sel", lambda: sel)
+        resp = await mcp_mod.api_mcp_gateway_set_poolable(
+            _request({"name": "ok-mcp", "poolable": True}, state=SimpleNamespace())
+        )
+        assert _payload(resp) == {
+            "ok": True,
+            "name": "ok-mcp",
+            "poolable": True,
+            "applied": False,
+        }
+        audited = [c.kwargs.get("resources") for c in sel.log_api_access.call_args_list]
+        assert any("name=ok-mcp" in (r or "") for r in audited)
+
+
 # ── the synchronous cleanup-sweep file lock ─────────────────────────────
 
 

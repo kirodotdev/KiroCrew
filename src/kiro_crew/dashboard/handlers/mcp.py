@@ -61,6 +61,12 @@ _GLOBAL_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
 # dashboard applies at most one change per visible server, so this is generous.
 _MCP_APPLY_MAX_CHANGES = 200
 
+# Max server names accepted by one /api/mcp-gateway/servers/poolable call. The
+# batch form exists for the UI's "toggle all", whose upper bound is the number of
+# configured servers, so this only fences a hand-rolled request from turning one
+# config write into an unbounded one.
+_MAX_POOLABLE_BATCH = 200
+
 # Bounded concurrency for the deferred capability-manager uninstall phase, so a
 # large batch neither serializes (timeout×N) nor floods the companion with N
 # simultaneous subprocesses.
@@ -2269,14 +2275,23 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
 
 
 async def api_mcp_gateway_set_poolable(request: web.Request) -> web.Response:
-    """POST /api/mcp-gateway/servers/poolable — toggle a server's poolable flag.
+    """POST /api/mcp-gateway/servers/poolable — toggle servers' poolable flag.
 
-    Body ``{"name": "slack-mcp", "poolable": true}``.  Adds/removes ``name``
-    from ``mcp_gateway.poolable_servers`` in config.json (same config lock +
-    atomic write as the enable toggle), then re-applies the change in-process
-    so new sessions pick up the new MCP routing without a restart.  When the
-    gateway is disabled, the allowlist is persisted only (it takes effect when
-    the gateway is enabled).  Returns ``{ok, name, poolable, ...}``.
+    Body ``{"name": "slack-mcp", "poolable": true}`` for one server, or
+    ``{"names": ["a-mcp", "b-mcp"], "poolable": true}`` for several.  Adds or
+    removes those names from ``mcp_gateway.poolable_servers`` in config.json
+    (same config lock + atomic write as the enable toggle), then re-applies the
+    change in-process so new sessions pick up the new MCP routing without a
+    restart.  When the gateway is disabled, the allowlist is persisted only (it
+    takes effect when the gateway is enabled).
+
+    The batch form exists because the UI's "toggle all" would otherwise issue
+    one request per server: N config rewrites and N pool re-applies for a single
+    user gesture, each one racing the others for the config lock.  One request
+    means one write and one apply, so the allowlist can never land half-flipped.
+
+    Returns ``{ok, name, poolable, ...}`` for the single form and
+    ``{ok, names, poolable, ...}`` for the batch form.
     """
     from kiro_crew.agent import _atomic_json_write
     from kiro_crew.config.loader import config_path  # noqa: F811
@@ -2286,12 +2301,49 @@ async def api_mcp_gateway_set_poolable(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     name = str(body.get("name", "")).strip()
+    raw_names = body.get("names")
     poolable = body.get("poolable")
-    if not name:
-        return web.json_response({"error": "name is required"}, status=400)
-    if not _is_valid_mcp_name(name):
-        return web.json_response({"error": "invalid server name"}, status=400)
+    batch = raw_names is not None
+    if batch:
+        if not isinstance(raw_names, list) or not all(
+            isinstance(n, str) for n in raw_names
+        ):
+            return web.json_response(
+                {
+                    "error": "names must be a list of strings",
+                    "code": "names_not_string_list",
+                },
+                status=400,
+            )
+        names = [n.strip() for n in raw_names if n.strip()]
+        if not names:
+            return web.json_response(
+                {"error": "names is required", "code": "names_required"}, status=400
+            )
+        if len(names) > _MAX_POOLABLE_BATCH:
+            return web.json_response(
+                {
+                    "error": f"names must hold at most {_MAX_POOLABLE_BATCH} servers",
+                    "code": "names_too_many",
+                },
+                status=400,
+            )
+        if any(not _is_valid_mcp_name(n) for n in names):
+            return web.json_response(
+                {"error": "invalid server name", "code": "invalid_server_name"},
+                status=400,
+            )
+    else:
+        if not name:
+            return web.json_response({"error": "name is required"}, status=400)
+        if not _is_valid_mcp_name(name):
+            return web.json_response({"error": "invalid server name"}, status=400)
+        names = [name]
     if not isinstance(poolable, bool):
         return web.json_response({"error": "poolable must be a boolean"}, status=400)
 
@@ -2305,20 +2357,21 @@ async def api_mcp_gateway_set_poolable(request: web.Request) -> web.Response:
         if not isinstance(section, dict):
             return web.json_response({"error": "mcp_gateway is not an object"}, status=500)
         current = section.get("poolable_servers")
-        servers_list = (
-            [s for s in current if isinstance(s, str)] if isinstance(current, list) else []
-        )
-        if poolable and name not in servers_list:
-            servers_list.append(name)
-        elif not poolable and name in servers_list:
-            servers_list = [s for s in servers_list if s != name]
-        section["poolable_servers"] = sorted(set(servers_list))
+        servers_set = {s for s in current if isinstance(s, str)} if isinstance(current, list) else set()
+        if poolable:
+            servers_set |= set(names)
+        else:
+            servers_set -= set(names)
+        section["poolable_servers"] = sorted(servers_set)
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_json_write(path, data)
 
     state: DashboardState = request.app["state"]
     apply = getattr(state, "_mcp_gateway_apply_poolable", None)
     applied: dict[str, Any] = {"applied": False}
+    # One apply for the whole batch: the allowlist is already fully written, so a
+    # single re-link picks up every name at once.
+    audited = f"names={','.join(names)}" if batch else f"name={name}"
     if apply is not None:
         try:
             async with _MCP_GATEWAY_APPLY_LOCK:
@@ -2329,7 +2382,7 @@ async def api_mcp_gateway_set_poolable(request: web.Request) -> web.Response:
                 operation="mcp_gateway_set_poolable",
                 outcome="error",
                 source="dashboard",
-                resources=f"name={name} poolable={poolable} error={exc}",
+                resources=f"{audited} poolable={poolable} error={exc}",
             )
             return web.json_response({"error": f"apply failed: {exc}"}, status=500)
 
@@ -2338,6 +2391,7 @@ async def api_mcp_gateway_set_poolable(request: web.Request) -> web.Response:
         operation="mcp_gateway_set_poolable",
         outcome="ok",
         source="dashboard",
-        resources=f"name={name} poolable={poolable}",
+        resources=f"{audited} poolable={poolable}",
     )
-    return web.json_response({"ok": True, "name": name, "poolable": poolable, **applied})
+    subject: dict[str, Any] = {"names": names} if batch else {"name": name}
+    return web.json_response({"ok": True, **subject, "poolable": poolable, **applied})

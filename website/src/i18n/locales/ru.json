@@ -10063,14 +10063,18 @@
       "mcpPoolableServers": {
         "blocked": "заблокировано",
         "could_not_load_mcp_servers": "Не удалось загрузить MCP-серверы.",
+        "could_not_update_all_try_again": "Не удалось обновить серверы. Изменения не внесены. Попробуй снова.",
         "could_not_update_try_again": "Не удалось обновить {{name}}. Попробуй снова.",
         "loading_mcp_servers": "Загрузка MCP-серверов…",
+        "n_of_m_pooled": "{{on}} из {{total}} серверов с поддержкой пула в пуле",
+        "n_of_m_pooled_plus_agent": "{{on}} из {{total}} серверов с поддержкой пула в пуле, +{{extra}} из конфигурации agent",
         "no_mcp_servers_configured": "MCP-серверы не настроены.",
         "pool": "Пул для {{name}}",
         "poolable_mcp_servers": "MCP-серверы с поддержкой пула",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "Пул начинает работать, когда включён общий MCP-шлюз. Здесь всё равно можно заранее указать, какие\n            серверы могут использовать пул.",
         "shared": "· общий",
+        "toggle_all": "Переключить все",
         "used_by": "используется"
       },
       "notificationsPanel": {

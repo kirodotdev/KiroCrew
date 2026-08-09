@@ -9721,14 +9721,18 @@
       "mcpPoolableServers": {
         "blocked": "已阻止",
         "could_not_load_mcp_servers": "无法加载 MCP 服务器。",
+        "could_not_update_all_try_again": "无法更新服务器，未做任何更改，重试一次。",
         "could_not_update_try_again": "无法更新 {{name}}，重试一次。",
         "loading_mcp_servers": "正在加载 MCP 服务器…",
+        "n_of_m_pooled": "已池化 {{on}}/{{total}} 个可池化服务器",
+        "n_of_m_pooled_plus_agent": "已池化 {{on}}/{{total}} 个可池化服务器，另有 {{extra}} 个来自 agent 配置",
         "no_mcp_servers_configured": "未配置 MCP 服务器。",
         "pool": "池化 {{name}}",
         "poolable_mcp_servers": "可池化的 MCP 服务器",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "池化在启用共享 MCP 网关后生效。无论是否启用，你都可以在此\n            预先配置哪些服务器可池化。",
         "shared": "· 共享",
+        "toggle_all": "全部切换",
         "used_by": "使用者"
       },
       "notificationsPanel": {

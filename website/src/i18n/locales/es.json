@@ -9949,14 +9949,18 @@
       "mcpPoolableServers": {
         "blocked": "bloqueado",
         "could_not_load_mcp_servers": "No se pudieron cargar los servidores MCP.",
+        "could_not_update_all_try_again": "No se pudieron actualizar los servidores. No se hizo ningún cambio. Inténtalo de nuevo.",
         "could_not_update_try_again": "No se pudo actualizar {{name}}. Inténtalo de nuevo.",
         "loading_mcp_servers": "Cargando servidores MCP…",
+        "n_of_m_pooled": "{{on}} de {{total}} servidores agrupables agrupados",
+        "n_of_m_pooled_plus_agent": "{{on}} de {{total}} servidores agrupables agrupados, +{{extra}} mediante la configuración del agent",
         "no_mcp_servers_configured": "No hay servidores MCP configurados.",
         "pool": "Agrupar {{name}}",
         "poolable_mcp_servers": "Servidores MCP agrupables",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "La agrupación surte efecto cuando el gateway MCP compartido está activado. De todos modos, aquí puedes preconfigurar qué\n            servidores son agrupables.",
         "shared": "· compartido",
+        "toggle_all": "Alternar todos",
         "used_by": "usado por"
       },
       "notificationsPanel": {

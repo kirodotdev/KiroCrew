@@ -9835,14 +9835,18 @@
       "mcpPoolableServers": {
         "blocked": "ব্লক করা",
         "could_not_load_mcp_servers": "MCP সার্ভার লোড করা যায়নি।",
+        "could_not_update_all_try_again": "সার্ভার আপডেট করা যায়নি। কোনো পরিবর্তন হয়নি। আবার চেষ্টা করো।",
         "could_not_update_try_again": "{{name}} আপডেট করা যায়নি। আবার চেষ্টা করো।",
         "loading_mcp_servers": "MCP সার্ভার লোড হচ্ছে…",
+        "n_of_m_pooled": "{{total}}টি পুলযোগ্য সার্ভারের মধ্যে {{on}}টি পুলে",
+        "n_of_m_pooled_plus_agent": "{{total}}টি পুলযোগ্য সার্ভারের মধ্যে {{on}}টি পুলে, agent কনফিগ থেকে আরও {{extra}}টি",
         "no_mcp_servers_configured": "কোনো MCP সার্ভার কনফিগার করা নেই।",
         "pool": "{{name}} পুল করো",
         "poolable_mcp_servers": "পুলযোগ্য MCP সার্ভার",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "শেয়ার্ড MCP গেটওয়ে সক্রিয় থাকলে পুলিং কার্যকর হয়। যেকোনো ক্ষেত্রেই কোন\n            সার্ভারগুলো পুলযোগ্য তা আপনি এখানে আগেভাগে কনফিগার করতে পারেন।",
         "shared": "· শেয়ার্ড",
+        "toggle_all": "সব টগল করো",
         "used_by": "ব্যবহার করছে:"
       },
       "notificationsPanel": {
