@@ -571,6 +571,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_commands.py::_register_app_crons_to_scheduler",
         "cli_doctor.py::_doctor",
         "cli_doctor.py::_doctor_mcp_tools",
+        # ``systemctl is-active <unit>`` probes for the memory-pressure
+        # preparedness check: argv is hardcoded (systemd-oomd/earlyoom unit
+        # names), no agent influence, 5s-capped, read-only query.
+        "cli_doctor.py::_detect_userspace_oom_killer",
         # Read-only diagnostic: `loginctl show-user <user> -p Linger --value`,
         # a fixed argv whose only variable is the invoking account name taken
         # from $USER/$LOGNAME (never agent-supplied). Same class as

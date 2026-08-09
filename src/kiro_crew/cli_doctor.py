@@ -649,6 +649,125 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         print("               taking running pods with it. " f"Fix: loginctl enable-linger {user}")
 
 
+# Where SwapTotal is read from. A module attribute (not inlined) so tests can
+# point it at a fabricated meminfo file.
+_PROC_MEMINFO = Path("/proc/meminfo")
+
+# Userspace OOM killers doctor knows how to detect, in probe order:
+# systemd-oomd ships with systemd (the common case), earlyoom is the usual
+# add-on daemon.
+_OOM_KILLER_UNITS = ("systemd-oomd", "earlyoom")
+
+
+def _swap_total_kib() -> int | None:
+    """``SwapTotal`` from ``/proc/meminfo`` in KiB, ``None`` when unreadable.
+
+    Read from procfs directly rather than shelling out to ``free``/``swapon``:
+    the file is world-readable and parsing it cannot hang or prompt.
+    """
+    try:
+        text = _PROC_MEMINFO.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in text.splitlines():
+        if line.startswith("SwapTotal:"):
+            parts = line.split()
+            try:
+                return int(parts[1])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def _detect_userspace_oom_killer() -> str | bool | None:
+    """Which userspace OOM killer is active, if any.
+
+    Returns the unit name (``"systemd-oomd"`` / ``"earlyoom"``) when one is
+    active, ``False`` when every probe completed and none is active, and
+    ``None`` when it cannot be determined (no ``systemctl``, probe timeout or
+    failure) so the caller reports "unknown" rather than guessing. ``True`` is
+    never returned — the truthy arm carries the unit name.
+
+    Non-privileged and bounded: ``systemctl is-active`` needs no root and each
+    probe is capped at 5s, so this can never hang the doctor.
+    """
+    systemctl = platform_compat.trusted_system_bin("systemctl")
+    if systemctl is None:
+        return None
+    determined = True
+    for unit in _OOM_KILLER_UNITS:
+        try:
+            res = subprocess.run(
+                [systemctl, "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            determined = False
+            continue
+        if res.returncode == 0 and res.stdout.strip() == "active":
+            return unit
+    return False if determined else None
+
+
+def _doctor_memory_pressure(issues: list[str]) -> None:
+    """Report whether the host can degrade gracefully under memory pressure.
+
+    A Linux host with zero swap and no userspace OOM killer has no pressure
+    release valve: sustained memory pressure evicts file-backed pages (running
+    code included) faster than they re-fault in, and the host livelocks —
+    unresponsive for minutes, sometimes until a power cycle — before the kernel
+    OOM killer's conservative heuristics fire. Either protection alone (swap to
+    absorb the spike, or earlyoom/systemd-oomd to kill a hog early) prevents
+    the freeze, so this warns only when BOTH are absent. When detection is
+    inconclusive it reports "unknown" instead of warning.
+
+    Advisory only (never appended to ``issues``): swap sizing and OOM-killer
+    policy are host configuration the user owns — doctor reports the exposure,
+    it does not fail the install over it. Linux-only: the freeze mode and both
+    detection sources are Linux-specific.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nMemory Pressure")
+    if not sys.platform.startswith("linux"):
+        print(
+            f"  freeze risk: ⏹ not applicable ({sys.platform} — the swap/OOM-killer "
+            "check reads Linux procfs)"
+        )
+        return
+
+    swap_kib = _swap_total_kib()
+    if swap_kib is None:
+        print("  swap:        ⚠️  could not read SwapTotal from /proc/meminfo — check skipped")
+        return
+    if swap_kib > 0:
+        print(f"  swap:        ✅ {swap_kib / 1048576:.1f} GiB configured")
+    else:
+        print("  swap:        ⏹ none (SwapTotal = 0)")
+
+    killer = _detect_userspace_oom_killer()
+    if isinstance(killer, str):
+        print(f"  oom killer:  ✅ {killer} active")
+    elif killer is False:
+        print("  oom killer:  ⏹ none active (checked: " + ", ".join(_OOM_KILLER_UNITS) + ")")
+    else:
+        print("  oom killer:  ⏹ could not determine (no systemctl, or the probe failed)")
+
+    if swap_kib > 0 or isinstance(killer, str):
+        return
+    if killer is None:
+        # Uncertain detection must not warn — a container or non-systemd host
+        # may run a killer doctor cannot see.
+        print("  freeze risk: ⏹ unknown — no swap, and OOM-killer detection was inconclusive")
+        return
+    print("  freeze risk: ⚠️  host can freeze under sustained memory pressure")
+    print("               With no swap and no userspace OOM killer, memory pressure")
+    print("               thrashes file-backed pages and the host can livelock before")
+    print("               the kernel OOM killer intervenes.")
+    print("               Fix: add swap, enable systemd-oomd, or install earlyoom.")
+
+
 def _doctor_model_url_reachable(issues: list[str]) -> None:
     """Light HTTPS-reachability probe of the resolved embedding-model URL.
 
@@ -924,6 +1043,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # Ahead of MCP Tools: the probes below spawn through the sandbox chokepoint,
     # so this verdict is the context for any probe failure they report.
     _doctor_sandbox(issues)
+
+    # ── Memory pressure preparedness (swap / userspace OOM killer) ──
+    _doctor_memory_pressure(issues)
 
     # ── MCP Tools ──
     print("\nMCP Tools")
