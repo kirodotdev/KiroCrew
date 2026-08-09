@@ -474,8 +474,11 @@ class SpeculativeResumeRefused(RuntimeError):
     """Raised by ``get_or_create(speculative=True)`` on a resumable key.
 
     A speculative caller must never be the one that resumes a persisted
-    session: the real first turn needs to observe ``resumed=True`` to make its
-    history-injection decision, and existing-session reuse reports
+    session — unless it passes ``speculative_resume=True`` (resume prefetch),
+    which preserves the observation by arming ``_Session.resumed_armed`` for
+    the first real claimant. Without the opt-in the refusal stands: the real
+    first turn needs to observe ``resumed=True`` to make its
+    history-injection decision, and existing-session reuse would report
     ``resumed=False``. Raised on the same session-map read that would drive
     the resume, so there is no window for a mapping to appear between a
     caller-side check and the create.
@@ -589,6 +592,16 @@ class _Session:
     # it cannot answer "how long has this session been alive".
     created_at: float = field(default_factory=time.time)
     is_new: bool = True
+    # One-shot companion to ``is_new``, armed only by a SPECULATIVE creator
+    # whose provider start restored the persisted transcript via ACP
+    # session/load. The existing-session fast path and the won-race path
+    # otherwise report ``resumed=False``, which would make the real first turn
+    # inject Kiro Crew history on top of the natively-replayed transcript. Set
+    # atomically at registration (never on its own — only ever alongside an
+    # armed ``is_new``) and consumed together with ``is_new`` by the first
+    # real claimant under the per-session semaphore; a speculative claimant
+    # reads without consuming.
+    resumed_armed: bool = False
     prompt_count: int = 0
     consecutive_failures: int = 0
     semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
@@ -627,6 +640,10 @@ class _Session:
         """
         self.provider = provider
         self.provider_switch_replay = False
+        # The replacement provider is a fresh native session, not a resumed
+        # one — a stale armed observation would make the next first turn skip
+        # history injection it actually needs.
+        self.resumed_armed = False
         self.prompt_count = 0
         self.consecutive_failures = 0
         self.prev_turn_cancelled = False
@@ -2286,6 +2303,7 @@ class SessionManager:
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
         speculative: bool = False,
+        speculative_resume: bool = False,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
@@ -2316,10 +2334,22 @@ class SessionManager:
                 never consumed (a speculative creator registers the session
                 with it still armed; a speculative claimant leaves it as-is);
                 a key with a resume mapping raises
-                :class:`SpeculativeResumeRefused` instead of resuming, because
+                :class:`SpeculativeResumeRefused` instead of resuming (unless
+                ``speculative_resume`` opts in), because
                 the real first turn must be the one that observes
                 ``resumed=True``; and the returned ``is_new`` reflects the
                 flag's state without consuming it.
+            speculative_resume: Only meaningful with ``speculative=True``.
+                Opts in to speculatively resuming a persisted session
+                (resume prefetch): instead of refusing a resumable key, the
+                speculative creator performs the session/load and registers
+                the session with BOTH one-shot markers armed —
+                ``is_new=True`` and ``resumed_armed=True`` when the load
+                actually restored the transcript. The first real claimant
+                consumes both atomically under the per-session semaphore and
+                receives ``(provider, True, True)``, preserving its
+                history-injection decision exactly as if it had performed the
+                resume itself.
         """
         # Fast path: existing session — hold lock only briefly
         # Fold bare/canonical Slack key aliases FIRST: the SessionMap thread
@@ -2444,16 +2474,22 @@ class SessionManager:
         if _claimed is not None:
             sess = _claimed
             if await self._reacquire_and_validate(key, sess):
-                # Consume the one-shot first-turn flag HERE, as the semaphore
+                # Consume the one-shot first-turn flags HERE, as the semaphore
                 # owner — not at claim time under self._lock. A claimant
-                # cancelled while waiting must not destroy the flag, and when
+                # cancelled while waiting must not destroy the flags, and when
                 # several callers queue on an armed (speculatively created)
-                # session, the flag belongs to whichever real caller acquires
+                # session, the flags belong to whichever real caller acquires
                 # first. A speculative claimant reads without consuming.
+                # ``resumed_armed`` travels with ``is_new``: both are set only
+                # together at registration and consumed together here, so the
+                # real first turn observes resumed=True exactly when a resume
+                # prefetch restored the transcript.
                 was_new = sess.is_new
+                was_resumed = sess.resumed_armed
                 if not speculative:
                     sess.is_new = False
-                return sess.provider, was_new, False
+                    sess.resumed_armed = False
+                return sess.provider, was_new, was_resumed
             # Stale between claim and acquire — the semaphore has already been
             # released by the re-validate. If the entry is still ours but the
             # provider died, evict it and shut the dead provider down (mirrors
@@ -2501,12 +2537,16 @@ class SessionManager:
         ) and not self._is_continuable_key(key)
         if not is_stateless:
             resume_sid = self._session_map.get(key)
-        # A speculative caller must never be the one that resumes: the real
-        # first turn needs to observe resumed=True to make its history-injection
-        # decision, and the existing-session fast path reports resumed=False.
-        # Checked HERE, on the same map read that would drive the resume, so no
-        # check-then-act window exists for a mapping to appear in between.
-        if speculative and resume_sid:
+        # A speculative caller must never be the one that resumes UNLESS it
+        # opted in via speculative_resume (resume prefetch): the real first
+        # turn needs to observe resumed=True to make its history-injection
+        # decision, and the existing-session fast path would otherwise report
+        # resumed=False. The opt-in path preserves that observation by arming
+        # resumed_armed at registration for the first real claimant to
+        # consume. Checked HERE, on the same map read that would drive the
+        # resume, so no check-then-act window exists for a mapping to appear
+        # in between.
+        if speculative and resume_sid and not speculative_resume:
             raise SpeculativeResumeRefused(key)
 
         # Try warm pool first (no resume — pooled processes have no prior session)
@@ -2619,7 +2659,7 @@ class SessionManager:
                 )
                 self._schedule_replenish()
             except (asyncio.CancelledError, Exception):
-                _sync_kill_provider(provider)
+                self._dispatch_hard_kill(provider)
                 raise
         else:
             # Cold start: start provider OUTSIDE the lock so other sessions
@@ -2677,11 +2717,15 @@ class SessionManager:
                     await provider.start()
                 except (asyncio.CancelledError, Exception):
                     # Provider process may have spawned before the cancel/error —
-                    # shut it down so it doesn't leak.  Use synchronous kill as
-                    # a last resort since asyncio.shield is unreliable during
-                    # cancellation (the awaited future raises CancelledError
-                    # immediately, leaving shutdown fire-and-forget).
-                    _sync_kill_provider(provider)
+                    # shut it down so it doesn't leak. Dispatched to the
+                    # subprocess executor: awaiting an async shutdown here is
+                    # unreliable during cancellation (the awaited future
+                    # re-raises CancelledError immediately), and an inline
+                    # _sync_kill_provider blocks the event loop (os.waitpid /
+                    # taskkill). Resume prefetch makes this path routine — a
+                    # focus flip mid-session/load cancels the loading task —
+                    # so it must not stall the loop.
+                    self._dispatch_hard_kill(provider)
                     raise
 
         # start() has written the provider's PID to kiro_session_pids.txt, but
@@ -2707,6 +2751,21 @@ class SessionManager:
 
             if isinstance(provider, AcpProvider):
                 resumed = provider.client.resumed
+
+            # A SPECULATIVE RESUME whose load did NOT restore the transcript
+            # (F2 fell back to a fresh session, the mapping vanished between
+            # lookup and load, or a provider switch discarded the sid) is
+            # rejected BEFORE registration. A registered fallback session is
+            # claimable: a real turn that queued during the load would claim
+            # it, the conditional cleanup would no-op, and the turn's
+            # exchanges would land in a session whose native id is unmapped —
+            # the next reopen resumes the OLD sid and silently drops them
+            # from model context. Raising here (the except below kills the
+            # provider) means no claimable session ever exists; the first
+            # real message creates AND maps the fallback itself, running the
+            # normal F2 recovery + history replay in its own coroutine.
+            if speculative and speculative_resume and not resumed:
+                raise SpeculativeResumeRefused(key)
 
             async with self._lock:
                 # Re-check _closing: the entry gate ran BEFORE the multi-second
@@ -2763,6 +2822,12 @@ class SessionManager:
                         # self._lock — this is what replaces the racy
                         # rearm-after-release design.
                         is_new=bool(speculative),
+                        # Armed only alongside is_new: a speculative resume
+                        # creator whose session/load actually restored the
+                        # transcript owes the resumed=True observation to the
+                        # first real claimant. A real creator receives
+                        # ``resumed`` directly in its own return tuple.
+                        resumed_armed=bool(speculative and resumed),
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
@@ -2784,7 +2849,11 @@ class SessionManager:
                         len(self._sessions),
                     )
 
-                    # Save session mapping for long-lived sessions
+                    # Save session mapping for long-lived sessions. A failed
+                    # speculative resume never reaches this point — it is
+                    # rejected before registration (SpeculativeResumeRefused
+                    # above), so a speculative_resume registration here always
+                    # carries resumed=True and mapping its sid is correct.
                     _cwd_str = provider.cwd
                     if not is_stateless and isinstance(provider, AcpProvider):
                         sid = provider.client._session_id
@@ -2809,8 +2878,12 @@ class SessionManager:
                     result = (provider, True, resumed)
         except BaseException:
             # CancelledError or any other exception after provider.start()
-            # succeeded — provider is running but never registered.  Kill it.
-            _sync_kill_provider(provider)
+            # succeeded — provider is running but never registered. Kill it
+            # via the executor dispatch: this handler is routine under resume
+            # prefetch (every failed speculative load raises
+            # SpeculativeResumeRefused through here), and an inline
+            # _sync_kill_provider blocks the event loop.
+            self._dispatch_hard_kill(provider)
             raise
         finally:
             # Registration is complete (or the provider was killed) — the PID is
@@ -2841,9 +2914,11 @@ class SessionManager:
                 # winner consumed its own flag at registration, so was_new
                 # reads False exactly as before.
                 was_new = _won_race_sess.is_new
+                was_resumed = _won_race_sess.resumed_armed
                 if not speculative:
                     _won_race_sess.is_new = False
-                return _won_race_sess.provider, was_new, False
+                    _won_race_sess.resumed_armed = False
+                return _won_race_sess.provider, was_new, was_resumed
             # Stale winner: the semaphore has already been released by the
             # re-validate; retry from the top (cold-starts cleanly). Bounded so
             # a pathological recycle race can't recurse without limit.
@@ -2862,6 +2937,7 @@ class SessionManager:
                 cwd=cwd,
                 extra_env=extra_env,
                 speculative=speculative,
+                speculative_resume=speculative_resume,
                 _won_race_retries=_won_race_retries + 1,
                 **extra_factory_kwargs,
             )
@@ -3372,6 +3448,34 @@ class SessionManager:
             await self.release_subagent_runtime(key)
             logger.info("Removed session (map preserved): %s", key)
 
+    async def remove_if_unclaimed(self, key: str) -> bool:
+        """Remove *key* only if its speculative session is still unclaimed.
+
+        The TTL backstop for resume prefetch: a speculatively resumed session
+        holds kiro-cli's native per-session lock, so one the user never
+        returns to must be released cleanly instead of waiting out the idle
+        sweep. "Unclaimed" is checked under the manager lock — the one-shot
+        ``is_new`` marker is still armed (no real turn consumed it) and the
+        per-session semaphore is unheld (no claimant mid-turn). A claimant
+        that has been handed the session object but not yet acquired the
+        semaphore loses the race benignly: its re-validate fails and it
+        cold-starts, exactly as if the prefetch never ran. Returns ``True``
+        when a session was removed. The session map survives (mirrors
+        :meth:`remove`), so the next open resumes normally.
+        """
+        key = self._fold_key(key)
+        async with self._lock:
+            session = self._sessions.get(key)
+            if session is None or not session.is_new or session.semaphore.locked():
+                return False
+            del self._sessions[key]
+            self._compact_cooldown_until.pop(key, None)
+            self._origin_links.pop(key, None)
+        await session.provider.shutdown()
+        await self.release_subagent_runtime(key)
+        logger.info("Removed unclaimed speculative session (map preserved): %s", key)
+        return True
+
     async def destroy(self, key: str) -> None:
         """Permanently destroy a session — no resume possible.
 
@@ -3793,6 +3897,19 @@ class SessionManager:
         map self-prunes entries whose files are gone).
         """
         return self._session_map.get(self._fold_key(key))
+
+    def resumable_hint(self, key: str) -> bool:
+        """Loop-safe, in-memory probe: *key* MAY be resumable.
+
+        A read-only ``SessionMap`` membership check — no disk I/O, no
+        stale-entry pruning, no map rewrite — so it can run on the event loop
+        (unlike :meth:`resumable_sid`, whose ``SessionMap.get`` prunes and can
+        rewrite the map file). May report a false positive for an entry whose
+        session files are gone; the authoritative pruning lookup inside
+        ``get_or_create``'s resume path settles it, and the speculative load
+        then falls back and is torn down by the caller.
+        """
+        return self._session_map.has_hint(self._fold_key(key))
 
     def seed_conversation(self, key: str, sid: str, *, provider: str = "", cwd: str = "") -> None:
         """Write a session-map entry for *key* on demand (spawn_continue).

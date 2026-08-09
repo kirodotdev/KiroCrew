@@ -866,6 +866,7 @@ class _ChatSlot:
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
         "_eager_spawn_task",
+        "_prefetch_ttl_task",
         "_dirty_flag",
         "_dirty_gen",
         "_orch_tracker",
@@ -1045,6 +1046,9 @@ class _ChatSlot:
         # At most one per slot: scheduling a new one cancels the previous, so
         # rapid signals (create + project set) collapse into a single spawn.
         self._eager_spawn_task: asyncio.Task[None] | None = None
+        # Unclaimed-prefetch teardown timer (resume prefetch). At most one per
+        # slot: a newer resumed prefetch cancels the previous timer.
+        self._prefetch_ttl_task: asyncio.Task[None] | None = None
         self._dirty_flag: bool = False  # True when messages changed since last flush
         # Bumped by the _dirty setter on every True. Lets the periodic flush tell
         # "the True I started this save under" from "a NEW True set during it".

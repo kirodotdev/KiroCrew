@@ -142,9 +142,9 @@ class TestSessionManager:
         finally:
             mgr._recycling.pop("thread1", None)
 
-        assert replacement.needs_context_reinjection is False, (
-            "a recycle must not flag the fresh replacement session"
-        )
+        assert (
+            replacement.needs_context_reinjection is False
+        ), "a recycle must not flag the fresh replacement session"
         assert mgr.consume_needs_reinjection("thread1") is False
         await mgr.close_all()
 
@@ -769,7 +769,16 @@ class TestCancelRaceCondition:
 
     @pytest.mark.asyncio
     async def test_cancel_during_start_kills_provider(self, cfg):
-        """CancelledError during provider.start() kills the process synchronously."""
+        """CancelledError during provider.start() dispatches the process kill.
+
+        The kill goes through _dispatch_hard_kill (non-blocking submission to
+        the subprocess executor) rather than an inline _sync_kill_provider:
+        the inline form blocks the event loop (os.waitpid / taskkill), and
+        resume prefetch makes this cancellation handler routine — a focus
+        flip mid-session/load cancels the loading task. Submission is
+        synchronous, so the kill is guaranteed dispatched before the
+        re-raise.
+        """
         mock_provider = AsyncMock()
         mock_provider.start = AsyncMock(side_effect=asyncio.CancelledError)
         mock_provider._client = AsyncMock()
@@ -780,9 +789,7 @@ class TestCancelRaceCondition:
 
         mgr = SessionManager(cfg, provider_factory=factory)
 
-        import kiro_crew.session as _sess_mod
-
-        with patch.object(_sess_mod, "_sync_kill_provider") as mock_kill:
+        with patch.object(SessionManager, "_dispatch_hard_kill") as mock_kill:
             with pytest.raises(asyncio.CancelledError):
                 await mgr.get_or_create("test-cancel")
 
@@ -794,7 +801,13 @@ class TestCancelRaceCondition:
 
     @pytest.mark.asyncio
     async def test_cancel_after_start_before_registration_kills_provider(self, cfg):
-        """CancelledError after start() but before _sessions[key] kills the process."""
+        """CancelledError after start() but before _sessions[key] dispatches the kill.
+
+        Same contract as the during-start case: _dispatch_hard_kill, never an
+        inline _sync_kill_provider (which blocks the event loop). This handler
+        is also the landing site for SpeculativeResumeRefused, so resume
+        prefetch exercises it on every failed speculative load.
+        """
         mock_provider = AsyncMock()
         mock_provider.start = AsyncMock()  # succeeds
         mock_provider.context_usage_pct = lambda: 0.0
@@ -824,9 +837,7 @@ class TestCancelRaceCondition:
                 if self._calls < 2:
                     return await original_lock.__aexit__(*a)
 
-        import kiro_crew.session as _sess_mod
-
-        with patch.object(_sess_mod, "_sync_kill_provider") as mock_kill:
+        with patch.object(SessionManager, "_dispatch_hard_kill") as mock_kill:
             mgr._lock = CancelOnSecondLock()
             with pytest.raises(asyncio.CancelledError):
                 await mgr.get_or_create("test-cancel-2")

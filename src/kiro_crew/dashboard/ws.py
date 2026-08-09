@@ -12,7 +12,7 @@ from aiohttp import WSMsgType, web
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
-from kiro_crew.dashboard.chat_utils import subagent_event_slot
+from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -159,6 +159,65 @@ def broadcast_side_queue(
     # does not own, and queue entries are the user's own prose. An unscoped broadcast
     # would hand that text to app sockets the HTTP layer keeps out.
     state.broadcast_ws_owners(SIDE_QUEUE_EVENT, payload)
+
+
+def _handle_slot_focused(
+    state: DashboardState,
+    slot_key: object,
+    prev_task: "asyncio.Task | None",
+    *,
+    owner: bool,
+) -> "asyncio.Task | None":
+    """React to a client's ``slot_focused`` frame with a resume prefetch.
+
+    Owner-only: an app-scoped socket is allowed on ``/api/ws`` for its own
+    event streams, but a prefetch starts (or lets it cancel) owner-session
+    processes and takes kiro-cli's native per-session lock — a permission
+    boundary an app token does not cross. Non-owner frames are ignored
+    entirely, including the cancel: ``prev_task`` can only be non-None for a
+    socket that was owner when it armed one.
+
+    Focusing a slot whose session is persisted but not live starts the
+    speculative ``session/load`` (resume prefetch), overlapping the
+    multi-second transcript replay with the user reading that history in the
+    UI. ``prev_task`` is the prefetch THIS socket's previous focus armed;
+    it is cancelled on every focus change so rapid tab flipping settles into
+    at most one pending prefetch per connection — only the task this path
+    created is touched, never one armed by the slot-create/project-set
+    intent signals. ``slot_key`` of ``None``/empty means blur (tab hidden,
+    no focused slot): cancel and do nothing else.
+
+    Returns the task now pending for this socket, if any.
+    """
+    # circular import: ws -> chat_runner -> handlers/__init__ -> handlers/side -> ws
+    from kiro_crew.dashboard.chat_runner import schedule_eager_spawn
+
+    if not owner:
+        return prev_task
+    if prev_task is not None and not prev_task.done():
+        prev_task.cancel()
+    if not isinstance(slot_key, str) or not slot_key:
+        return None  # blur
+    slot = state.get_slot(slot_key)
+    if slot is None or slot.running:
+        return None
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return None
+    session_key = effective_session_key(slot)
+    if sessions.has_session(session_key):
+        return None  # already live (in-memory check) — nothing to prefetch
+    # Loop-safe resumability HINT (in-memory membership, no disk, no pruning —
+    # the pruning ``resumable_sid`` lookup stays inside the spawn task's
+    # get_or_create resume path). Checked HERE so a non-resumable slot never
+    # reaches schedule_eager_spawn: creating a slot focuses it, and the focus
+    # frame arriving behind the create signal would otherwise CANCEL the
+    # create-armed fresh spawn (schedule_eager_spawn keeps one task per slot)
+    # and then no-op — silently gutting the fresh eager-spawn path for every
+    # new slot. Non-resumable focus preserves whatever task is pending.
+    if not sessions.resumable_hint(session_key):
+        return None
+    return schedule_eager_spawn(state, slot, allow_resume=True)
 
 
 def _check_ws_origin(request: web.Request) -> None:
@@ -310,11 +369,13 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.warning(
-                    "check-status refresh round failed; continuing", exc_info=True
-                )
+                logger.warning("check-status refresh round failed; continuing", exc_info=True)
 
     check_task = asyncio.create_task(_refresh_check_loop()) if owner_request else None
+    # The resume prefetch this socket's most recent slot_focused frame armed.
+    # Tracked per connection so a focus change (or blur/disconnect) cancels
+    # only this socket's speculation, never another window's.
+    _focus_task: "asyncio.Task | None" = None
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
@@ -366,7 +427,18 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                                 "elapsed": native["elapsed"],
                                                 "error": _r(str(_err)) if _err else None,
                                                 "stopped": bool(native.get("stopped")),
-                                                "outcome": str(native.get("outcome") or ("stopped" if native.get("stopped") else ("failed" if native.get("error") else "completed"))),
+                                                "outcome": str(
+                                                    native.get("outcome")
+                                                    or (
+                                                        "stopped"
+                                                        if native.get("stopped")
+                                                        else (
+                                                            "failed"
+                                                            if native.get("error")
+                                                            else "completed"
+                                                        )
+                                                    )
+                                                ),
                                                 "task": _r(str(native["task"])),
                                                 "agent": _r(str(native["agent"])),
                                                 "result": _r(str(native["result"])),
@@ -454,6 +526,10 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             pass
                     elif msg_type == "unsubscribe_subagents":
                         state.unsubscribe_subagents(ws)
+                    elif msg_type == "slot_focused":
+                        _focus_task = _handle_slot_focused(
+                            state, data.get("slot"), _focus_task, owner=owner_request
+                        )
                 except (json.JSONDecodeError, Exception):
                     pass
             elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
@@ -464,6 +540,9 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         status_task.cancel()
         if check_task is not None:
             check_task.cancel()
+        # A prefetch still debouncing for a closed dashboard serves nobody.
+        if _focus_task is not None and not _focus_task.done():
+            _focus_task.cancel()
         state.unsubscribe_logs(ws)
         state.unsubscribe_subagents(ws)
         state.unregister_ws(ws)

@@ -2241,8 +2241,54 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 _EAGER_SPAWN_MAX_CONCURRENT = 2
 _eager_spawn_sem = asyncio.Semaphore(_EAGER_SPAWN_MAX_CONCURRENT)
 
+# How long a speculatively RESUMED session may sit unclaimed before it is
+# torn down. A resumed session holds kiro-cli's native per-session lock, so
+# a prefetch the user walked away from must release it cleanly rather than
+# wait out the 30-minute idle sweep. Fresh (non-resumed) eager sessions keep
+# the idle-sweep-only behavior — they hold no prior transcript's lock.
+_RESUME_PREFETCH_TTL_SECS = 600.0
 
-def schedule_eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
+# Population cap on live-but-unclaimed prefetched sessions. The spawn
+# semaphore bounds concurrent SPAWNS, not accumulated LIVE processes: after a
+# gateway restart restores many resumable tabs, flipping through them could
+# stack one full kiro-cli process (RSS + native session lock) per dwelled tab
+# for the whole TTL. Arming a new prefetch beyond the cap evicts the OLDEST
+# unclaimed one via the conditional remove_if_unclaimed — a claimed session is
+# never touched, it just falls out of the accounting.
+_RESUME_PREFETCH_MAX_LIVE = 3
+# Insertion-ordered arm registry (loop-owned, like all chat_runner state):
+# session_key -> None. Entries leave on TTL fire, on eviction, or lazily when
+# an eviction attempt finds the session already claimed/gone.
+_armed_prefetches: "dict[str, None]" = {}
+
+
+async def _cap_armed_prefetches(sessions: Any, new_key: str) -> None:
+    """Register *new_key* as armed and evict oldest unclaimed beyond the cap."""
+    _armed_prefetches.pop(new_key, None)  # re-arm moves the key to newest
+    _armed_prefetches[new_key] = None
+    while len(_armed_prefetches) > _RESUME_PREFETCH_MAX_LIVE:
+        oldest = next(iter(_armed_prefetches))
+        _armed_prefetches.pop(oldest, None)
+        try:
+            # Shielded for the same reason as the TTL removal: an interrupted
+            # removal leaks the process holding the native lock.
+            if await asyncio.shield(sessions.remove_if_unclaimed(oldest)):
+                logger.info(
+                    "Resume prefetch: evicted oldest unclaimed %s (cap %d)",
+                    oldest,
+                    _RESUME_PREFETCH_MAX_LIVE,
+                )
+            # False = claimed or already gone — either way it no longer
+            # counts against the cap; dropping the registry entry suffices.
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Resume prefetch: eviction failed for %s", oldest, exc_info=True)
+
+
+def schedule_eager_spawn(
+    state: "DashboardState", slot: "_ChatSlot", *, allow_resume: bool = False
+) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
     Fire-and-forget: called from the slot-create and project-set handlers so
@@ -2252,20 +2298,31 @@ def schedule_eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
 
     At most one pending task per slot: a newer signal cancels the older task,
     so the spawn always reflects the slot's settled agent/model/project.
+
+    ``allow_resume`` opts this spawn into resume prefetch (the slot-focused
+    intent signal): a resumable key performs the speculative ``session/load``
+    instead of skipping, with the ``resumed=True`` observation armed for the
+    first real turn and a TTL teardown if no turn ever claims it. The other
+    intent signals keep the refusal — slot create has no mapping, and the
+    agent/project switch handlers reset the session themselves.
     """
     try:
         cfg = KiroCrewConfig.load()
         if not cfg.session.eager_spawn:
-            return
+            return None
     except Exception:
-        return
+        return None
     prev = getattr(slot, "_eager_spawn_task", None)
     if prev is not None and not prev.done():
         prev.cancel()
-    slot._eager_spawn_task = asyncio.create_task(_eager_spawn(state, slot))
+    task = asyncio.create_task(_eager_spawn(state, slot, allow_resume=allow_resume))
+    slot._eager_spawn_task = task
+    return task
 
 
-async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
+async def _eager_spawn(
+    state: "DashboardState", slot: "_ChatSlot", *, allow_resume: bool = False
+) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
     Ordering is load-bearing:
@@ -2298,6 +2355,18 @@ async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
         async with _eager_spawn_sem:
             await _consume_pending_reset(state, slot)
             session_key = effective_session_key(slot)
+            if allow_resume:
+                # The focus signal only ever adds the RESUME case; fresh eager
+                # spawn stays owned by the create/project/agent signals. This
+                # probe is the in-memory hint (no disk, no pruning): SessionMap
+                # is loop-owned and unlocked, so the pruning ``resumable_sid``
+                # lookup must not run in a worker thread — a prune there would
+                # race concurrent loop-side map writes. The authoritative
+                # pruning lookup happens inside get_or_create's resume path,
+                # on the loop, where it always ran; a false-positive hint just
+                # means the speculative load falls back and is torn down below.
+                if not sessions.resumable_hint(session_key):
+                    return
             # Snapshot the bindings the handshake is about to bake in. A
             # switch handler (workspace, model, reasoning effort) that fires
             # mid-handshake resets the session key — but the reset no-ops
@@ -2325,18 +2394,27 @@ async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
             try:
                 # speculative=True keeps the one-shot first-turn flag armed for
                 # the real first message (atomically, at registration) and
-                # refuses resumable keys — the real turn must be the one that
-                # observes resumed=True. See get_or_create's docstring.
+                # refuses resumable keys — unless allow_resume opted in, in
+                # which case the speculative session/load runs here and the
+                # resumed=True observation is armed for the real turn. See
+                # get_or_create's docstring.
                 _, is_new, resumed = await sessions.get_or_create(
                     session_key,
                     agent=kiro_agent or slot.agent or None,
                     model=slot.model or agent_model or None,
                     cwd=slot.project or None,
                     speculative=True,
+                    speculative_resume=allow_resume,
                     reasoning_effort_override=slot.reasoning_effort or None,
                 )
             except SpeculativeResumeRefused:
-                logger.info("Eager spawn: %s is resumable, leaving to first turn", session_key)
+                # Two sources: the entry gate (resumable key, resume not
+                # opted in — fresh eager spawn leaves it to the first turn)
+                # or a failed speculative LOAD (allow_resume path: F2 fell
+                # back / mapping vanished / provider switch), rejected before
+                # registration so no claimable fallback session exists. Both
+                # end the same way: the first real message handles it.
+                logger.info("Eager spawn: %s left to first turn (refused)", session_key)
                 return
             sessions.release(session_key)
             # The cleanup below may only tear down a session THIS task created.
@@ -2382,10 +2460,81 @@ async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
                 is_new,
                 resumed,
             )
+            if allow_resume and resumed:
+                _schedule_prefetch_ttl(state, slot, session_key)
+                await _cap_armed_prefetches(sessions, session_key)
+            # allow_resume and not resumed cannot happen: a speculative
+            # resume whose load fell back is rejected BEFORE registration
+            # (SpeculativeResumeRefused, caught above) precisely so no
+            # claimable fallback session ever exists — a real turn queued
+            # during the load would otherwise claim it and strand its
+            # exchanges behind the preserved old sid.
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
+
+
+def _schedule_prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> None:
+    """Arm the unclaimed-prefetch teardown for a speculatively RESUMED session.
+
+    One pending TTL per slot: a newer prefetch cancels the older timer, so the
+    countdown always covers the most recent load. The teardown itself is
+    conditional — ``remove_if_unclaimed`` no-ops once a real turn consumed the
+    one-shot markers or a claimant holds the semaphore — so a TTL that fires
+    after the user came back does nothing.
+    """
+    prev = getattr(slot, "_prefetch_ttl_task", None)
+    if prev is not None and not prev.done():
+        prev.cancel()
+    slot._prefetch_ttl_task = asyncio.create_task(_prefetch_ttl(state, slot, session_key))
+
+
+async def _prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> None:
+    """Tear down a resume-prefetched session no real turn claimed in time.
+
+    A resumed session pins kiro-cli's native per-session lock; leaving an
+    abandoned prefetch to the 30-minute idle sweep holds that lock (and the
+    process's RSS) far longer than the speculation was worth. The removal
+    preserves the session map, so the next focus or first message resumes
+    again normally.
+    """
+    try:
+        await asyncio.sleep(_RESUME_PREFETCH_TTL_SECS)
+        _armed_prefetches.pop(session_key, None)  # arm window over either way
+        sessions = getattr(state, "sessions", None)
+        if sessions is None:
+            return
+        _current = state.get_slot(slot.key)
+        if _current is not None and _current is not slot:
+            return  # slot replaced — the new occupant owns this key now
+        if _current is None:
+            # Slot DELETED — do not assume the delete handler cleaned up this
+            # session: it removes the slot-key-derived history session, while
+            # a channel-born slot's prefetch registered under its LINKED
+            # session key (effective_session_key). Returning here would leak
+            # that process holding kiro-cli's native lock. Fall through to the
+            # conditional removal — it no-ops on an already-removed key and
+            # never touches a claimed session (e.g. the channel side using
+            # the linked session).
+            pass
+        elif slot.running:
+            return  # a real turn claimed (or is claiming) the session
+        # Shielded: a cancel landing after remove_if_unclaimed has popped the
+        # registry entry but before provider.shutdown() finishes would leak
+        # the process holding kiro-cli's native lock — nothing else can find
+        # it anymore. The shield lets the removal run to completion while the
+        # cancel still propagates to this task.
+        if await asyncio.shield(sessions.remove_if_unclaimed(session_key)):
+            logger.info(
+                "Resume prefetch: unclaimed session %s expired after %.0fs",
+                session_key,
+                _RESUME_PREFETCH_TTL_SECS,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Prefetch TTL failed for slot %s", slot.key, exc_info=True)
 
 
 async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
@@ -2491,9 +2640,7 @@ def _settle_consumed_steers(slot: "_ChatSlot", snapshot: str) -> None:
     # echo is no evidence, so keep entries pending and let the requeue show a
     # cancellable card); whether the main chat should follow is a separate
     # change, because its requeue is not exercised here.
-    remaining = settle_consumed_steers(
-        slot._pending_steers, snapshot, settle_all_on_empty=True
-    )
+    remaining = settle_consumed_steers(slot._pending_steers, snapshot, settle_all_on_empty=True)
     logger.debug(
         "Steer consumed for slot %s (%d settled, %d still pending)",
         slot.key,

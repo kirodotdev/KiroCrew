@@ -1990,6 +1990,11 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     _eager = getattr(slot, "_eager_spawn_task", None)
     if _eager is not None and not _eager.done():
         _eager.cancel()
+    # A pending resume-prefetch TTL timer is deliberately NOT cancelled here:
+    # its removal is conditional (no-ops once the slot is gone or the session
+    # was claimed), while a cancel landing mid-removal would interrupt
+    # provider.shutdown() after the registry entry was already popped and
+    # leak the process holding kiro-cli's native session lock.
     if slot.running and slot.task is not None:
         slot.task.cancel()
         try:

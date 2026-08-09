@@ -96,6 +96,18 @@ export function staleAskIds(
   return askIdsOf(current).filter((id) => !live.has(id))
 }
 
+/* Slot-focus intent signal (resume prefetch). The hook instance owns the
+   live socket, but split view needs to report pane focus from a component
+   tree that has no access to the hook's return value — so the sender is a
+   module-level indirection the hook binds while mounted. Before the hook
+   mounts (or after it unmounts) the emitter is a no-op: focus frames are a
+   best-effort optimization, never load-bearing. */
+let sendSlotFocusedImpl: (slot: string | null) => void = () => {}
+
+export function emitSlotFocused(slot: string | null): void {
+  sendSlotFocusedImpl(slot)
+}
+
 export function useWebSocket() {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
@@ -403,6 +415,9 @@ export function useWebSocket() {
         ws.send(JSON.stringify({ type: 'subscribe_subagents' }))
         subagentSubRef.current = true
         if (logCbRef.current) ws.send(JSON.stringify({ type: 'subscribe_logs' }))
+        // Re-announce focus: the server lost this socket's focus state with
+        // the old connection, and the store subscription only fires on change.
+        ws.send(JSON.stringify({ type: 'slot_focused', slot: active || null }))
         return
       }
       wasConnectedRef.current = true
@@ -422,6 +437,11 @@ export function useWebSocket() {
       // lines at all until an unrelated reconnect. The reconnect branch above
       // already does this; the two paths must stay symmetric.
       if (logCbRef.current) ws.send(JSON.stringify({ type: 'subscribe_logs' }))
+      // Announce the restored active slot so a resumable session prefetches
+      // while the user reads its transcript (resume prefetch).
+      ws.send(
+        JSON.stringify({ type: 'slot_focused', slot: store.getState().chat.activeSlot || null })
+      )
     }
 
     ws.onmessage = (e) => {
@@ -1210,6 +1230,31 @@ export function useWebSocket() {
     }
     window.addEventListener('voice-stop', onVoiceStop)
     window.addEventListener('voice-config-changed', onVoiceConfigChanged)
+    // Slot-focus intent signal (resume prefetch). One shared sender for
+    // every focus source — Redux activeSlot changes (sidebar, keyboard,
+    // deep links, history), tab visibility, and split-view pane focus via
+    // emitSlotFocused — so the HTTP and WS notions of "focused" cannot
+    // drift. Best-effort: dropped silently while the socket is not OPEN.
+    const sendFocus = (slot: string | null) => {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify({ type: 'slot_focused', slot }))
+    }
+    sendSlotFocusedImpl = sendFocus
+    let lastFocusSent: string | null = null
+    const unsubFocus = store.subscribe(() => {
+      const active = store.getState().chat.activeSlot
+      if (active === lastFocusSent) return  // store.subscribe fires on EVERY action
+      lastFocusSent = active
+      sendFocus(active)
+    })
+    const onVisibility = () => {
+      // Hidden → blur (cancels a pending prefetch server-side); visible →
+      // re-announce the active slot even if unchanged, since the server may
+      // have expired the previous prefetch while the tab was away.
+      sendFocus(document.hidden ? null : store.getState().chat.activeSlot)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       closingRef.current = true
       clearTimeout(reconnectTimerRef.current)
@@ -1219,6 +1264,9 @@ export function useWebSocket() {
       wsRef.current = null
       window.removeEventListener('voice-stop', onVoiceStop)
       window.removeEventListener('voice-config-changed', onVoiceConfigChanged)
+      document.removeEventListener('visibilitychange', onVisibility)
+      unsubFocus()
+      sendSlotFocusedImpl = () => {}
     }
   }, [connect, stopVoice])
 
