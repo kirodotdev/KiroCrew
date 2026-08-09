@@ -3547,24 +3547,28 @@ class WatchdogConfig:
         ),
     )
     tool_stall_suspect_secs: float = field(
-        default=10800.0,
+        default=3600.0,
         metadata=_meta(
             "Tool stall suspect (s)",
             "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and "
             "the turn routed to tool-stall recovery (continue-nudge, no re-run of "
             "the original message). WORKING tools (e.g. a matched live build child) "
-            "are never cancelled regardless of duration. Default 3h to accommodate "
-            "long-running builds and MCP tools on macOS where the liveness oracle "
-            "degrades (no /proc) and cannot distinguish live builds from stalls.",
+            "are never cancelled regardless of duration. Default 1h: generous enough "
+            "for long builds and MCP tools on macOS, where the liveness oracle "
+            "degrades (no /proc) and cannot distinguish a live build from a stall, "
+            "while still landing inside the turn's own ceiling "
+            "(agent.chat_turn_timeout_secs) so recovery is reachable. A window at or "
+            "past that ceiling is clamped at load with a warning.",
         ),
     )
     tool_stall_hard_cap_secs: float = field(
-        default=10800.0,
+        default=3600.0,
         metadata=_meta(
             "Hard cap (s)",
             "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
             "probably-thinking window). Applies ONLY to UNKNOWN verdicts — never "
-            "to a WORKING session. Default 3h.",
+            "to a WORKING session. Default 1h, bounded by the turn ceiling like "
+            "the suspect window.",
         ),
     )
     model_silent_probe_secs: float = field(
@@ -4901,10 +4905,10 @@ class KiroCrewConfig:
                 check_after_secs=_safe_float(watchdog_data.get("check_after_secs", 60.0), 60.0),
                 stale_window_secs=_safe_float(watchdog_data.get("stale_window_secs", 300.0), 300.0),
                 tool_stall_suspect_secs=_safe_float(
-                    watchdog_data.get("tool_stall_suspect_secs", 10800.0), 10800.0
+                    watchdog_data.get("tool_stall_suspect_secs", 3600.0), 3600.0
                 ),
                 tool_stall_hard_cap_secs=_safe_float(
-                    watchdog_data.get("tool_stall_hard_cap_secs", 10800.0), 10800.0
+                    watchdog_data.get("tool_stall_hard_cap_secs", 3600.0), 3600.0
                 ),
                 model_silent_probe_secs=_safe_float(
                     watchdog_data.get("model_silent_probe_secs", 900.0), 900.0

@@ -109,14 +109,79 @@ class WatchdogSettings:
     """Resolved ``watchdog.*`` config values, read ONCE at handle construction
     (never inside the dispatch loop). Defaults mirror ``WatchdogConfig`` in
     ``config/loader.py`` so a config-less context (tests, early bootstrap)
-    behaves identically to a default config."""
+    behaves identically to a default config.
+
+    Every idle window must stay strictly inside the turn's own wall-clock
+    ceiling — see :func:`_clamp_to_turn_ceiling` for why and
+    :data:`_TURN_CEILING_WINDOW_FRACTION` for the enforced headroom."""
 
     check_after_secs: float = 60.0
     stale_window_secs: float = 300.0
-    tool_stall_suspect_secs: float = 10800.0
-    tool_stall_hard_cap_secs: float = 10800.0
+    tool_stall_suspect_secs: float = 3600.0
+    tool_stall_hard_cap_secs: float = 3600.0
     model_silent_probe_secs: float = 900.0
     wellness_sample_secs: float = 3.0
+
+
+# Fraction of a turn's deadline that a watchdog idle window may occupy. A window
+# at or past the deadline is unreachable: the turn's own timeout fires first, so
+# the UNKNOWN-verdict branch never runs and the user gets the generic "turn hit
+# the limit" card instead of tool-stall recovery (which cancels non-lethally and
+# re-drives with a continue-nudge naming the tool and any redirect log). The
+# headroom covers the cancel + ack grace so recovery lands inside the same turn.
+_TURN_CEILING_WINDOW_FRACTION = 0.9
+# watchdog.* keys bounded by the prompt timeout: each is an idle-seconds window
+# the dispatch loop compares elapsed idle against. wellness_sample_secs is a
+# sampling interval, not a window, so it is not bounded here.
+_TURN_BOUNDED_WINDOWS = (
+    "check_after_secs",
+    "stale_window_secs",
+    "tool_stall_suspect_secs",
+    "tool_stall_hard_cap_secs",
+    "model_silent_probe_secs",
+)
+
+
+def _clamp_to_prompt_ceiling(key: str, value: float) -> float:
+    """Bound one watchdog window to the transport's own per-prompt timeout.
+
+    :data:`_DEFAULT_PROMPT_TIMEOUT` is the one deadline EVERY caller shares —
+    the dispatch loop stops the turn there — so it is the only safe bound for a
+    snapshot that is taken once per handle and reused across prompts.
+
+    Mirrors the shape of ``turn_dispatch.chat_turn_timeout_secs``'s clamp
+    against the same timeout: an out-of-range value is honoured as far as the
+    system can honour it, and the clamp is logged at warning level so the
+    misconfiguration is visible instead of silently ignored.
+    """
+    budget = _DEFAULT_PROMPT_TIMEOUT * _TURN_CEILING_WINDOW_FRACTION
+    if value <= budget:
+        return value
+    logger.warning(
+        "watchdog.%s=%.0fs leaves no room inside the %.0fs prompt timeout; "
+        "clamping to %.0fs. The turn's own timeout would fire first, so the "
+        "larger window cannot take effect.",
+        key, value, _DEFAULT_PROMPT_TIMEOUT, budget,
+    )
+    return budget
+
+
+def _warn_if_above_chat_ceiling(key: str, value: float, chat_ceiling: float) -> None:
+    """Advisory: a DASHBOARD turn ends at ``agent.chat_turn_timeout_secs``, so a
+    window above that can never act there.
+
+    Deliberately not clamped. The same handle also serves callers that pass
+    their own, larger prompt timeout (a review run, a cron turn), and shrinking
+    every window to the dashboard's ceiling would cancel their live work. So the
+    mismatch is reported and left to the operator.
+    """
+    if 0 < chat_ceiling < value:
+        logger.warning(
+            "watchdog.%s=%.0fs exceeds agent.chat_turn_timeout_secs=%.0fs — a "
+            "dashboard turn ends before this window can act, so a stall there "
+            "surfaces as the turn-limit card instead of stall recovery.",
+            key, value, chat_ceiling,
+        )
 
 
 def _load_watchdog_settings() -> WatchdogSettings:
@@ -127,14 +192,17 @@ def _load_watchdog_settings() -> WatchdogSettings:
         # circular import: config.loader -> dashboard -> session -> acp
         from kiro_crew.config.loader import KiroCrewConfig
 
-        w = KiroCrewConfig.load().watchdog
+        cfg = KiroCrewConfig.load()
+        w = cfg.watchdog
+        chat_ceiling = float(cfg.agent.chat_turn_timeout_secs)
+        bounded = {}
+        for key in _TURN_BOUNDED_WINDOWS:
+            value = _clamp_to_prompt_ceiling(key, float(getattr(w, key)))
+            _warn_if_above_chat_ceiling(key, value, chat_ceiling)
+            bounded[key] = value
         return WatchdogSettings(
-            check_after_secs=float(w.check_after_secs),
-            stale_window_secs=float(w.stale_window_secs),
-            tool_stall_suspect_secs=float(w.tool_stall_suspect_secs),
-            tool_stall_hard_cap_secs=float(w.tool_stall_hard_cap_secs),
-            model_silent_probe_secs=float(w.model_silent_probe_secs),
             wellness_sample_secs=float(w.wellness_sample_secs),
+            **bounded,
         )
     except Exception:
         logger.debug("watchdog settings load failed — using defaults", exc_info=True)
@@ -143,6 +211,22 @@ def _load_watchdog_settings() -> WatchdogSettings:
 
 # How often a WORKING-verdict deferral is logged (evidence trail without spam).
 _WORKING_LOG_INTERVAL_SECS = 600.0
+# Idle ceiling past which a WORKING deferral stops being routine. Below it, a
+# deferral is the expected shape of a long build and logs at INFO. Past it the
+# deferral is on course to consume the whole turn budget, so it logs at WARNING
+# — the default ``agent.log_level``, without which the one decision that can
+# hold a turn silent until its ceiling leaves no trace in production logs. The
+# rate limit above still applies, so escalation does not become a spam source.
+_WORKING_WARN_AFTER_SECS = 1800.0
+# The same mark as a fraction of the turn's own deadline, so escalation still
+# happens with room to spare on a turn shorter than the default: the effective
+# threshold is whichever of the two is lower.
+_WORKING_WARN_DEADLINE_FRACTION = 0.25
+# "No deferral logged yet" marker for the rate-limit clock. It cannot be 0.0:
+# ``time.monotonic()`` counts from boot on Linux, so on a host up for less than
+# the interval above, 0.0 reads as "logged moments ago" and swallows the very
+# first deferral line — exactly the evidence a freshly restarted gateway needs.
+_WORKING_NEVER_LOGGED = float("-inf")
 # Unresponsive-cancel budget: after cancel() is sent, if kiro-cli does not
 # ack (via a cancelled stopReason on the prompt response) within this window,
 # the dispatch loop unblocks the caller with a terminal EVENT_COMPLETE. The
@@ -249,7 +333,7 @@ class AcpSessionHandle:
         # EVENT_TOOL_RESULT alongside _tool_dispatched.
         self._inflight_tool: ToolCallState | None = None
         # Last monotonic ts a WORKING-verdict deferral was logged (rate limit).
-        self._working_logged_ts = 0.0
+        self._working_logged_ts = _WORKING_NEVER_LOGGED
         # Terminal compaction status captured by compact() while draining its
         # own prompt turn (kiro-cli may emit _kiro.dev/compaction/status
         # BEFORE end_turn). wait_for_compaction() consumes it first so the
@@ -396,7 +480,7 @@ class AcpSessionHandle:
         self._tool_dispatched = False
         self._inflight_tool = None
         self._retire_liveness_state()
-        self._working_logged_ts = 0.0
+        self._working_logged_ts = _WORKING_NEVER_LOGGED
         self._tool_call_inputs.clear()
         self._tool_call_is_shell.clear()
         self._tool_call_raw_params.clear()
@@ -1166,7 +1250,7 @@ class AcpSessionHandle:
                             continue
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=False)
                         if verdict == VERDICT_WORKING:
-                            self._log_working_deferral(_tool_idle, evidence)
+                            self._log_working_deferral(_tool_idle, evidence, timeout)
                             continue
                         # UNKNOWN acts at the suspect window; the hard cap governs
                         # only the stale/model-wait branch below (it bounds the
@@ -1187,7 +1271,7 @@ class AcpSessionHandle:
                             continue
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=True)
                         if verdict == VERDICT_WORKING:
-                            self._log_working_deferral(_stale_idle, evidence)
+                            self._log_working_deferral(_stale_idle, evidence, timeout)
                             continue
                         if verdict != VERDICT_DEAD:
                             # UNKNOWN: probe only past the window. An established-
@@ -1545,14 +1629,25 @@ class AcpSessionHandle:
             logger.debug("oracle consultation failed/timed out", exc_info=True)
             return VERDICT_UNKNOWN, "oracle offload error"
 
-    def _log_working_deferral(self, idle: float, evidence: str) -> None:
+    def _log_working_deferral(self, idle: float, evidence: str, turn_timeout: float) -> None:
         """Evidence trail for a WORKING deferral, rate-limited to one line per
-        interval so a 40-minute build doesn't spam the journal."""
+        interval so a 40-minute build doesn't spam the journal.
+
+        Escalates to WARNING once idle passes the lower of
+        :data:`_WORKING_WARN_AFTER_SECS` and
+        :data:`_WORKING_WARN_DEADLINE_FRACTION` of this turn's own deadline, so a
+        deferral long enough to matter is visible at the default log level on a
+        short turn as well as a default-length one.
+        """
         now = time.monotonic()
         if now - self._working_logged_ts < _WORKING_LOG_INTERVAL_SECS:
             return
         self._working_logged_ts = now
-        logger.info(
+        warn_after = min(
+            _WORKING_WARN_AFTER_SECS, turn_timeout * _WORKING_WARN_DEADLINE_FRACTION
+        )
+        logger.log(
+            logging.WARNING if idle >= warn_after else logging.INFO,
             "Watchdog deferral on session %s: idle %.0fs but verdict WORKING (%s)",
             self._session_id, idle, evidence,
         )
