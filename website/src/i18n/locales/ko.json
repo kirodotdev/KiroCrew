@@ -9128,7 +9128,7 @@
       "restore": "복원",
       "resumable": "재개 가능",
       "search_placeholder": "세션 검색",
-      "sort_largest": "큰 순",
+      "sort_largest": "큰순",
       "sort_name": "이름",
       "sort_oldest": "오래된순",
       "subheading": "세션 {{sessions}}개 · 디스크 사용량 {{total}} · {{reclaimable}} 회수 가능",
