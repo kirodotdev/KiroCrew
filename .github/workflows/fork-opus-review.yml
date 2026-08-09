@@ -215,8 +215,7 @@ jobs:
           # message via the SHA-scoped markers required by FINAL OUTPUT below —
           # the same robust pattern claude-review.yml and codex-review.yml use.
           claude_args: |
-            --model us.anthropic.claude-opus-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-4-8
             --max-turns 120
             --allowedTools "Read,Grep,Glob"
           prompt: |
