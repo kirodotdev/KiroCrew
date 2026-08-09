@@ -30,9 +30,14 @@ interface SettingsToggleProps {
   disabled?: boolean
   /** Backend config key this toggle writes (e.g. 'telemetry.beacon_enabled'). Used by the settings registry and SettingRef linking. */
   configKey?: string
+  /** id of an element describing a CONSEQUENCE of flipping this toggle, rendered
+   *  outside the row (so it is not dimmed with a disabled row). Threaded to the
+   *  switch's `aria-describedby` so assistive tech announces it before the user
+   *  acts, instead of leaving a side effect discoverable only by exploring. */
+  describedBy?: string
 }
 
-export function SettingsToggle({ label, description, checked, onChange, disabled, configKey }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, checked, onChange, disabled, configKey, describedBy }: SettingsToggleProps) {
   return (
     <Clickable data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={() => onChange(!checked)} disabled={disabled}>
       <div className="flex-1 min-w-0 mr-4">
@@ -43,7 +48,7 @@ export function SettingsToggle({ label, description, checked, onChange, disabled
           toggling; the inner Toggle carries all keyboard/AT semantics. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div onClick={e => e.stopPropagation()}>
-        <Toggle checked={checked} onChange={onChange} disabled={disabled} label={label} />
+        <Toggle checked={checked} onChange={onChange} disabled={disabled} label={label} describedBy={describedBy} />
       </div>
     </Clickable>
   )
