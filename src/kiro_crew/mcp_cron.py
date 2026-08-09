@@ -26,6 +26,7 @@ from typing import Any
 from kiro_crew import model_registry
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.cron import (
+    CronJob,
     CronService,
     CronStoreBusy,
     compute_next_run_ts,
@@ -464,7 +465,7 @@ def _audit_governance_deny(session_key: str, tool_name: str, scope: str, decisio
         logger.debug("governance deny audit emit failed", exc_info=True)
 
 
-def _vet_cron_capability_governance() -> str | None:
+def _vet_cron_capability_governance(session_key: str | None = None) -> str | None:
     """Apply the ``capabilities.cron`` gate before authoring ANY cron job.
 
     Distinct from :func:`_vet_command_governance` (which gates the command
@@ -476,6 +477,11 @@ def _vet_cron_capability_governance() -> str | None:
     cron bounded by policy alone (profile-absence = not-governed, the documented
     deviation) — only an explicit ``enabled: false`` (or a deny-all profile)
     disables it.  Best-effort beyond the caller's always-on guards.
+
+    ``session_key`` overrides the MCP-environment resolution: the gateway's
+    fire-time gate (:func:`vet_job_at_fire_time`) runs outside any MCP server
+    environment and passes ``cron:<job.id>`` so the SEL deny trail names the
+    job that was blocked instead of the generic vetting key.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
@@ -484,7 +490,7 @@ def _vet_cron_capability_governance() -> str | None:
     # classifies to the CRON surface (a bare "mcp_cron" misclassifies to the
     # attended "slack" surface via sel._infer_source, skipping a cron-bound
     # profile) — matching _vet_command_governance's "cron:_vet".
-    sk = _resolve_session_key() or "cron:_vet"
+    sk = session_key or _resolve_session_key() or "cron:_vet"
     try:
         from kiro_crew.platform.governance_profiles import governance_permits
 
@@ -785,6 +791,79 @@ def _vet_script_file(file_path: str) -> str | None:
     except OSError as e:
         return f"Error: cannot read cron script for security review: {e}"
     return _vet_script_contents(contents)
+
+
+def _audit_fire_time_decision(job_id: str, scope: str, outcome: str, reason: str = "") -> None:
+    """Best-effort SEL ``governance_decision`` for a fire-time gate outcome.
+
+    Emitted for ALLOWED and DENIED alike, so the audit trail shows every
+    fire-time permission decision, not just refusals. Never raises (audit
+    must not wedge the fire path).
+    """
+    try:
+        sel().log_governance_decision(
+            session_key=f"cron:{job_id}",
+            tool_name="cron_fire_time_vet",
+            scope=scope,
+            outcome=outcome,
+            reason=redact(reason) if reason else "",
+        )
+    except Exception:
+        logger.debug("fire-time governance audit emit failed", exc_info=True)
+
+
+def vet_job_at_fire_time(job: CronJob) -> str | None:
+    """Re-run the governance gates for an already-scheduled cron job at FIRE time.
+
+    ``cron_add`` vets a job once, at authoring time. Without this re-check a
+    policy tightened AFTER scheduling — or a script file edited on disk after
+    authoring — would never be re-evaluated: the job keeps running under the
+    rules that were in force when it was created. The gateway's
+    ``_cron_callback`` calls this immediately before executing every job kind:
+
+    - all kinds: the ``capabilities.cron`` on/off gate
+      (:func:`_vet_cron_capability_governance`), keyed ``cron:<job.id>`` so the
+      SEL deny trail names the blocked job;
+    - ``command`` jobs: the governance ``commands`` ceiling over the command
+      body (:func:`_vet_command_governance`);
+    - ``script`` jobs: the script BODY re-scan (:func:`_vet_script_file`) on the
+      freshly re-resolved path, so an on-disk edit after authoring is caught.
+
+    Every decision — allowed and denied — leaves a SEL ``governance_decision``
+    event keyed ``cron:<job.id>``, so permitted fires are auditable too.
+
+    Returns a redacted ``"Error: ..."`` deny reason, or ``None`` when the job
+    may run. Deny semantics at the call site: mark the run failed but KEEP the
+    job, so a later policy loosening lets it resume without re-authoring.
+    ``resolve_script_path`` failures propagate — the caller's existing
+    exception handling records them exactly as the pre-existing bare
+    resolution call did.
+    """
+    reason = _vet_cron_capability_governance(session_key=f"cron:{job.id}")
+    if reason:
+        # The capability deny already emitted its own governance_decision via
+        # _audit_governance_deny; this uniform event marks WHICH fire-time
+        # gate refused so allowed/denied trails stay symmetric.
+        _audit_fire_time_decision(job.id, "capabilities.cron", "denied", reason)
+        return reason
+    _audit_fire_time_decision(job.id, "capabilities.cron", "allowed")
+    if job.command:
+        reason = _vet_command_governance(job.command)
+        if reason:
+            _audit_fire_time_decision(job.id, "commands", "denied", reason)
+            return reason
+        # The command-body authorization is a DISTINCT decision from the
+        # capability gate above — audit it in its own right so the SEL trail
+        # shows every permission decision that authorized this execution.
+        _audit_fire_time_decision(job.id, "commands", "allowed")
+    elif job.script:
+        script_path, _ = resolve_script_path(job.script)
+        reason = _vet_script_file(script_path)
+        if reason:
+            _audit_fire_time_decision(job.id, "cron_script_body", "denied", reason)
+            return reason
+        _audit_fire_time_decision(job.id, "cron_script_body", "allowed")
+    return None
 
 
 def _log_cron_denial(tool_name: str, error: str) -> None:

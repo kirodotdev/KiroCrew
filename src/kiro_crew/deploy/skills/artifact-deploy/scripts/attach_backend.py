@@ -136,9 +136,11 @@ _SENSITIVE_PREFIXES: tuple[str, ...] = (
     ".git-credentials",
     ".kiro/crew/.env",
     ".kiro/crew/sel_hmac.key",
+    ".kiro/crew/trust",
     ".kiro/crew/security_events.jsonl",
     ".kirocrew/.env",
     ".kirocrew/sel_hmac.key",
+    ".kirocrew/trust",
     ".kirocrew/security_events.jsonl",
 )
 

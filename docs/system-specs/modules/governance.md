@@ -651,12 +651,25 @@ read-your-writes should add it deliberately, with its own tests.
 - **Plane C — out-of-band executors**: the cron `command` (runs via `sh -c`
   outside the ACP flow) is gated in `mcp_cron._vet_command_governance`; the
   cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`.
-  Both run at `cron_add` (authoring) AND again at fire time, in
-  `slack.gateway._cron_callback`, immediately before the sandboxed subprocess
-  is spawned — a policy tightened after a job was scheduled denies that job's
-  next run instead of only affecting jobs authored after the change. Denial at
-  fire time marks the run `last_status="error"` and does not delete or pause
-  the job, so a later policy loosening lets it resume on its own; the sandbox
+  Both run at `cron_add` (authoring) AND again at fire time — for EVERY job
+  kind — via the shared `mcp_cron.vet_job_at_fire_time(job)` entry point
+  called from `slack.gateway._cron_callback` immediately before execution:
+  `command` jobs re-run the capability gate + the `commands` ceiling, `script`
+  jobs re-run the capability gate + the script-body scan
+  (`mcp_cron._vet_script_file`) on the freshly re-resolved path (so a script
+  file edited on disk after authoring is re-checked too), and `message` (LLM)
+  jobs re-run the capability gate before the session dispatch. A policy
+  tightened after a job was scheduled therefore denies that job's next run
+  instead of only affecting jobs authored after the change. Denial at
+  fire time marks the run `last_status="error"`, emits a SEL
+  `outcome="denied"` event keyed `cron:<job.id>`, and does not delete or pause
+  a RECURRING job — deliberately including the consecutive-failure auto-pause
+  counter, which a policy denial must not feed (five denied fires would
+  otherwise auto-pause the job permanently) — so a later policy loosening
+  lets it resume on its own at its next slot. A denied one-shot `at` job is
+  parked DISABLED instead (never deleted, even with `delete_after_run`): its
+  due time has passed, so leaving it enabled would refire it on every timer
+  tick; the operator re-enables it after loosening; the sandbox
   ordinal floor is clamped in `sandbox.wrap_argv`;
   spawn in `subagent._vet_spawn_governance`; outbound messaging in
   `mcp_core._vet_messaging_governance` plus the per-transport `channels` check

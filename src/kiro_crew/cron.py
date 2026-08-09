@@ -227,6 +227,15 @@ class CronJob:
     last_error: str | None = None
     created_ts: float = 0.0
     delete_after_run: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run was
+    # refused by the fire-time governance gate. A denied run is a policy
+    # state, not a completed run: a one-shot delete_after_run job is RETAINED
+    # instead of deleted, and a denied "at" job is parked DISABLED (a past-due
+    # at-job left enabled would be due again on every timer tick — a
+    # zero-delay refire loop) so an operator can re-enable it after a policy
+    # loosening. Recurring jobs need neither: they wait for their next slot.
+    # Reset at the start of every run.
+    fire_time_denied: bool = False
     last_result: str | None = None
     context_enabled: bool = False
     agent_id: str = ""
@@ -2381,8 +2390,9 @@ class CronService:
         """Run the job callback and update runtime fields (last_run_ts, last_status)."""
         logger.info("Cron: executing '%s' (%s)", job.name, job.id)
         # Reset status for this run so a prior run's "error" can't leak into an
-        # "ok" decision below.
+        # "ok" decision below. Same for the fire-time denial marker.
         job.last_status = None
+        job.fire_time_denied = False
         try:
             if self._on_job:
                 await self._on_job(job)
@@ -2403,8 +2413,16 @@ class CronService:
 
         job.last_run_ts = time.time()
 
-        # One-shot "at" jobs without delete_after_run: disable instead of delete
-        if job.schedule.kind == "at" and not job.delete_after_run:
+        # One-shot "at" jobs: disable after the run. A fire-time-DENIED at-job
+        # is disabled too — its due time has passed, so leaving it enabled
+        # would make it due on EVERY timer tick (a zero-delay refire loop that
+        # floods audit/history until resource exhaustion). Parking it disabled
+        # (instead of deleting — including the delete_after_run shape, which
+        # the merge below retains) keeps it discoverable so an operator can
+        # re-enable it after a policy loosening. Recurring jobs are untouched:
+        # they simply wait for their next scheduled slot and resume on their
+        # own when policy loosens.
+        if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
             job.enabled = False
 
     def _merge_job_result(self, job: CronJob) -> None:
@@ -2427,7 +2445,10 @@ class CronService:
                 # Only propagate enabled=False for one-shot at-jobs that fired.
                 # Never overwrite enabled for recurring jobs — user_paused is the
                 # sole authority for user-controlled pause/resume state.
-                if job.schedule.kind == "at" and not job.delete_after_run:
+                # Propagate the fired/parked disable for at-jobs — including a
+                # fire-time-DENIED one (parked disabled instead of deleted so
+                # it cannot refire every tick yet stays re-enableable).
+                if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
                     by_id[job.id].enabled = job.enabled
                     by_id[job.id].user_paused = not job.enabled
                 # auto_paused is execution-owned (repeated-failure auto-pause and
@@ -2445,7 +2466,10 @@ class CronService:
                 by_id[job.id].last_failure_hash = job.last_failure_hash
                 by_id[job.id].last_failure_at = job.last_failure_at
                 by_id[job.id].consecutive_failures = job.consecutive_failures
-            if job.delete_after_run:
+            # A fire-time-DENIED run is a policy refusal, not a completed run:
+            # deleting the one-shot here would make the documented
+            # resume-on-policy-loosening semantic impossible for at-jobs.
+            if job.delete_after_run and not job.fire_time_denied:
                 self._jobs = [j for j in self._jobs if j.id != job.id]
             self._save()
 

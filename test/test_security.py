@@ -2810,8 +2810,14 @@ class TestIsSensitivePath:
         # security-review finding cdf82704: the SEL HMAC signing key is the trust root of
         # the tamper-evident audit chain. If an audited agent could fs_read it,
         # it could forge the entire chain, so it must be sensitive (read-blocked).
+        # The key lives at trust/sel_hmac.key (whole-dir gate); the bare leaf
+        # covers pre-migration installs and stale post-restore leftovers.
         assert is_sensitive_path("~/.kiro/crew/sel_hmac.key") is True
         assert is_sensitive_path("~/.kirocrew/sel_hmac.key") is True
+        assert is_sensitive_path("~/.kiro/crew/trust") is True
+        assert is_sensitive_path("~/.kiro/crew/trust/sel_hmac.key") is True
+        assert is_sensitive_path("~/.kirocrew/trust") is True
+        assert is_sensitive_path("~/.kirocrew/trust/sel_hmac.key") is True
 
     def test_security_events_log(self) -> None:
         # security-review finding cdf82704: the SEL audit log itself must not be
@@ -2822,8 +2828,10 @@ class TestIsSensitivePath:
     def test_sel_files_absolute_path(self) -> None:
         home = str(Path.home())
         assert is_sensitive_path(f"{home}/.kiro/crew/sel_hmac.key") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/trust/sel_hmac.key") is True
         assert is_sensitive_path(f"{home}/.kiro/crew/security_events.jsonl") is True
         assert is_sensitive_path(f"{home}/.kirocrew/sel_hmac.key") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/trust/sel_hmac.key") is True
         assert is_sensitive_path(f"{home}/.kirocrew/security_events.jsonl") is True
 
     def test_app_admission_policy(self) -> None:
@@ -3193,6 +3201,11 @@ class TestIsSensitiveBashCommand:
         assert result is not None and "blocked" in result.lower()
         legacy = is_sensitive_bash_command("cat ~/.kirocrew/sel_hmac.key")
         assert legacy is not None and "blocked" in legacy.lower()
+        # The key's real home since the trust/ relocation.
+        trust = is_sensitive_bash_command("cat ~/.kiro/crew/trust/sel_hmac.key")
+        assert trust is not None and "blocked" in trust.lower()
+        trust_legacy = is_sensitive_bash_command("cat ~/.kirocrew/trust/sel_hmac.key")
+        assert trust_legacy is not None and "blocked" in trust_legacy.lower()
 
     def test_cat_security_events_log_blocked(self) -> None:
         result = is_sensitive_bash_command("cat ~/.kiro/crew/security_events.jsonl")

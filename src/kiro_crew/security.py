@@ -4131,7 +4131,10 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 #   browser-cookies.txt           reusable browser-auth session cookies …
 #   playwright-storage-state.json … and the Playwright storage-state they become
 #   sel_hmac.key                  Security Event Log HMAC key — signs the
-#   security_events.jsonl         tamper-evident audit chain (``sel.py``)
+#   security_events.jsonl         tamper-evident audit chain (``sel.py``);
+#   trust                         the key now lives at ``trust/sel_hmac.key``
+#                                 (owner-only dir OUTSIDE the log's directory);
+#                                 the bare leaf covers pre-migration installs
 #   app_admission.json            App Kit admission ceiling (apps/admission.py)
 #   security_policy.json          governance ceiling (KEYSTONE, governance.py)
 #   profiles                      per-surface governance profiles
@@ -4192,7 +4195,17 @@ _CREW_SECRET_LEAVES: list[str] = [
     "workspace/md-notebook/vaults.json",
     "browser-cookies.txt",
     "playwright-storage-state.json",
+    # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
+    # a backup restore resurrects after migration). Kept alongside the ``trust``
+    # directory entry below so the key is gated at BOTH locations.
     "sel_hmac.key",
+    # SEL trust-root directory: sel.py stores/migrates the audit chain's HMAC
+    # signing key at ``trust/sel_hmac.key`` — OUTSIDE the log's directory, so
+    # write access to the log dir no longer implies re-signing power. The whole
+    # dir is gated (like ``profiles``/``run``) so future trust-root material is
+    # covered without a new entry. sel.py opens the key directly, not through
+    # this gate.
+    "trust",
     "security_events.jsonl",
     "app_admission.json",
     "security_policy.json",

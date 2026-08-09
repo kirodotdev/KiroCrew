@@ -80,7 +80,7 @@ from kiro_crew.constants import CHAT_TURN_TIMEOUT, DATA_WARNING
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
-from kiro_crew.cron_script import resolve_script_path, run_command_sandboxed, run_script_sandboxed
+from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _run_chat
@@ -148,6 +148,7 @@ from kiro_crew.llm_helpers import (
     save_conversation_turn_off_loop,
     stream_and_collect,
 )
+from kiro_crew.mcp_cron import vet_job_at_fire_time
 from kiro_crew.mcp_gateway import is_gateway_supported
 from kiro_crew.mcp_gateway.manager import (
     GatewayManager,
@@ -1991,23 +1992,27 @@ class GatewayOrchestrator:
                         )
                     # Re-run governance at fire time, not just at cron_add authoring
                     # time. A job vetted when it was scheduled can outlive a later
-                    # policy tightening: mcp_cron._vet_cron_capability_governance and
-                    # _vet_command_governance only run once, at authoring, so a
-                    # ceiling change has no effect on an already-scheduled job until
-                    # someone notices and re-authors it. Denial here does not delete
-                    # the job, so a later policy loosening lets it resume on its own.
-                    from kiro_crew.mcp_cron import (
-                        _vet_command_governance,
-                        _vet_cron_capability_governance,
-                    )
-
-                    gate_reason = _vet_cron_capability_governance() or _vet_command_governance(
-                        job.command
+                    # policy tightening: the mcp_cron _vet_* gates only run once, at
+                    # authoring, so a ceiling change has no effect on an
+                    # already-scheduled job until someone notices and re-authors it.
+                    # Denial here does not delete the job, so a later policy
+                    # loosening lets it resume on its own. vet_job_at_fire_time is
+                    # the shared gate for all three job kinds (command/script/message).
+                    # Off-loop: the script variant of this gate reads the script
+                    # file from disk, and governance profile resolution can touch
+                    # the filesystem too — neither may block the event loop.
+                    gate_reason = await asyncio.get_running_loop().run_in_executor(
+                        cron_executor(), vet_job_at_fire_time, job
                     )
                     if gate_reason:
+                        # Deliberately NOT record_failure(): a governance denial
+                        # is a policy state, not a job defect. Counting it would
+                        # auto-pause the job after _AUTO_PAUSE_THRESHOLD fires,
+                        # and a paused job never fires again — breaking the
+                        # documented resume-on-policy-loosening semantic.
                         job.last_status = "error"
                         job.last_error = redact(gate_reason)
-                        job.record_failure()
+                        job.fire_time_denied = True
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}",
@@ -2120,8 +2125,38 @@ class GatewayOrchestrator:
                         logger.debug(
                             "SEL logging failed in cron script invoked path", exc_info=True
                         )
-                    # Validate path before spawning subprocess
-                    resolve_script_path(job.script)
+                    # Fire-time governance gate — mirrors the command path above.
+                    # vet_job_at_fire_time re-runs the capabilities.cron gate AND
+                    # re-scans the script BODY on the freshly re-resolved path
+                    # (which also validates the path, as the bare
+                    # resolve_script_path call here previously did), so a policy
+                    # tightened after scheduling — or a script file edited on disk
+                    # after authoring — denies this run. The job is kept: a later
+                    # policy loosening lets it resume on its own.
+                    # Off-loop: reads the script body from disk (up to the scan
+                    # cap) — must not block the event loop on a wedged FS.
+                    gate_reason = await asyncio.get_running_loop().run_in_executor(
+                        cron_executor(), vet_job_at_fire_time, job
+                    )
+                    if gate_reason:
+                        # No record_failure() — see the command-path deny above:
+                        # a policy denial must not feed the auto-pause counter.
+                        job.last_status = "error"
+                        job.last_error = redact(gate_reason)
+                        job.fire_time_denied = True
+                        try:
+                            sel().log_tool_invocation(
+                                session_key=f"cron:{job.id}",
+                                tool_name=job.script,
+                                tool_kind="cron_script",
+                                outcome="denied",
+                            )
+                        except Exception:
+                            logger.debug(
+                                "SEL logging failed in cron script fire-time deny path",
+                                exc_info=True,
+                            )
+                        return None
                     # Run in sandboxed subprocess via wrap_argv()
                     script_timeout = job.timeout or 30
                     result = await asyncio.wait_for(
@@ -2262,6 +2297,35 @@ class GatewayOrchestrator:
                     return None
                 finally:
                     self._running_script_ids.discard(job.id)
+
+            # ── Fire-time governance gate: message (LLM) jobs ──
+            # Command and script jobs are gated inside their blocks above; a job
+            # reaching this point dispatches an LLM turn. Message jobs previously
+            # had NO fire-time capabilities.cron check at all, so disabling the
+            # cron capability after scheduling never affected them. Same deny
+            # semantics as the other kinds: mark the run failed, keep the job.
+            # Off-loop for the same reason as the command/script sites above.
+            gate_reason = await asyncio.get_running_loop().run_in_executor(
+                cron_executor(), vet_job_at_fire_time, job
+            )
+            if gate_reason:
+                # No record_failure() — see the command-path deny above: a
+                # policy denial must not feed the auto-pause counter.
+                job.last_status = "error"
+                job.last_error = redact(gate_reason)
+                job.fire_time_denied = True
+                try:
+                    sel().log_tool_invocation(
+                        session_key=f"cron:{job.id}",
+                        tool_name="cron_message_dispatch",
+                        tool_kind="cron_message",
+                        outcome="denied",
+                    )
+                except Exception:
+                    logger.debug(
+                        "SEL logging failed in cron message fire-time deny path", exc_info=True
+                    )
+                return None
 
             def _cron_extra_env() -> dict[str, str] | None:
                 """job.env plus KIROCREW_APPROVAL_MODE when the job runs auto.

@@ -512,6 +512,14 @@ class TestExclusionLogic:
         from pathlib import PurePosixPath
         assert _is_excluded(PurePosixPath(".local_secret"))
 
+    def test_excludes_sel_hmac_key_at_trust_path(self):
+        # The SEL key moved to trust/sel_hmac.key; exclusion is basename-based
+        # so the key must stay excluded at BOTH the new and legacy locations.
+        from pathlib import PurePosixPath
+
+        assert _is_excluded(PurePosixPath("sel_hmac.key"))
+        assert _is_excluded(PurePosixPath("trust/sel_hmac.key"))
+
     def test_excludes_pid_files(self):
         from pathlib import PurePosixPath
         assert _is_excluded(PurePosixPath("gateway.pid"))

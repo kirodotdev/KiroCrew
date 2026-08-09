@@ -9,7 +9,10 @@ Records structured JSON events for every tool/MCP action with:
 - Downstream service (MCP server name if applicable)
 - HMAC-SHA256 integrity chain (each entry signs over previous hash)
 
-Storage: ``<config_dir>/security_events.jsonl`` (append-only JSONL)
+Storage: ``<config_dir>/security_events.jsonl`` (append-only JSONL); the HMAC
+signing key lives OUTSIDE the log directory in ``<config_dir>/trust/`` so an
+actor who can rewrite the log dir cannot also read the key and re-sign a
+clean-looking chain.
 Retention: configurable, default 365 days per Amazon Security Event Logging Standard.
 """
 
@@ -52,6 +55,13 @@ def _default_dir() -> Path:
 _SEL_FILE = "security_events.jsonl"
 _RETENTION_DAYS = 365
 _HMAC_KEY_FILE = "sel_hmac.key"
+# Dedicated trust-root subdirectory (owner-only, 0o700) holding the HMAC key.
+# The key must not live NEXT TO the log it signs: an actor with write access to
+# the log directory could otherwise read the key, rewrite security_events.jsonl,
+# and re-sign a clean-looking chain that verify_integrity() accepts. A legacy
+# key at ``<config_dir>/sel_hmac.key`` is migrated in atomically (same bytes, so
+# every existing chain still verifies) — see _load_or_create_hmac_key.
+_TRUST_SUBDIR = "trust"
 # Minimum accepted HMAC key length. os.urandom(32) is always written, so a
 # shorter key on disk means truncation/corruption/tampering — signing the
 # audit chain with an empty or short key yields a predictable, forgeable MAC
@@ -308,8 +318,164 @@ class SecurityEventLog:
             self._pending_cond.wait_for(lambda: self._pending == 0, timeout=timeout)
 
     def _load_or_create_hmac_key(self) -> bytes:
-        key_path = self._dir / _HMAC_KEY_FILE
+        trust_dir = self._dir / _TRUST_SUBDIR
+        key_path = trust_dir / _HMAC_KEY_FILE
+        legacy_path = self._dir / _HMAC_KEY_FILE
         self._dir.mkdir(parents=True, exist_ok=True)
+        # The upgrade boundary is hostile ground: BEFORE this release, ``trust``
+        # was not on the sensitive-path deny list, so an agent could have
+        # pre-planted a ``trust`` symlink/junction (pointing the key write
+        # somewhere it can read) or a ``trust/sel_hmac.key`` with bytes it
+        # knows — letting it forge SEL chain and session-identity MACs after
+        # the upgrade. Two defenses, both BEFORE anything trusts the
+        # destination:
+        #   1. a linked ``trust`` entry is removed (link only, never its
+        #      target) so the real directory is created in its place;
+        #   2. when a genuine legacy key exists, it WINS over any
+        #      pre-existing destination file (see the migration block below) —
+        #      the legacy key is the only one that was deny-list-protected all
+        #      along, so it is the only trustworthy chain anchor here.
+        if platform_compat.is_link_or_junction(trust_dir):
+            logger.warning(
+                "SEL trust dir %s is a symlink/junction — removing the link "
+                "(planted before upgrade?) and creating a real directory",
+                trust_dir,
+            )
+            try:
+                platform_compat.unlink_link_or_junction(trust_dir)
+            except OSError:
+                # Read-only config dir: the link cannot be removed. NEVER use
+                # the linked destination — fall back to the legacy key when one
+                # exists (same fail-soft as an uncreatable trust dir below);
+                # a fresh install with an unremovable planted link cannot
+                # proceed safely, so surface the failure.
+                if legacy_path.exists():
+                    logger.warning(
+                        "cannot remove linked SEL trust dir %s; continuing with "
+                        "the legacy key location",
+                        trust_dir,
+                        exc_info=True,
+                    )
+                    key_path = legacy_path
+                else:
+                    raise
+        # Owner-only trust dir. mkdir's mode is umask-filtered and ignored when
+        # the dir already exists, so chmod_safe re-asserts 0o700 every init
+        # (fail-soft: a read-only FS must not take down SecurityEventLog init;
+        # Windows relies on the key FILE's owner-only DACL below). Creation
+        # failure itself is fail-soft too: a legacy install on a read-only
+        # config dir must keep signing with its existing key at the legacy
+        # location, not crash before the migration fallback can run.
+        if key_path != legacy_path:
+            try:
+                trust_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            except OSError:
+                if legacy_path.exists():
+                    logger.warning(
+                        "cannot create SEL trust dir %s; continuing with the legacy "
+                        "key location",
+                        trust_dir,
+                        exc_info=True,
+                    )
+                    key_path = legacy_path
+                else:
+                    # Fresh install on an unwritable config dir: key creation
+                    # below would fail anyway — surface the real cause.
+                    raise
+            else:
+                platform_compat.chmod_safe(trust_dir, 0o700)
+        # A linked destination KEY file is removed for the same reason as a
+        # linked dir above (the link is removed, never its target): a fresh
+        # key must never be written THROUGH a planted link, and a read must
+        # never follow one.
+        if key_path != legacy_path and platform_compat.is_link_or_junction(key_path):
+            logger.warning(
+                "SEL HMAC key path %s is a symlink/junction — removing the link "
+                "(planted before upgrade?)",
+                key_path,
+            )
+            try:
+                platform_compat.unlink_link_or_junction(key_path)
+            except OSError:
+                # Same fail-soft as the linked dir above: never use the linked
+                # destination; prefer the legacy key, else surface the failure.
+                if legacy_path.exists():
+                    logger.warning(
+                        "cannot remove linked SEL HMAC key %s; continuing with "
+                        "the legacy key location",
+                        key_path,
+                        exc_info=True,
+                    )
+                    key_path = legacy_path
+                else:
+                    raise
+        # ── Migration: relocate a legacy key sitting next to the log ──
+        # os.replace is atomic on the same filesystem and preserves the key
+        # BYTES, so every HMAC chain already written to security_events.jsonl
+        # still verifies — no re-signing. The >= length validation and
+        # restrict_to_owner below apply to the migrated file exactly as to a
+        # pre-existing one at the new path. Skipped when trust-dir creation
+        # above already fell back to the legacy location.
+        if key_path != legacy_path and legacy_path.exists():
+            # The legacy key WINS over any pre-existing destination file.
+            # ``trust/`` was not deny-listed before this release, so a file
+            # already at the destination on a legacy install is untrustworthy
+            # (an agent could have planted bytes it knows and then forged SEL
+            # and session-identity MACs); the legacy key is the only anchor
+            # that was deny-list-protected all along. os.replace overwrites
+            # the destination atomically. Benign overlap (a backup restore
+            # resurrecting the legacy file after a real migration) is
+            # unaffected: the key never rotates, so the bytes are identical.
+            if key_path.exists():
+                logger.warning(
+                    "pre-existing file at %s is being replaced by the legacy SEL "
+                    "HMAC key %s (the legacy key is the deny-list-protected "
+                    "trust anchor)",
+                    key_path,
+                    legacy_path,
+                )
+            try:
+                os.replace(legacy_path, key_path)
+                logger.info("migrated SEL HMAC key %s -> %s", legacy_path, key_path)
+            except OSError:
+                # Ordering is security-relevant: while the legacy source STILL
+                # EXISTS it stays the only deny-list-protected trust anchor, so
+                # a failed replace must fall back to it — never to a
+                # destination file that could have been pre-planted (an
+                # attacker able to make os.replace fail must not get their
+                # planted key adopted). The destination is trusted only after
+                # the legacy source is gone, which on a failed replace can only
+                # mean a sibling process completed the same migration (its
+                # os.replace moved the SAME legacy bytes there).
+                if legacy_path.exists():
+                    # Chain continuity beats relocation: if the move fails
+                    # (read-only FS, permissions), keep signing with the
+                    # legacy file rather than minting a fresh key that would
+                    # orphan every already-chained record. Path stays legacy
+                    # for this process so sel_hmac_key_path() reports the
+                    # file in use.
+                    logger.warning(
+                        "failed to migrate SEL HMAC key %s -> %s; continuing with "
+                        "the legacy location",
+                        legacy_path,
+                        key_path,
+                        exc_info=True,
+                    )
+                    key_path = legacy_path
+                elif key_path.exists():
+                    # Lost the migration race to a sibling process: the key
+                    # is already at the new path, and its bytes are the same
+                    # legacy bytes — proceed with it.
+                    logger.debug(
+                        "SEL HMAC key migration raced; using already-migrated %s",
+                        key_path,
+                    )
+                # else: both paths vanished mid-init (external deletion) —
+                # fall through to fresh-key creation at the NEW path.
+        # Single source of truth for dependent protocols: sel_hmac_key_path()
+        # reports THIS resolved path (normally trust/sel_hmac.key; the legacy
+        # path only on a failed migration above).
+        self._hmac_key_file = key_path
         if key_path.exists():
             existing = key_path.read_bytes()
             # Validate the key BEFORE it is ever used to sign the chain. A
@@ -950,14 +1116,16 @@ def sel_hmac_key_path() -> Path:
     Single source of truth shared by :class:`SecurityEventLog` (the key's
     creator/owner) and dependent protocols (``session_pid_sig``) so they can
     never diverge on which file anchors trust. Tracks the LIVE singleton's
-    directory when one is initialized (tests and embedded deployments pass a
-    ``base_dir``); otherwise falls back to the same default the singleton
-    would use. Dependent protocols must resolve the key through this accessor
-    rather than re-deriving the path (e.g. via ``config_dir()``; ``_default_dir()``
-    honors ``KIROCREW_HOME`` the same way, so resolving through the shared
-    accessor keeps the trust root single under isolated-home deployments).
+    RESOLVED key path when one is initialized (tests and embedded deployments
+    pass a ``base_dir``; a failed legacy migration keeps the legacy location —
+    see ``_load_or_create_hmac_key``); otherwise falls back to the same
+    ``trust/`` default the singleton would use. Dependent protocols must
+    resolve the key through this accessor rather than re-deriving the path
+    (e.g. via ``config_dir()``; ``_default_dir()`` honors ``KIROCREW_HOME`` the
+    same way, so resolving through the shared accessor keeps the trust root
+    single under isolated-home deployments).
     """
     inst = SecurityEventLog._instance
     if inst is not None and getattr(inst, "_initialized", False):
-        return inst._dir / _HMAC_KEY_FILE
-    return _default_dir() / _HMAC_KEY_FILE
+        return inst._hmac_key_file
+    return _default_dir() / _TRUST_SUBDIR / _HMAC_KEY_FILE
