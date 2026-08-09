@@ -7169,7 +7169,11 @@
         "aria_show_details": "ツールの詳細を表示: {{label}}",
         "blocked_by_security_policy": "セキュリティポリシーによりブロックされました",
         "open_in_side_panel": "{{path}} をサイドパネルで開く",
-        "opened_in_the_side_panel": "サイドパネルで開きました"
+        "opened_in_the_side_panel": "サイドパネルで開きました",
+        "wait_end_now": "待機を終了",
+        "wait_ending": "終了中…",
+        "wait_remaining": "残り {{time}}",
+        "wait_status": "待機中"
       },
       "toolDetails": {
         "auto": "自動",

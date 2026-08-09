@@ -7466,7 +7466,11 @@
         "aria_show_details": "Показать подробности инструмента: {{label}}",
         "blocked_by_security_policy": "Заблокировано политикой безопасности",
         "open_in_side_panel": "Открыть {{path}} в боковой панели",
-        "opened_in_the_side_panel": "Открыто в боковой панели"
+        "opened_in_the_side_panel": "Открыто в боковой панели",
+        "wait_end_now": "Завершить ожидание",
+        "wait_ending": "Завершение…",
+        "wait_remaining": "осталось {{time}}",
+        "wait_status": "Ожидание"
       },
       "toolDetails": {
         "auto": "Авто",

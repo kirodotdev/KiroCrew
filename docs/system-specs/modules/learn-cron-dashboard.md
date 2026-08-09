@@ -587,6 +587,113 @@ echo time a new post-steer streaming message may be live below the bubble and
 must keep streaming. Pinned by `test_chat_steer.py` (cut ordering, cut-failure
 resilience) and the `finalize-on-steer` describe in `chatSlice.test.ts`.
 
+### Wait countdown and early end (`/api/session-keepalive` as a control channel)
+
+While the MCP `wait` tool sleeps, the transcript shows a live countdown and an
+"End wait" button that returns the tool early **without ending the turn**. Both
+ride `POST /api/session-keepalive`, which is therefore no longer write-only.
+
+Why that endpoint and not a cancel path. The tool sleeps in a separate MCP
+subprocess that runs **no inbound listener** — communication is outbound
+`urllib` only. The one channel that can interrupt it, `notifications/cancelled`
+on stdin, is unusable for this: it is a session-teardown signal whose response
+`_run_tool` suppresses entirely (so kiro-cli would wait out the 600s stall
+watchdog), it requires `mcp_gateway.enabled` (default **False**), it cancels
+*every* in-flight request for the PID's stubs, and on Windows there is no path
+at all because `select.select()` cannot poll stdin. The keepalive round-trip was
+already running on a timer, already authenticated (`X-Internal-Secret`), and
+already carried session identity (`X-Session-Key`) — and its reply was being
+discarded.
+
+Contract:
+
+- **Request** (`wait` only; every other caller still sends `{}` and is
+  unaffected): `{wait_id, seconds, remaining, interval}`, or
+  `{wait_id, wait_done: true}` on the final ping. `wait_id` is a uuid4 hex
+  minted per sleep. The body is optional and advisory — a malformed or
+  non-object body degrades to touch-only rather than failing the keepalive,
+  because that half of the route is what stops the watchdog killing the ACP
+  subprocess mid-wait.
+- **Reply**: `{"ok": true}`, plus `{"end_wait": "<wait_id>"}` when the user has
+  asked to end *that* sleep. The tool breaks its loop and returns a normal
+  string — deliberately **not** `ToolCancelled`, whose response is suppressed.
+- **Ping interval** is `mcp_core.WAIT_PING_SECS` (5.0s), not the 60s the
+  staleness watchdog alone needs: it is the button's worst-case latency. The
+  handler only touches two timestamps, so a 30-minute wait costs ~360 loopback
+  POSTs and no meaningful work.
+- **`POST /api/chat/slots/{slot}/end-wait`** with `{wait_id}` parks the request
+  on the slot for the tool to collect. 400 `wait_id_required`, 404
+  `slot_not_found`, 409 `wait_not_in_flight` when the id does not match the
+  sleep currently tracked — which is how a click on a stale countdown is
+  rejected instead of ending a *later* wait. Consumed exactly once.
+- **`_ChatSlot`** gains `_wait_state` (`{wait_id, seconds, deadline_ts}`, emitted
+  as `wait_state` in `to_dict()`), plus the server-only `_wait_last_ping` and
+  `_wait_contested`. `deadline_ts` is absolute and minted **once** on first
+  sight from the tool's own `remaining`: recomputing per ping would jitter the
+  countdown by a round-trip, and the tool's monotonic clock shares no epoch.
+  Riding the slots payload (rather than a bespoke WS event) is what makes a
+  mid-wait reload re-seed the countdown from `GET /api/chat/slots`. Pushed on
+  start and end only — never on the 5s heartbeats.
+
+**Authoritative identity is a precondition, not a nicety.** Before publishing
+anything the tool calls `_resolve_session_key_strict()`, and when that comes back
+empty it sends the original bare `{}` ping and refuses to honour `end_wait` at
+all. The countdown and the button simply do not appear. This is the primary
+control, and it is what makes the channel safe rather than merely
+usually-right: `_resolve_session_key()` — the lenient resolver behind the
+`X-Session-Key` header — ends its ladder with a `/proc` ancestor walk, so a
+subagent's MCP-core child walks up into its parent slot's process tree and
+resolves to the **parent**. Publishing a `wait_id` under that key puts a
+subagent's deadline on the parent's pill and lets the parent's button end the
+subagent's sleep. Nothing downstream can catch that case, because with a single
+`wait_id` pinging there is no collision to observe. `_resolve_session_key_strict()`
+is the existing primitive for this class of session-mutating tool
+(`monitor_start`, `autonudge_stop`, `set_project`): it drops the walk and accepts
+only a gateway-injected caller context, `KIROCREW_SESSION_KEY`, or an
+HMAC-verified pid sidecar. Consequence worth stating plainly: with
+`mcp_gateway.enabled` at its default of **false** and no sandbox launcher, the
+feature is absent. [#2347](https://github.com/kirodotdev/KiroCrew/issues/2347) is
+the work that supplies per-session identity and lets this gate go away.
+
+**Ambiguous-identity containment.** Behind that gate, two sleeps can still share
+one slot wherever identity resolves to a session that hosts both. The ping doubles
+as a heartbeat, which makes that detectable — a second `wait_id` arriving while the
+incumbent is still pinging (within `interval * 2.5`) means two sleeps genuinely
+share the slot, so **neither** is tracked, any parked request is dropped, and the
+slot is marked contested. The countdown disappears and the feature degrades to the
+bare spinner it replaced. The latch is **turn-scoped** — released only by the
+turn-end block in `chat_runner`, never on a timer. A self-expiring window was
+tried first and rejected: both sleeps keep pinging, so on expiry whichever pinged
+first re-minted its own `wait_state`, and for up to one ping interval that
+deadline was published and painted onto the *other* sleep's pill with a live
+button that would have ended the wrong one. The attribution flapped open once per
+window instead of staying shut. A `wait_id` change *after* the incumbent
+goes quiet is still a legitimate hand-over (missed `wait_done`, killed process).
+Two frontend guards cover the one-sided case: the countdown requires the slot to
+be `running` and requires its pill to be the transcript's newest tool row of any
+kind — within one session the agent is blocked on the wait's result and cannot
+issue another call, so a later tool row means the wait is over or belongs to
+someone else. All three are **containment, not a cure**; the cure is per-session
+identity and is tracked separately in
+[#2347](https://github.com/kirodotdev/KiroCrew/issues/2347), which lists what to
+delete here once it lands.
+
+Frontend joins the countdown to a pill by tool *title*, via `isWaitToolTitle()`,
+an **allowlist** of the shapes the transport produces: `wait`, `<server>___wait`,
+`wait (mcp)`, and the two decorations combined. Deliberately stricter than its
+backend counterpart `acp/liveness.py::is_wait_tool`, and the asymmetry is
+intentional rather than drift. The backend's looser rule only answers "is this
+session legitimately blocked in a long tool", where over-matching merely declines
+to reap something; here a false positive misattributes a live deadline. Concretely,
+a per-token rule accepts an unrelated `wait_for_ci` from another server, so a
+subagent's `wait` could publish its deadline onto the parent's `wait_for_ci` pill
+and arm the button against the wrong sleep — and the contested latch cannot cover
+that case, because only one `wait_id` ever pings and there is no collision to
+detect.
+
+Dashboard-only: the Slack renderer tears its stream down for the
+duration of a `wait`, so there is no surface there to host either affordance.
+
 ### Agent Questions (`ask_question`)
 
 `ask_question` is **non-blocking** as of issue #755: the tool renders a question card in the caller's own chat window and the agent ENDS its turn — it no longer holds the turn open on a server-side wait resolving to an answer map. User-facing documentation lives in `src/kiro_crew/docs/agent-questions.md`; this section is the contract.

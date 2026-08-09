@@ -7268,7 +7268,11 @@
         "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}",
         "blocked_by_security_policy": "নিরাপত্তা নীতি দ্বারা অবরুদ্ধ",
         "open_in_side_panel": "{{path}} সাইড প্যানেলে খোলো",
-        "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে"
+        "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে",
+        "wait_end_now": "অপেক্ষা শেষ করো",
+        "wait_ending": "শেষ করা হচ্ছে…",
+        "wait_remaining": "{{time}} বাকি",
+        "wait_status": "অপেক্ষমাণ"
       },
       "toolDetails": {
         "auto": "স্বয়ংক্রিয়",

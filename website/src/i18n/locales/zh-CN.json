@@ -7169,7 +7169,11 @@
         "aria_show_details": "展开工具详情：{{label}}",
         "blocked_by_security_policy": "已被安全策略阻止",
         "open_in_side_panel": "在侧边面板中打开 {{path}}",
-        "opened_in_the_side_panel": "已在侧边栏中打开"
+        "opened_in_the_side_panel": "已在侧边栏中打开",
+        "wait_end_now": "结束等待",
+        "wait_ending": "正在结束…",
+        "wait_remaining": "剩余 {{time}}",
+        "wait_status": "等待中"
       },
       "toolDetails": {
         "auto": "自动",

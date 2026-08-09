@@ -144,6 +144,22 @@ def _resolve_api_base() -> str:
 
 _API = _resolve_api_base()
 
+# How often a sleeping `wait` polls /api/session-keepalive.
+#
+# Two jobs in one round-trip: keeping the session's activity clock warm (the
+# staleness watchdog alone would be satisfied by 60s) and collecting an
+# early-end request from the dashboard. The second job sets the value -- it is
+# the upper bound on how long the "End wait" button appears to do nothing, so
+# it is deliberately tightened to the loop's own sleep granularity. The handler
+# it calls only touches two timestamps, so a 30-minute wait costs ~360 loopback
+# POSTs and no meaningful work.
+WAIT_PING_SECS = 5.0
+
+# Ping cadence for a sleep that cannot publish (identity not authoritative, so no
+# countdown and no button). Only the staleness watchdog cares at that point, and
+# 60s satisfies it -- the same interval spawn_sub_agents' blocking poll uses.
+WAIT_STALENESS_PING_SECS = 60.0
+
 # Context cap for one `skill_fetch` body. The gateway's preview endpoint
 # already caps at 64 KiB for the dashboard's detail panel; a tool result is
 # spent from the conversation's context budget instead, so cap it again
@@ -4432,9 +4448,51 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         reason_safe, _ = redact_exfiltration_urls(reason)
         reason_safe, _ = redact_credentials(reason_safe)
         deadline = time.monotonic() + seconds
-        # Ping session-keepalive every 60s so the gateway's is_responsive()
-        # doesn't flag this session as stale and SIGTERM the ACP subprocess.
+        # Identity for THIS sleep. The dashboard's "end wait now" button echoes
+        # it back through the keepalive response, so a request left over from an
+        # earlier sleep can never terminate the next one in the same session.
+        wait_id = uuid.uuid4().hex
+        # Ping session-keepalive every WAIT_PING_SECS so the gateway's
+        # is_responsive() doesn't flag this session as stale and SIGTERM the ACP
+        # subprocess -- and so the reply can carry an early-end request back.
+        #
+        # This POST is the ONLY inbound channel a sleeping wait has: the MCP
+        # subprocess runs no listener, and the one path that can interrupt it
+        # (notifications/cancelled on stdin) is a session-teardown signal that
+        # suppresses the tool's response entirely, and does not exist at all on
+        # Windows. So the ping interval IS the button's worst-case latency,
+        # which is why it matches the sleep granularity rather than the 60s the
+        # staleness watchdog alone would need.
         _next_ping = time.monotonic()
+        ended_early = False
+        # Publish wait metadata ONLY under an authoritative identity, and refuse
+        # to honour `end_wait` without one.
+        #
+        # `_resolve_session_key()` -- what `_post` puts in the X-Session-Key
+        # header -- ends its ladder with a /proc ancestor walk, which answers per
+        # RUNTIME rather than per ACP session: a subagent's MCP-core child walks
+        # up into its parent slot's process tree and resolves to the PARENT. So on
+        # a default install (gateway off, so no per-call caller context and no
+        # KIROCREW_SESSION_KEY) a subagent's sleep would publish its deadline onto
+        # the parent's slot, and the parent's End-wait button would return the
+        # SUBAGENT's wait. No frontend guard can catch that: with only one wait_id
+        # pinging there is no collision to detect.
+        #
+        # `_resolve_session_key_strict()` is the existing primitive for exactly
+        # this class of session-mutating tool (monitor_start, autonudge_stop,
+        # set_project) -- it drops the walk and accepts only gateway-injected
+        # caller context, KIROCREW_SESSION_KEY, or a HMAC-verified pid sidecar.
+        # When it comes back empty the identity is a guess, so the ping degrades
+        # to the original `{}` touch: the session still cannot be reaped
+        # mid-sleep, and the countdown simply never appears. Tracked in #2347,
+        # which is the work that lets this gate go away.
+        _identified = bool(_resolve_session_key_strict())
+        # The 5s cadence exists ONLY to bound how long the button appears to do
+        # nothing. An unidentified sleep publishes nothing and honours no
+        # end_wait, so it has no button and would be paying a 12x request
+        # multiplier for a latency nobody can observe; it reverts to the 60s the
+        # staleness watchdog actually needs.
+        _ping_secs = WAIT_PING_SECS if _identified else WAIT_STALENESS_PING_SECS
         while True:
             now = time.monotonic()
             remaining = deadline - now
@@ -4445,17 +4503,68 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 raise ToolCancelled(f"wait cancelled after {seconds - remaining:.0f}s")
             if now >= _next_ping:
                 try:
-                    _post("/api/session-keepalive", {})
+                    reply = _post(
+                        "/api/session-keepalive",
+                        {
+                            "wait_id": wait_id,
+                            "seconds": seconds,
+                            "remaining": max(0, int(remaining)),
+                            # Lets the dashboard derive a liveness window for
+                            # this sleep without importing this module's
+                            # constant -- see _service_wait_ping's collision
+                            # guard, which needs to know how stale a ping has to
+                            # be before the sleep behind it is presumed gone.
+                            "interval": _ping_secs,
+                        }
+                        if _identified
+                        else {},
+                    )
                 except Exception:
-                    pass  # keepalive is best-effort
-                _next_ping = now + 60.0
-            time.sleep(min(5, remaining))
+                    reply = {}  # keepalive is best-effort
+                # Only a request naming this wait ends it. `_post` returns
+                # {"error": ...} on a failed round-trip rather than raising, so
+                # the equality check doubles as the error guard. Gated on
+                # `_identified` too: an unidentified sleep sends no wait_id, so a
+                # matching reply could only mean the backend is answering about
+                # somebody else's wait.
+                if (
+                    _identified
+                    and isinstance(reply, dict)
+                    and reply.get("end_wait") == wait_id
+                ):
+                    ended_early = True
+                    break
+                _next_ping = now + _ping_secs
+            time.sleep(min(_ping_secs, remaining))
+        waited = max(0, int(seconds - max(0.0, deadline - time.monotonic())))
         sel().log_tool_invocation(
             session_key=_resolve_session_key(),
             source="mcp",
             tool_name="wait",
             outcome="success",
         )
+        # Retire the countdown card. The tool result travels back through
+        # kiro-cli, which the dashboard cannot correlate to this wait_id, so the
+        # sleep has to announce its own end. Best-effort: a slot whose wait
+        # state is stale also clears at turn end (chat_runner) and renders
+        # nothing once the turn stops running. Skipped entirely when the identity
+        # was never authoritative -- nothing was ever published, so there is
+        # nothing to retire, and sending a wait_id under a guessed key could
+        # blank a countdown belonging to a different session.
+        if _identified:
+            try:
+                _post("/api/session-keepalive", {"wait_id": wait_id, "wait_done": True})
+            except Exception:
+                pass
+        # Deliberately a normal return, NOT ToolCancelled: _run_tool suppresses
+        # the response of a cancelled call, so raising here would leave kiro-cli
+        # waiting on a tool result that never arrives until the 600s stall
+        # watchdog kills the session. Ending a wait early continues the turn.
+        if ended_early:
+            return (
+                f"Wait ended early by the user after {waited}s of {seconds}s. "
+                f"Resuming: {reason_safe}"
+            )
         return f"Waited {seconds}s. Resuming: {reason_safe}"
 
     if name == "select_crew":

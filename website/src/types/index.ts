@@ -492,6 +492,11 @@ export interface ChatSlot {
   has_options?: boolean; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean; orchestrating?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
+  /** In-flight `wait` tool sleep, absent when nothing is sleeping. `deadline_ts`
+   * is absolute seconds on the BACKEND clock (Date.now() / 1000 territory), so
+   * the transcript can count down against it and survive a page reload;
+   * `wait_id` is the handle the End-wait button must quote. */
+  wait_state?: { wait_id: string; seconds: number; deadline_ts: number } | null
   /** Agent TODO list. Null/absent = the todo tool was never used in this slot. */
   todo?: TodoList | null
 }

@@ -1619,6 +1619,60 @@ def _is_interrupted(slot: _ChatSlot) -> bool:
     return False
 
 
+async def api_chat_slot_end_wait(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/end-wait — ask the sleeping `wait` tool to
+    return early. Body: ``{"wait_id": "..."}``.
+
+    Cooperative, and deliberately NOT a cancel. The tool sleeps in a separate
+    MCP subprocess that runs no listener, so there is nothing to signal: the
+    request is parked on the slot and collected by the tool on its next
+    keepalive poll (see WAIT_PING_SECS — bounded at 5s). The turn then continues
+    with a normal tool result, which is the whole point of not routing this
+    through /stop: /stop can only end a wait as collateral of killing the
+    session, losing in-flight results and paying a respawn.
+
+    ``wait_id`` is required and must match the sleep currently in flight. That
+    rejects the two races a slot-scoped flag would have accepted: a click landing
+    after the wait already elapsed, and a click from a stale tab still showing a
+    previous wait's countdown.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    try:
+        body = await request.json() if request.content_length else {}
+    except Exception:
+        body = {}
+    # `request.json()` happily returns a list or a scalar for well-formed JSON
+    # that simply is not an object, and `.get` on one of those raises past the
+    # except above into a 500. Normalize the shape, not just the parse.
+    if not isinstance(body, dict):
+        body = {}
+    wait_id = str(body.get("wait_id") or "").strip()
+    if not wait_id:
+        return web.json_response(
+            {"error": "wait_id required", "code": "wait_id_required"}, status=400
+        )
+    current = slot._wait_state or {}
+    if current.get("wait_id") != wait_id:
+        return web.json_response(
+            {"error": "no such wait in flight", "code": "wait_not_in_flight"}, status=409
+        )
+    slot._end_wait_request = wait_id
+    sel().log_tool_invocation(
+        session_key=_history_key_for(name),
+        agent=getattr(slot, "agent", "") or "kirocrew",
+        source="dashboard",
+        tool_name="dashboard_end_wait",
+        tool_kind="command",
+        outcome="success",
+        metadata={"slot": name, "wait_id": wait_id},
+    )
+    return web.json_response({"ok": True})
+
+
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/interrupt — interrupt current turn and
     immediately process the next queued message.

@@ -7169,7 +7169,11 @@
         "aria_show_details": "도구 세부 정보 표시: {{label}}",
         "blocked_by_security_policy": "보안 정책에 의해 차단되었습니다",
         "open_in_side_panel": "{{path}}을(를) 사이드 패널에서 열기",
-        "opened_in_the_side_panel": "사이드 패널에서 열었습니다"
+        "opened_in_the_side_panel": "사이드 패널에서 열었습니다",
+        "wait_end_now": "대기 종료",
+        "wait_ending": "종료 중…",
+        "wait_remaining": "{{time}} 남음",
+        "wait_status": "대기 중"
       },
       "toolDetails": {
         "auto": "자동",

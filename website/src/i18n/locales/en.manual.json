@@ -2420,7 +2420,11 @@
         "aria_show_details": "Show details for tool: {{label}}",
         "blocked_by_security_policy": "Blocked by security policy",
         "open_in_side_panel": "Open {{path}} in side panel",
-        "opened_in_the_side_panel": "Opened in the side panel"
+        "opened_in_the_side_panel": "Opened in the side panel",
+        "wait_end_now": "End wait",
+        "wait_ending": "Ending…",
+        "wait_remaining": "{{time}} left",
+        "wait_status": "Waiting"
       }
     },
     "chatPage": {

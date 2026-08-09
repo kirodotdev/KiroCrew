@@ -6308,6 +6308,24 @@ async def _run_chat(
         # individually cancellable — a user who meant "discard" clicks ✕;
         # nothing is ever silently lost.
         _requeue_unconsumed_steers(state, slot)
+        # ── Retire any wait countdown ──
+        # A healthy `wait` clears its own state with a final keepalive ping, but
+        # that ping is best-effort and cannot run at all if the MCP subprocess
+        # died mid-sleep (hard stop, crash, gateway abort). Clearing at turn end
+        # is the backstop that keeps a dead wait from leaving a countdown ticking
+        # toward a deadline nothing is waiting on, and drops any end request the
+        # tool never collected so it cannot reach the next sleep.
+        # Also releases the contested latch: it is deliberately turn-scoped, so
+        # this is the ONLY thing that clears it. A slot whose parent and subagent
+        # both slept in one turn gets its countdown back on the next turn.
+        if (
+            slot._wait_state is not None
+            or slot._end_wait_request is not None
+            or slot._wait_contested
+        ):
+            slot._wait_state = None
+            slot._end_wait_request = None
+            slot._wait_contested = False
         # Record this turn's auth outcome so the orchestrator _stage_loop, which
         # runs stages as separate _run_chat calls, can mirror this same
         # "hold the queue for post-login resume" guard on its end-of-plan handoff.

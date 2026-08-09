@@ -1304,6 +1304,12 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
 
     Authenticated via X-Internal-Secret; session is selected via the
     X-Session-Key header that all MCP subprocesses already send.
+
+    Doubles as the sleeping `wait` tool's only inbound channel. When the body
+    names a ``wait_id`` the reply may carry ``end_wait: <wait_id>``, which the
+    tool treats as "return early, keep the turn". The body is optional and every
+    field in it is advisory: a caller that sends ``{}`` gets the original
+    touch-only behaviour.
     """
     state: DashboardState = request.app["state"]
     session_key = request.headers.get("X-Session-Key", "").strip()
@@ -1312,6 +1318,17 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     provider = state.sessions.get_provider(session_key)
     if provider is None:
         return web.json_response({"error": "session not found"}, status=404)
+    body: dict = {}
+    try:
+        if request.can_read_body:
+            parsed = await request.json()
+            if isinstance(parsed, dict):
+                body = parsed
+    except Exception:
+        # A malformed body must never cost the session its keepalive — that is
+        # the half of this route that keeps the watchdog from killing the ACP
+        # subprocess mid-wait.
+        body = {}
     try:
         provider.touch_activity()
     except Exception as exc:
@@ -1328,7 +1345,131 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
             touched(session_key)
     except Exception:
         logger.debug("last_used touch failed for %s", session_key, exc_info=True)
-    return web.json_response({"ok": True})
+    reply: dict = {"ok": True}
+    wait_id = str(body.get("wait_id") or "").strip()[:64]
+    if wait_id:
+        _service_wait_ping(state, session_key, wait_id, body, reply)
+    return web.json_response(reply)
+
+
+def _service_wait_ping(
+    state: DashboardState,
+    session_key: str,
+    wait_id: str,
+    body: dict,
+    reply: dict,
+) -> None:
+    """Track an in-flight `wait` sleep and hand back any early-end request.
+
+    Mutates ``reply`` in place, adding ``end_wait`` when the user asked to end
+    this exact wait. Silent no-op when the calling session has no dashboard tab
+    (a Slack/cron session can call `wait` too — it just has nothing to render a
+    countdown on).
+    """
+    # Local import: this module's other chat_utils uses are function-local for
+    # the same circular-import reason (handlers/__init__ re-exports this module).
+    from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+    slot_name = dashboard_slot_key(session_key)
+    slot = state.get_slot(slot_name) if slot_name else None
+    if slot is None:
+        return
+    now = time.time()
+    # How stale the incumbent's last ping must be before its sleep is presumed
+    # gone. 2.5 intervals tolerates one dropped ping plus scheduling jitter
+    # without tolerating a sleep that is simply still running.
+    try:
+        interval = float(body.get("interval") or 5.0)
+    except (TypeError, ValueError):
+        interval = 5.0
+    window = max(2.0, min(60.0, interval) * 2.5)
+    if body.get("wait_done"):
+        # Only the wait that owns the state may retire it, so a late final ping
+        # from a previous sleep cannot blank the countdown of the current one.
+        if slot._wait_state and slot._wait_state.get("wait_id") == wait_id:
+            slot._wait_state = None
+            slot._end_wait_request = None
+            slot._wait_last_ping = 0.0
+            state.push_slots_update()
+        return
+    # ── Ambiguous-identity guard ──
+    # `_resolve_session_key()` answers per RUNTIME, not per ACP session: with the
+    # MCP gateway disabled (the default) KIROCREW_SESSION_KEY is unset and one MCP
+    # process serves the whole runtime, so a subagent's `wait` and its parent's
+    # resolve to the SAME session key and land on this one slot. Taking the newer
+    # wait over would then attribute one sleep's countdown to the other's pill,
+    # and worse, hand the user's End-wait click to whichever sleep polled next.
+    #
+    # The ping doubles as a heartbeat, which makes the ambiguity detectable: a
+    # second wait_id arriving while the incumbent is still pinging means two
+    # sleeps genuinely share this slot. There is no way to tell which one the
+    # user is looking at, so track neither, and stay that way for the rest of the
+    # turn (see the latch below -- a self-expiring window flapped the hole back
+    # open). Deliberately a containment, not a cure: the cure is per-session
+    # identity, which this cannot synthesize.
+    # Tracked in https://github.com/kirodotdev/KiroCrew/issues/2347, which also
+    # lists this guard among the things to delete once identity is fixed.
+    if slot._wait_contested:
+        # Latched for the REST OF THE TURN, not for a fixed window. An expiring
+        # window reopened the hole it was built to close: both sleeps keep
+        # pinging, so on expiry whichever pinged first re-minted state, and for
+        # up to one ping interval that wait's id and deadline were published and
+        # painted onto the OTHER one's pill -- with a live button that would end
+        # the wrong sleep. Re-detection closed it again a ping later, so the
+        # attribution flapped open every window instead of staying shut.
+        if slot._wait_state is not None or slot._end_wait_request is not None:
+            slot._wait_state = None
+            slot._end_wait_request = None
+            slot._wait_last_ping = 0.0
+            state.push_slots_update()
+        return
+    prev = slot._wait_state
+    if prev and prev.get("wait_id") != wait_id:
+        if now - slot._wait_last_ping < window:
+            slot._wait_contested = True
+            slot._wait_state = None
+            slot._end_wait_request = None
+            slot._wait_last_ping = 0.0
+            logger.info(
+                "two concurrent waits share session %s; countdown suppressed", session_key
+            )
+            state.push_slots_update()
+            return
+        # The incumbent stopped pinging: its sleep is over (a missed wait_done, a
+        # killed MCP process, a hard stop). Safe to hand the slot to this one.
+    if not prev or prev.get("wait_id") != wait_id:
+        try:
+            remaining = max(0, min(1800, int(body.get("remaining") or 0)))
+            total = max(0, min(1800, int(body.get("seconds") or 0)))
+        except (TypeError, ValueError):
+            remaining, total = 0, 0
+        slot._wait_state = {
+            "wait_id": wait_id,
+            "seconds": total,
+            # Absolute deadline on the DASHBOARD's clock, derived once on first
+            # sight from the tool's own remaining budget. Two reasons not to
+            # recompute it every ping: the countdown would jitter by one
+            # round-trip each tick, and the tool's monotonic clock has no shared
+            # epoch it could send instead.
+            "deadline_ts": now + remaining,
+        }
+        # A brand-new wait cannot inherit an end request aimed at an older one.
+        slot._end_wait_request = None
+        slot._wait_last_ping = now
+        state.push_slots_update()
+    else:
+        # Heartbeat only. Held OFF the wire payload so the deadline the browser
+        # counts down against stays byte-identical between pushes.
+        slot._wait_last_ping = now
+    if slot._end_wait_request and slot._end_wait_request == wait_id:
+        # Consume exactly once. Leaving it set would make the NEXT wait in this
+        # session return instantly, which is the failure mode a session-scoped
+        # boolean flag would have had.
+        slot._end_wait_request = None
+        slot._wait_state = None
+        slot._wait_last_ping = 0.0
+        reply["end_wait"] = wait_id
+        state.push_slots_update()
 
 
 async def api_session_tool_policy(request: web.Request) -> web.Response:

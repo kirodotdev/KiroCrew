@@ -1589,6 +1589,11 @@ export const api = {
   editQueuedMessage: (slot: string, queueId: string, content: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId), { content }).then(j),
   reorderQueuedMessages: (slot: string, order: string[]) => put('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/order', { order }).then(j),
   interruptSlot: (slot: string, queueId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/interrupt', queueId ? { queue_id: queueId } : {}).then(j),
+  /** Ask the sleeping `wait` tool to return early. Cooperative, not a stop:
+   *  the turn continues with a normal tool result. `waitId` must name the sleep
+   *  currently in flight — the backend answers 409 for a stale one, which is how
+   *  a click on a leftover countdown is rejected rather than ending a later wait. */
+  endWait: (slot: string, waitId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/end-wait', { wait_id: waitId }).then(j),
   approveChatSlot: (slot: string, action: string, extra?: Record<string, string>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
   planAction: (slot: string, action: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/plan-action', { action }).then(j),
   resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),

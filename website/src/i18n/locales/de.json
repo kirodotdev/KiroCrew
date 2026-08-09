@@ -7268,7 +7268,11 @@
         "aria_show_details": "Details für Werkzeug {{label}} anzeigen",
         "blocked_by_security_policy": "Durch Sicherheitsrichtlinie blockiert",
         "open_in_side_panel": "{{path}} im Seitenpanel öffnen",
-        "opened_in_the_side_panel": "Im Seitenbereich geöffnet"
+        "opened_in_the_side_panel": "Im Seitenbereich geöffnet",
+        "wait_end_now": "Warten beenden",
+        "wait_ending": "Wird beendet…",
+        "wait_remaining": "{{time}} übrig",
+        "wait_status": "Wartet"
       },
       "toolDetails": {
         "auto": "Automatisch",

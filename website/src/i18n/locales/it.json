@@ -7367,7 +7367,11 @@
         "aria_show_details": "Mostra i dettagli per lo strumento: {{label}}",
         "blocked_by_security_policy": "Bloccato dalla policy di sicurezza",
         "open_in_side_panel": "Apri {{path}} nel pannello laterale",
-        "opened_in_the_side_panel": "Aperto nel pannello laterale"
+        "opened_in_the_side_panel": "Aperto nel pannello laterale",
+        "wait_end_now": "Termina attesa",
+        "wait_ending": "Terminazione…",
+        "wait_remaining": "{{time}} rimanenti",
+        "wait_status": "In attesa"
       },
       "toolDetails": {
         "auto": "Automatico",

@@ -7367,7 +7367,11 @@
         "aria_show_details": "Afficher les détails de l’outil : {{label}}",
         "blocked_by_security_policy": "Bloqué par la politique de sécurité",
         "open_in_side_panel": "Ouvrir {{path}} dans le panneau latéral",
-        "opened_in_the_side_panel": "Ouvert dans le panneau latéral"
+        "opened_in_the_side_panel": "Ouvert dans le panneau latéral",
+        "wait_end_now": "Arrêter l’attente",
+        "wait_ending": "Arrêt en cours…",
+        "wait_remaining": "Il reste {{time}}",
+        "wait_status": "En attente"
       },
       "toolDetails": {
         "auto": "Auto",

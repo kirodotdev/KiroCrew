@@ -904,6 +904,10 @@ class _ChatSlot:
         "_native_subagent_tracker",
         "_native_subagent_output",
         "_pending_steers",
+        "_wait_state",
+        "_end_wait_request",
+        "_wait_last_ping",
+        "_wait_contested",
     )
 
     def __init__(
@@ -1207,6 +1211,28 @@ class _ChatSlot:
         # STOP, error). Without this, a steer swallowed by a dying turn
         # vanished with no trace (see the requeue site).
         self._pending_steers: list[str] = []
+        # In-flight `wait` tool sleep, as reported by the tool's own keepalive
+        # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
+        # deadline is on the dashboard's clock (see api_session_keepalive) so
+        # the browser can count down against it directly. None whenever no wait
+        # is sleeping.
+        self._wait_state: dict | None = None
+        # wait_id the user asked to end early, parked here until the sleeping
+        # tool collects it on its next poll. Consumed exactly once.
+        self._end_wait_request: str | None = None
+        # Wall clock of the tracked wait's last keepalive ping. Server-side only
+        # (deliberately NOT in to_dict): it is the heartbeat that distinguishes a
+        # sleep that ended from one that is still running, which is how
+        # _service_wait_ping tells a legitimate hand-over from two concurrent
+        # waits colliding on one session key.
+        self._wait_last_ping: float = 0.0
+        # True once two sleeps have been seen sharing this slot: neither may be
+        # tracked or ended, because there is no way to know which one the user is
+        # looking at. Latched for the rest of the turn and cleared by the same
+        # turn-end block that clears the two fields above -- an earlier revision
+        # expired it on a timer, which let whichever sleep pinged first after
+        # expiry re-publish its deadline onto the other's pill.
+        self._wait_contested: bool = False
 
     @property
     def _dirty(self) -> bool:
@@ -1870,6 +1896,12 @@ class _ChatSlot:
             "last_activity_ts": last_activity_ts,
             "waiting_for_input": waiting_for_input,
             "stop_state": self._stop_state,
+            # In-flight `wait` sleep, or None. Carries the absolute deadline the
+            # transcript counts down against and the wait_id the "End wait"
+            # button must quote. Rides the slots payload rather than a bespoke
+            # WS event so a page reload mid-wait re-seeds it from
+            # GET /api/chat/slots for free.
+            "wait_state": self._wait_state,
             "created": self.created_at,
             "last_ts": last_ts,
             "last_message": last_msg,
