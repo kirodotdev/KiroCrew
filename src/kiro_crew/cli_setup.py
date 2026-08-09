@@ -1,4 +1,4 @@
-"""CLI setup subcommand — interactive credential and config wizard."""
+"""CLI setup subcommand — interactive config wizard (channel credentials are opt-in)."""
 
 from __future__ import annotations
 
@@ -253,10 +253,15 @@ def _setup_electron() -> None:
     print("     Launch via Spotlight (⌘+Space → KiroCrew) or Finder → ~/Applications")
 
 
-def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = False) -> None:
+def _setup(
+    agent_only: bool = False,
+    electron_only: bool = False,
+    clean: bool = False,
+    slack: bool = False,
+) -> None:
     """Install agent config and optionally configure credentials."""
     try:
-        _setup_impl(agent_only=agent_only, electron_only=electron_only, clean=clean)
+        _setup_impl(agent_only=agent_only, electron_only=electron_only, clean=clean, slack=slack)
     except _SetupAborted as exc:
         # A closed/piped stdin mid-wizard. One clean line instead of a stack
         # trace at whichever prompt hit it first — every guarded prompt raises,
@@ -266,7 +271,12 @@ def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = 
         print(f"\n⏭  Setup aborted: {exc}. Re-run interactively to finish.")
 
 
-def _setup_impl(agent_only: bool = False, electron_only: bool = False, clean: bool = False) -> None:
+def _setup_impl(
+    agent_only: bool = False,
+    electron_only: bool = False,
+    clean: bool = False,
+    slack: bool = False,
+) -> None:
     from kiro_crew.agent import install_agent  # circular import: agent imports cli
     from kiro_crew.cli import _project_dir_file  # circular import: cli -> cli_setup -> cli
 
@@ -337,11 +347,22 @@ def _setup_impl(agent_only: bool = False, electron_only: bool = False, clean: bo
         print("\n👻 Done! Try: kirocrew gateway")
         return
 
-    # 3. Slack credentials
-    _setup_slack_tokens()
+    # 3. Messaging channels (optional, configured after setup by default).
+    #    Slack prompts run only on explicit opt-in (`kirocrew setup --slack`);
+    #    the dashboard and CLI need no channel credentials, and every channel
+    #    (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat) can be
+    #    connected later from the dashboard or its setup guide.
+    if slack:
+        _setup_slack_tokens()
 
-    # 3b. Slash command name
-    _setup_slash_command()
+        # 3b. Slash command name (Slack-only concept)
+        _setup_slash_command()
+    else:
+        print("── Messaging Channels ──\n")
+        print("  The dashboard works without any messaging credentials.")
+        print("  Connect Slack, Discord, Telegram, Teams, Webex, WeCom, or WeChat")
+        print("  later from the dashboard (Settings → Channels) or run")
+        print("  'kirocrew setup --slack' for the guided Slack setup.\n")
 
     # 4. Timezone
     _setup_timezone()

@@ -10,8 +10,9 @@ triggers: help, commands, setup, gateway, how to, what can you do, getting start
 
 | Command | Description |
 |---------|-------------|
-| `kirocrew setup` | Interactive wizard — install agent config and configure credentials |
-| `kirocrew setup --agent-only` | Only install kiro-cli agent config, skip credential prompts |
+| `kirocrew setup` | Interactive wizard — install agent config (messaging channels connect later) |
+| `kirocrew setup --slack` | Also run the guided Slack credential setup (opt-in; ignored with `--agent-only`) |
+| `kirocrew setup --agent-only` | Only install kiro-cli agent config, skip the other wizard steps |
 | `kirocrew setup --clean` | Fresh install — don't merge from existing config |
 | `kirocrew doctor` | Verify KiroCrew setup (checks all dependencies) |
 | `kirocrew update` | Update KiroCrew to the latest version |

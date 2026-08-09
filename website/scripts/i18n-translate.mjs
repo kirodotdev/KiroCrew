@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Translation driver: renders the committed prompt per (locale, shard), validates
  * filled shards, and drives `i18n-shard.mjs join` across every shipped locale.

@@ -3,7 +3,7 @@
 Commands:
     kirocrew chat -m "message"    Send a single message
     kirocrew chat                 Interactive chat mode
-    kirocrew gateway              Start the Kiro Crew server (dashboard + Slack)
+    kirocrew gateway              Start the Kiro Crew server (dashboard + messaging channels)
     kirocrew gateway --seed NAME  Populate $KIROCREW_HOME from fixture NAME, then start the gateway
     kirocrew status               Show runtime stats
     kirocrew run TASK.md          Run an autonomous task from a spec file
@@ -12,7 +12,7 @@ Commands:
     kirocrew spawn run "task"     Spawn a background subagent
     kirocrew spawn list           List subagents
     kirocrew learn add|list|remove Save and manage learned corrections
-    kirocrew setup                Interactive credential setup
+    kirocrew setup                Interactive setup wizard
     kirocrew doctor               Verify setup
 """
 
@@ -812,7 +812,9 @@ Examples:
     )
 
     # gateway
-    gw_parser = sub.add_parser("gateway", help="Start the Kiro Crew server (dashboard + Slack)")
+    gw_parser = sub.add_parser(
+        "gateway", help="Start the Kiro Crew server (dashboard + messaging channels)"
+    )
     gw_parser.add_argument(
         "--slack-only",
         action="store_true",
@@ -898,11 +900,19 @@ Examples:
     )
 
     # setup
-    setup_parser = sub.add_parser("setup", help="Install agent config and configure credentials")
+    setup_parser = sub.add_parser("setup", help="Install agent config and run the setup wizard")
     setup_parser.add_argument(
         "--agent-only",
         action="store_true",
-        help="Only install the agent config, skip credential prompts",
+        help="Only install the agent config, skip the interactive wizard steps",
+    )
+    setup_parser.add_argument(
+        "--slack",
+        action="store_true",
+        help=(
+            "Also run the guided Slack credential setup (messaging channels are "
+            "otherwise connected later from the dashboard); ignored with --agent-only"
+        ),
     )
     setup_parser.add_argument(
         "--electron-only",
@@ -2051,6 +2061,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             agent_only=getattr(args, "agent_only", False),
             electron_only=getattr(args, "electron_only", False),
             clean=getattr(args, "clean", False),
+            slack=getattr(args, "slack", False),
         )
     elif args.command == "doctor":
         _doctor(platform_boot_error=_platform_boot_error, bundle=getattr(args, "bundle", False))

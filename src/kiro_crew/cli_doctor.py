@@ -948,8 +948,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 print("               The gateway will refuse to connect.")
                 issues.append("slack workspace: not in allowlist")
     else:
-        print("  status:      ⏭  not configured (dashboard-only mode)")
-        print("  setup:       run 'kirocrew setup' to add Slack tokens")
+        print("  status:      ⏭  not configured (optional)")
+        print("  setup:       run 'kirocrew setup --slack', or connect any channel")
+        print("               (Slack, Discord, Telegram, …) from the dashboard")
 
     # ── Loop-stall crash dumps ──
     print("\nLoop-stall Crash Dumps")

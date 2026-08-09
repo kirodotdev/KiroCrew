@@ -36,6 +36,14 @@ and several hundred fixes from the first weeks in the open.
   subprocesses. Skills, the usage ledger, and build tooling all learned the
   platform's rules.
 
+### Setup no longer assumes Slack
+
+- **`kirocrew setup` stops asking for Slack tokens.** The wizard now finishes on
+  the dashboard and points at the full set of chat channels; walk through the
+  Slack credentials only when you ask for them with `kirocrew setup --slack`.
+- Docs, in-app copy, and suggestions describe Kiro Crew as **multi-channel**
+  rather than Slack-first, so nothing implies Slack is required to use it.
+
 ### A dashboard you can operate
 
 - **System is now a task manager** — live per-session resource usage, plus a

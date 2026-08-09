@@ -2,7 +2,8 @@
 
 Jobs are stored in the config directory (``~/.kiro/crew/crons.json`` by default,
 overridden by ``KIROCREW_HOME``) and executed by a background
-asyncio timer.  Each job fires a callback (typically posting to Slack via ACP).
+asyncio timer.  Each job fires a callback (typically delivering the result to
+the dashboard and, when configured, the owner's Slack DM).
 
 Cross-process safety: the CLI and gateway run as separate processes sharing
 the same ``crons.json``.  All read-modify-write cycles use advisory file

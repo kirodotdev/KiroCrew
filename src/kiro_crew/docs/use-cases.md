@@ -1,8 +1,8 @@
 # Use Cases & Workflows
 
 Real-world workflows from the Kiro Crew community. These combine Kiro Crew's
-capabilities — cron jobs, subagents, memory, Slack, and task runner — into
-end-to-end automation.
+capabilities — cron jobs, subagents, memory, chat channels, and task runner —
+into end-to-end automation.
 
 ## Backlog Crusher
 

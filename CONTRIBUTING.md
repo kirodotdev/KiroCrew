@@ -61,15 +61,17 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[voice]"
 
 # 4. Configure and verify
-kirocrew setup               # data dir, agent backend, Slack tokens (optional)
+kirocrew setup               # data dir, agent backend (channels connect later)
 kirocrew doctor              # verify everything works
-kirocrew gateway             # start server (dashboard + Slack)
+kirocrew gateway             # start server (dashboard + messaging channels)
 ```
 
 The dashboard is at `http://localhost:5476`.
 
-**Dashboard-only mode**: skip Slack tokens during `kirocrew setup` to run
-without Slack.
+**Messaging channels are optional**: the default `kirocrew setup` configures
+none, and the dashboard + CLI work without any channel credentials. Connect
+Slack, Discord, Telegram, Teams, Webex, WeCom, or WeChat later, or run
+`kirocrew setup --slack` for the guided Slack path.
 
 ## Development Skills (agents and humans)
 

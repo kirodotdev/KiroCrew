@@ -3737,6 +3737,64 @@ class TestConfigDirOverride:
         assert "xapp-test" in content
 
 
+class TestSetupChannelGating:
+    """`kirocrew setup` runs the Slack steps only with --slack.
+
+    Messaging channels are optional: the default wizard must configure none and
+    instead print the pointer to connect channels later, while `--slack` opts
+    into the guided Slack credential + slash-command steps.
+    """
+
+    def _run_setup(self, monkeypatch, tmp_path, **kwargs):
+        import kiro_crew.cli_setup as cs
+
+        calls: list[str] = []
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        # Imported inside _setup_impl — patch at their source modules.
+        monkeypatch.setattr(
+            "kiro_crew.agent.install_agent", lambda clean=False: tmp_path / "agent.json"
+        )
+        monkeypatch.setattr("kiro_crew.agent.ensure_kirocrew_on_path", lambda: None)
+        monkeypatch.setattr("kiro_crew.mcp_cleanup.clean_stale_managed_mcp", lambda: [])
+        # Neutralize every unrelated wizard step so only the gating is under test.
+        for name in (
+            "_ensure_prerequisites",
+            "_setup_workspace_dir",
+            "_setup_sandbox_consent",
+            "_setup_timezone",
+            "_maybe_setup_dashboard_url",
+            "_maybe_setup_custom_domain",
+            "_maybe_setup_cloud",
+            "_ensure_default_agent_in_config",
+        ):
+            monkeypatch.setattr(cs, name, lambda *a, **k: None)
+        monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
+        monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
+        monkeypatch.setattr(cs, "browser_mode_enabled", lambda: False)
+        # Conductor-skill step catches Exception and continues.
+        monkeypatch.setattr(
+            cs, "KiroCrewConfig", MagicMock(load=MagicMock(side_effect=RuntimeError("no config")))
+        )
+        # Keep the macOS-only desktop-app input() prompt off the path.
+        monkeypatch.setattr(cs.platform, "system", lambda: "Linux")
+
+        cs._setup_impl(**kwargs)
+        return calls
+
+    def test_default_setup_skips_slack_steps(self, tmp_path, monkeypatch, capsys):
+        """Default wizard: no Slack prompts, prints the channels pointer instead."""
+        calls = self._run_setup(monkeypatch, tmp_path)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "Messaging Channels" in out
+        assert "setup --slack" in out
+
+    def test_slack_flag_opts_into_slack_steps(self, tmp_path, monkeypatch):
+        """--slack runs the guided Slack credential + slash-command steps in order."""
+        calls = self._run_setup(monkeypatch, tmp_path, slack=True)
+        assert calls == ["slack_tokens", "slash_command"]
+
+
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
 

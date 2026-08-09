@@ -173,6 +173,9 @@ Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
 Multi-user access and open channels are refused regardless of what these lists
 contain, so treat them as bookkeeping rather than an access grant.
 
+Other channels (Discord, Telegram, Teams, Webex, WeCom, WeChat) are configured
+from the dashboard — see each channel's doc for keys and credentials.
+
 ### Speech-to-text
 
 | Key | Description | Default |
@@ -256,7 +259,8 @@ A per-job `timezone` on a cron job wins over this global value.
 
 ## Credentials
 
-`~/.kiro/crew/.env` holds the Slack tokens and owner ID:
+`~/.kiro/crew/.env` holds messaging-channel credentials and the owner ID. For
+Slack:
 
 ```
 SLACK_APP_TOKEN=xapp-...
