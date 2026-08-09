@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Untranslated-string gate. Two checks with different jobs:
  *
