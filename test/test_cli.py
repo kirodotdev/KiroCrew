@@ -4109,6 +4109,18 @@ class TestDoctorEmbeddings:
         after the CPU arch instead of the packaging rule that dropped the file
         on every arch.
         """
+        # This test asserts the NO-override branch, so the var must be absent.
+        # It is not, reliably: the doctor branches on LLAMA_CPP_LIB_PATH and the
+        # value can arrive from outside this test -- a dev shell that exports it,
+        # or the sibling override test, whose helper sets it via a raw
+        # os.environ.setdefault that escapes pytest teardown. Either way the
+        # doctor takes the "libs load from the override dir" path and this
+        # assertion can never match. Clearing it here (mirroring the sibling,
+        # which explicitly setenv-s) makes the expectation independent of both
+        # the ambient environment and test order -- pytest-split reshuffles
+        # shards whenever the suite test count changes, so the leak surfaced on
+        # an unrelated PR that merely added tests elsewhere.
+        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
         self._run_doctor(
             tmp_path,
             monkeypatch,

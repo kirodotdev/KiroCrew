@@ -1,29 +1,36 @@
 """Discord-specific adapter over channel-neutral attachment ingestion.
 
-Discord owns the envelope mapping, CDN download callback, and voice-message
-transcription. Classification, limits, signature validation, extraction,
-redaction, rejection text, and temp-file ownership stay in
-``kiro_crew.messaging.attachments``.
+Discord owns only what is genuinely Discord-shaped: the envelope mapping and the
+signed-CDN download callback. Classification, limits, signature validation,
+extraction, redaction, rejection text, transcription and temp-file ownership all
+stay in ``kiro_crew.messaging.attachments``.
 """
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.messaging.attachments import (
     Attachment,
     IngestResult,
+    append_attachment_context,
     ingest_attachments,
+    transcribe_audio_attachments,
 )
-from kiro_crew.transcribe import is_available as stt_available
-from kiro_crew.transcribe import transcribe_audio
+
+# ``append_attachment_context`` is channel-neutral and lives in
+# ``messaging.attachments``; it is re-exported here so existing
+# ``from kiro_crew.discord.attachments import append_attachment_context``
+# callers keep resolving. Declared in ``__all__`` rather than carrying a
+# blanket ``# noqa: F401`` on the import block, which would also suppress
+# genuine unused-import warnings for the names above that ARE used.
+__all__ = [
+    "append_attachment_context",
+    "process_discord_attachments",
+]
 
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient
-
-logger = logging.getLogger(__name__)
 
 
 def _to_attachment(raw: Any) -> Attachment:
@@ -73,49 +80,9 @@ async def process_discord_attachments(
         source="discord",
         handle_audio=True,
     )
-
-    if not result.audio_paths:
-        return result
-
-    try:
-        available = await asyncio.to_thread(stt_available)
-    except Exception:
-        logger.exception("Discord: failed to check speech-to-text availability")
-        available = False
-
-    if not available:
-        result.rejections.extend(
-            "[Audio attachment — transcription is unavailable]"
-            for _ in result.audio_paths
-        )
-        return result
-
-    for path in result.audio_paths:
-        try:
-            transcript = await transcribe_audio(path)
-        except Exception:
-            logger.exception("Discord: audio transcription raised")
-            transcript = None
-        if transcript:
-            result.text_blocks.append(
-                "[Voice memo transcription]\n"
-                f"{transcript}\n"
-                "[End of transcription]"
-            )
-        else:
-            result.rejections.append("[Audio attachment — transcription failed]")
-
-    return result
+    return await transcribe_audio_attachments(result, "Discord")
 
 
-def append_attachment_context(text: str, result: IngestResult) -> str:
-    """Append prompt-ready attachment material using Slack's proven layout."""
-    if result.image_paths:
-        paths_text = "\n".join(result.image_paths)
-        text = f"{text}\n{paths_text}" if text else paths_text
-
-    blocks = [*result.text_blocks, *result.rejections]
-    if blocks:
-        blocks_text = "\n\n".join(blocks)
-        text = f"{text}\n\n{blocks_text}" if text else blocks_text
-    return text
+# append_attachment_context is re-exported from messaging.attachments (imported above).
+# Kept in this module's public API so existing `from kiro_crew.discord.attachments
+# import append_attachment_context` continues to resolve without a code change.

@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
+from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
@@ -44,6 +46,7 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.sel import sel
+from kiro_crew.telegram.attachments import process_telegram_attachments
 from kiro_crew.telegram.commands import (
     ConversationState,
     parse_command,
@@ -75,6 +78,12 @@ _DEFAULT_KIROCREW_AGENT = "kirocrew"
 # A single human won't realistically burst past this mid-turn; anything beyond
 # stays queued and drains after the next turn (logged for observability).
 _MAX_COLLAPSE = 50
+
+# Keep queue collapse within the shared ingestion layer's per-turn file cap.
+# Without this, two queued 10-photo albums would concatenate to 20 attachments
+# in one turn and ingest_attachments would silently process only the first 10,
+# losing the second album entirely. Mirrors discord/transport_dispatch.py.
+_MAX_COLLAPSED_ATTACHMENTS = IngestLimits().max_attachments
 
 _HELP_TEXT = """\
 🦞 Kiro Crew — Telegram
@@ -235,12 +244,17 @@ class TelegramDispatcher:
         # payload is replayed as pure content, so a queued "/new" reaches the
         # model as text instead of executing on drain.
         override_mode = None
-        if interpret_commands and parse_command(text) is None:
+        # Attachments make this a content-bearing turn, not a control command:
+        # a caption of "/new" would otherwise intercept and return BEFORE
+        # attachment ingestion, silently discarding the photo the user attached
+        # to it. Mirrors discord/transport_dispatch.py's interpret_as_command.
+        interpret_as_command = interpret_commands and not msg.attachments
+        if interpret_as_command and parse_command(text) is None:
             override_mode, text = parse_mid_turn_override(text)
 
         # ── Command intercept (no LLM session needed; skipped for override
         # payloads and drained queue content — see above) ──
-        cmd = parse_command(text) if interpret_commands and override_mode is None else None
+        cmd = parse_command(text) if interpret_as_command and override_mode is None else None
         if cmd == "new":
             self._conv.bump_gen(route)
             await self._reply(chat_id, "✅ New conversation started.", thread=reply_thread)
@@ -309,6 +323,7 @@ class TelegramDispatcher:
         # on _acquired so we never release a semaphore we didn't hold. Mirrors
         # slack/transport_dispatch.py.
         _acquired = False
+        attachment_temp_paths: list[str] = []
         try:
             # Ack placeholder first (before the potentially slow cold-start);
             # on_turn_start is idempotent so the driver's later call no-ops.
@@ -319,6 +334,15 @@ class TelegramDispatcher:
             _acquired = True
             if is_new:
                 await self.sessions.set_channel(session_key, channel_id)
+            # ── Attachment ingestion (mirrors Discord) ──
+            if msg.attachments:
+                attachment_result = await process_telegram_attachments(
+                    self.client, msg.attachments
+                )
+                attachment_temp_paths = list(attachment_result.temp_paths)
+                text = append_attachment_context(text, attachment_result)
+            if not text:
+                return
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity.
             await publish_turn_identity(self.sessions, session_key)
@@ -421,6 +445,7 @@ class TelegramDispatcher:
             self._active_renderers.pop(session_key, None)
             if _acquired:
                 self.sessions.release(session_key)
+            await asyncio.to_thread(cleanup_attachments, attachment_temp_paths)
 
         # Now that the turn is released, run anything that queued during it
         # (queue_mode == "queue"). ``drain`` is False for drained turns so the
@@ -450,7 +475,15 @@ class TelegramDispatcher:
         assert self.client is not None
         chat_id = int(msg.conversation_id)
         mode = override_mode or self.cfg.messaging.queue_mode
-        if mode != "queue":
+        # An attachment-bearing message can never take the steer path: ``steer``
+        # forwards TEXT ONLY, so steering a photo/document message would deliver
+        # its caption and silently drop every file. Such a message always goes to
+        # the queue path below, which carries ``attachments`` through the drain.
+        # Mirrors discord/transport_dispatch.py's identical gate -- Telegram was
+        # missing it, and album buffering makes it far more reachable: a follow-up
+        # typed during the debounce window starts a turn, so the album's own flush
+        # arrives mid-turn and would have been steered as caption-only.
+        if mode != "queue" and not msg.attachments:
             provider = self.sessions.get_provider(session_key)
             steer = getattr(provider, "steer", None)
             # Only steer when a turn is GENUINELY in flight. ``is_busy`` stays
@@ -497,7 +530,10 @@ class TelegramDispatcher:
         # bubble. If the turn finished in the window the message is not queued, so
         # we run it now (re-entering handle_message, which re-strips the directive
         # and runs it as a fresh turn) instead of stranding it.
-        if not await self._enqueue_with_receipt(session_key, chat_id, text, thread=thread):
+        if not await self._enqueue_with_receipt(
+            session_key, chat_id, text, thread=thread,
+            attachments=list(msg.attachments) if msg.attachments else None,
+        ):
             await self.handle_message(msg)
 
     async def _drain_queue(
@@ -520,59 +556,96 @@ class TelegramDispatcher:
         receipt and drain after the next turn. Only the queued text is replayed
         (matching what ``enqueue`` persists for DM channels: text only).
         """
-        texts: list[str] = []
-        remainder: list[tuple[str, str, dict]] = []
-        async with self._receipt_lock:
-            # Drain the ENTIRE queue under the lock, then split: the first
-            # _MAX_COLLAPSE messages collapse into this turn; the rest are
-            # re-enqueued IN ORIGINAL ORDER (the queue is now empty, so
-            # re-adding preserves FIFO) to drain after the next turn. This
-            # bounds the combined prompt without dropping or reordering surplus.
-            while True:
-                item = self.sessions.dequeue(session_key)
-                if item is None:
-                    break
-                if len(texts) < _MAX_COLLAPSE:
-                    texts.append(item[1])
-                else:
-                    remainder.append(item)
-            for _ts, rtext, _kw in remainder:
-                self.sessions.enqueue(session_key, str(time.time()), rtext, force=True)
-            if texts:
-                await self._receipt_flip_locked(session_key, chat_id, texts, len(remainder))
-        if not texts:
-            return
-        if remainder:
-            logger.debug(
-                "telegram: drain hit collapse cap=%d for %s; %d message(s) "
-                "deferred (in order) to the next turn",
-                _MAX_COLLAPSE,
-                session_key,
-                len(remainder),
+        # Iterate rather than recurse: one burst can span multiple
+        # attachment-capped turns, and a message deferred by the cap must drain
+        # in THIS pump rather than waiting for unrelated future user input.
+        # Mirrors the Discord drain.
+        while True:
+            texts: list[str] = []
+            all_attachments: list[Any] = []
+            remainder: list[tuple[str, str, dict]] = []
+            defer_rest = False
+            async with self._receipt_lock:
+                # Drain the ENTIRE queue under the lock, then split: the first
+                # _MAX_COLLAPSE messages collapse into this turn; the rest are
+                # re-enqueued IN ORIGINAL ORDER (the queue is now empty, so
+                # re-adding preserves FIFO) to drain after the next turn. This
+                # bounds the combined prompt without dropping or reordering surplus.
+                while True:
+                    item = self.sessions.dequeue(session_key)
+                    if item is None:
+                        break
+                    item_attachments = list(item[2].get("attachments") or [])
+                    # Never collapse past the shared ingestion cap: the extra files
+                    # would be dropped inside ingest_attachments with the user given
+                    # no indication, so defer instead. Mirrors the Discord drain.
+                    exceeds_attachment_cap = bool(
+                        texts
+                        and item_attachments
+                        and len(all_attachments) + len(item_attachments)
+                        > _MAX_COLLAPSED_ATTACHMENTS
+                    )
+                    if (
+                        not defer_rest
+                        and len(texts) < _MAX_COLLAPSE
+                        and not exceeds_attachment_cap
+                    ):
+                        texts.append(item[1])
+                        all_attachments.extend(item_attachments)
+                    else:
+                        # Once one message no longer fits, defer it AND everything
+                        # behind it, so queue order stays exact.
+                        defer_rest = True
+                        remainder.append(item)
+                for _ts, rtext, rkw in remainder:
+                    self.sessions.enqueue(
+                        session_key, str(time.time()), rtext, force=True,
+                        attachments=list(rkw.get("attachments") or []),
+                    )
+                if texts:
+                    await self._receipt_flip_locked(session_key, chat_id, texts, len(remainder))
+            if not texts:
+                return
+            if remainder:
+                logger.debug(
+                    "telegram: drain deferred %d message(s) for %s to respect the "
+                    "collapse cap (%d) / attachment cap (%d); they drain in the "
+                    "next iteration of this pump, in order",
+                    len(remainder),
+                    session_key,
+                    _MAX_COLLAPSE,
+                    _MAX_COLLAPSED_ATTACHMENTS,
+                )
+            combined = "\n\n".join(texts)
+            await self.handle_message(
+                TelegramInboundMessage(
+                    channel_type="telegram",
+                    user_id=str(user_id),
+                    conversation_id=str(chat_id),
+                    text=combined,
+                    # Carry the turn's ORIGINAL route so the drained turn resolves to
+                    # the SAME forum session key -- a plain DM-shaped InboundMessage
+                    # would drain a queued forum message under the DM key instead.
+                    thread_id=thread,
+                    chat_type=chat_type,
+                    attachments=all_attachments,
+                ),
+                drain=False,
+                # Drained payloads are pure turn content: a queued "/new" must reach
+                # the model as literal text, not execute as a command on drain.
+                interpret_commands=False,
             )
-        combined = "\n\n".join(texts)
-        await self.handle_message(
-            TelegramInboundMessage(
-                channel_type="telegram",
-                user_id=str(user_id),
-                conversation_id=str(chat_id),
-                text=combined,
-                # Carry the turn's ORIGINAL route so the drained turn resolves to
-                # the SAME forum session key -- a plain DM-shaped InboundMessage
-                # would drain a queued forum message under the DM key instead.
-                thread_id=thread,
-                chat_type=chat_type,
-            ),
-            drain=False,
-            # Drained payloads are pure turn content: a queued "/new" must reach
-            # the model as literal text, not execute as a command on drain.
-            interpret_commands=False,
-        )
 
     # ── Mid-turn queue receipt (single, in-place, persistent record) ───────
 
     async def _enqueue_with_receipt(
-        self, session_key: str, chat_id: int, text: str, *, thread: int | None = None
+        self,
+        session_key: str,
+        chat_id: int,
+        text: str,
+        *,
+        thread: int | None = None,
+        attachments: list[Any] | None = None,
     ) -> bool:
         """Atomically enqueue a mid-turn message and create/grow its collapsing
         "⏳ Queued (N): …" receipt, under ``_receipt_lock``.
@@ -587,7 +660,10 @@ class TelegramDispatcher:
         """
         assert self.client is not None
         async with self._receipt_lock:
-            if not self.sessions.enqueue(session_key, str(time.time()), text, force=False):
+            if not self.sessions.enqueue(
+                session_key, str(time.time()), text, force=False,
+                attachments=list(attachments or []),
+            ):
                 return False
             receipt = self._queue_receipts.get(session_key)
             if receipt is None:

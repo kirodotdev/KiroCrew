@@ -1893,6 +1893,147 @@ class TestConfigMasking:
 
 
 class TestTelegramMidTurn:
+    def test_drain_defers_past_the_attachment_cap(self) -> None:
+        """Queue collapse must not exceed the shared ingestion file cap.
+
+        Two queued 10-photo albums. Concatenating them hands 20 attachments to
+        one turn and ingest_attachments silently processes only the first
+        max_attachments, so the second album vanishes with no indication. The
+        drain must defer the overflowing message (and everything behind it, to
+        keep FIFO exact) AND then keep pumping so the deferred album runs in a
+        second turn -- deferring without looping just strands it until the user
+        happens to send something else.
+        """
+        from kiro_crew.messaging.attachments import IngestLimits
+
+        cap = IngestLimits().max_attachments
+        d, cli, sess = _dispatcher({7})
+        album_a = [{"file_id": f"a{i}", "file_name": f"a{i}.jpg",
+                    "mime_type": "image/jpeg"} for i in range(cap)]
+        album_b = [{"file_id": f"b{i}", "file_name": f"b{i}.jpg",
+                    "mime_type": "image/jpeg"} for i in range(cap)]
+        # Two albums already sitting in the queue when the turn ends.
+        sess.queued = [
+            (str(1), "album A", {"attachments": album_a}),
+            (str(2), "album B", {"attachments": album_b}),
+        ]
+        sess._busy = False
+
+        seen: list[tuple[str, int]] = []
+        original = d.handle_message
+
+        async def _spy(msg, **kw):  # type: ignore[no-untyped-def]
+            seen.append((msg.text, len(msg.attachments)))
+            return None  # don't run a real turn
+
+        async def _go() -> None:
+            d.handle_message = _spy  # type: ignore[assignment]
+            try:
+                await d._drain_queue("k", 7, 7)
+            finally:
+                d.handle_message = original  # type: ignore[assignment]
+
+        asyncio.run(_go())
+
+        # Cap first, and over EVERY turn: without this ordering a cap regression
+        # merges both albums into one turn and would trip the pump-count
+        # assertion instead, leaving the cap itself unpinned.
+        assert seen, "the drain must run at least one turn"
+        for i, (_t, n) in enumerate(seen):
+            assert n <= cap, (
+                f"turn {i} carried {n} attachments, over the cap of {cap} -- "
+                "ingestion would silently drop the excess"
+            )
+        assert len(seen) == 2, (
+            "the drain must keep pumping: the deferred album has to run in a "
+            "SECOND turn of this same drain, not wait for unrelated user input"
+        )
+        first_text, _ = seen[0]
+        second_text, _ = seen[1]
+        assert "album A" in first_text and "album B" not in first_text, (
+            "album B must be deferred whole, not partially merged"
+        )
+        assert "album B" in second_text, "album B must drain in the second turn"
+        assert not sess.queued, "the queue must be empty once the pump finishes"
+
+    def test_command_caption_on_attachment_is_content_not_a_command(self) -> None:
+        """A photo captioned "/new" must be ingested, not intercepted.
+
+        The command intercept returns BEFORE attachment ingestion, so treating a
+        caption as a command silently discards the file the user attached to it.
+        Attachments make the message content-bearing; Discord already gated on
+        this via interpret_as_command.
+        """
+        d, cli, sess = _dispatcher({7})
+        photos = [{"file_id": "p1", "file_name": "a.jpg", "mime_type": "image/jpeg"}]
+        before_gen = d._conv.current_gen(d._route_key(
+            chat_type="private", user_id=7, chat_id=7, thread=None,
+        ))
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="/new",
+                    attachments=photos,
+                )
+            )
+
+        asyncio.run(_go())
+
+        route = d._route_key(chat_type="private", user_id=7, chat_id=7, thread=None)
+        assert d._conv.current_gen(route) == before_gen, (
+            "/new as an attachment caption must NOT start a new conversation -- "
+            "that path returns before ingestion and drops the photo"
+        )
+        assert not any("New conversation started" in t for t, _ in cli.sent), (
+            "the command confirmation must not be sent for an attachment caption"
+        )
+
+    def test_attachment_message_is_queued_not_steered(self) -> None:
+        """A mid-turn message carrying files must NEVER take the steer path.
+
+        ``steer`` forwards TEXT ONLY, so steering a photo/album message would
+        deliver its caption and silently discard every attachment. This is the
+        exact loss an album hits: a follow-up typed during the debounce window
+        starts a turn, so the album's own flush lands mid-turn.
+
+        The queue path is correct because it carries ``attachments`` through the
+        drain -- assert they survive, not merely that steer was skipped.
+        """
+        d, cli, sess = _dispatcher({7})
+        sess._busy = True
+        # Default (non-queue) mode: without the guard this would steer.
+        d.cfg.messaging.queue_mode = "steer"
+        photos = [
+            {"file_id": "p1", "file_name": "a.jpg", "mime_type": "image/jpeg"},
+            {"file_id": "p2", "file_name": "b.jpg", "mime_type": "image/jpeg"},
+        ]
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="what is wrong here?",
+                    attachments=photos,
+                )
+            )
+
+        asyncio.run(_go())
+
+        assert sess._gp.steered == [], "an attachment message must not be steered"
+        assert len(sess.queued) == 1, "it must be queued instead"
+        _ts, text, kwargs = sess.queued[0]
+        assert text == "what is wrong here?"
+        assert kwargs.get("attachments") == photos, (
+            "the queue must carry the attachments -- otherwise the images are "
+            "silently dropped exactly as steering would have done"
+        )
+
     def test_busy_steer_folds_into_running_turn(self) -> None:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
@@ -2118,20 +2259,36 @@ class TestTelegramMidTurn:
         assert len(sends) == 1
         assert len(grows) == 3
 
-    def test_drain_caps_collapse_and_defers_remainder(self) -> None:
+    def test_drain_caps_collapse_and_drains_remainder_in_order(self) -> None:
         d, cli, sess = _dispatcher({7})
-        # 52 queued -> the collapse cap (50) drains 50 into one turn and leaves
-        # the 2-message remainder queued IN ORDER for the next turn (a 2+ item
-        # remainder is what exposes any FIFO reordering of the surplus).
+        # 52 queued -> the collapse cap (50) puts 50 into the first turn and
+        # defers the 2-message remainder. The drain then keeps pumping, so the
+        # remainder runs in a SECOND turn of the same drain rather than waiting
+        # for unrelated future input. A 2+ item remainder is what exposes any
+        # FIFO reordering of the surplus.
         sess.queued = [(f"t{i}", f"m{i}", {}) for i in range(52)]
+        seen: list[str] = []
+        original = d.handle_message
+
+        async def _spy(msg, **kw):  # type: ignore[no-untyped-def]
+            seen.append(msg.text)
+            return None  # don't run a real turn
 
         async def _go() -> None:
-            await d._drain_queue("telegram:kirocrew:direct:7", 7, 7)
+            d.handle_message = _spy  # type: ignore[assignment]
+            try:
+                await d._drain_queue("telegram:kirocrew:direct:7", 7, 7)
+            finally:
+                d.handle_message = original  # type: ignore[assignment]
 
         asyncio.run(_go())
-        # surplus (m50, m51) is deferred IN ORIGINAL ORDER, not dropped/reordered
-        assert [text for _ts, text, _ in sess.queued] == ["m50", "m51"]
-        assert sess.successes == ["telegram:kirocrew:direct:7"]  # one combined turn
+
+        assert len(seen) == 2, "cap-deferred surplus must drain in a second turn"
+        # First turn takes exactly the cap, in order.
+        assert seen[0].split("\n\n") == [f"m{i}" for i in range(50)]
+        # Surplus drains next, IN ORIGINAL ORDER -- not dropped, not reordered.
+        assert seen[1].split("\n\n") == ["m50", "m51"]
+        assert not sess.queued, "the queue must be empty once the pump finishes"
 
     def test_flip_count_reflects_answered_not_full_queue(self) -> None:
         d, cli, sess = _dispatcher({7})
