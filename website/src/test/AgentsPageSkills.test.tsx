@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 /* ── Mock api/client BEFORE the page imports ── */
@@ -65,15 +66,17 @@ beforeEach(() => {
 
 describe('AgentsPage skills section', () => {
   it('offers the editor when agent detail loaded', async () => {
+    const user = userEvent.setup()
     mockApi.agentDetail.mockResolvedValue({ ...AGENT, skills: ['kiro-user/prepare-pr'], unmanaged_skills: [] })
     renderPage()
     // The editor lives behind the Skills tab of the inspector now, so the
     // prompt, tool chips and guardrails no longer share one scroll box with it.
-    fireEvent.click(await screen.findByRole('tab', { name: /skills/i }))
+    await user.click(await screen.findByRole('tab', { name: /skills/i }))
     expect(await screen.findByRole('button', { name: /add skill/i })).toBeInTheDocument()
   })
 
   it('hides the editor — never an empty enabled one — when agent detail fails', async () => {
+    const user = userEvent.setup()
     // The real mapping is UNKNOWN here. An empty-but-enabled editor is
     // destructive: add/remove PATCH the complete desired key list and the
     // backend fully replaces the managed skill:// set, so a single "Add skill"
@@ -82,8 +85,8 @@ describe('AgentsPage skills section', () => {
     renderPage()
 
     // The fallback only triggers on an explicit selection whose detail fetch fails.
-    fireEvent.click(await screen.findByText('specialist'))
-    fireEvent.click(await screen.findByRole('tab', { name: /skills/i }))
+    await user.click(await screen.findByText('specialist'))
+    await user.click(await screen.findByRole('tab', { name: /skills/i }))
 
     await waitFor(() => expect(screen.getByText(/Could not load this agent/i)).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: /add skill/i })).not.toBeInTheDocument()

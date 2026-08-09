@@ -19,6 +19,9 @@ from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
 
+_NODE_VERSION_PROBE_TIMEOUT_SECS = 5.0
+_PLAYWRIGHT_NODE_MIN_MAJOR = 18
+
 # Common directories where MCP server binaries may be installed.
 # Order matters — earlier entries take precedence.
 _EXTRA_PATH_DIRS = (
@@ -129,6 +132,30 @@ def _has_node(d: Path) -> bool:
     return any(platform_compat.is_executable_file(d / n) for n in names)
 
 
+def _node_version_supported(node: str | Path) -> bool:
+    """Whether *node* runs and satisfies the Playwright MCP runtime floor.
+
+    ``@playwright/mcp`` declares Node >=18. This is intentionally a setup-time
+    probe; ordinary PATH construction remains filesystem-only and non-blocking.
+    """
+    try:
+        result = subprocess.run(
+            [str(node), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_NODE_VERSION_PROBE_TIMEOUT_SECS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    parts = result.stdout.strip().removeprefix("v").split(".")
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        return False
+    major = int(parts[0])
+    return major >= _PLAYWRIGHT_NODE_MIN_MAJOR
+
+
 def _node_version_key(name: str) -> tuple[int, tuple[int, ...], str]:
     """Sort key ranking a manager's version directory, highest/most-specific first.
 
@@ -162,7 +189,16 @@ def _validated_bin_dir(val: str) -> str | None:
 
 
 def _marker_node_bin_dir() -> str | None:
-    """Read the node bin dir recorded by ``ensure-node.sh``, or ``None``."""
+    """Read the default-home Node marker, or ``None``.
+
+    A custom ``KIROCREW_HOME`` is intentionally excluded. File-tool checks know
+    its resolved location, but the shell gate's static home-anchored matcher
+    cannot protect every redirect/computed-command form for an arbitrary path.
+    Consuming that marker after restart would therefore turn an agent-writable
+    file into an unsandboxed executable trust root.
+    """
+    if os.environ.get("KIROCREW_HOME"):
+        return None
     try:
         raw = (data_home() / _NODE_BIN_DIR_MARKER).read_text(encoding="utf-8")
     except (OSError, ValueError):
@@ -177,9 +213,9 @@ def node_bin_dirs() -> tuple[str, ...]:
     Resolution order, most specific first:
 
     1. ``KIROCREW_NODE_BIN_DIR`` -- explicit operator override.
-    2. ``<data-home>/node-bin-dir`` -- the marker ``ensure-node.sh`` writes
-       after installing/locating node. Preferred over a bare filesystem scan
-       because it names the version that script decided on.
+    2. ``~/.kiro/crew/node-bin-dir`` -- the default-home marker setup writes.
+       It is ignored when ``KIROCREW_HOME`` is set because an arbitrary custom
+       shell path is not protected by the static bash gate.
     3. The highest version found under each per-version manager root
        (mise / asdf / nvm / fnm).
     4. Shim dirs (mise shims, volta, n).
@@ -198,9 +234,10 @@ def node_bin_dirs() -> tuple[str, ...]:
     the very node Kiro Crew installed for it.
 
     Cached for the process lifetime: the globs must run once, matching
-    :func:`_node_version_manager_bins`. A node installed while a long-lived
-    gateway is running is not seen until restart; call ``cache_clear()`` if it
-    ever needs re-discovery without one.
+    :func:`_node_version_manager_bins`. Operator changes to the marker or process
+    environment become visible after the gateway restarts. The trusted bootstrap
+    path clears this cache after ``ensure-node.sh`` completes so its own install
+    can be used immediately.
     """
     home = os.path.expanduser("~")
     mise_data = _mise_data_dir(home)
@@ -253,16 +290,32 @@ def node_bin_dirs() -> tuple[str, ...]:
     return tuple(out)
 
 
-def node_augmented_path(base_path: str = "") -> str:
-    """Return *base_path* with :func:`node_bin_dirs` PREPENDED.
+def node_augmented_path(base_path: str = "", *, preferred_node: str | None = None) -> str:
+    """Return *base_path* with Node toolchain directories prepended.
 
     Prepended, not appended: a distribution's system ``node`` can be older than
     what ``website/package.json`` declares in ``engines`` (Amazon Linux 2023
     ships node 18 against a ``20 || >=22`` requirement), whereas
     ``ensure-node.sh`` installs a version chosen to satisfy the build. Where
     both exist the managed toolchain is the one that works.
+
+    When *preferred_node* is provided, its bin directory is first and any
+    duplicate from :func:`node_bin_dirs` is omitted. Browser setup and the
+    runtime proxy use this after validating a Node candidate so later ``npx``
+    and ``/usr/bin/env node`` resolution execute that same runtime.
     """
-    parts = [*node_bin_dirs()]
+    parts: list[str] = []
+    preferred_bin = ""
+    preferred_key = ""
+    if preferred_node:
+        preferred_bin = os.path.dirname(os.path.abspath(preferred_node))
+        preferred_key = os.path.normcase(preferred_bin)
+        parts.append(preferred_bin)
+    parts.extend(
+        d
+        for d in node_bin_dirs()
+        if not preferred_key or os.path.normcase(os.path.abspath(d)) != preferred_key
+    )
     if base_path:
         parts.append(base_path)
     return os.pathsep.join(parts)
@@ -281,6 +334,28 @@ def find_node_tool(name: str, base_path: str | None = None) -> str | None:
     """
     base = os.environ.get("PATH", "") if base_path is None else base_path
     return shutil.which(name, path=node_augmented_path(base))
+
+
+def _find_supported_node(base_path: str | None = None) -> str | None:
+    """Return the first resolvable Node that satisfies the Playwright floor.
+
+    An explicit marker remains highest precedence when it is usable, but an old
+    marker or inherited Node must not hide a supported installation later on the
+    search path.
+    """
+    base = os.environ.get("PATH", "") if base_path is None else base_path
+    seen: set[str] = set()
+    for directory in node_augmented_path(base).split(os.pathsep):
+        candidate = shutil.which("node", path=directory)
+        if not candidate:
+            continue
+        normalized = os.path.normcase(os.path.abspath(candidate))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if _node_version_supported(candidate):
+            return candidate
+    return None
 
 
 def _ensure_node_script() -> Path | None:
@@ -302,23 +377,32 @@ def _ensure_node_script() -> Path | None:
     return None
 
 
-def ensure_node(timeout: float = 180.0) -> str | None:
-    """Guarantee a usable ``node`` is resolvable, bootstrapping it if needed.
+def ensure_node(timeout: float = 180.0, *, bootstrap: bool = True) -> str | None:
+    """Return a usable ``node``, optionally bootstrapping it if needed.
 
     Returns the absolute ``node`` path when one is (or becomes) available, else
-    ``None``. Resolution: use an already-resolvable Node; otherwise invoke the
-    bundled ``ensure-node.sh`` (mise / nvm / the nodejs glibc-217 tarball on old
-    hosts), which records its bin dir in the ``node-bin-dir`` marker
-    :func:`node_bin_dirs` reads — so a freshly bootstrapped toolchain is found
-    without a restart. On Windows, where the bash installer cannot run, this only
-    reports what is already present.
+    ``None``. Resolution selects the first candidate that satisfies the
+    Playwright runtime floor; an older higher-precedence Node does not hide a
+    supported one later in the search. If no candidate is found and *bootstrap*
+    is true, invoke the bundled ``ensure-node.sh`` (mise / nvm / the nodejs
+    glibc-217 tarball on old hosts), which records its bin dir in the
+    ``node-bin-dir`` marker :func:`node_bin_dirs` reads — so a freshly
+    bootstrapped toolchain is found without a restart. A custom
+    ``KIROCREW_HOME`` cannot consume that marker safely, so this does not run an
+    installer whose result the gateway could neither retain nor rediscover.
+    Custom-home deployments must expose Node through
+    ``KIROCREW_NODE_BIN_DIR`` or another supported source. When *bootstrap* is
+    false, or on Windows where the bash installer cannot run, this only reports
+    what is already present.
 
     Blocking (spawns a subprocess and walks the filesystem) — never call it on
     the event loop; offload with ``asyncio.to_thread`` / ``run_in_executor``.
     """
-    node = find_node_tool("node")
-    if node:
+    node = _find_supported_node()
+    if node or not bootstrap:
         return node
+    if os.environ.get("KIROCREW_HOME"):
+        return None
     script = _ensure_node_script()
     if script is None or platform_compat.IS_WINDOWS:
         return None
@@ -328,7 +412,7 @@ def ensure_node(timeout: float = 180.0) -> str | None:
         logger.warning("ensure-node.sh failed: %s", type(exc).__name__)
         return None
     node_bin_dirs.cache_clear()  # the marker/bin dir may have just appeared
-    return find_node_tool("node")
+    return _find_supported_node()
 
 
 @functools.lru_cache(maxsize=1)

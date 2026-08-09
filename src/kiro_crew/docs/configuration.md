@@ -23,6 +23,38 @@ Every config change is audit-logged to the security event log.
 
 The dashboard port is **not** a config key: set `KIROCREW_PORT` instead.
 
+## Node Toolchain
+
+Playwright Browser Mode uses Node.js `>=18` to run `@playwright/mcp`. Node tools
+resolve from `KIROCREW_NODE_BIN_DIR`, then the default-home
+`~/.kiro/crew/node-bin-dir` marker, supported version-manager layouts, and
+finally the inherited `PATH`.
+
+`ensure-node.sh` writes the marker automatically when it provisions Node. An
+operator can also write one absolute bin directory to the marker manually. For
+the default data home on macOS or Linux:
+
+```bash
+node -p 'require("path").dirname(process.execPath)' > ~/.kiro/crew/node-bin-dir
+```
+
+Desktop apps launched by Finder or Dock do not source `~/.zshrc`, and Kiro Crew
+does not guess package-manager-specific directories such as Homebrew's defaults.
+Write the directory selected by your terminal to the marker or provide it
+through the desktop process environment, then fully quit and reopen Kiro Crew.
+Node discovery stays cached for the gateway process lifetime, so a Settings
+retry does not make a newly written executable eligible. The resolver also skips
+candidates older than Node 18 instead of letting one hide a supported
+installation later in the search order. The marker selects executables later
+launched by the gateway, so agent tool calls cannot read or modify it; write it
+only from an operator terminal. When `KIROCREW_HOME` is set, Kiro Crew does not
+consume a marker from that arbitrary custom path because shell redirects to
+custom locations are not fully covered by the static bash gate. Configure
+`KIROCREW_NODE_BIN_DIR` in the desktop process environment instead. Browser
+Mode does not run its automatic Node bootstrap for a custom data home when no
+supported Node is already visible, because the installer would only record the
+result in that ignored marker.
+
 ## Sandbox
 
 `agent.sandbox` controls whether Kiro Crew wraps the agent process in its own
@@ -242,6 +274,7 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `KIROCREW_PORT` | Override the dashboard port | `5476` |
 | `KIROCREW_PROJECT_DIR` | Override the agent-config/skills project directory | Auto-detected |
 | `KIROCREW_WORKSPACE` | Override the workspace root, used as-is with no subdirectory appended | Saved `workspace_dir`, else a platform default |
+| `KIROCREW_NODE_BIN_DIR` | Override the directory containing Node.js tools for this process | default-home `node-bin-dir`, manager scan, then inherited `PATH` |
 | `KIROCREW_SKIP_MODEL_DOWNLOAD` | Set to `1` to skip the background embedding-model download at gateway startup (tests, CI, airgapped hosts) | unset |
 | `KIROCREW_EMBED_MODEL_URL` | Override HTTPS URL for the embedding-model GGUF; wins over `memory.embed_model_url` and the CDN default | unset |
 | `KIROCREW_EMBED_MODEL_PATH` | Absolute path to a local GGUF to use instead of the bundled model; wins over `memory.embed_model_path` and suppresses the default download entirely | unset |
@@ -292,6 +325,7 @@ rules so they cannot be opted out of at all.
 | `~/.kiro/crew/hooks.json` | Script hooks |
 | `~/.kiro/crew/lessons.jsonl` | Learned corrections |
 | `~/.kiro/crew/notifications.jsonl` | Notification history |
+| `~/.kiro/crew/node-bin-dir` | Node bin directory saved by setup or an operator; ignored when `KIROCREW_HOME` is set |
 | `~/.kiro/crew/models/` | Embedding model, downloaded in the background at startup |
 | `~/.kiro/crew/history/` | Chat history (JSONL) |
 | `~/.kiro/crew/workspace/memory/` | Memory files |

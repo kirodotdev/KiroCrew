@@ -24,6 +24,15 @@ type Cfg = {
   extension_mode: boolean
   token: boolean
   installed: boolean
+  install?: {
+    ok: boolean
+    step: string
+    detail: string
+    engine: string
+    manual_command?: string
+    node_download_url?: string
+    help_url?: string
+  }
 }
 
 function cfg(overrides: Partial<Cfg> = {}): Cfg {
@@ -96,6 +105,36 @@ describe('BrowserPanel', () => {
     fireEvent.click(await screen.findByRole('switch', { name: /enable browser mode/i }))
     expect(await screen.findByText(/node\.js is required/i)).toBeInTheDocument()
     expect(screen.queryByText(/saved and applied/i)).toBeNull()
+  })
+
+  it('replays the step-specific recovery after returning to the panel', async () => {
+    await renderPanel(cfg({
+      enabled: true,
+      installed: false,
+      install: {
+        ok: false,
+        step: 'node',
+        detail: '1. Write the marker.\n2. Fully quit and reopen Kiro Crew.',
+        engine: 'chromium',
+        manual_command: 'write-node-marker',
+        node_download_url: 'https://nodejs.org',
+        help_url: 'https://example.test/node-help',
+      },
+    }))
+
+    const detail = await screen.findByText(/fully quit and reopen/i)
+    expect(detail).toHaveStyle({ whiteSpace: 'pre-line', overflowWrap: 'anywhere' })
+    expect(detail.textContent).toContain('1. Write the marker.\n2. Fully quit')
+    expect(screen.getByRole('link', { name: 'https://nodejs.org' })).toHaveAttribute(
+      'href',
+      'https://nodejs.org',
+    )
+    expect(screen.getByRole('link', { name: 'https://example.test/node-help' })).toHaveAttribute(
+      'href',
+      'https://example.test/node-help',
+    )
+    expect(screen.getByText('write-node-marker')).toBeInTheDocument()
+    expect(screen.queryByText(/toggle browser mode off and on/i)).toBeNull()
   })
 
   it('connect-your-browser links the Playwright Extension for Chromium browsers only', async () => {

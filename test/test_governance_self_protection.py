@@ -175,6 +175,25 @@ def test_browser_mode_gate_writes_blocked(cmd):
     assert security.is_sensitive_bash_command(cmd) is not None
 
 
+# Browser Mode executes Node tools from this marker in the gateway process, so
+# direct file writes must stay operator-only.
+_NODE_PATH_TRUST_ROOT = (
+    "~/.kiro/crew/node-bin-dir",
+    "~/.kirocrew/node-bin-dir",
+)
+
+
+@pytest.mark.parametrize("path", _NODE_PATH_TRUST_ROOT)
+def test_node_path_marker_is_sensitive(path):
+    assert security.is_sensitive_path(path)
+    assert validate_file_path(path) is None
+
+
+def test_agent_node_path_marker_mutations_are_blocked():
+    command = "echo /tmp/evil > ~/.kiro/crew/node-bin-dir"
+    assert security.is_sensitive_bash_command(command) is not None
+
+
 def test_benign_archive_and_vcs_not_overblocked():
     for cmd in [
         "tar -xf release.tar -C /tmp/build",

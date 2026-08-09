@@ -1187,10 +1187,37 @@ class TestBrowserConfig:
             "installed": True,
         }
 
+    def test_get_replays_matching_install_guidance(self, monkeypatch) -> None:
+        install = {
+            "ok": False,
+            "step": "node",
+            "detail": "restart required",
+            "engine": "firefox",
+        }
+        state = _state(browser_install_result=install)
+        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: True)
+        monkeypatch.setattr(mod, "get_browser_engine", lambda: "firefox")
+        monkeypatch.setattr(mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(mod, "get_extension_token", lambda: None)
+        # Launcher presence alone must not erase a more specific failed setup
+        # result (for example npx beside an unsupported Node runtime).
+        monkeypatch.setattr(mod, "is_playwright_installed", lambda: True)
+
+        payload = _payload(_run(mod.api_browser_config_get, _Req(state)))
+
+        assert payload["install"] == install
+
     def _stub_enable_side_effects(self, monkeypatch) -> None:
         monkeypatch.setattr(mod, "generate_playwright_config", lambda engine=None: None)
         monkeypatch.setattr(
-            mod, "ensure_playwright_installed", lambda engine: {"ok": True, "step": "done"}
+            mod,
+            "ensure_playwright_installed",
+            lambda engine: {
+                "ok": True,
+                "step": "done",
+                "detail": "ready",
+                "engine": engine,
+            },
         )
 
     def test_save_enables_extension_mode_and_writes_the_token(
@@ -1200,10 +1227,12 @@ class TestBrowserConfig:
         self._stub_enable_side_effects(monkeypatch)
         monkeypatch.setattr(mod, "register_playwright_proxy", lambda: (None, "registered"))
         body = {"enabled": True, "extension_mode": True, "token": "secret-value"}
-        resp = _run(mod.api_browser_config_save, _Req(_state(), body))
+        state = _state()
+        resp = _run(mod.api_browser_config_save, _Req(state, body))
         payload = _payload(resp)
         assert payload["ok"] is True and payload["enabled"] is True
         assert payload["mcp_status"] == "registered"
+        assert state.browser_install_result == payload["install"]
         assert (tmp_path / "playwright-extension-mode").exists()
         assert (tmp_path / "playwright-extension-token").read_text() == "secret-value"
 
@@ -1219,6 +1248,31 @@ class TestBrowserConfig:
         assert _payload(resp)["mcp_status"] == "deregistered"
         assert not (tmp_path / "playwright-extension-mode").exists()
         assert not (tmp_path / "playwright-extension-token").exists()
+
+    def test_stale_disable_does_not_erase_newer_enable_guidance(
+        self, monkeypatch
+    ) -> None:
+        install = {
+            "ok": False,
+            "step": "node",
+            "detail": "restart required",
+            "engine": "chromium",
+        }
+        state = _state(browser_install_result=install)
+        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: True)
+        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "absent"))
+
+        asyncio.run(
+            mod._browser_config_finalize(
+                _Req(state),
+                enabled=False,
+                engine="chromium",
+                extension_mode=False,
+                enabled_before=False,
+            )
+        )
+
+        assert state.browser_install_result == install
 
     def test_mcp_registration_failure_is_reported_not_raised(
         self, monkeypatch, tmp_path: Path

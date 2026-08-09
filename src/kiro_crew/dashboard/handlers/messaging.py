@@ -2274,16 +2274,27 @@ async def api_browser_config_get(request: web.Request) -> web.Response:
         outcome="completed",
         downstream_service="browser",
     )
-    return web.json_response(
-        {
-            "enabled": browser_mode_enabled(),
-            "engine": get_browser_engine(),
-            "engines": list(BROWSER_ENGINES),
-            "extension_mode": has_playwright_extension(),
-            "token": get_extension_token() is not None,
-            "installed": is_playwright_installed(),
-        }
-    )
+    enabled = browser_mode_enabled()
+    engine = get_browser_engine()
+    installed = is_playwright_installed()
+    payload: dict[str, Any] = {
+        "enabled": enabled,
+        "engine": engine,
+        "engines": list(BROWSER_ENGINES),
+        "extension_mode": has_playwright_extension(),
+        "token": get_extension_token() is not None,
+        "installed": installed,
+    }
+    state = request.app.get("state")
+    if state is not None and enabled:
+        install_result = state.__dict__.get("browser_install_result")
+        if (
+            isinstance(install_result, dict)
+            and install_result.get("engine") == engine
+            and install_result.get("detail")
+        ):
+            payload["install"] = install_result
+    return web.json_response(payload)
 
 
 async def api_browser_config_save(request: web.Request) -> web.Response:
@@ -2496,6 +2507,17 @@ async def _browser_config_finalize(
             # not report the SAVE as failed. Worst case is the prior behavior — the
             # new tool surface applies on the next cold session.
             logger.exception("browser config saved, but session reset failed")
+
+    # Keep the structured setup guidance available when Settings is revisited.
+    # It is process-local on purpose: a full restart both refreshes Node discovery
+    # and discards a stale "restart required" result. A concurrent newer save may
+    # finish first, so publish only when the durable enable/engine still match.
+    state = request.app.get("state")
+    if state is not None:
+        if enabled and browser_mode_enabled() and get_browser_engine() == engine:
+            state.browser_install_result = install_result
+        elif not enabled and not browser_mode_enabled():
+            state.browser_install_result = None
 
     # ``mcp_status`` is "kept-user-entry" when the caller's own hand-authored
     # Playwright server was left in place — the preferences were still saved,

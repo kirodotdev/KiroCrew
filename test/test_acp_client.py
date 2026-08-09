@@ -551,6 +551,7 @@ class TestAcpClientSessionKey:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
+            mock_proc.stderr = None
             mock_exec.return_value = mock_proc
 
             await client._spawn()
@@ -575,6 +576,7 @@ class TestAcpClientSessionKey:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
+            mock_proc.stderr = None
             mock_exec.return_value = mock_proc
 
             await client._spawn()
@@ -612,6 +614,7 @@ class TestAcpClientSessionKey:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
+            mock_proc.stderr = None
             mock_exec.return_value = mock_proc
 
             await client._spawn()
@@ -638,6 +641,7 @@ class TestAcpClientSessionKey:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
+            mock_proc.stderr = None
             mock_exec.return_value = mock_proc
 
             await client._spawn()
@@ -664,6 +668,7 @@ class TestAcpClientSessionKey:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
+            mock_proc.stderr = None
             mock_exec.return_value = mock_proc
 
             await client._spawn()
@@ -689,6 +694,7 @@ class TestAcpClientSessionKey:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
+            mock_proc.stderr = None
             mock_exec.return_value = mock_proc
 
             await client._spawn()
@@ -746,6 +752,7 @@ class TestAcpClientBackendSelection:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
+            mock_proc.stderr = None
             mock_exec.return_value = mock_proc
 
             await client._spawn()
@@ -783,6 +790,7 @@ class TestAcpClientBackendSelection:
             mock_proc = MagicMock()
             mock_proc.pid = 12345
             mock_proc.returncode = None
+            mock_proc.stderr = None
             mock_exec.return_value = mock_proc
 
             await client._spawn()
@@ -7761,6 +7769,8 @@ class TestResolveKiroBinEnvOverride:
         fake.write_bytes(b"#!/bin/sh\n# original\n")
         fake.chmod(0o755)
         mock_exec = AsyncMock()
+        mock_proc = MagicMock(pid=12345, returncode=None, stderr=None)
+        mock_exec.return_value = mock_proc
         with (
             patch.dict("os.environ", {"KIROCREW_KIRO_BIN": str(fake)}),
             # This test asserts WHICH bytes get launched, not that the spawn is

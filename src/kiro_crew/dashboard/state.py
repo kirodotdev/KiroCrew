@@ -2021,6 +2021,10 @@ class DashboardState:
         # The socket binds earlier, so /api/ready can truthfully return 503
         # while session restoration, channel relaunch, and tunnel setup finish.
         self.ready: bool = False
+        # Latest Browser Mode provisioning result for this gateway process. The
+        # Settings GET replays its step-specific recovery after panel navigation;
+        # a process restart clears it together with cached Node discovery.
+        self.browser_install_result: dict[str, Any] | None = None
         # Wired by server.py after the gateway-owned prerequisite service is
         # constructed. The central chat runner reads this latch so every turn
         # entry path is protected, including task/workflow continuations.

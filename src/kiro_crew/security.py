@@ -4248,6 +4248,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # could steer the launch, and it must not diverge from the enable beside it.
     "browser-mode-enabled",
     "browser-engine",
+    # Controls which Node/npm/npx binaries Browser Mode executes in the
+    # unsandboxed gateway. Direct file writes are blocked at PreToolUse; trusted
+    # setup opens the marker directly and remains unaffected.
+    "node-bin-dir",
     # Ops Mission Control's third-party provider tokens (PagerDuty / Datadog
     # API + application keys). These are live credentials against a user's
     # production incident tooling: a leaked one can acknowledge or resolve real

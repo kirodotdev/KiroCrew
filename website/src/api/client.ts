@@ -2140,8 +2140,8 @@ export const api = {
   editArtifactComment: (slug: string, commentId: string, body: { text: string }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}`, body).then(j),
   browserAuthRetry: () => post('/api/browser-auth-retry', {}).then(j),
-  getBrowserConfig: () => get('/api/browser/config').then(j) as Promise<{enabled: boolean; engine: string; engines: string[]; extension_mode: boolean; token: boolean; installed: boolean}>,
-  saveBrowserConfig: (body: {enabled: boolean; engine: string; extension_mode: boolean; token: string}) => put('/api/browser/config', body).then(j) as Promise<{ok: boolean; mcp_status?: string; enabled?: boolean; engine?: string; install?: {ok: boolean; step: string; detail: string; engine: string}}>,
+  getBrowserConfig: () => get('/api/browser/config').then(j) as Promise<{enabled: boolean; engine: string; engines: string[]; extension_mode: boolean; token: boolean; installed: boolean; install?: {ok: boolean; step: string; detail: string; engine: string; manual_command?: string; reason?: string; node_download_url?: string; help_url?: string}}>,
+  saveBrowserConfig: (body: {enabled: boolean; engine: string; extension_mode: boolean; token: string}) => put('/api/browser/config', body).then(j) as Promise<{ok: boolean; mcp_status?: string; enabled?: boolean; engine?: string; install?: {ok: boolean; step: string; detail: string; engine: string; manual_command?: string; reason?: string; node_download_url?: string; help_url?: string}}>,
   // Computer use (desktop automation). The PUT returns the refreshed snapshot so
   // the panel re-renders from server truth rather than its optimistic guess.
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,

@@ -14,6 +14,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -26,11 +27,17 @@ from kiro_crew import platform_compat
 from kiro_crew.agent_files import OWNED_CC_AGENT_FILES, OWNED_KIRO_AGENT_FILES
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.auth import parse_netscape_cookies
-from kiro_crew.config.paths import config_dir, kiro_agents_dir
-from kiro_crew.env import ensure_node, find_node_tool, node_augmented_path
+from kiro_crew.config.paths import config_dir, data_home, kiro_agents_dir
+from kiro_crew.env import (
+    _NODE_BIN_DIR_MARKER,
+    ensure_node,
+    find_node_tool,
+    node_augmented_path,
+)
 from kiro_crew.mcp_playwright_proxy import (
     PUBLIC_NPM_REGISTRY,
     _is_npx_launcher,
+    _playwright_cmd_requires_node,
     _resolve_playwright_cmd,
 )
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -58,6 +65,22 @@ _BROWSER_ENGINE_FILE = "browser-engine"
 # floating ``@latest`` (deterministic offline, no revision drift). Absent → the
 # proxy falls back to ``@latest``. A plain semver string (validated on read).
 _BROWSER_MCP_VERSION_FILE = "playwright-mcp-version"
+
+
+def _node_marker_command() -> str:
+    """Return a shell-native command for the operator-owned Node marker."""
+    marker = str(data_home() / _NODE_BIN_DIR_MARKER)
+    if platform_compat.IS_WINDOWS:
+        marker_arg = "'" + marker.replace("'", "''") + "'"
+        return (
+            f"[IO.File]::WriteAllText({marker_arg}, "
+            "(node -p \"require('path').dirname(process.execPath)\"), "
+            "[Text.UTF8Encoding]::new($false))"
+        )
+    return (
+        "node -p 'require(\"path\").dirname(process.execPath)' > "
+        f"{shlex.quote(marker)}"
+    )
 
 
 def browser_mode_enabled() -> bool:
@@ -186,6 +209,12 @@ def is_playwright_installed() -> bool:
 #: npm registry package name installed globally as the Playwright MCP launcher.
 _PLAYWRIGHT_MCP_NPM = "@playwright/mcp@latest"
 
+_NODE_DOWNLOAD_URL = "https://nodejs.org"
+_NODE_DESKTOP_HELP_URL = (
+    "https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/install.md"
+    "#desktop-browser-mode-cannot-find-nodejs"
+)
+
 
 def _playwright_binary_present(base_path: str) -> bool:
     """True when a STANDALONE @playwright/mcp launcher binary resolves on PATH.
@@ -280,9 +309,10 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
     in its JSON body rather than 500-ing. Steps, in order:
 
     1. **node** — ensure a usable Node via :func:`kiro_crew.env.ensure_node`
-       (bootstraps it through the bundled ``ensure-node.sh`` when absent). Without
-       Node nothing else can run, so this returns ``ok=False, step="node"`` with
-       an install hint.
+       (bootstraps it through the bundled ``ensure-node.sh`` when absent). An
+       explicit native launcher owns its runtime and skips host provisioning;
+       known JavaScript and npx launchers still return ``ok=False, step="node"``
+       with an install hint when Node is unavailable.
     2. **package** — make ``@playwright/mcp`` launchable the SAME way the proxy
        runs it, matching the ecosystem: no ``npm install -g``. Every MCP client
        (Claude Code, Codex, VS Code) launches it via ``npx @playwright/mcp`` — a
@@ -308,23 +338,54 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
     if engine not in BROWSER_ENGINES:
         engine = _DEFAULT_ENGINE
 
-    node = ensure_node()
+    configured_cmd = os.environ.get("KIROCREW_PLAYWRIGHT_CMD") or None
+    node_required = _playwright_cmd_requires_node(configured_cmd)
+    # A native/Docker launcher does not justify installing host Node. Probe only
+    # so an extensionless Node shebang shim can still use a recovered toolchain.
+    node = ensure_node() if node_required else ensure_node(bootstrap=False)
+    if configured_cmd is not None and not node_required:
+        return {"ok": True, "step": "done", "detail": "", "engine": engine}
     if not node:
         # Browser Mode is still ON (the proxy is registered); the browser tools
         # just can't run until Node is present. Calm, actionable note — never a
         # raw "install failed" error.
-        return {
+        command_shell = (
+            "PowerShell" if platform_compat.IS_WINDOWS else "your terminal"
+        )
+        custom_data_home = bool(os.environ.get("KIROCREW_HOME"))
+        default_marker_step = (
+            f"2. Use {command_shell} to save Node's bin directory with the "
+            "command shown after these steps."
+        )
+        marker_step = (
+            "2. Set KIROCREW_NODE_BIN_DIR for the Kiro Crew desktop process "
+            "using the instructions linked after these steps."
+            if custom_data_home
+            else default_marker_step
+        )
+        result: dict[str, Any] = {
             "ok": False,
             "step": "node",
             "detail": (
-                "Browser Mode is on. To finish setup, install Node.js "
-                "(https://nodejs.org) — the agent's browser tools start working "
-                "once it is available."
+                "Browser Mode is on, but Kiro Crew could not find Node.js 18 or "
+                "newer.\n"
+                "1. Install or upgrade Node.js using the link shown after these "
+                "steps if needed.\n"
+                f"{marker_step}\n"
+                "3. Fully quit and reopen Kiro Crew.\n"
+                "4. Toggle Browser Mode off and on to finish setup."
             ),
             "engine": engine,
+            "node_download_url": _NODE_DOWNLOAD_URL,
         }
+        if custom_data_home:
+            result["help_url"] = _NODE_DESKTOP_HELP_URL
+        else:
+            result["manual_command"] = _node_marker_command()
+        return result
 
-    aug_path = node_augmented_path(os.environ.get("PATH", ""))
+    selected_node_bin = os.path.dirname(os.path.abspath(node))
+    aug_path = node_augmented_path(os.environ.get("PATH", ""), preferred_node=node)
     # Pin the public registry in every child (npm/npx shell out to fetch): a user's
     # default ``.npmrc`` may point at a private mirror with an expiring token, and
     # ``npm_config_registry`` is honored by npm and npx on every OS, so the fetch of
@@ -352,7 +413,7 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
     # toolchain — npx alongside a Node the gateway did not inherit — is seen here
     # too, matching ensure_node / find_node_tool; otherwise this falsely reports
     # "no launcher" on exactly the host node_augmented_path exists to serve.
-    launch_cmd = _resolve_playwright_cmd(aug_path)
+    launch_cmd = _resolve_playwright_cmd(aug_path, node_bin_dir=selected_node_bin)
     if launch_cmd is None:
         # Node is present but neither a launcher binary nor npx resolves (an
         # npm-free Node). Browser Mode stays ON (the proxy is registered); the
@@ -400,8 +461,7 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
     # (global root OR the npx cache primed above) guarantees the downloaded revision
     # matches the launcher. ``install <engine>`` is idempotent; a present browser is
     # a fast no-op.
-    node = find_node_tool("node", aug_path)
-    core_cli = _resolve_playwright_core_cli(node, run_env) if node else None
+    core_cli = _resolve_playwright_core_cli(node, run_env)
     if not (node and core_cli):
         # The launcher resolves (step 2 passed) but its bundled core is not yet on
         # disk — an npx host where the prime is still warming. This is "not yet

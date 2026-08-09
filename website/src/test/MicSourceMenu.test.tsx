@@ -114,10 +114,8 @@ describe('MicSourceMenu', () => {
     setPreferredMicId('airpods')
     render(<MicSourceMenu onSelect={() => {}} recording liveSwitch activeDeviceId="builtin" />)
     fireEvent.click(screen.getByRole('button'))
-    const menu = await screen.findByRole('menu')
-    const rows = Array.from(menu.querySelectorAll('[role="menuitemradio"]'))
-    const builtin = rows.find(r => r.textContent?.includes('MacBook Pro Microphone'))!
-    const airpods = rows.find(r => r.textContent?.includes('AirPods Pro'))!
+    const builtin = await screen.findByRole('menuitemradio', { name: 'MacBook Pro Microphone' })
+    const airpods = await screen.findByRole('menuitemradio', { name: 'AirPods Pro' })
     expect(builtin.querySelector('svg')).toBeTruthy()
     expect(airpods.querySelector('svg')).toBeNull()
     // The icon is aria-hidden and the rest is colour, so the programmatic state
@@ -130,10 +128,8 @@ describe('MicSourceMenu', () => {
     setPreferredMicId('airpods')
     render(<MicSourceMenu onSelect={() => {}} recording liveSwitch deviceLabel="MacBook Pro Microphone" />)
     fireEvent.click(screen.getByRole('button'))
-    const menu = await screen.findByRole('menu')
-    const rows = Array.from(menu.querySelectorAll('[role="menuitemradio"]'))
-    const builtin = rows.find(r => r.textContent?.includes('MacBook Pro Microphone'))!
-    const airpods = rows.find(r => r.textContent?.includes('AirPods Pro'))!
+    const builtin = await screen.findByRole('menuitemradio', { name: 'MacBook Pro Microphone' })
+    const airpods = await screen.findByRole('menuitemradio', { name: 'AirPods Pro' })
     expect(builtin.querySelector('svg')).toBeTruthy()
     expect(airpods.querySelector('svg')).toBeNull()
   })
@@ -152,9 +148,7 @@ describe('MicSourceMenu', () => {
     setPreferredMicId('airpods')
     render(<MicSourceMenu onSelect={() => {}} />)
     fireEvent.click(screen.getByRole('button'))
-    const menu = await screen.findByRole('menu')
-    const rows = Array.from(menu.querySelectorAll('[role="menuitemradio"]'))
-    const airpods = rows.find(r => r.textContent?.includes('AirPods Pro'))!
+    const airpods = await screen.findByRole('menuitemradio', { name: 'AirPods Pro' })
     expect(airpods.querySelector('svg')).toBeTruthy()
   })
 

@@ -14,6 +14,7 @@ type BrowserConfig = {
   extension_mode: boolean
   token: boolean
   installed: boolean
+  install?: InstallResult
 }
 type InstallResult = {
   ok: boolean
@@ -25,6 +26,8 @@ type InstallResult = {
   // never raw stderr).
   manual_command?: string
   reason?: string
+  node_download_url?: string
+  help_url?: string
 }
 type SaveResult = {
   ok: boolean
@@ -58,7 +61,7 @@ export function BrowserPanel() {
   const [engineOverride, setEngineOverride] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
-  const [install, setInstall] = useState<InstallResult | null>(null)
+  const [installOverride, setInstallOverride] = useState<InstallResult | null | undefined>(undefined)
   const qc = useQueryClient()
 
   const { data: config, isLoading, isError } = useQuery<BrowserConfig>({
@@ -74,6 +77,7 @@ export function BrowserPanel() {
       return res
     },
     onError: () => {
+      setInstallOverride(undefined)
       setError(i18nT('pages.settings.browserPanel.cannot_reach_gateway_is_it_running'))
       setTimeout(() => setError(''), 5000)
     },
@@ -87,7 +91,7 @@ export function BrowserPanel() {
       // note with `ok:true` (e.g. "downloads on first use") still shows the saved
       // tick alongside; only a genuinely-not-usable note (`ok:false`: no Node/npm)
       // withholds the tick, but it is still styled as guidance, not a failure.
-      setInstall(res.install && res.install.detail ? res.install : null)
+      setInstallOverride(res.install && res.install.detail ? res.install : null)
       if (!res.install || res.install.ok) {
         setSaved(true)
         setTimeout(() => setSaved(false), 4000)
@@ -101,11 +105,12 @@ export function BrowserPanel() {
   const engines = config?.engines ?? ['chromium', 'firefox', 'webkit']
   const extensionMode = showExtension ?? config?.extension_mode ?? false
   const displayToken = token || (config?.extension_mode && config?.token ? '••••••••' : '')
+  const install = installOverride === undefined ? config?.install ?? null : installOverride
 
   const persist = useCallback(
     (next: { enabled: boolean; engine: string; extension_mode: boolean; token: string }) => {
       setError('')
-      setInstall(null)
+      setInstallOverride(null)
       saveMut.mutate(next)
     },
     [saveMut],
@@ -209,8 +214,25 @@ export function BrowserPanel() {
                 {install.ok
                   ? <Info size={13} className="lucide-inline" style={{ marginTop: 2, color: 'var(--muted)' }} />
                   : <AlertTriangle size={13} className="lucide-inline" style={{ marginTop: 2, color: 'var(--danger)' }} />}
-                <span style={{ fontSize: 12 }}>{install.detail}</span>
+                <span style={{ fontSize: 12, whiteSpace: 'pre-line', overflowWrap: 'anywhere' }}>{install.detail}</span>
               </div>
+              {(install.node_download_url || install.help_url) && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingLeft: 19 }}>
+                  {[install.node_download_url, install.help_url]
+                    .filter((url): url is string => Boolean(url))
+                    .map((url) => (
+                      <a
+                        key={url}
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ fontSize: 12, color: 'var(--accent)', overflowWrap: 'anywhere' }}
+                      >
+                        {url}
+                      </a>
+                    ))}
+                </div>
+              )}
               {/*
                 Attempted-and-failed download: render the manual fallback command as
                 a selectable <code> block so the user has a concrete next step. It

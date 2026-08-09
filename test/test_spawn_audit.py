@@ -627,6 +627,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/port_reclaim.py::_listeners_on_port",
         "env.py::_run",
         "env.py::activate_mise",
+        # Browser Mode's setup-time compatibility probe: fixed ``--version``
+        # argv, no shell and no cwd. The executable comes from the same
+        # operator-owned/process-manager/system Node resolution path that the
+        # gateway will use for Browser Mode; agent writes to the persisted
+        # marker are blocked by the always-on sensitive-path gate. Sandboxing
+        # only this probe would not reduce the trust granted to the selected
+        # Node toolchain and could prevent it from observing the host runtime
+        # it is validating.
+        "env.py::_node_version_supported",
         # Node bootstrap: runs the bundled ``ensure-node.sh`` (a fixed `bash
         # <script>` argv, script path derived from KIROCREW_PROJECT_DIR / the
         # module's own location, never agent input) when no node resolves. Same

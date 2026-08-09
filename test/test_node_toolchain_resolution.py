@@ -95,6 +95,7 @@ def test_marker_dir_is_preferred_over_a_filesystem_scan(isolated_home, tmp_path,
 
 def test_marker_carrying_a_path_separator_is_rejected(tmp_path, monkeypatch):
     """A multi-entry value would smuggle extra dirs into every PATH built from it."""
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     home = tmp_path / "dh"
     home.mkdir()
     (home / "node-bin-dir").write_text(f"/opt/a/bin{os.pathsep}/tmp/evil/bin\n")
@@ -103,6 +104,7 @@ def test_marker_carrying_a_path_separator_is_rejected(tmp_path, monkeypatch):
 
 
 def test_relative_marker_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     home = tmp_path / "dh"
     home.mkdir()
     (home / "node-bin-dir").write_text("relative/bin\n")
@@ -111,6 +113,7 @@ def test_relative_marker_is_rejected(tmp_path, monkeypatch):
 
 
 def test_absolute_marker_first_line_is_taken(tmp_path, monkeypatch):
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     home = tmp_path / "dh"
     home.mkdir()
     (home / "node-bin-dir").write_text("/opt/node/bin\ntrailing junk\n")
@@ -119,7 +122,18 @@ def test_absolute_marker_first_line_is_taken(tmp_path, monkeypatch):
 
 
 def test_missing_marker_is_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
     monkeypatch.setattr(env_mod, "data_home", lambda: tmp_path / "nope", raising=True)
+    assert env_mod._marker_node_bin_dir() is None
+
+
+def test_custom_data_home_marker_is_not_an_executable_source(tmp_path, monkeypatch):
+    custom_home = tmp_path / "custom-home"
+    custom_home.mkdir()
+    (custom_home / "node-bin-dir").write_text("/tmp/agent-controlled/bin\n")
+    monkeypatch.setenv("KIROCREW_HOME", str(custom_home))
+    monkeypatch.setattr(env_mod, "data_home", lambda: custom_home, raising=True)
+
     assert env_mod._marker_node_bin_dir() is None
 
 
@@ -291,6 +305,20 @@ def test_node_augmented_path_prepends(isolated_home):
 def test_node_augmented_path_with_empty_base_has_no_empty_entry(isolated_home):
     _fake_node_bin(isolated_home / ".volta" / "bin")
     assert "" not in env_mod.node_augmented_path("").split(os.pathsep)
+
+
+def test_node_augmented_path_promotes_validated_runtime(isolated_home, tmp_path):
+    stale = _fake_node_bin(isolated_home / ".volta" / "bin")
+    selected = _fake_node_bin(tmp_path / "supported" / "bin")
+    node_name = "node.exe" if platform_compat.IS_WINDOWS else "node"
+
+    parts = env_mod.node_augmented_path(
+        os.pathsep.join((str(stale), "/system/bin")),
+        preferred_node=str(selected / node_name),
+    ).split(os.pathsep)
+
+    assert parts[0] == str(selected)
+    assert parts[1] == str(stale)
 
 
 def test_find_node_tool_returns_absolute_path(isolated_home):
