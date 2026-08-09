@@ -3532,6 +3532,13 @@ async def start_dashboard(
             await asyncio.sleep(interval)
             _loop_watchdog.beat()
             lag = time.monotonic() - t0 - interval
+            # Resource-pressure notifications ride the heartbeat cadence
+            # rather than owning a task: the notifier self-gates to its own
+            # sample interval, never raises, and off-loads its synchronous
+            # probe to a worker thread so a slow config filesystem cannot
+            # block the loop this heartbeat exists to watch. After the lag
+            # read so the await can't register as loop lag.
+            await state.resource_pressure_notifier.maybe_sample()
             if lag > 1.0:
                 logger.warning("event-loop heartbeat: lag %.1fs (loop was blocked)", lag)
             else:
