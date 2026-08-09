@@ -44,6 +44,16 @@ DATA_WARNING = (
 # work, not a "this turn took too long" guard.
 CHAT_TURN_TIMEOUT = 7200.0
 
+# How long the dashboard chat path parks a turn waiting for a human to answer a
+# tool-approval prompt, when config is unavailable (tests, early bootstrap).
+# Deliberately far below ``CHAT_TURN_TIMEOUT``: a window at or above the turn
+# ceiling can never fire, because the turn is cut first and reports itself as a
+# turn timeout, so the real cause (nobody approved) is never named. It also has
+# to leave the turn enough time to act on a late answer — an approval granted at
+# the ceiling buys a turn that is already over. ``agent.tool_approval_timeout_secs``
+# overrides it and is clamped below the turn ceiling at load time.
+TOOL_APPROVAL_TIMEOUT = 600.0
+
 # How long any caller waits for a compaction to report completed/failed —
 # the default of ``LLMProvider.wait_for_compaction`` and the cap on the
 # automatic context-threshold compaction in ``session.py``. Manual (/compact,

@@ -631,6 +631,8 @@ class AgentConfig:
     subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
     subagent_max_turns: int = 100  # default per-subagent tool-call budget. Load-time clamped to [1, 200]
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
+    chat_turn_timeout_secs: int = 7200  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 7200] and to the ACP prompt timeout
+    tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
 
 @dataclass
 class SessionConfig:
@@ -821,8 +823,8 @@ screenshot.
 
 ### Security-Bounded Config Clamp
 
-Three resource-limit knobs are clamped to hard ceilings **at load time**, not just
-at the dashboard write gate. The ceilings are the single source of truth in
+Resource-limit and timeout knobs are clamped to hard ceilings **at load time**, not
+just at the dashboard write gate. The ceilings are the single source of truth in
 `loader.py`:
 
 | Constant | Value | Field |
@@ -830,6 +832,8 @@ at the dashboard write gate. The ceilings are the single source of truth in
 | `SUBAGENT_AUTO_MAX_CEILING` | 64 | `agent.subagent_auto_max`, `agent.max_subagents` |
 | `SUBAGENT_MAX_TURNS_CEILING` | 200 | `agent.subagent_max_turns` |
 | `POOL_SIZE_MAX` | 10 | `session.pool_size` |
+| `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 7200 | `agent.chat_turn_timeout_secs` |
+| `TOOL_APPROVAL_TIMEOUT_MIN` / `_MAX` | 30 / 7200 | `agent.tool_approval_timeout_secs` |
 
 `_SECURITY_BOUNDED_FIELDS` lists each `(section, key, min, max)`; the mins match
 the existing runtime floors (0/1) so a legitimate in-range value is never
@@ -839,6 +843,23 @@ serve clamped values. It clamps out-of-range real integers in place (a JSON
 `true`/`false` bool or any non-int is skipped and left to dataclass
 coercion/defaults), logs a WARNING, and emits a best-effort `config_bounds_clamped`
 SEL security event (never fatal — config loading must not raise).
+
+Two **cross-field** clamps run after that generic pass, so both operands are
+already in range:
+
+- `agent.max_subagents`: 0 is the auto-size sentinel, so an explicit pin below
+  `MAX_SUBAGENTS_FIXED_FLOOR` (3) is raised UP to the floor.
+- `agent.tool_approval_timeout_secs` is pulled to `APPROVAL_TURN_MARGIN_SECS`
+  (60) below `agent.chat_turn_timeout_secs`. An approval window that reaches the
+  turn ceiling can never fire: the turn is cut first and reports itself as a turn
+  timeout, so the unanswered approval is never named and an unattended run burns
+  the whole ceiling on every prompt. `dashboard/turn_dispatch.py`
+  `tool_approval_timeout_secs()` repeats the cap against the **resolved** ceiling,
+  which the ACP prompt timeout can lower below the configured one, and then
+  against the budget REMAINING in the running turn (`_TURN_DEADLINE`, published by
+  `_bounded_turn`). The arm-time bound is the one that makes the invariant hold
+  for a prompt arming late in a long turn; with under a margin left it returns
+  `0.0` and the runner declines without waiting.
 
 Why load-time (not just the API): the REST API rejects out-of-range writes, but a
 direct edit of `config.json` (any process running as the same OS user — including

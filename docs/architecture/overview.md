@@ -285,6 +285,14 @@ graph TB
   turn that hits it ends with a card naming the limit rather than failing
   silently. The ACP transport carries its own prompt timeout of the same
   magnitude and bounds the turn first.
+- **Tool-approval window**: `agent.tool_approval_timeout_secs` defaults to
+  **600s** (10 min). It must expire *inside* the turn that opened it — otherwise
+  an unanswered prompt is reported as a turn timeout and the real cause is lost —
+  so it is bounded twice: to 60s below the turn ceiling at config load, and at
+  arm time to the budget actually remaining in the running turn. A prompt arming
+  with less than that margin left is declined immediately rather than waiting on
+  a deadline the ceiling would beat. On expiry the tool is declined and a card
+  says the approval went unanswered and to send the message again.
 - **Circuit breaker**: five consecutive failures on one session force a reset.
 - **Auto-compaction** at `session.autocompact_pct` of the context window
   (default 90%).

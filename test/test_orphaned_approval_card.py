@@ -130,8 +130,12 @@ class TestRunnerBackstopContract:
 
         src = inspect.getsource(chat_runner._run_chat)
         # The pre-seed must appear before the guarded await that follows it.
+        # Matched on the call SHAPE, not on the timeout value: the window is
+        # configurable (``agent.tool_approval_timeout_secs``), and pinning its
+        # literal made an unrelated retune of the window fail this test, which
+        # is about assignment ORDER and nothing else.
         preseed = src.index('outcome = "rejected"')
-        await_idx = src.index("await asyncio.wait_for(fut, timeout=7200.0)")
+        await_idx = src.index("await asyncio.wait_for(fut, timeout=")
         assert preseed < await_idx, (
             "outcome must be pre-seeded before the approval await so the "
             "finally backstop is total over cancellation"
@@ -152,7 +156,10 @@ class TestRunnerBackstopContract:
         async def approval_branch() -> None:
             outcome = "rejected"
             try:
-                outcome = await asyncio.wait_for(fut, timeout=7200.0)
+                # Value is irrelevant to the shape under test; the real site
+                # resolves it from config. Long enough that cancellation, not
+                # the deadline, is what ends the await.
+                outcome = await asyncio.wait_for(fut, timeout=600.0)
             except asyncio.TimeoutError:
                 outcome = "rejected"
             finally:

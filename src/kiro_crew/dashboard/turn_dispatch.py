@@ -29,13 +29,40 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Coroutine
+from contextvars import ContextVar
 from typing import Any
 
 from kiro_crew.acp.client import _DEFAULT_PROMPT_TIMEOUT
-from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.constants import CHAT_TURN_TIMEOUT
+from kiro_crew.config.loader import (
+    APPROVAL_TURN_MARGIN_SECS,
+    TOOL_APPROVAL_TIMEOUT_MIN,
+    KiroCrewConfig,
+)
+from kiro_crew.constants import CHAT_TURN_TIMEOUT, TOOL_APPROVAL_TIMEOUT
 
 logger = logging.getLogger(__name__)
+
+# Absolute ``loop.time()`` deadline of the turn currently running, published by
+# :func:`_bounded_turn` so code INSIDE the turn can size its own waits against
+# the budget that is actually left. ``None`` outside a bounded turn (the OpenAI
+# compatibility path bounds its turn with a bare ``wait_for``, and unit tests
+# call the resolvers directly), in which case callers fall back to the
+# ceiling-relative bound.
+_TURN_DEADLINE: ContextVar[float | None] = ContextVar("kirocrew_turn_deadline", default=None)
+
+
+def _turn_budget_remaining() -> float | None:
+    """Seconds left in the running turn, or ``None`` when that is unknowable."""
+    deadline = _TURN_DEADLINE.get()
+    if deadline is None:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop: the deadline is on the same clock as ``loop.time()`` and
+        # cannot be compared to anything here.
+        return None
+    return deadline - loop.time()
 
 
 def _acp_prompt_ceiling() -> float:
@@ -81,6 +108,103 @@ def chat_turn_timeout_secs() -> float:
         )
         return acp_ceiling
     return configured
+
+
+def tool_approval_timeout_secs() -> float:
+    """Resolve how long a turn waits for a human to answer an approval prompt.
+
+    Reads ``agent.tool_approval_timeout_secs``, falling back to
+    :data:`TOOL_APPROVAL_TIMEOUT` when config is unavailable (tests, early
+    bootstrap) so a config-less context behaves exactly like a default config.
+
+    The value is bounded twice, because two different things can make it
+    outlive the turn it belongs to:
+
+    * against the turn ceiling :func:`chat_turn_timeout_secs` resolves. The
+      config loader already applies this to the two config fields; repeating it
+      here catches a RESOLVED ceiling lower than the configured one (the ACP
+      transport's prompt timeout clamps it).
+    * against the budget REMAINING in the turn that is already running. A prompt
+      arming late in a long agentic turn has far less than the full ceiling left,
+      so a ceiling-relative bound alone still lets the turn die first — the exact
+      failure this window exists to prevent. Returns ``0.0`` when less than the
+      margin remains: there is no window that can both wait and report, so the
+      caller declines immediately instead of pretending to wait.
+    """
+    try:
+        configured = float(KiroCrewConfig.load().agent.tool_approval_timeout_secs)
+    except Exception:
+        logger.debug("approval-window config unavailable; using default", exc_info=True)
+        configured = TOOL_APPROVAL_TIMEOUT
+    if configured <= 0:
+        # An approval prompt cannot be disabled by zeroing its window — that
+        # would make wait_for raise immediately and auto-decline every tool.
+        configured = TOOL_APPROVAL_TIMEOUT
+    ceiling = chat_turn_timeout_secs()
+    budget = max(float(TOOL_APPROVAL_TIMEOUT_MIN), ceiling - APPROVAL_TURN_MARGIN_SECS)
+    window = configured
+    if window > budget:
+        logger.warning(
+            "agent.tool_approval_timeout_secs=%.0fs leaves less than %ds under the "
+            "resolved %.0fs turn ceiling; capping at %.0fs so the approval deadline "
+            "lands inside the turn.",
+            configured,
+            APPROVAL_TURN_MARGIN_SECS,
+            ceiling,
+            budget,
+        )
+        window = budget
+    remaining = _turn_budget_remaining()
+    if remaining is None:
+        return window
+    arm_budget = max(0.0, remaining - APPROVAL_TURN_MARGIN_SECS)
+    if arm_budget < window:
+        # Normal operation on a long turn, not a misconfiguration.
+        logger.info(
+            "Approval window shortened from %.0fs to %.0fs: %.0fs left in the turn.",
+            window,
+            arm_budget,
+            remaining,
+        )
+        return arm_budget
+    return window
+
+
+def format_approval_no_budget_card() -> str:
+    """User-facing text for a prompt that arrived with no time left to answer it.
+
+    Distinct from :func:`format_approval_timeout_card` because nothing was
+    waited on: the turn was already close enough to its ceiling that any wait
+    would have been cut by the ceiling and misreported as a turn timeout.
+    """
+    return (
+        "⏱️ A tool needed your approval, but this turn was too close to its time "
+        "limit to wait for an answer, so I declined it on your behalf and carried "
+        "on from the denial — nothing was rolled back. If you wanted that tool to "
+        "run, send the message again: the fresh turn has a full window to ask you "
+        "properly."
+    )
+
+
+def format_approval_timeout_card(timeout_secs: float) -> str:
+    """User-facing text for an approval prompt nobody answered in time.
+
+    Deliberately distinct from :func:`format_turn_timeout_card`: the two used to
+    be indistinguishable to the user because the approval window outlived the
+    turn, so an unanswered prompt always surfaced as a generic turn timeout and
+    the actual cause — and the fix, resending — was never stated.
+    """
+    if timeout_secs >= 3600:
+        waited = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + " hours"
+    else:
+        waited = f"{max(1, round(timeout_secs / 60))} minutes"
+    return (
+        f"⏱️ A tool needed your approval and nothing came back within {waited}, "
+        "so I declined it on your behalf and carried on from the denial — nothing "
+        "was rolled back. If you wanted that tool to run, send the message again "
+        "and approve the prompt when it appears, or turn on YOLO mode first for an "
+        "unattended run."
+    )
 
 
 def format_turn_timeout_card(timeout_secs: float) -> str:
@@ -163,7 +287,6 @@ async def _bounded_turn(coro: "Coroutine[Any, Any, Any]", timeout_secs: float) -
     shared with the user's Stop button.
     """
     loop = asyncio.get_running_loop()
-    task: "asyncio.Task[Any]" = asyncio.ensure_future(coro)
     deadline_fired = False
 
     def _on_deadline() -> None:
@@ -172,6 +295,14 @@ async def _bounded_turn(coro: "Coroutine[Any, Any, Any]", timeout_secs: float) -
             deadline_fired = True
             task.cancel()
 
+    # Published so anything running INSIDE the turn can size its own waits
+    # against the budget that is actually left, rather than against the
+    # full-length ceiling. Set before the task is created so the task's context
+    # copy carries it; reset in the finally so a direct `await _bounded_turn(...)`
+    # cannot leak a spent deadline into the caller's context and starve the next
+    # turn dispatched there.
+    deadline_token = _TURN_DEADLINE.set(loop.time() + timeout_secs)
+    task: "asyncio.Task[Any]" = asyncio.ensure_future(coro)
     handle = loop.call_later(timeout_secs, _on_deadline)
     try:
         try:
@@ -191,6 +322,7 @@ async def _bounded_turn(coro: "Coroutine[Any, Any, Any]", timeout_secs: float) -
         return result
     finally:
         handle.cancel()
+        _TURN_DEADLINE.reset(deadline_token)
         if not task.done():
             # The wrapper itself was cancelled; don't orphan the turn.
             task.cancel()

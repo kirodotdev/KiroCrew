@@ -43,7 +43,7 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Context compaction | `session.py` | Chat sessions | `session.autocompact_pct` | No | Sends `/compact` to kiro-cli to free context window |
 | Background session recycle | `session.py` | Background sessions (cron, subagent) | 70% context usage (`_BG_RECYCLE_PCT`) | No | Recycles the session before context overflow |
 | Watchdog process liveness | `taskrunner.py` | Task runner steps | 2 consecutive dead checks (`_DEAD_THRESHOLD`) at 30s intervals | Yes, part of the watchdog loop | Resets the session to trigger crash recovery |
-| Config bound clamp | `config/loader.py` | Subagent count, turns, timeouts and pool size at load time | `subagent_auto_max` and `max_subagents` to 64 (`SUBAGENT_AUTO_MAX_CEILING`), `subagent_max_turns` 1..200, `chat_turn_timeout_secs` 300..7200, `loop_stall_exit_after_secs` 10..300, `pool_size` 0..10 (`_SECURITY_BOUNDED_FIELDS`) | No | `_clamp_security_bounds` clamps out-of-range ints, logs a WARNING, emits SEL `config_bounds_clamped` (`outcome=clamped`) |
+| Config bound clamp | `config/loader.py` | Subagent count, turns, timeouts and pool size at load time | `subagent_auto_max` and `max_subagents` to 64 (`SUBAGENT_AUTO_MAX_CEILING`), `subagent_max_turns` 1..200, `chat_turn_timeout_secs` 300..7200, `tool_approval_timeout_secs` 30..7200 and cross-field to 60s under the turn ceiling (`APPROVAL_TURN_MARGIN_SECS`), `loop_stall_exit_after_secs` 10..300, `pool_size` 0..10 (`_SECURITY_BOUNDED_FIELDS`) | No | `_clamp_security_bounds` clamps out-of-range ints, logs a WARNING, emits SEL `config_bounds_clamped` (`outcome=clamped`) |
 
 ## Per-workflow coverage matrix
 

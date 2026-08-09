@@ -131,7 +131,12 @@ from kiro_crew.dashboard.state import (
     unsafe_bash_reason,
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
-from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+from kiro_crew.dashboard.turn_dispatch import (
+    format_approval_no_budget_card,
+    format_approval_timeout_card,
+    spawn_guarded_turn,
+    tool_approval_timeout_secs,
+)
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
@@ -4637,8 +4642,9 @@ async def _run_chat(
                 # Mirror the prompt to the linked Slack thread so a user driving
                 # this session from Slack can actually answer it. Without this,
                 # the prompt only renders in the dashboard and a Slack-only user
-                # never sees it — the turn then parks here until the 2h timeout,
-                # holding the slot lock and silently dropping inbound messages.
+                # never sees it — the turn then parks here for the whole approval
+                # window, holding the slot lock and silently dropping inbound
+                # messages.
                 # The Slack click resolves THIS future (via state.resolve_approval);
                 # we remain the sole caller of approve_tool/reject_tool below.
                 _slack_approval_ts: str | None = None
@@ -4659,7 +4665,8 @@ async def _run_chat(
                             event.tool_input or "",
                         )
                         if _slack_approval_ts is None:
-                            # Delivery failed — do not silently park for 2h.
+                            # Delivery failed — do not park for the whole
+                            # approval window.
                             # Resolve the future now (reject) and tell the user
                             # the prompt could not be delivered, so they retry
                             # rather than wait. The dashboard still rendered the
@@ -4683,7 +4690,7 @@ async def _run_chat(
                         # Any failure before the future is resolved (ImportError,
                         # post_linked_approval raising, slot.append/push raising in
                         # the delivery-failure branch) would otherwise fall through
-                        # to the 2h wait_for with an unresolved future — the exact
+                        # to the approval wait_for with an unresolved future — the exact
                         # wedge this fix prevents. Auto-reject so the turn unblocks,
                         # mirroring the _slack_approval_ts is None branch.
                         logger.warning("Error mirroring approval prompt to Slack", exc_info=True)
@@ -4700,11 +4707,39 @@ async def _run_chat(
                 # "rejected" is the correct reading: a cancelled turn never
                 # obtained consent.
                 outcome = "rejected"
+                _approval_window = tool_approval_timeout_secs()
+                _approval_card: str | None = None
                 try:
-                    outcome = await asyncio.wait_for(fut, timeout=7200.0)
+                    if _approval_window <= 0:
+                        # Too little of the turn left to both wait and report.
+                        # Waiting anyway guarantees the ceiling fires first and
+                        # relabels the unanswered approval as a turn timeout.
+                        logger.warning(
+                            "Declining approval for %r without waiting: no turn budget left",
+                            event.title,
+                        )
+                        _approval_card = format_approval_no_budget_card()
+                    else:
+                        outcome = await asyncio.wait_for(fut, timeout=_approval_window)
                 except asyncio.TimeoutError:
                     outcome = "rejected"
+                    # Name the real cause. An unanswered prompt used to be
+                    # indistinguishable from a generic turn timeout, because the
+                    # window outlived the turn ceiling and the turn always died
+                    # first — so an unattended run burned the full ceiling and
+                    # the user was never told an approval was waiting.
+                    logger.warning(
+                        "Tool approval for %r went unanswered for %.0fs; declining",
+                        event.title,
+                        _approval_window,
+                    )
+                    _approval_card = format_approval_timeout_card(_approval_window)
                 finally:
+                    if _approval_card is not None:
+                        try:
+                            slot.append("error", _approval_card, "msg msg-err")
+                        except Exception:
+                            logger.debug("Failed to render approval card", exc_info=True)
                     slot._approval_futures.pop(str(event.request_id), None)
                     # Backstop: the future is now gone, so the permission
                     # message MUST NOT be left reading pending — the UI would
@@ -4713,8 +4748,8 @@ async def _run_chat(
                     # resolvers (HTTP slot-approve, Slack click) already mark it
                     # and record richer decisions like "trust"/"yolo", so only
                     # write when still pending. This is the sole marker for the
-                    # paths that resolve the future in-process: the 2h timeout
-                    # above and the Slack-delivery auto-reject branches.
+                    # paths that resolve the future in-process: the approval
+                    # timeout above and the Slack-delivery auto-reject branches.
                     _approved = outcome in ("approved", "approved_trust_reads")
                     if _mark_permission_resolved(
                         slot.messages,

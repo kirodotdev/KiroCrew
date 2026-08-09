@@ -1047,6 +1047,18 @@ class AgentConfig:
             "clamped, because the transport bounds the turn first.",
         ),
     )
+    tool_approval_timeout_secs: int = field(
+        default=600,
+        metadata=_meta(
+            "Tool Approval Timeout (secs)",
+            "How long a chat turn waits for a human to answer a tool-approval "
+            "prompt before declining it and telling the user to resend. Kept "
+            "well below the chat-turn ceiling on purpose: a window at or above "
+            "it can never fire, so an unattended turn burns the whole ceiling "
+            "and is then misreported as a turn timeout. Clamped to 30s..7200s, "
+            "and additionally to 60s below the turn ceiling at load time.",
+        ),
+    )
     subagent_cost_gb: float = field(
         default=0.5,
         metadata=_meta(
@@ -2687,6 +2699,28 @@ POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
 CHAT_TURN_TIMEOUT_MIN = 300
 CHAT_TURN_TIMEOUT_MAX = 7200
 
+# agent.tool_approval_timeout_secs — how long a chat turn parks waiting for a
+# human to answer a tool-approval prompt. The floor keeps the window long enough
+# for a human who is actually present to reach the dashboard; the ceiling is the
+# turn ceiling, but the binding limit is the cross-field clamp in
+# ``_clamp_security_bounds``, which pulls the window APPROVAL_TURN_MARGIN_SECS
+# under the configured turn ceiling.
+TOOL_APPROVAL_TIMEOUT_MIN = 30
+TOOL_APPROVAL_TIMEOUT_MAX = CHAT_TURN_TIMEOUT_MAX
+
+# The turn ceiling assumed when config omits ``agent.chat_turn_timeout_secs``.
+# Read from the dataclass default so the two cannot drift apart.
+_DEFAULT_CHAT_TURN_TIMEOUT_SECS = int(
+    AgentConfig.__dataclass_fields__["chat_turn_timeout_secs"].default  # type: ignore[arg-type]
+)
+
+# Minimum slack between the approval window and the turn ceiling. Two things
+# need it: the approval deadline must land inside the turn so its own "nobody
+# approved, resend" card renders instead of the generic turn-timeout card, and a
+# late approval must leave the turn some time to actually run the tool. A window
+# flush against the ceiling satisfies neither.
+APPROVAL_TURN_MARGIN_SECS = 60
+
 # dashboard.loop_stall_exit_after_secs — event-loop silence tolerated before the
 # gateway dumps all thread stacks and hard-exits for systemd to restart. The
 # floor keeps a stall from being declared faster than ordinary GC/IO pauses; the
@@ -2716,6 +2750,12 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
+    (
+        "agent",
+        "tool_approval_timeout_secs",
+        TOOL_APPROVAL_TIMEOUT_MIN,
+        TOOL_APPROVAL_TIMEOUT_MAX,
+    ),
     ("dashboard", "loop_stall_exit_after_secs", LOOP_STALL_EXIT_AFTER_MIN, LOOP_STALL_EXIT_AFTER_MAX),
     ("session", "pool_size", 0, POOL_SIZE_MAX),
 )
@@ -2820,6 +2860,39 @@ def _clamp_security_bounds(data: dict) -> None:
                 MAX_SUBAGENTS_FIXED_FLOOR,
                 MAX_SUBAGENTS_FIXED_FLOOR,
                 SUBAGENT_AUTO_MAX_CEILING,
+            )
+
+    # tool_approval_timeout_secs cross-field case: the approval window must end
+    # inside the turn that opened it. At or above the turn ceiling it can never
+    # fire — the turn is cut first, so the user is told "this turn timed out"
+    # while the real cause (nobody answered the approval prompt) is never named,
+    # and an unattended run burns the entire ceiling on every prompt. Clamp to
+    # APPROVAL_TURN_MARGIN_SECS below the ceiling. Runs after the generic range
+    # clamp above, so both operands are already inside their declared bounds.
+    if isinstance(agent, dict):
+        window = agent.get("tool_approval_timeout_secs")
+        ceiling = agent.get("chat_turn_timeout_secs", _DEFAULT_CHAT_TURN_TIMEOUT_SECS)
+        if not isinstance(ceiling, int) or isinstance(ceiling, bool):
+            ceiling = _DEFAULT_CHAT_TURN_TIMEOUT_SECS
+        budget = max(TOOL_APPROVAL_TIMEOUT_MIN, ceiling - APPROVAL_TURN_MARGIN_SECS)
+        if isinstance(window, int) and not isinstance(window, bool) and window > budget:
+            agent["tool_approval_timeout_secs"] = budget
+            logger.warning(
+                "config agent.tool_approval_timeout_secs=%d leaves less than %ds "
+                "under the %ds turn ceiling; clamped to %d. A window that outlives "
+                "the turn can never fire: the turn is cut first and reports itself "
+                "as a turn timeout, hiding the unanswered approval.",
+                window,
+                APPROVAL_TURN_MARGIN_SECS,
+                ceiling,
+                budget,
+            )
+            _log_config_clamp_event(
+                "agent.tool_approval_timeout_secs",
+                window,
+                budget,
+                TOOL_APPROVAL_TIMEOUT_MIN,
+                budget,
             )
 
 
@@ -4803,6 +4876,12 @@ class KiroCrewConfig:
                     7200,
                     CHAT_TURN_TIMEOUT_MIN,
                     CHAT_TURN_TIMEOUT_MAX,
+                ),
+                tool_approval_timeout_secs=_safe_int(
+                    agent_data.get("tool_approval_timeout_secs", 600),
+                    600,
+                    TOOL_APPROVAL_TIMEOUT_MIN,
+                    TOOL_APPROVAL_TIMEOUT_MAX,
                 ),
                 subagent_cost_gb=_safe_float(agent_data.get("subagent_cost_gb", 0.5), 0.5),
                 subagent_cpu_cost_cores=_safe_float(
