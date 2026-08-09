@@ -1183,6 +1183,52 @@ def test_build_env_pins_git_protocols():
     _assert_git_neutralizers(env)
 
 
+# --- cancellation survives an already-reaped child (#2096) ---
+@pytest.mark.asyncio
+async def test_run_cmd_cancel_with_reaped_child_propagates_cancellation(monkeypatch):
+    """Cancelling _run_cmd whose child was already reaped must raise
+    CancelledError, not ProcessLookupError.
+
+    An unguarded ``proc.kill()`` in the CancelledError branch raises
+    ProcessLookupError on a reaped child, REPLACING the in-flight
+    cancellation; ``_status_refresher``'s broad handler then swallows it
+    and loops forever, hanging ``dev_fleet_cleanup``'s ``await bg_task``
+    and the whole pytest-asyncio loop teardown (#2096).
+    """
+    entered = asyncio.Event()  # deterministic rendezvous, no sleeps
+
+    class FakeProc:
+        pid = 12345
+        returncode = None
+
+        async def communicate(self):
+            entered.set()
+            await asyncio.Event().wait()  # block until cancelled
+
+        def kill(self):
+            raise ProcessLookupError  # child already reaped
+
+        async def wait(self):
+            return 0
+
+    async def fake_spawn(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(
+        mod, "sandboxed_spawn_argv",
+        lambda cmd, mode, *, env=None, **kw: (cmd, env, None),
+    )
+    monkeypatch.setattr(mod, "create_subprocess_limited", fake_spawn)
+    monkeypatch.setattr(mod, "_kill_tree", AsyncMock())
+
+    task = asyncio.ensure_future(mod._run_cmd(["/bin/true"]))
+    # Bounded so a future early-return in _run_cmd fails fast, not a hang.
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 # --- stream-overrun subprocess reaping (Codex R34 #2) ---
 @pytest.mark.asyncio
 async def test_start_run_readline_overrun_kills_process_tree(monkeypatch):

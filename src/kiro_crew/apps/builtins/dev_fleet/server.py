@@ -880,7 +880,10 @@ async def _run_cmd(
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await _kill_tree(proc.pid)
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
             await proc.wait()
             return -1, "", f"timeout ({timeout}s)"
         except asyncio.CancelledError:
@@ -888,7 +891,13 @@ async def _run_cmd(
             # runs in its own process group and would outlive us (a canceled
             # rebase never reaches its --abort path, wedging the worktree).
             await _kill_tree(proc.pid)
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                # Already reaped: an unguarded kill here would REPLACE the
+                # in-flight CancelledError with ProcessLookupError, swallowing
+                # the cancellation (#2096).
+                pass
             await proc.wait()
             raise
         return proc.returncode or 0, (stdout or b"").decode(errors="replace"), (stderr or b"").decode(errors="replace")
