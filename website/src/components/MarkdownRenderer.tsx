@@ -4,6 +4,8 @@ import { Paperclip, X, Download, Plus, Minus, Search, Folder } from 'lucide-reac
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkCjkFriendly from 'remark-cjk-friendly'
+import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import remarkMath from 'remark-math'
 import rehypeRaw from 'rehype-raw'
 import rehypeKatex from 'rehype-katex'
@@ -1054,7 +1056,23 @@ export function rehypeSanitize() {
   }
 }
 
-const REMARK_PLUGINS: PluggableList = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]
+// CommonMark has a known emphasis defect (commonmark/commonmark-spec#650): a
+// closing `**` is only right-flanking when it is NOT preceded by punctuation, or
+// IS followed by whitespace/punctuation. `**中文（带括号）。**这句` fails both —
+// preceded by `。`, followed by the letter `这` — so it renders as literal
+// asterisks. English prose sidesteps this by putting a space after the `**`; CJK
+// cannot, because a space there is visibly wrong.
+//
+// `remark-cjk-friendly` implements the CJK-friendly flanking amendment. ORDER IS
+// LOAD-BEARING: it must run BEFORE remark-gfm (it changes how emphasis
+// delimiters are classified), and the strikethrough companion AFTER, because it
+// extends gfm's own `~~` construct.
+const REMARK_PLUGINS: PluggableList = [
+  remarkCjkFriendly,
+  remarkGfm,
+  remarkCjkFriendlyGfmStrikethrough,
+  [remarkMath, { singleDollarTextMath: false }],
+]
 const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeSanitize, rehypeKatex]
 
 // Matches one source line break plus any leading tabs/spaces, so a trailing

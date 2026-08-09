@@ -81,6 +81,8 @@
     "react-virtuoso": "4.18.3",
     "rehype-katex": "^7.0.1",
     "rehype-raw": "^7.0.0",
+    "remark-cjk-friendly": "^2.3.1",
+    "remark-cjk-friendly-gfm-strikethrough": "^2.3.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "roughjs": "4.6.6",
