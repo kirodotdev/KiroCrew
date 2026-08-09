@@ -48,7 +48,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS, summarize_result
-from kiro_crew.dashboard.origin import parse_dashboard_url
+from kiro_crew.dashboard.origin import dashboard_socket_path, parse_dashboard_url
 from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
 from kiro_crew.history import INCOGNITO_MEMORY_MODES, ConversationLog
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
@@ -145,6 +145,34 @@ def _resolve_api_base() -> str:
 
 
 _API = _resolve_api_base()
+
+
+def _resolve_api_unix_socket() -> str:
+    """Path of the gateway's internal-API unix socket (may not exist yet).
+
+    Preferred transport for every ``_API`` request: connecting through it lets
+    the gateway kernel-verify (``SO_PEERCRED`` + /proc ancestry) that this
+    process actually belongs to the session its ``X-Session-Key`` header
+    declares, instead of taking the header on faith. ``loopback_urlopen``
+    checks existence per call and falls back to TCP when the file is absent
+    (Windows, older gateway, bind failure) or nobody answers on it, so
+    resolving the path once at import — mirroring ``_API`` — is safe.
+    """
+    try:
+        cfg = KiroCrewConfig.load()
+        _host, port = parse_dashboard_url(cfg.dashboard.url)
+        return str(dashboard_socket_path(port))
+    except Exception:
+        return ""
+
+
+_API_UNIX_SOCKET = _resolve_api_unix_socket()
+
+
+def _api_urlopen(req: urllib.request.Request | str, timeout: float):
+    """``loopback_urlopen`` against ``_API`` with the unix-socket preference."""
+    return loopback_urlopen(req, timeout=timeout, unix_socket_path=_API_UNIX_SOCKET or None)
+
 
 # How often a sleeping `wait` polls /api/session-keepalive.
 #
@@ -2969,7 +2997,7 @@ def _post(path: str, body: dict | None = None, *, timeout: float = 30) -> dict:
     )
     try:
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_API from dashboard.url config) + a fixed internal path; never user-controlled  # noqa: E501
-        with loopback_urlopen(req, timeout=timeout) as resp:
+        with _api_urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         # urlopen raises HTTPError on 4xx/5xx; str(e) is only "HTTP Error 400:
@@ -3044,7 +3072,7 @@ def _get(path: str) -> dict:
         headers=headers,
     )
     try:
-        with loopback_urlopen(req, timeout=10) as resp:
+        with _api_urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -3070,7 +3098,7 @@ def _patch(path: str, body: dict | None = None) -> dict:
     try:
         # _API is the hardcoded loopback dashboard base and `path` is a code
         # literal — never attacker-controlled, so no file:// scheme risk.
-        with loopback_urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
+        with _api_urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -3102,7 +3130,7 @@ def _put(path: str, body: dict | None = None) -> dict:
     try:
         # _API is the hardcoded loopback dashboard base and `path` is a code
         # literal — never attacker-controlled, so no file:// scheme risk.
-        with loopback_urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
+        with _api_urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -3128,7 +3156,7 @@ def _delete(path: str, body: dict | None = None) -> dict:
         method="DELETE",
     )
     try:
-        with loopback_urlopen(req, timeout=10) as resp:
+        with _api_urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -5265,7 +5293,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"{_API}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
         )
         try:
-            with loopback_urlopen(req, timeout=30) as http_resp:
+            with _api_urlopen(req, timeout=30) as http_resp:
                 d = json.loads(http_resp.read())
         except urllib.error.HTTPError as exc:
             try:
@@ -5327,7 +5355,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"{_API}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
         )
         try:
-            with loopback_urlopen(req, timeout=30) as http_resp:
+            with _api_urlopen(req, timeout=30) as http_resp:
                 d = json.loads(http_resp.read())
         except urllib.error.HTTPError as exc:
             try:

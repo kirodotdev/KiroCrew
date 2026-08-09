@@ -23,15 +23,20 @@ Redirects are refused for the same reason the external bearer-token path in
 ``dashboard/handlers/kiro_usage_api.py`` refuses them -- a 3xx from the gateway
 would replay the secret to whatever host ``Location`` names.
 
-This module is a **stdlib-only leaf** and must stay one: it imports
-``urllib.request`` and nothing else. That is what lets the cheapest callers use
-it -- ``cron_trigger`` imports nothing from ``kiro_crew`` at all, and the MCP
-stdio proxies deliberately avoid importing the gateway, since reaching
-``parse_dashboard_url`` through ``dashboard.origin`` costs ~605 ms and 1124
-modules (see the ``dashboard/urls.py`` docstring). Adding an import here that
-pulls aiohttp in behind it would defeat the point.
+This module is a **stdlib-only leaf** and must stay one: it imports only
+standard-library modules (``urllib.request``, ``http.client``, ``os``,
+``socket``) and nothing from ``kiro_crew``. That is what lets the cheapest
+callers use it -- ``cron_trigger`` imports nothing from ``kiro_crew`` at all,
+and the MCP stdio proxies deliberately avoid importing the gateway, since
+reaching ``parse_dashboard_url`` through ``dashboard.origin`` costs ~605 ms and
+1124 modules (see the ``dashboard/urls.py`` docstring). Adding an import here
+that pulls aiohttp in behind it would defeat the point.
 """
 
+import http.client
+import os
+import socket
+import urllib.error
 import urllib.request
 
 __all__ = ["build_loopback_opener", "loopback_urlopen"]
@@ -61,7 +66,64 @@ def build_loopback_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
-def loopback_urlopen(req: urllib.request.Request | str, timeout: float):
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """``HTTPConnection`` whose transport is an ``AF_UNIX`` stream socket.
+
+    The ``host`` from the request URL is kept (so the ``Host`` header the
+    gateway's host-validation middleware sees is identical to the TCP path);
+    only ``connect()`` is rerouted onto the unix socket.
+    """
+
+    def __init__(self, socket_path: str, host: str, timeout=None) -> None:
+        if timeout is None:
+            super().__init__(host)
+        else:
+            super().__init__(host, timeout=timeout)
+        self._socket_path = socket_path
+
+    def connect(self) -> None:  # noqa: D102 -- contract inherited
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if self.timeout is not None:
+            sock.settimeout(self.timeout)
+        try:
+            sock.connect(self._socket_path)
+        except OSError:
+            sock.close()
+            raise
+        self.sock = sock
+
+
+class _UnixHTTPHandler(urllib.request.HTTPHandler):
+    """Route ``http://`` requests over a fixed ``AF_UNIX`` socket path.
+
+    Subclasses ``HTTPHandler`` so ``build_opener`` displaces the default TCP
+    handler (same displacement rule ``build_loopback_opener`` documents).
+    """
+
+    def __init__(self, socket_path: str) -> None:
+        super().__init__()
+        self._socket_path = socket_path
+
+    def http_open(self, req):  # noqa: D102 -- contract inherited
+        def _factory(host, timeout=None, **_kwargs):
+            return _UnixHTTPConnection(self._socket_path, host, timeout=timeout)
+
+        return self.do_open(_factory, req)
+
+
+def _build_unix_opener(socket_path: str) -> urllib.request.OpenerDirector:
+    """Opener twin of :func:`build_loopback_opener` bound to a unix socket."""
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoRedirect(), _UnixHTTPHandler(socket_path)
+    )
+
+
+def loopback_urlopen(
+    req: urllib.request.Request | str,
+    timeout: float,
+    *,
+    unix_socket_path: "str | os.PathLike[str] | None" = None,
+):
     """Open ``req`` against the local gateway, ignoring any configured proxy.
 
     Drop-in for ``urllib.request.urlopen`` at loopback call sites, with one
@@ -69,6 +131,17 @@ def loopback_urlopen(req: urllib.request.Request | str, timeout: float):
     gateway that can hang forever is never what a call site wants, and making
     it explicit costs nothing -- every existing loopback site already passes
     one.
+
+    When *unix_socket_path* is given and the file exists, the request is sent
+    over that ``AF_UNIX`` socket instead of TCP (the URL -- and therefore the
+    ``Host`` header -- is unchanged). This lets the gateway kernel-verify the
+    caller's identity via ``SO_PEERCRED``; see ``dashboard/token_auth``. The
+    TCP fallback triggers ONLY when nobody answers on the socket at connect
+    time (``FileNotFoundError`` / ``ConnectionRefusedError``, i.e. a stale
+    file left by a dead gateway): those cases provably never delivered the
+    request, so retrying over TCP cannot double-send. Any later failure --
+    an HTTP error status, a read timeout, a reset mid-response -- propagates
+    exactly as it would on TCP, keeping every caller's error shape unchanged.
 
     The opener is rebuilt per call rather than cached at module scope. Both
     handlers are stateless, so a cache would be safe for the FIXED code -- but
@@ -83,4 +156,19 @@ def loopback_urlopen(req: urllib.request.Request | str, timeout: float):
     default opener, because they genuinely need the corporate proxy to leave
     the host.
     """
+    if unix_socket_path is not None and hasattr(socket, "AF_UNIX"):
+        sock_path = os.fspath(unix_socket_path)
+        if os.path.exists(sock_path):
+            try:
+                return _build_unix_opener(sock_path).open(req, timeout=timeout)
+            except urllib.error.HTTPError:
+                # The gateway answered (4xx/5xx) -- a real response, never a
+                # transport failure. HTTPError subclasses URLError, so this
+                # re-raise must precede the URLError arm below.
+                raise
+            except urllib.error.URLError as exc:
+                if not isinstance(exc.reason, (FileNotFoundError, ConnectionRefusedError)):
+                    raise
+                # Stale socket file (gateway died / restarted TCP-only):
+                # connect never delivered anything, so TCP retry is safe.
     return build_loopback_opener().open(req, timeout=timeout)

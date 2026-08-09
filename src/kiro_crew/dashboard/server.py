@@ -8,6 +8,7 @@ import faulthandler
 import importlib
 import logging
 import os
+import stat
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -148,6 +149,7 @@ from kiro_crew.dashboard.origin import (
     build_allowed_origins,
     check_host,
     check_origin,
+    dashboard_socket_path,
     resolve_dashboard_host,
     should_canonicalize_host,
 )
@@ -173,6 +175,7 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances.registry import InstancesRegistry
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
+from kiro_crew.mcp_gateway.socketsec import chmod_socket_0600
 from kiro_crew.metrics.http_metrics import (
     make_route_latency_middleware,
     record_boot_to_ready,
@@ -1228,6 +1231,95 @@ async def _start_site(
         retries * delay,
     )
     raise SystemExit(1) from last_exc
+
+
+def _remove_stale_unix_socket(path: Path) -> None:
+    """Best-effort unlink of a leftover unix-socket file before rebind.
+
+    Only a socket inode is removed — anything else at the path is left in
+    place (and the subsequent bind fails, degrading to TCP-only). Safe against
+    a live sibling instance: the socket name is port-suffixed and the TCP port
+    bind (a singleton per port) has already succeeded by the time this runs,
+    so an existing file with our port's name can only be stale.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return
+    if not stat.S_ISSOCK(st.st_mode):
+        logger.warning(
+            "path %s exists and is not a socket (mode=%o); leaving in place", path, st.st_mode
+        )
+        return
+    try:
+        path.unlink()
+    except OSError as exc:
+        logger.warning("could not remove stale dashboard socket %s: %s", path, exc)
+
+
+async def _start_unix_site(runner: web.AppRunner, port: int) -> Path | None:
+    """Additionally serve the internal API on a unix socket (POSIX only).
+
+    Binds ``dashboard_socket_path(port)`` on the same :class:`web.AppRunner`
+    as the TCP site, so both transports serve the identical app + middleware
+    chain. The unix transport exists so ``token_auth_middleware`` can
+    kernel-verify (``SO_PEERCRED`` + /proc ancestry) the session identity an
+    internal caller declares in ``X-Session-Key`` — TCP loopback carries no
+    peer credentials.
+
+    Strictly additive: skipped entirely on Windows, and ANY failure (bind
+    error, permission problem) logs once and degrades to TCP-only, which is
+    exactly today's behavior. The socket file inherits the data home's 0700
+    directory gate (created here if missing) and is itself tightened to 0600,
+    mirroring ``mcp_gateway/transport`` conventions. Returns the bound path,
+    or ``None`` when the transport is unavailable.
+    """
+    if platform_compat.IS_WINDOWS:
+        return None
+    try:
+        path = dashboard_socket_path(port)
+        # Offloaded: directory creation, the stale-socket stat/unlink, and the
+        # post-bind chmod are blocking fs I/O (no-blocking-call-on-event-loop).
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            subprocess_executor(), platform_compat.make_owner_only_dir, path.parent
+        )
+        await loop.run_in_executor(subprocess_executor(), _remove_stale_unix_socket, path)
+        unix_site = web.UnixSite(runner, str(path))
+        await unix_site.start()
+        await loop.run_in_executor(subprocess_executor(), chmod_socket_0600, path)
+        logger.info("dashboard internal API also listening on unix socket %s", path)
+        return path
+    except Exception as exc:
+        logger.warning(
+            "dashboard unix socket unavailable (%s); internal API stays TCP-only", exc
+        )
+        return None
+
+
+def _register_unix_socket_cleanup(app: web.Application, holder: dict[str, Path | None]) -> None:
+    """Register best-effort removal of the unix socket file at shutdown.
+
+    Registered BEFORE ``runner.setup()`` freezes the app's signal lists; the
+    socket path only becomes known after the site starts, so it is read from
+    *holder* lazily. aiohttp does not unlink a ``UnixSite``'s socket file on
+    stop, and while startup self-heals a stale file, a clean shutdown should
+    not leave one for clients to trip over (each stale connect costs the
+    client a refused-connect before its TCP fallback).
+    """
+
+    async def _unlink_unix_socket(app_: web.Application) -> None:
+        path = holder.get("path")
+        if path is None:
+            return
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _remove_stale_unix_socket, path
+            )
+        except Exception:  # pragma: no cover — cleanup must never break shutdown
+            logger.debug("dashboard unix socket cleanup failed", exc_info=True)
+
+    app.on_cleanup.append(_unlink_unix_socket)
 
 
 def _write_secret_file(secret_path: Path, secret: str) -> None:
@@ -3167,6 +3259,12 @@ async def start_dashboard(
     # ``_register_instances_hooks`` for why ordering matters.
     _register_instances_hooks(app, state, port)
 
+    # Unix-socket cleanup hook — registered before runner.setup freezes the
+    # signal lists; the path itself only becomes known after the site starts
+    # (below), hence the holder indirection.
+    _unix_socket_holder: dict[str, Path | None] = {"path": None}
+    _register_unix_socket_cleanup(app, _unix_socket_holder)
+
     # Hardened runner: bounds the request-line/header read time (slowloris /
     # CWE-400) and reaps idle keep-alive connections. See dashboard.slowloris.
     # max_field_size is raised from aiohttp's 8190 default so the accumulated
@@ -3176,6 +3274,9 @@ async def start_dashboard(
     await runner.setup()
     site = web.TCPSite(runner, bind_address_for(local_only), port)
     await _start_site(site, port)
+    # Additional kernel-verifiable transport for the internal API (POSIX only;
+    # degrades to TCP-only on any failure — see _start_unix_site).
+    _unix_socket_holder["path"] = await _start_unix_site(runner, port)
 
     # Port bind succeeded — now safe to write the secret file. Offloaded:
     # _write_secret_file does blocking fs I/O (os.open/os.close and, on Windows,
@@ -3714,6 +3815,11 @@ async def start_api_server(
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
 
+    # Unix-socket cleanup hook — same holder pattern as start_dashboard,
+    # registered before runner.setup freezes the signal lists.
+    _unix_socket_holder: dict[str, Path | None] = {"path": None}
+    _register_unix_socket_cleanup(app, _unix_socket_holder)
+
     # Hardened runner: same slowloris / CWE-400 mitigation as start_dashboard,
     # plus the raised max_field_size (see start_dashboard for the cookie-jar
     # rationale).
@@ -3727,6 +3833,9 @@ async def start_api_server(
     bind_addr = bind_address_for(local_only)
     site = web.TCPSite(runner, bind_addr, port)
     await _start_site(site, port)
+    # Additional kernel-verifiable transport for the internal API (parity with
+    # start_dashboard; POSIX only, degrades to TCP-only on any failure).
+    _unix_socket_holder["path"] = await _start_unix_site(runner, port)
 
     # Port bind succeeded — now safe to persist the secret file (parity with
     # start_dashboard: write deferred so a failed bind can't poison it).

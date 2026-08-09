@@ -282,14 +282,18 @@ def read_session_pid_txt(pid: int | str, cfg: Path | None = None) -> str:
     return txt.strip() if txt is not None else ""
 
 
-def verify_session_pid(pid: int | str) -> str:
+def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:
     """Return the session key for *pid* iff its HMAC sidecar verifies.
 
     Fails closed to ``""`` on: missing ``.txt``, missing ``.sig``, a symlink
     or non-regular file at either path (see :func:`_read_regular_nofollow`),
     missing or short SEL key, or signature mismatch. Never raises.
+
+    *cfg* overrides the mapping directory (mirrors
+    :func:`read_session_pid_txt`); defaults to :func:`config_dir`.
     """
-    cfg = config_dir()
+    if cfg is None:
+        cfg = config_dir()
     txt = _read_regular_nofollow(_txt_path(pid, cfg))
     sig_raw = _read_regular_nofollow(_sig_path(pid, cfg))
     if txt is None or sig_raw is None:

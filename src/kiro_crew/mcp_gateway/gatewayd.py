@@ -74,9 +74,9 @@ from kiro_crew.mcp_gateway.rewriter import (
 from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.peer_resolve import resolve_peer_identity
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import SecurityEventLog
-from kiro_crew.session_pid_sig import read_session_pid_txt
 
 logger = logging.getLogger(__name__)
 
@@ -1419,51 +1419,19 @@ def _audit_caller_claimed(
 def _resolve_peer_identity(peer_pid: int) -> tuple[str, list[int]]:
     """Walk the peer's real-PID ancestry (server-side): session key + host chain.
 
-    Runs in gatewayd's own PID namespace (real pids), so it works regardless
-    of how the stub sees the world. A single /proc walk returns both:
-
-    * the session_key from the first ancestor with a ``session_pid_<pid>.txt``
-      file (``""`` when none matches — normal at register time for a runtime
-      that has not been claimed yet), and
-    * the full HOST ancestor PID chain (peer first). The register handler
-      indexes the stub connection under this chain so a later ``claim`` frame
-      — which always carries the runtime's HOST pid — matches even when the
-      stub's self-reported ``ancestor_pids`` are namespace-local (sandbox
-      PID-namespace topology). Without the host chain in ``_CONN_INDEX`` the
-      claim-push silently updates zero connections and the stub stays
-      identity-less for life: orphan subagents with empty ``parent_session``
-      and undeliverable completion events.
-
-    The walk continues past a session-key match so the chain is complete for
-    claim matching at any ancestry level.
+    Delegates to the shared :func:`kiro_crew.peer_resolve.resolve_peer_identity`
+    walk (also consumed by the dashboard's unix-socket peer verification) with
+    gatewayd's module-level ``_config_dir`` / ``_ppid_fn`` seams, which tests
+    monkeypatch. The register handler indexes the stub connection under the
+    returned host chain so a later ``claim`` frame — which always carries the
+    runtime's HOST pid — matches even when the stub's self-reported
+    ``ancestor_pids`` are namespace-local (sandbox PID-namespace topology).
+    Without the host chain in ``_CONN_INDEX`` the claim-push silently updates
+    zero connections and the stub stays identity-less for life: orphan
+    subagents with empty ``parent_session`` and undeliverable completion
+    events.
     """
-    session_key = ""
-    chain: list[int] = []
-    try:
-        cfg_dir = _config_dir()
-    except Exception:
-        return "", []
-
-    pid = peer_pid
-    seen: set[int] = set()
-    while pid > 1 and pid not in seen:
-        seen.add(pid)
-        chain.append(pid)
-        if not session_key:
-            # Hardened read (symlink refusal, regular-file check, size
-            # bound) — gatewayd is a trusted process reading a predictable,
-            # agent-writable path, the exact symlink-planting surface
-            # session_pid_sig's reader exists to close.
-            try:
-                session_key = read_session_pid_txt(pid, cfg_dir)
-            except OSError:
-                pass
-        try:
-            pid = _ppid_fn(pid)
-        except (OSError, ValueError):
-            # Target exited mid-walk (/proc/<pid>/stat gone or malformed).
-            break
-    return session_key, chain
+    return resolve_peer_identity(peer_pid, config_dir_fn=_config_dir, ppid_fn=_ppid_fn)
 
 
 def _audit_peer_identity_resolved(caller: str, peer_pid: int, stub_uuid: str) -> None:

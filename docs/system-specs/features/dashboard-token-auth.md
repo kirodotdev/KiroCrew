@@ -376,6 +376,69 @@ same token-auth chain; otherwise every state-changing MCP route (`/api/spawn`,
 `/api/taskrunner`) is reachable unauthenticated on loopback (port forwarders and
 browser CSRF reach `127.0.0.1`).
 
+#### Unix-socket transport: kernel-attested `X-Session-Key` (POSIX)
+
+TCP loopback + `X-Internal-Secret` authenticates the *installation* (any
+same-uid process can read `.local_secret`), but the session identity in
+`X-Session-Key` is entirely client-declared — a same-uid process could claim
+any session's key. To close that gap, both server entrypoints additionally
+bind a `web.UnixSite` on the **same** `AppRunner` at
+`dashboard_socket_path(port)` (`~/.kiro/crew/dashboard-<port>.sock`,
+port-suffixed so multi-instance homes don't collide; see
+`server._start_unix_site`). Windows and any bind failure degrade to TCP-only
+— today's behavior — after one log line. The socket file is unlinked
+best-effort at shutdown and self-heals from stale files at startup.
+
+For an internal/mixed-internal request arriving on that socket **and carrying
+`X-Session-Key`**, `token_auth_middleware` kernel-verifies the claim before
+either auth flavor can grant (see `_verify_unix_peer`):
+
+1. `socketsec.check_peer_is_self` — anything but a positive `MATCH` (foreign
+   uid, or credentials unreadable) → deny, mirroring gatewayd's
+   deny-by-default register policy. On supported POSIX platforms an accepted
+   `AF_UNIX` connection always yields peer credentials, so `UNVERIFIABLE`
+   means the attestation mechanism itself failed.
+2. `socketsec.get_peer_pid` (`SO_PEERCRED` / `LOCAL_PEERPID`) → peer pid.
+3. `peer_resolve.resolve_peer_identity(..., signed_only=True)` (the same
+   host-namespace /proc ancestry walk gatewayd uses for stub registration,
+   offloaded to the subprocess executor) → the session key of the nearest
+   ancestor whose `session_pid_<pid>.txt` **HMAC sidecar verifies**. The bare
+   `.txt` is same-uid agent-writable and MUST NOT authorize: an unsigned
+   mapping counts as unresolvable, so a planted
+   `session_pid_<own_pid>.txt` cannot mint a verified identity (the sidecar
+   is keyed by the agent-unreadable SEL trust root with the pid bound into
+   the MAC).
+4. Resolved key **differs** from the declared header → **403** + SEL
+   `dashboard.peer-identity-mismatch` (outcome=denied, peer pid recorded).
+   Resolved and equal → proceed with `request["peer_verified"] = True`.
+   Unresolvable (warm-pool runtime before claim, cron scripts, pooled MCP
+   backends — no pidfile in the ancestry; or a mapping published unsigned) →
+   proceed under today's semantics.
+
+CSRF interplay: `check_origin`'s no-Origin branch trusts the unix transport
+(`origin.request_is_unix_socket`) exactly as it trusts loopback TCP — a
+browser cannot connect to the unix socket, so the cookie-attaching
+cross-origin threat the CSRF check exists for cannot arrive on it. Without
+this, every mutating internal call on the socket would 403 at the CSRF layer
+before token auth ran.
+
+The posture is deliberately **verify-when-resolvable / deny-on-mismatch**:
+never weaker than the TCP-era check, kernel-verified whenever the gateway's
+own registry can attest the peer. Strict fail-closed denial of unresolvable
+peers is explicitly out of scope (it would break warm-pool and cron callers).
+TCP requests never engage the branch — browser cookies, Windows, and remote
+`local_only=False` deployments are untouched.
+
+Client side, `loopback_http.loopback_urlopen` accepts a `unix_socket_path`
+and `mcp_core` prefers the socket for every `_API` request when the file
+exists (`_api_urlopen`), falling back to TCP **only** when nothing answered
+at connect time (`FileNotFoundError` / `ConnectionRefusedError` — cases that
+provably never delivered the request, so the retry cannot double-send). HTTP
+error statuses and read timeouts propagate unchanged, keeping every caller's
+error shape identical. The Playwright proxy stays on TCP: it sends no
+session-mutating claims and deliberately avoids the config import the socket
+path requires.
+
 ### 6. `gateway.py` Integration
 
 `_init_dashboard()` resolves config and passes to `start_dashboard()`:

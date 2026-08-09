@@ -18,6 +18,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from kiro_crew.dashboard.origin import (
     is_https_request,
     is_loopback,
     is_proxied_request,
+    request_is_unix_socket,
 )
 from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
@@ -51,6 +53,9 @@ from kiro_crew.dashboard.token_secret import (  # noqa: F401  # re-exports
     _get_secret,
     _load_or_create_secret,
 )
+from kiro_crew.executors import subprocess_executor
+from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
+from kiro_crew.peer_resolve import resolve_peer_identity
 from kiro_crew.sel import sel as _sel_fn
 
 logger = logging.getLogger(__name__)
@@ -1271,6 +1276,126 @@ async def warm_auth_singletons() -> None:
     await asyncio.to_thread(_get_revoked_store)
 
 
+def _unix_request_socket(request: web.Request) -> Any:
+    """Return the request's underlying socket iff it is ``AF_UNIX``.
+
+    Thin socket-returning wrapper over the shared
+    :func:`~kiro_crew.dashboard.origin.request_is_unix_socket` discriminator
+    (one definition of "arrived on the dashboard's unix socket" for the CSRF
+    and token-auth layers). The peer-verification branch needs the SOCKET (to
+    read kernel peer credentials), not just the boolean. Returns ``None`` for
+    TCP requests, mocked/absent transports, platforms without ``AF_UNIX``,
+    and any error — never raises.
+    """
+    if not request_is_unix_socket(request):
+        return None
+    transport = getattr(request, "transport", None)
+    if transport is None:  # pragma: no cover — excluded by the check above
+        return None
+    try:
+        return transport.get_extra_info("socket")
+    except Exception:
+        return None
+
+
+async def _verify_unix_peer(
+    request: web.Request, sock: Any, path: str
+) -> web.StreamResponse | None:
+    """Kernel-verify the declared ``X-Session-Key`` of an AF_UNIX peer.
+
+    Verify-when-resolvable, deny-on-mismatch, degrade-to-status-quo when
+    unresolvable — strictly monotonic hardening over the TCP-era behavior
+    (where the header was accepted entirely on the caller's word):
+
+    * peer uid positively ≠ ours (``MISMATCH``) → deny. Cannot normally
+      happen (the socket sits in the 0700 data home), so a hit means the
+      directory gate failed — exactly when denying matters most.
+    * peer resolved to a session key that DIFFERS from the declared header →
+      deny 403 + SEL ``dashboard.peer-identity-mismatch`` (the impersonation
+      this check exists to close: a same-uid process declaring another
+      session's identity).
+    * peer resolved to the SAME key → proceed with
+      ``request["peer_verified"] = True``.
+    * anything unresolvable (no peer pid mechanism, no ``session_pid_<pid>``
+      file in the ancestry — warm-pool runtimes before claim, cron scripts,
+      pooled MCP backends) → proceed under today's semantics: no new denial.
+
+    Returns a deny response, or ``None`` to proceed. The /proc ancestry walk
+    is blocking I/O and runs on the subprocess executor (mirroring gatewayd's
+    register-path offload).
+    """
+    declared = request.headers.get("X-Session-Key", "")
+    if not declared:
+        # Nothing session-scoped is being claimed — nothing to verify.
+        return None
+    verdict = check_peer_is_self(sock)
+    if verdict is not PeerCredResult.MATCH:
+        # Deny-by-default, mirroring gatewayd's register-path policy: a peer
+        # whose principal cannot be POSITIVELY confirmed as ours is refused.
+        # On the supported POSIX platforms (Linux SO_PEERCRED, macOS
+        # LOCAL_PEERCRED) an accepted AF_UNIX connection always yields peer
+        # credentials, so UNVERIFIABLE here means the mechanism itself failed
+        # — exactly when trusting the claim is least justified. TCP callers
+        # are unaffected (this branch is AF_UNIX-only) and the client falls
+        # back to TCP transparently if the socket ever refuses connects.
+        _reason = (
+            "unix peer uid differs from server uid"
+            if verdict is PeerCredResult.MISMATCH
+            else "unix peer credentials unverifiable"
+        )
+        _sel_fn().log_api_access(
+            caller="unknown",
+            operation="dashboard.peer-identity-mismatch",
+            outcome="denied",
+            source="token_auth",
+            resources=path,
+            error=_reason,
+        )
+        _log_auth(request, "internal", "denied", _reason)
+        return _deny(request, "Forbidden")
+    peer_pid = get_peer_pid(sock)
+    if peer_pid is None:
+        return None
+    try:
+        # signed_only: authorization decisions must not trust the bare
+        # same-uid-writable .txt mapping — require the HMAC sidecar (pid
+        # bound into the MAC, keyed by the agent-unreadable SEL trust root),
+        # or the walk yields "" and this check degrades to status quo.
+        peer_key, _chain = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            partial(resolve_peer_identity, peer_pid, signed_only=True),
+        )
+    except Exception:
+        # Resolution machinery failing is an "unresolvable" outcome, not a
+        # denial — the change must never be weaker OR stricter than intended.
+        logger.debug("unix peer identity resolution failed", exc_info=True)
+        return None
+    if not peer_key:
+        return None
+    if peer_key != declared:
+        _sel_fn().log_api_access(
+            caller=declared,
+            operation="dashboard.peer-identity-mismatch",
+            outcome="denied",
+            source="token_auth",
+            resources=path,
+            error=f"peer_pid={peer_pid} resolved session differs from declared X-Session-Key",
+        )
+        _log_auth(
+            request,
+            "internal",
+            "denied",
+            f"peer identity mismatch (peer_pid={peer_pid})",
+        )
+        return _deny(request, "Forbidden")
+    # Positive kernel attestation. Debug-level on purpose — this fires on
+    # every internal call from a claimed session; the SEL trail records the
+    # deny arm, which is the permission decision that changes anything.
+    logger.debug("unix peer identity verified for %s (peer_pid=%d)", path, peer_pid)
+    request["peer_verified"] = True
+    return None
+
+
 def token_auth_middleware(
     *,
     internal_paths: frozenset[str] = frozenset(),
@@ -1344,7 +1469,24 @@ def token_auth_middleware(
             _matches_mixed = True
             _matches_strict = False
         _matches_internal = _matches_strict or _matches_mixed
-        if _matches_internal and is_loopback(request.remote or ""):
+        # A request on the dashboard's unix socket is same-machine by
+        # construction (the socket lives in the 0700 data home), so it
+        # qualifies as "local" for the internal branch even though it has no
+        # loopback peer IP (request.remote is empty for AF_UNIX transports).
+        _unix_sock = _unix_request_socket(request) if _matches_internal else None
+        if _matches_internal and (
+            _unix_sock is not None or is_loopback(request.remote or "")
+        ):
+            # Kernel-attested peer verification (AF_UNIX only): deny a caller
+            # whose /proc ancestry resolves to a DIFFERENT session than the
+            # one its X-Session-Key header declares. Runs before either auth
+            # flavor grants — a mismatched peer is denied no matter what
+            # credentials it carries. TCP loopback is untouched (no peer
+            # credentials to check).
+            if _unix_sock is not None:
+                _peer_deny = await _verify_unix_peer(request, _unix_sock, path)
+                if _peer_deny is not None:
+                    return _peer_deny
             _has_secret_header = "X-Internal-Secret" in request.headers
             if _has_secret_header:
                 _provided_secret = request.headers["X-Internal-Secret"]
