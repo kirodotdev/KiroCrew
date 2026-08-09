@@ -189,7 +189,7 @@ def node_bin_dirs() -> tuple[str, ...]:
     is returned: these entries go on the PATH of build subprocesses, and mise
     alone can contribute ~18 install and alias directories on a developer box --
     a PATH that long slows every exec lookup and buries the intended toolchain
-    behind stale majors (node 16/18 against a ``20 || >=22`` engines field).
+    behind stale majors (node 16/18 against a ``>=22`` engines field).
 
     Why this exists: ``install.sh --mise`` and ``ensure-node.sh`` -- the
     supported install path -- put node under ``$HOME``. A non-login gateway
@@ -258,7 +258,7 @@ def node_augmented_path(base_path: str = "") -> str:
 
     Prepended, not appended: a distribution's system ``node`` can be older than
     what ``website/package.json`` declares in ``engines`` (Amazon Linux 2023
-    ships node 18 against a ``20 || >=22`` requirement), whereas
+    ships node 18 against a ``>=22`` requirement), whereas
     ``ensure-node.sh`` installs a version chosen to satisfy the build. Where
     both exist the managed toolchain is the one that works.
     """

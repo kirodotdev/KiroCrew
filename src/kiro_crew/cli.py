@@ -47,7 +47,7 @@ from kiro_crew.config.loader import (
     build_provider_factory,
 )
 from kiro_crew.config.paths import _default_home, _legacy_home
-from kiro_crew.constants import BANNER, env_flag_enabled
+from kiro_crew.constants import BANNER, MIN_NODE_MAJOR, env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.dashboard.state import set_build_info
 from kiro_crew.dashboard.urls import parse_dashboard_url
@@ -259,11 +259,8 @@ def _project_dir_file() -> Path:
     return config_dir() / "project_dir"
 
 
-_MIN_NODE_VERSION = 16
-
-
 def _ensure_node(proj_dir: str = "") -> bool:
-    """Run ensure-node.sh to guarantee Node >= 16. Returns True if node is OK."""
+    """Run ensure-node.sh to guarantee a supported Node. Returns True if node is OK."""
     script = None
     env_dir = os.environ.get("KIROCREW_PROJECT_DIR")
     for candidate in [
@@ -288,7 +285,7 @@ def _ensure_node(proj_dir: str = "") -> bool:
 
 
 def _node_ok() -> bool:
-    """Check if node >= MIN_NODE_VERSION is available."""
+    """Check if node >= MIN_NODE_MAJOR is available."""
     node = shutil.which("node")
     if not node:
         return False
@@ -300,7 +297,7 @@ def _node_ok() -> bool:
             timeout=5,
         )
         major = int(node_ver.stdout.strip().lstrip("v").split(".")[0])
-        return major >= _MIN_NODE_VERSION
+        return major >= MIN_NODE_MAJOR
     except Exception:
         return False
 

@@ -7,7 +7,7 @@
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "type": "module",
   "engines": {
-    "node": "20 || >=22"
+    "node": ">=22"
   },
   "scripts": {
     "clean": "rm -rf dist && rm -rf node_modules",
@@ -136,7 +136,7 @@
     "@mswjs/interceptors": "0.41.3",
     "@smithy/types": "4.13.1",
     "@tanstack/query-core": "5.96.0",
-    "@types/node": "25.5.0",
+    "@types/node": "24.13.3",
     "@typescript-eslint/project-service": "8.58.0",
     "@typescript-eslint/scope-manager": "8.58.0",
     "@typescript-eslint/tsconfig-utils": "8.58.0",

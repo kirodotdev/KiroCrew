@@ -230,7 +230,7 @@ The gate audits all lockfile-backed Node applications independently:
 - `website/electron/package-lock.json`
 - `site/package-lock.json`
 
-CI pins Node `20.19.4`, then invokes the exact npm package `npm@10.8.2` through `npx` with
+CI pins Node `24.19.0`, then invokes the exact npm package `npm@10.8.2` through `npx` with
 `audit --omit=dev --package-lock-only --ignore-scripts --audit-level=high --json`. It neither
 installs project packages nor runs project lifecycle scripts. High and critical production
 findings block; information, low, moderate, and development-only findings do not.

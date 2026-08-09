@@ -1298,7 +1298,7 @@ def _update() -> None:
         print("  🔄 kiro-cli update")
         subprocess.run(["kiro-cli", "update"], capture_output=True, timeout=120)
 
-    # Ensure Node.js >= 16 for frontend builds
+    # Ensure a supported Node.js for frontend builds
     from kiro_crew.cli import _ensure_node  # circular import: cli -> cli_server -> cli
 
     print("  🔄 Checking Node.js…")

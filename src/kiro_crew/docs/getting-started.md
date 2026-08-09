@@ -11,7 +11,7 @@ like Slack, Discord, and Telegram.
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
 | **Python** + pip | Backend | `>= 3.10` |
-| **Node.js** + npm | Building the dashboard from source | `20` or `>= 22` |
+| **Node.js** + npm | Building the dashboard from source | `>= 22` (24 LTS recommended) |
 | **`kiro-cli`** | Driving the LLM | Required, on your `PATH` |
 
 Node is only needed to *build* the dashboard. The prebuilt wheel, the macOS DMG,

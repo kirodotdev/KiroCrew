@@ -348,9 +348,9 @@ Resources:
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
           echo "--- installing Node.js ---"
-          # AL2023 ships a recent-enough nodejs (>=18) in its default AppStream,
-          # which is what the vite build needs — this is the reliable primary path
-          # (validated on AL2023, no external repo). The NodeSource fallback does
+          # AL2023's default AppStream nodejs is the reliable primary path
+          # (validated on AL2023, no external repo); the supported floor is
+          # Node 22+ (24 LTS recommended). The NodeSource fallback does
           # NOT pipe a remote script into bash (a supply-chain risk if NodeSource
           # is MITM'd/compromised); instead it imports NodeSource's GPG key over
           # pinned TLS and writes a signed dnf repo with gpgcheck=1, so every RPM
@@ -377,7 +377,7 @@ Resources:
               {
                 printf '%s\n' '[nodesource-nodejs]'
                 printf '%s\n' 'name=Node.js Packages'
-                printf '%s\n' 'baseurl=https://rpm.nodesource.com/pub_20.x/nodistro/nodejs/$basearch'
+                printf '%s\n' 'baseurl=https://rpm.nodesource.com/pub_24.x/nodistro/nodejs/$basearch'
                 printf '%s\n' 'enabled=1'
                 printf '%s\n' 'gpgcheck=1'
                 printf '%s\n' "gpgkey=$NS_KEY"

@@ -37,7 +37,7 @@ tell you in a paragraph.
 
 - macOS or Linux (Windows is not supported by the `kiro-cli` backend)
 - Python ≥ 3.9
-- Node.js ≥ 18 and npm (for the frontend)
+- Node.js ≥ 22 (24 LTS recommended) and npm (for the frontend)
 - The `kiro-cli` agent on your `PATH`, logged in (`kiro-cli login`) — it is the
   only LLM backend (`agent.provider = acp`)
 - [Ollama](https://ollama.com) for memory and knowledge-library embeddings

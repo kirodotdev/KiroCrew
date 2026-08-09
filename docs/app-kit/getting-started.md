@@ -5,7 +5,7 @@ Build, install, and run your first KiroCrew app in 5 minutes.
 ## Prerequisites
 
 - KiroCrew installed and running (`kirocrew gateway`)
-- Node.js 18+ (for apps with UI)
+- Node.js 22+ (24 LTS recommended) (for apps with UI)
 
 ## 1. Create an App Directory
 

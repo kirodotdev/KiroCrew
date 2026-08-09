@@ -11,7 +11,7 @@
 #   cd kirocrew
 #   bash minimal_install.sh
 #
-# Prerequisites: Python 3.10+, Node.js 18+, npm, git
+# Prerequisites: Python 3.10+, Node.js 22+ (24 LTS recommended), npm, git
 # Optional:
 #   --voice    also install voice extras (pip install -e .[voice])
 #   ollama     for local vector memory (see step "Embeddings" below)
@@ -52,8 +52,8 @@ for c in python3.12 python3.11 python3.10 python3; do
 done
 [ -n "$_py" ] || die "Python 3.10+ not found. Install Python 3.10 or newer and re-run."
 
-has node || die "Node.js not found. Install Node.js 18+ (https://nodejs.org) and re-run."
-has npm  || die "npm not found. Install Node.js 18+ (https://nodejs.org) and re-run."
+has node || die "Node.js not found. Install Node.js 22+ (24 LTS recommended, https://nodejs.org) and re-run."
+has npm  || die "npm not found. Install Node.js 22+ (24 LTS recommended, https://nodejs.org) and re-run."
 
 echo "👻 KiroCrew — minimal install"
 echo "  Repo:    $REPO_DIR"

@@ -62,7 +62,7 @@ echo ""
 
 echo "── Step 2: Dependencies ──"
 
-# Node.js (>= 18 recommended for the website build)
+# Node.js (>= 22 required for the website build; 24 LTS recommended)
 if [ -x "$_kirocrew_dir/ensure-node.sh" ]; then
     bash "$_kirocrew_dir/ensure-node.sh"
     # Re-source managers so newly-installed node lands on PATH

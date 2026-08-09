@@ -41,11 +41,12 @@
  * ## Known limitations, stated explicitly
  *
  *  1. **`Intl.DurationFormat` is NOT used**, because it does not exist on the
- *     runtime this ships to: `typeof Intl.DurationFormat === 'undefined'` on
- *     Node 20 (the CI and Electron baseline). `fmtUnit` uses `NumberFormat`
- *     with `style: 'unit'` instead, which is Baseline and covers every duration
- *     shape this app renders (a single value plus a unit). Revisit when the
- *     Electron floor reaches a Chromium with `DurationFormat`.
+ *     minimum supported runtime: `typeof Intl.DurationFormat === 'undefined'`
+ *     on Node 22 (the contributor floor; CI and Electron run Node 24, which
+ *     has it). `fmtUnit` uses `NumberFormat` with `style: 'unit'` instead,
+ *     which is Baseline and covers every duration shape this app renders (a
+ *     single value plus a unit). Revisit when the supported floor reaches a
+ *     runtime with `DurationFormat`.
  *  2. **Locale-formatted digits are not machine-readable.** `hi` groups as
  *     `12,34,567` (Indian grouping) and `bn` renders `১২,৩৪,৫৬৭` in Bengali
  *     digits by default — correct for display, catastrophic for a CSS length, a
@@ -211,7 +212,7 @@ export function fmtUnit(value: number, unit: FormatUnit, options?: NumberOptions
  * put a stray gap in `6分钟 38秒`.
  *
  * `Intl.DurationFormat` would do all of this in one call and is deliberately
- * not used: it is `undefined` on the Node 20 / Electron baseline (see
+ * not used: it is `undefined` on the Node 22 contributor floor (see
  * limitation 1 in the file header).
  *
  * Every part passed is RENDERED, including zeros. That is deliberate: several

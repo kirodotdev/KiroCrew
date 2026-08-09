@@ -24,6 +24,15 @@ KIROCREW_SPAWNED_VALUE = "1"
 ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
+# Minimum supported Node.js MAJOR version for every Python-side check
+# (``kirocrew doctor``, the frontend-build probe in ``cli.py``, the TUI
+# launcher in ``cli_chat.py``). Single source of truth so doctor and chat can
+# never disagree about the floor. 22 is the oldest non-EOL line the frontend
+# bundler supports (``ensure-node.sh`` enforces the finer-grained 22.12 floor;
+# ``.nvmrc`` pins the recommended 24 LTS).
+MIN_NODE_MAJOR = 22
+
+
 def env_flag_enabled(name: str) -> bool:
     """Return True iff env var *name* is set to a truthy value (case/space-insensitive)."""
     return os.environ.get(name, "").strip().lower() in ENV_TRUTHY

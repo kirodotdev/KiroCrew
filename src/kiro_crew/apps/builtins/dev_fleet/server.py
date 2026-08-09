@@ -802,7 +802,7 @@ def _toolchain_bin(name: str) -> str | None:
 
     Managed toolchain first, system npm second: a distribution's node can be
     older than ``website/package.json``'s ``engines`` (Amazon Linux 2023 ships
-    node 18 against ``20 || >=22``), while ``ensure-node.sh`` installs a version
+    node 18 against ``>=22``), while ``ensure-node.sh`` installs a version
     chosen to satisfy the build.
     """
     return find_node_tool(name, _TRUSTED_PATH) or _trusted_bin(name)

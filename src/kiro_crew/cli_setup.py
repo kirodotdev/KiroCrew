@@ -38,7 +38,7 @@ from kiro_crew.config.loader import (
     env_path,
     write_config_atomically,
 )
-from kiro_crew.constants import DATA_WARNING
+from kiro_crew.constants import DATA_WARNING, MIN_NODE_MAJOR
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
@@ -152,7 +152,7 @@ def _ensure_prerequisites() -> bool:
     # npm packages, e.g. the Playwright browser MCP).
     if not shutil.which("node"):
         _header()
-        print("  ⚠️  node not found on PATH — install Node.js >= 16 from https://nodejs.org\n")
+        print(f"  ⚠️  node not found on PATH — install Node.js >= {MIN_NODE_MAJOR} from https://nodejs.org\n")
 
     # kiro-cli is the agent backend. Note its absence so the user can install it.
     if not shutil.which(KIRO_CLI_BIN):

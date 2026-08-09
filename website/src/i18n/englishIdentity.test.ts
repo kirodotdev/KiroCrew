@@ -121,10 +121,9 @@ describe('no user-facing English left outside the catalog', () => {
     const { readdirSync, readFileSync } = await import('node:fs')
     const { join } = await import('node:path')
 
-    // Hand-rolled walk rather than `fs.globSync`, which only exists on Node 22+
-    // — CI pins Node 20, where it is `undefined` and this test throws
-    // `TypeError: globSync is not a function`. Same shape as the walk in
-    // `scripts/i18n-codemod.mjs`.
+    // Hand-rolled walk rather than `fs.globSync` so the test runs on any
+    // Node a contributor may have (`globSync` only exists on Node 22+). Same
+    // shape as the walk in `scripts/i18n-codemod.mjs`.
     const walk = (dir: string, out: string[] = []): string[] => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name)
@@ -136,8 +135,7 @@ describe('no user-facing English left outside the catalog', () => {
 
     const files = walk('src').filter(f => !f.includes('.test.'))
     // A walk that silently resolved nothing would make this guard vacuous — it
-    // would pass forever while scanning zero files. That is exactly the failure
-    // mode `globSync` had here (undefined on Node 20), so the count is asserted.
+    // would pass forever while scanning zero files, so the count is asserted.
     expect(files.length, 'no .tsx sources found — the walk is broken').toBeGreaterThan(100)
 
     const offenders: string[] = []

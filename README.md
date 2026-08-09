@@ -145,7 +145,7 @@ the container security model.
 
 ### Build from source
 
-macOS and Linux require Python 3.10+, Node.js 18+, npm, and
+macOS and Linux require Python 3.10+, Node.js 22+ (24 LTS recommended), npm, and
 [`kiro-cli`](https://kiro.dev/docs/cli/). The first desktop or dashboard launch
 can install Kiro CLI on the Gateway host and guide device-code sign-in before
 chat opens. Windows is supported through a native source install; follow the

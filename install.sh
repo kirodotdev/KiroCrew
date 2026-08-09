@@ -41,7 +41,7 @@ KIROCREW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Data home: honor KIROCREW_HOME, else the current default ~/.kiro/crew (NOT the
 # pre-move ~/.kirocrew, which the one-time data-home migration deletes).
 KIROCREW_DATA_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
-NODE_VERSION="20"
+NODE_VERSION="24"
 PYTHON_VERSION="3.12"
 KIROCREW_PORT="${KIROCREW_PORT:-5476}"
 ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
@@ -272,6 +272,20 @@ else
 fi
 fi # USE_MISE -eq 0 (Node.js)
 
+# The apt/dnf/brew branches above accept whatever Node the distro ships, which
+# can be older than the supported floor (Debian/Ubuntu in particular). Catch
+# that here rather than as a confusing frontend-build failure later.
+NODE_MIN_MAJOR=22
+if has node; then
+    # `|| echo v0` keeps a broken node binary (loader error) from killing the
+    # installer under `set -e`; v0 then trips the floor warning below.
+    _node_major="$( { node --version 2>/dev/null || echo v0; } | sed 's/^v//' | cut -d. -f1)"
+    if [ -n "$_node_major" ] && [ "$_node_major" -lt "$NODE_MIN_MAJOR" ] 2>/dev/null; then
+        warn "Node.js v$_node_major is below the supported floor (>= $NODE_MIN_MAJOR) — the frontend build will fail"
+        detail "Install Node.js $NODE_VERSION (LTS): https://nodejs.org or 'nvm install $NODE_VERSION'"
+    fi
+fi
+
 # ══════════════════════════════════════════════════════════════════════
 # Step 2: Agent Backend (claude-agent-acp)
 # ══════════════════════════════════════════════════════════════════════
@@ -336,7 +350,7 @@ if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
     rm -f "$_fe_log"
 else
     warn "Skipping frontend build (Node.js or website/ not available)"
-    detail "Install Node.js 18+ for the full React dashboard experience"
+    detail "Install Node.js 22+ (24 LTS recommended) for the full React dashboard experience"
 fi
 
 # ── Python virtual environment & package ──

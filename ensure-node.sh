@@ -13,21 +13,22 @@
 
 # The frontend build (vite 8 / rolldown) requires a Node in the bundler's own
 # declared support range: `vite@8.2.0` and `rolldown@1.2.3` both set
-# engines.node "^20.19.0 || >=22.12.0". Too-old Node fails in more than one
-# way; the first symptom on Node 16 is rolldown importing `styleText` from
-# `node:util` (added in 20.12.0), which aborts the build with
+# engines.node "^20.19.0 || >=22.12.0". Node 20 reached end-of-life on
+# 2026-04-30, so the supported floor is the 22.x leg of that range: 22.12.
+# Too-old Node fails in more than one way; the first symptom on Node 16 is
+# rolldown importing `styleText` from `node:util` (added in 20.12.0), which
+# aborts the build with
 #   "The requested module 'node:util' does not provide an export named 'styleText'".
 # See _version_meets_floor for the exact per-line cutoffs.
-MIN_VERSION="20.19"   # human-readable primary floor, for messages
-TARGET_VERSION=20
+MIN_VERSION="22.12"   # human-readable primary floor, for messages
+TARGET_VERSION=24
 
 # Amazon Linux 2 ships glibc 2.26, but the OFFICIAL Node >= 18 binaries are
 # linked against glibc >= 2.28 and fail to load ("GLIBC_2.28 not found"). The
-# official Node 16 build (glibc-2.17 baseline) runs on AL2 but is below the
-# >= 20.19 floor the frontend now needs. The nodejs "unofficial-builds" project
-# publishes a `glibc-217` variant compiled against glibc 2.17 that satisfies
-# both constraints on AL2 — x64 only (upstream ships no arm64 glibc-217 build).
-GLIBC217_VERSION=20.20.2
+# nodejs "unofficial-builds" project publishes a `glibc-217` variant compiled
+# against glibc 2.17 that satisfies both the loader constraint and the
+# >= 22.12 floor on AL2 — x64 only (upstream ships no arm64 glibc-217 build).
+GLIBC217_VERSION=24.19.0
 
 _node_major() {
     node -v 2>/dev/null | sed 's/v//' | cut -d. -f1
@@ -44,20 +45,20 @@ _node_usable() {
     command -v node >/dev/null 2>&1 && node -v >/dev/null 2>&1
 }
 
-# The floor is the frontend bundler's OWN declared support range, not just the
-# first symptom: `vite@8.2.0` and `rolldown@1.2.3` (website/package-lock.json)
-# both declare engines.node "^20.19.0 || >=22.12.0". So 20.19+ is supported on
-# the 20.x line, the whole 21.x line is not supported at all, and 22 needs
-# 22.12+. A missing `util.styleText` (added in 20.12.0) is only the first way a
-# too-old Node fails; gating on that export alone would still admit versions the
-# bundler rejects. Re-check this range when vite/rolldown are upgraded.
+# The floor is the 22.x leg of the frontend bundler's OWN declared support
+# range: `vite@8.2.0` and `rolldown@1.2.3` (website/package-lock.json) both
+# declare engines.node "^20.19.0 || >=22.12.0", and the 20.x leg is excluded
+# because Node 20 reached end-of-life on 2026-04-30. So 22 needs 22.12+ and
+# anything 23+ is fine. A missing `util.styleText` (added in 20.12.0) is only
+# the first way a too-old Node fails; gating on that export alone would still
+# admit versions the bundler rejects. Re-check this range when vite/rolldown
+# are upgraded.
 _version_meets_floor() {   # $1=major $2=minor
     local maj="$1" min="$2"
     [ -n "$maj" ] && [ -n "$min" ] || return 1
-    if [ "$maj" -eq 20 ]; then [ "$min" -ge 19 ]; return; fi
     if [ "$maj" -eq 22 ]; then [ "$min" -ge 12 ]; return; fi
     if [ "$maj" -ge 23 ]; then return 0; fi
-    return 1   # 21.x is unsupported; so is anything below 20.19
+    return 1   # 20.x is EOL and 21.x unsupported; so is anything below 22.12
 }
 
 # True (0) iff the node FIRST ON PATH runs and meets the floor. This is the
@@ -150,7 +151,7 @@ _candidate_node_bins() {
 }
 
 # PATH precedence is SOURCE ORDER, not version: whichever manager is sourced
-# last wins, so an nvm default of Node 18 can mask a Node 20 that mise or the
+# last wins, so an nvm default of Node 18 can mask a Node 24 that mise or the
 # glibc-217 install just provided, and the run then fails validation with the
 # right node installed but not in front. When the node on PATH is below the
 # floor, promote the first candidate that meets it instead of trusting order.
@@ -294,7 +295,7 @@ PLATFORM=$(_get_platform)
 
 # Source existing managers first — node may already be installed but not in PATH.
 # _promote_usable_node then puts a good-enough node in front regardless of which
-# manager was sourced last, so an already-present Node 20 is not reinstalled just
+# manager was sourced last, so an already-present supported Node is not reinstalled just
 # because an older nvm default masks it.
 _source_mise
 _source_nvm
@@ -325,7 +326,7 @@ case $PLATFORM in
         _install_glibc217_node
         ;;
     mac|al2023)
-        # macOS + AL2023 (glibc 2.34) run the official mise build for Node 20.
+        # macOS + AL2023 (glibc 2.34) run the official mise build for Node 24.
         _ensure_mise
         mise use -g "node@$TARGET_VERSION" 2>/dev/null
         ;;
@@ -344,14 +345,14 @@ case $PLATFORM in
             nvm alias default "$TARGET_VERSION" 2>/dev/null
         fi
         # If the resulting node can't load OR is outside the supported range (an
-        # old glibc leaves official Node 20 unloadable, or a pre-existing
+        # old glibc leaves official Node 24 unloadable, or a pre-existing
         # nvm/mise Node 16/18 is runnable but too old), fall back to the
         # glibc-217 unofficial build (x64), which runs on glibc 2.17+ and is
         # within the range the frontend build requires.
         _source_mise
         _source_nvm
         # Promote before deciding: source order alone can leave an nvm default of
-        # Node 18 in front of the Node 20 mise just installed, and testing PATH
+        # Node 18 in front of the Node 24 mise just installed, and testing PATH
         # as-is would download the unofficial build on a host that already has a
         # supported toolchain.
         _promote_usable_node
