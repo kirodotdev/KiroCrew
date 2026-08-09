@@ -210,11 +210,21 @@ jobs:
             - BLOCK: the design itself is wrong — no real problem, the change does
               not actually solve the stated problem, a clearly better alternative
               was ignored, or an unsafe one-way door with no migration/compat
-              story. (Advisory: BLOCK does NOT block the merge; it flags for a
-              human.)
+              story. BLOCK **FAILS this check and blocks PR readiness** -- a
+              contributor cannot merge past it without fixing the design or
+              getting an explicit human override. Treat it accordingly.
             Tie-breaker: when torn between BLOCK and CONCERNS, choose CONCERNS.
             Only reach for BLOCK when the DESIGN is wrong — never merely because
             the change is large or far-reaching.
+            FALSIFY BEFORE YOU BLOCK (mandatory, because BLOCK now blocks): for
+            each BLOCK candidate, actively try to KILL it -- name the specific
+            requirement the design fails, the concrete alternative that is
+            better, and the consequence of shipping as-is. A candidate survives
+            ONLY if you can state all three from the diff and the code you
+            opened. If any is "might", "unclear", or a matter of taste, it is a
+            CONCERNS at most -- never a BLOCK. Budget: at most 1 BLOCK per
+            review; if you have two, you are almost certainly describing one
+            root design problem, so merge them.
 
             FINAL OUTPUT (authoritative — this is your LAST message; the workflow
             captures it verbatim from the run transcript, so do NOT call any tool
@@ -313,7 +323,7 @@ jobs:
           case "$verdict" in
             PASS) badge="✅ PASS" ;;
             CONCERNS) badge="🟡 CONCERNS" ;;
-            BLOCK) badge="🔴 BLOCK (advisory)" ;;
+            BLOCK) badge="🔴 BLOCK (blocking)" ;;
             *) badge="" ;;
           esac
           if [ -n "$badge" ]; then
@@ -368,10 +378,13 @@ jobs:
       # Dependabot skip, and — critically — any run that DID NOT COMPLETE
       # (Bedrock overload / throttle / 403 / action error → UNKNOWN or empty
       # verdict). An errored or overloaded review must NEVER fail this gate; only
-      # a genuine BLOCK does. NOTE: failing here only turns the "Design Review"
-      # check red — it gates MERGE only if the check is added to the base
-      # branch's REQUIRED status checks (a repo branch-protection setting, out of
-      # scope of this workflow). Do NOT widen the failing branch beyond BLOCK.
+      # a genuine BLOCK does. This check DOES gate merge: pr-readiness.yml
+      # aggregates "Design Review" into the `PR Readiness` status, which is the
+      # branch ruleset's required check, and a `failure` here is counted as a
+      # readiness blocker. That wiring is only safe BECAUSE the failing branch
+      # below is exactly BLOCK -- an errored or overloaded review exits 0, so
+      # infrastructure noise can never block a merge. Do NOT widen the failing
+      # branch beyond BLOCK.
       - name: Design review status (gates on BLOCK)
         if: always()
         env:

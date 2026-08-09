@@ -1,0 +1,123 @@
+name: Screenshot Evidence
+
+# Requires visual evidence in the PR body when the diff touches a USER-VISIBLE
+# frontend surface. Rationale: a reviewer cannot judge a layout, theme, or
+# component change from a diff -- the repo's PR description contract already
+# mandates screenshots for UI changes, but nothing enforced it, so the
+# requirement was routinely missed.
+#
+# Deterministic on purpose: no model, no network beyond the PR read. It answers
+# exactly one question -- "does the body carry an image for a visual change?"
+#
+# Scope is deliberately NARROWER than "website/** changed". Test files, i18n
+# locale catalogues, and type-only declarations change constantly without any
+# visual delta; gating on those would train contributors to paste a meaningless
+# screenshot to get green, which is worse than no gate.
+
+on:
+  pull_request:
+    # `edited` matters: adding the screenshots to the body must be able to turn
+    # this check green WITHOUT forcing a no-op code push.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: screenshot-evidence-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  screenshot-evidence:
+    name: Screenshot Evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Visual surfaces only. Mirrors the `frontend` bucket in ci.yml but
+      # subtracts the paths that change without a visual delta.
+      - name: Detect user-visible frontend changes
+        id: visual
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+            'website/src/components/**' \
+            'website/src/pages/**' \
+            'website/src/apps/**' \
+            'website/src/**/*.css' \
+            'website/index.html' \
+            ':(exclude)website/src/**/*.test.ts' \
+            ':(exclude)website/src/**/*.test.tsx' \
+            ':(exclude)website/src/test/**' \
+            ':(exclude)website/src/**/*.d.ts' \
+            2>/dev/null || true)"
+          if [ -n "$changed" ]; then
+            echo "visual=true" >> "$GITHUB_OUTPUT"
+            echo "Visual surfaces touched:"
+            printf '%s\n' "$changed"
+          else
+            echo "visual=false" >> "$GITHUB_OUTPUT"
+            echo "No user-visible frontend surface touched."
+          fi
+
+      # The body is UNTRUSTED author input. It is only ever regex-matched here --
+      # never executed, never echoed into a shell as code.
+      - name: Require visual evidence in the PR body
+        if: steps.visual.outputs.visual == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          # Escape hatch for a genuinely non-visual change to a visual file
+          # (a pure rename, a comment, an a11y attribute with no rendered delta).
+          # Labelled PRs pass with a warning rather than silently.
+          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'no-screenshots') }}
+        run: |
+          set -uo pipefail
+          if [ "$EXEMPT" = "true" ]; then
+            echo "::warning::'no-screenshots' label present -- visual-evidence requirement waived for this PR."
+            exit 0
+          fi
+
+          body="$(gh api "repos/$REPO/pulls/$PR" --jq '.body // ""' 2>/dev/null || true)"
+
+          # Accept any form that actually renders as an image/video for a
+          # reviewer: markdown image, HTML img/video, a committed
+          # temp-screenshots path, or a GitHub user-attachment URL.
+          if printf '%s' "$body" | grep -qiE '!\[[^]]*\]\([^)]+\)|<img[[:space:]]|<video[[:space:]]|temp-screenshots/|user-attachments/'; then
+            echo "Visual evidence found in the PR description."
+            exit 0
+          fi
+
+          echo "::error::This PR changes a user-visible frontend surface but its description carries no screenshot or recording."
+          {
+            echo "### Screenshot evidence required"
+            echo
+            echo "This PR touches a user-visible surface under \`website/src/\`, so the PR"
+            echo "description must show the change. A diff cannot demonstrate a layout,"
+            echo "theme, or component result."
+            echo
+            echo "**What to attach**"
+            echo "- Static layout / styling / a component at rest -> screenshots"
+            echo "- Animation, transition, hover or focus state -> a recording (video or GIF)"
+            echo "- A multi-step flow (wizard, modal, drag) -> a recording of the whole sequence"
+            echo
+            echo "**How to attach it** (see the \`web-verify\` and \`frontend-design-workflow\` skills)"
+            echo "1. Capture the surface yourself from a running dev server or pod."
+            echo "2. Commit the images under \`temp-screenshots/<feature>/\` -- never under"
+            echo "   \`docs/\` or \`src/kiro_crew/**\`, which ship in the wheel and the DMG."
+            echo "3. Embed with a commit-SHA-pinned URL so it survives branch deletion:"
+            echo "   \`![alt](https://github.com/$REPO/raw/<sha>/temp-screenshots/<feature>/<name>.png)\`"
+            echo
+            echo "**If the change genuinely has no visual delta** (pure rename, comment-only,"
+            echo "or a non-rendering attribute), add the \`no-screenshots\` label and re-run."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1

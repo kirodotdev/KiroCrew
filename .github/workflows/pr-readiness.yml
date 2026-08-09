@@ -368,11 +368,25 @@ jobs:
                     and (.conclusion | IN("success","neutral")))] | length' <<<"$cruns")"
               if [ "$total" -eq 0 ] || [ "$incomplete" -gt 0 ]; then
                 pending+=("$label (not started)")
-              elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ]; then
-                # Advisory: once the real review posts any decisive result it
-                # never blocks; only-skipped means it has not posted yet.
+              elif [ "$label" = "UX Review" ]; then
+                # UX stays advisory: once the real review posts any decisive
+                # result it never blocks; only-skipped means it has not posted yet.
                 if [ "$fail" -gt 0 ] || [ "$pass" -gt 0 ]; then
                   passed+=("$label (advisory)")
+                else
+                  pending+=("$label (not started)")
+                fi
+              elif [ "$label" = "Design Review" ]; then
+                # Design Review BLOCKS on a real BLOCK verdict, so a contributor
+                # cannot merge past a design judged wrong. Safe to treat a
+                # failure as a blocker because fork-design-review.yml fails the
+                # check ONLY on BLOCK -- an errored, throttled or verdict-less
+                # run resolves NEUTRAL and exits 0 -- so `failure` here can only
+                # mean a judged-wrong design, never infrastructure noise.
+                if [ "$fail" -gt 0 ]; then
+                  failed+=("$label (BLOCK)")
+                elif [ "$pass" -gt 0 ]; then
+                  passed+=("$label")
                 else
                   pending+=("$label (not started)")
                 fi
@@ -425,11 +439,21 @@ jobs:
                   success|skipped) passed+=("$label") ;;
                   *) failed+=("$label ($conclusion)") ;;
                 esac
-              elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ]; then
-                # Design and UX are advisory: their opinions and infrastructure
-                # failures do not become an independent readiness blocker, but
-                # completion is still required so the verdict is not premature.
+              elif [ "$label" = "UX Review" ]; then
+                # UX is advisory: its opinions and infrastructure failures do not
+                # become an independent readiness blocker, but completion is
+                # still required so the verdict is not premature.
                 passed+=("$label (advisory)")
+              elif [ "$label" = "Design Review" ]; then
+                # Design Review BLOCKS on a real BLOCK verdict. design-review.yml
+                # fails the check ONLY on BLOCK (PASS/CONCERNS, the Dependabot
+                # skip, and any errored/overloaded/verdict-less run all exit 0),
+                # so a `failure` conclusion is a judged-wrong design rather than
+                # infrastructure noise and is safe to treat as a blocker.
+                case "$conclusion" in
+                  success|neutral|skipped) passed+=("$label") ;;
+                  *) failed+=("$label (BLOCK)") ;;
+                esac
               else
                 case "$conclusion" in
                   success|neutral|skipped) passed+=("$label") ;;
