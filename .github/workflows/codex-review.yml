@@ -6,7 +6,7 @@ name: GPT 5.6 Review
 # authenticates to Bedrock with the OIDC role's SigV4 credentials via the AWS
 # SDK credential chain. No proxy, no bearer token, no OpenAI API key.
 #
-# Verdict model is BINARY (BLOCKING / FINDING) and identical to the Opus 5
+# Verdict model is BINARY (BLOCKING / FINDING) and identical to the Opus 4.8
 # reviewer's. Two structural changes vs. the original three-pass design:
 #   * pass 2 is a FALSIFICATION pass, not a second discovery pass. The old
 #     "find what pass 1 missed" instruction was a recall ratchet that only ever
@@ -365,7 +365,7 @@ jobs:
       # Assume the Bedrock role only now, immediately before the step that calls
       # Bedrock, to minimize the window the credentials exist in the job
       # environment. Uses a DEDICATED least-privilege role (GPT/Mantle only,
-      # pull_request-scoped) so a leaked token can't reach the Opus 5 reviewer's model access.
+      # pull_request-scoped) so a leaked token can't reach the Opus 4.8 reviewer's model access.
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         with:

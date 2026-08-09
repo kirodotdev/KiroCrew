@@ -451,7 +451,7 @@ depends on *where your branch lives*:
 
 | Check | Fork PR | Branch pushed to `kirodotdev/KiroCrew` |
 | --- | --- | --- |
-| **Opus 5 Review** | Skipped (neutral — not a failure) | Runs |
+| **Opus 4.8 Review** | Skipped (neutral — not a failure) | Runs |
 | **GPT 5.6 Review** | Skipped | Runs |
 | **Design Review** | Skipped | Runs |
 | Tests, lint, typecheck, CodeQL, coverage, build | Run normally | Run normally |

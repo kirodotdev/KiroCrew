@@ -1,6 +1,6 @@
-name: Fork Opus 5 Review
+name: Fork Opus 4.8 Review
 
-# STAGE 2 (privileged) of the fork AI-review pipeline — the Opus 5 reviewer.
+# STAGE 2 (privileged) of the fork AI-review pipeline — the Opus 4.8 reviewer.
 # Triggered by the completion of "Fork AI Review (collect)" (Stage 1). Runs from
 # the DEFAULT branch with secrets + OIDC. It NEVER checks out or executes the
 # fork's code.
@@ -21,7 +21,7 @@ name: Fork Opus 5 Review
 #
 # Mirrors claude-review.yml's contract (model, [OPUS-REVIEWED]/[BLOCK-MERGE]
 # markers, fail-closed gate). claude-review.yml is UNCHANGED and owns same-repo
-# PRs. The fork check-run is named exactly "Opus 5 Review" so branch protection
+# PRs. The fork check-run is named exactly "Opus 4.8 Review" so branch protection
 # is satisfied on either path. (Follow-up: extract a shared prompt file so the
 # fork and same-repo prompts cannot drift.)
 
@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   fork-opus-review:
-    name: Fork Opus 5 Review
+    name: Fork Opus 4.8 Review
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: the review
     # self-terminates well before this. Set at 90 min (matches claude-review.yml)
@@ -119,7 +119,7 @@ jobs:
         run: |
           set -uo pipefail
           id="$(gh api --method POST "repos/$REPO/check-runs" \
-            -f name="Opus 5 Review" -f head_sha="$HEAD" -f status="in_progress" \
+            -f name="Opus 4.8 Review" -f head_sha="$HEAD" -f status="in_progress" \
             --jq '.id')"
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
@@ -199,7 +199,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Opus 5 review
+      - name: Opus 4.8 review
         id: review
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         with:
@@ -485,7 +485,7 @@ jobs:
           fi
           {
             echo "$MARKER"
-            echo "## Opus 5 Review (fork) — $verdict"
+            echo "## Opus 4.8 Review (fork) — $verdict"
             echo
             echo "_Reviewed \`$HEAD\` via the fork AI-review pipeline; updated in place on each push._"
             echo
@@ -499,7 +499,7 @@ jobs:
               echo
               echo "</details>"
             else
-              echo "_No completed Opus verdict for this commit; see the Fork Opus 5 Review job logs._"
+              echo "_No completed Opus verdict for this commit; see the Fork Opus 4.8 Review job logs._"
             fi
           } > /tmp/fork-opus-comment.md
           existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
@@ -510,7 +510,7 @@ jobs:
             gh pr comment "$PR" --body-file /tmp/fork-opus-comment.md || true
           fi
 
-      # Fail-CLOSED finalize of the required "Opus 5 Review" check-run, keyed to
+      # Fail-CLOSED finalize of the required "Opus 4.8 Review" check-run, keyed to
       # head_sha; posts a failing check-run if the job died before opening one.
       # Opus is a REQUIRED gating check, so it never resolves neutral.
       - name: Finalize check-run (fail closed)
@@ -533,12 +533,12 @@ jobs:
           if [ -n "${CHECK_ID:-}" ]; then
             gh api --method PATCH "repos/$REPO/check-runs/$CHECK_ID" \
               -f status="completed" -f conclusion="$conclusion" \
-              -f "output[title]=Opus 5 Review — $title" \
+              -f "output[title]=Opus 4.8 Review — $title" \
               -f "output[summary]=Fork AI review for $HEAD. See the PR comment for details." >/dev/null || true
           elif [ -n "${HEAD:-}" ]; then
             gh api --method POST "repos/$REPO/check-runs" \
-              -f name="Opus 5 Review" -f head_sha="$HEAD" \
+              -f name="Opus 4.8 Review" -f head_sha="$HEAD" \
               -f status="completed" -f conclusion="failure" \
-              -f "output[title]=Opus 5 Review — could not run" \
+              -f "output[title]=Opus 4.8 Review — could not run" \
               -f "output[summary]=The fork Opus review job failed before producing a verdict; re-run it." >/dev/null || true
           fi

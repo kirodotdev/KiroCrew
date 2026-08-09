@@ -1,4 +1,4 @@
-name: Opus 5 Review
+name: Opus 4.8 Review
 
 # Semantic AI review layer. Replicates ONLY the AutoSDE rules that cannot be
 # expressed as a grep (aria-label on icon-only buttons, no-emoji-as-icons,
@@ -36,18 +36,18 @@ concurrency:
 jobs:
   claude-review:
     # Model-NAMED check on purpose: this repo names reviewers by their model
-    # ("Opus 5 Review", "GPT 5.6 Review") rather than by vendor/harness. Branch
+    # ("Opus 4.8 Review", "GPT 5.6 Review") rather than by vendor/harness. Branch
     # protection keys its required status check on this job name, so if the
     # --model below is bumped and this name changes with it, the required-check
     # list AND the `workflow_run.workflows:` array in pr-readiness.yml must be
     # updated in the same change.
-    name: Opus 5 Review
+    name: Opus 4.8 Review
     runs-on: ubuntu-latest
     # Same-repo PRs only (not forks). Fork PRs get NO OIDC/secrets access from
     # GitHub, so the Bedrock role assumption below can never succeed — without
     # this guard the review step is skipped and the fail-closed gate turns the
     # required check RED on every external contribution. Skipping the whole job
-    # instead reports the required "Opus 5 Review" check as "skipped", which
+    # instead reports the required "Opus 4.8 Review" check as "skipped", which
     # branch protection treats as satisfied. Mirrors the fork guard in
     # codex-review.yml and design-review.yml. Dependabot PRs are same-repo
     # (branch lives in this repo) so they still enter the job and are handled by
@@ -129,7 +129,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Opus 5 review
+      - name: Opus 4.8 review
         id: review
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
@@ -400,7 +400,7 @@ jobs:
       # [OPUS-REVIEWED] marker parsed for THIS head — an errored or partial
       # transcript posts NOTHING (see the incomplete early-out below), so no raw
       # model/error text can leak.
-      - name: Post Opus 5 review summary
+      - name: Post Opus 4.8 review summary
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -443,13 +443,13 @@ jobs:
           MARKER="<!-- claude-ai-review -->"
           {
             echo "$MARKER"
-            echo "## Opus 5 Review — $verdict"
+            echo "## Opus 4.8 Review — $verdict"
             echo
             echo "_Reviewed \`$HEAD\` — this comment is updated in place on each push._"
             echo
             case "$kind" in
               override)
-                echo "Human judgment by @$OVERRIDE_ACTOR overrides the Opus 5 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
+                echo "Human judgment by @$OVERRIDE_ACTOR overrides the Opus 4.8 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
                 ;;
               blocked)
                 cat claude-review-output.md
@@ -483,10 +483,10 @@ jobs:
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
             gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
               --field body="$(cat /tmp/claude-summary.md)" >/dev/null || true
-            echo "Updated existing Opus 5 summary comment #$existing"
+            echo "Updated existing Opus 4.8 summary comment #$existing"
           else
             gh pr comment "$PR" --body-file /tmp/claude-summary.md || true
-            echo "Created new Opus 5 summary comment"
+            echo "Created new Opus 4.8 summary comment"
           fi
 
       # Fail-CLOSED gate on two SHA-scoped markers parsed from the captured
@@ -497,7 +497,7 @@ jobs:
       #     This is the ONLY thing that blocks the merge. There is deliberately
       #     no label-scanning backstop, so a label the model chooses can never
       #     override the contract.
-      - name: Gate on Opus 5 review
+      - name: Gate on Opus 4.8 review
         if: always()
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}
@@ -507,37 +507,37 @@ jobs:
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
         run: |
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
-            echo "Human judgment by $OVERRIDE_ACTOR overrides Opus 5 for $HEAD. Passing gate."
+            echo "Human judgment by $OVERRIDE_ACTOR overrides Opus 4.8 for $HEAD. Passing gate."
             exit 0
           fi
           if [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "Dependabot PR ($ACTOR): Opus 5 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
+            echo "Dependabot PR ($ACTOR): Opus 4.8 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
             exit 0
           fi
           if [ "$REVIEW_OUTCOME" != "success" ]; then
-            echo "::error::Opus 5 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
+            echo "::error::Opus 4.8 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."
             exit 1
           fi
           if [ ! -s claude-review-output.md ]; then
-            echo "::error::Opus 5 review produced no output for $HEAD (empty transcript capture). Failing closed — re-run or inspect the Opus 5 review step logs."
+            echo "::error::Opus 4.8 review produced no output for $HEAD (empty transcript capture). Failing closed — re-run or inspect the Opus 4.8 review step logs."
             exit 1
           fi
           # Positive proof the review ran for THIS commit (fail closed).
           if ! grep -Fq "[OPUS-REVIEWED] $HEAD" claude-review-output.md; then
-            echo "::error::Opus 5 review did not complete for $HEAD (no [OPUS-REVIEWED] marker). Failing closed — re-run the workflow or inspect the Opus 5 review step logs."
+            echo "::error::Opus 4.8 review did not complete for $HEAD (no [OPUS-REVIEWED] marker). Failing closed — re-run the workflow or inspect the Opus 4.8 review step logs."
             echo "--- review output ---"
             cat claude-review-output.md
             exit 1
           fi
           # Block ONLY on the contract-gated marker.
           if grep -Fq "[BLOCK-MERGE] $HEAD" claude-review-output.md; then
-            echo "::error::Opus 5 review flagged a blocking issue on $HEAD — see the posted review summary."
+            echo "::error::Opus 4.8 review flagged a blocking issue on $HEAD — see the posted review summary."
             exit 1
           fi
           # Advisory coherence signal (never fails the build): a BLOCKING-labelled
           # finding without the marker means the model's label and its verdict
           # disagree. Worth tuning the prompt over; not worth blocking a merge.
           if grep -qE '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?BLOCKING\b' claude-review-output.md; then
-            echo "::warning::Opus 5 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
+            echo "::warning::Opus 4.8 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
           fi
-          echo "Opus 5 review completed for $HEAD with no blocking findings."
+          echo "Opus 4.8 review completed for $HEAD with no blocking findings."

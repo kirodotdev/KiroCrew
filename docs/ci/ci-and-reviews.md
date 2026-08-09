@@ -24,7 +24,7 @@ pull_request
   |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene, dep audit
   |-- dependency-review.yml            license allowlist
   |-- docker-smoke.yml                 container contract (paths-filtered)
-  |-- claude-review.yml "Opus 5 Review"     line-level, code-only, blocking
+  |-- claude-review.yml "Opus 4.8 Review"     line-level, code-only, blocking
   |-- codex-review.yml  "GPT 5.6 Review"    line-level + PR intent, blocking
   |-- design-review.yml "Design Review"     design shape, advisory
   |-- ux-review.yml     "UX Review"         rendered experience, advisory
@@ -207,12 +207,12 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 
 | Reviewer | Check name | Harness | Reads | Question | Blocks? |
 |---|---|---|---|---|---|
-| Opus 5 | `Opus 5 Review` | Agentic, `--max-turns 120`, one pass with two internal phases | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
+| Opus 4.8 | `Opus 4.8 Review` | Agentic, `--max-turns 120`, one pass with two internal phases | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
 | GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two** invocations (discovery, then authoritative falsification), `reasoning_effort: medium` | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
 | Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
 | UX Review | `UX Review` | Agentic Fable 5, with the same fallback | Code plus committed screenshot PNGs, read directly | Does the shipped experience read correctly? | Advisory; red only on a genuine `BLOCK` |
 
-### Why Opus 5 is code-only
+### Why Opus 4.8 is code-only
 
 It is the agentic reviewer, so pulling attacker-controllable PR prose into its
 context is a prompt-injection surface. `gh pr view` and `gh api` are disallowed, and
@@ -240,7 +240,7 @@ says "No findings." is the expected output for a typical PR.
 
 ### Asymmetric multi-pass is intentional
 
-The agentic Opus 5 reviewer runs ONE pass with two internal phases: discover
+The agentic Opus 4.8 reviewer runs ONE pass with two internal phases: discover
 (generous candidate collection), then falsify (kill each candidate against code it
 opened, with extra falsification effort only where the diff touches
 security or data-integrity paths). The lean single-shot GPT 5.6 reviewer runs
@@ -256,7 +256,7 @@ and therefore cannot contradict itself across rounds.
 
 The markers are the **only** gate:
 
-- Opus 5 emits `[OPUS-REVIEWED] <sha>` always, and `[BLOCK-MERGE] <sha>` only when a
+- Opus 4.8 emits `[OPUS-REVIEWED] <sha>` always, and `[BLOCK-MERGE] <sha>` only when a
   blocking finding exists. Both are parsed out of the action's `execution_file`
   transcript rather than a `--json-schema` structured output, because the harness's
   internal structured-output tool is unreliable when other tools are enabled:
@@ -353,7 +353,7 @@ queries the latest run per monitored workflow, and publishes **one `PR Readiness
 commit status plus one `readiness:` label**.
 
 - **Always required:** CI, Build, Code Review.
-- **Additionally required on a same-repo PR:** CodeQL, Opus 5 Review, GPT 5.6
+- **Additionally required on a same-repo PR:** CodeQL, Opus 4.8 Review, GPT 5.6
   Review, and completion of Design Review and UX Review.
 - **Design Review and UX Review are completion-required but advisory:** once
   complete they score as `"(advisory)"` whatever their conclusion, so neither their
@@ -421,7 +421,7 @@ protection remain separate gates.
 `fork-ux-review.yml` each trigger on the **completion of CI** (stage 1) and run
 privileged from the default branch (stage 2), gated on
 `workflow_run.head_repository.full_name != github.repository`. Each posts a check-run
-named exactly like its same-repo twin (`Opus 5 Review`, `GPT 5.6 Review`,
+named exactly like its same-repo twin (`Opus 4.8 Review`, `GPT 5.6 Review`,
 `Design Review`, `UX Review`), so branch protection is satisfied on either path, and
 it opens that check-run as early as possible keyed to `head_sha` so a job that dies
 still leaves a fail-closed result.
@@ -466,7 +466,7 @@ resists this:
   code, it is out of scope for the bot and the finding is dropped. **The absence of a
   mechanism is never a finding.** This makes "add mechanism X" structurally
   un-reportable: the demand fails the bar before it can become a finding. A scope cap
-  complements it: Opus 5 stays within the evident scope of the diff (it is code-only),
+  complements it: Opus 4.8 stays within the evident scope of the diff (it is code-only),
   and GPT 5.6 stays within the PR's stated purpose, flagging a
   description-versus-diff mismatch as an **advisory** finding rather than a block.
 - **The WHAT BLOCKS list is closed:** exhaustive, never extended, never reasoned about

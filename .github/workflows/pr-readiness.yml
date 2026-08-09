@@ -21,7 +21,7 @@ on:
       - CI
       - Build
       - Code Review
-      - Opus 5 Review
+      - Opus 4.8 Review
       - GPT 5.6 Review
       - Design Review
       - UX Review
@@ -30,13 +30,13 @@ on:
       # `workflow_run` (on CI's completion), so their own completion must
       # re-trigger this job to publish the fork PR's real verdict once the
       # reviews land -- otherwise the fork verdict freezes at `checking`.
-      - Fork Opus 5 Review
+      - Fork Opus 4.8 Review
       - Fork GPT 5.6 Review
       - Fork Design Review
       - Fork UX Review
     # `completed` publishes the real verdict. `requested`/`in_progress` exist so
     # a monitored workflow flipping BACK to running -- most commonly a re-run of
-    # a reviewer (e.g. Opus 5 re-run after a human override) -- re-triggers this
+    # a reviewer (e.g. Opus 4.8 re-run after a human override) -- re-triggers this
     # job WHILE it runs, instead of leaving the label frozen at the previous
     # commit's verdict until the re-run completes. On re-evaluation that workflow
     # is queried live as `in_progress`, buckets into `pending`, and the label
@@ -310,13 +310,13 @@ jobs:
             # CodeQL, so that lane stays ineligible. The AI code reviews DO run
             # on forks: the privileged Stage-2 fork-*-review.yml pipeline fires
             # on CI completion from the default branch and posts a check-run
-            # named exactly like the same-repo lane ("Opus 5 Review", etc.).
+            # named exactly like the same-repo lane ("Opus 4.8 Review", etc.).
             # Read those results from the head SHA's check-runs (checkrun:
             # specs) so a fully-reviewed green fork can reach "passed" instead
             # of being forced to a maintainer-review verdict.
             skipped+=("CodeQL (fork PR)")
             workflow_specs+=(
-              "checkrun:Opus 5 Review|Opus 5 Review"
+              "checkrun:Opus 4.8 Review|Opus 4.8 Review"
               "checkrun:GPT 5.6 Review|GPT 5.6 Review"
               "checkrun:Design Review|Design Review"
               "checkrun:UX Review|UX Review"
@@ -328,7 +328,7 @@ jobs:
               workflow_specs+=("dynamic/github-code-scanning/codeql|CodeQL")
             fi
             workflow_specs+=(
-              "claude-review.yml|Opus 5 Review"
+              "claude-review.yml|Opus 4.8 Review"
               "codex-review.yml|GPT 5.6 Review"
               "design-review.yml|Design Review"
               "ux-review.yml|UX Review"

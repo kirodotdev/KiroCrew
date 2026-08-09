@@ -97,7 +97,7 @@ class TestLineReviewHumanOverrides:
         assert '.user.login == "github-actions[bot]"' in workflow
         assert "steps.human_override.outputs.active != 'true'" in workflow
         assert "✅ human override accepted" in workflow
-        assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 5" in workflow
+        assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 4.8" in workflow
         assert "/ai-review override fable $HEAD:" in workflow
 
     def test_gpt_has_clear_verdict_banner_and_human_override(self) -> None:
@@ -257,7 +257,7 @@ class TestPrReadiness:
             "build.yml|Build",
             "code-review.yml|Code Review",
             "dynamic/github-code-scanning/codeql|CodeQL",
-            "claude-review.yml|Opus 5 Review",
+            "claude-review.yml|Opus 4.8 Review",
             "codex-review.yml|GPT 5.6 Review",
             "design-review.yml|Design Review",
         ):
@@ -278,7 +278,7 @@ class TestPrReadiness:
         # CodeQL stays the only ineligible fork lane.
         assert '"CodeQL (fork PR)"' in workflow
         # AI reviews are now monitored on forks via check-run specs.
-        assert '"checkrun:Opus 5 Review|Opus 5 Review"' in workflow
+        assert '"checkrun:Opus 4.8 Review|Opus 4.8 Review"' in workflow
         assert '"checkrun:GPT 5.6 Review|GPT 5.6 Review"' in workflow
         assert '"checkrun:Design Review|Design Review"' in workflow
         assert '"checkrun:UX Review|UX Review"' in workflow
@@ -289,7 +289,7 @@ class TestPrReadiness:
         assert "AI reviews could not run" not in workflow
         # Stage-2 fork reviewers re-trigger readiness on completion so the
         # green verdict actually lands.
-        assert "Fork Opus 5 Review" in workflow
+        assert "Fork Opus 4.8 Review" in workflow
         assert "Fork GPT 5.6 Review" in workflow
         assert "github.event.workflow_run.event == 'workflow_run'" in workflow
 
