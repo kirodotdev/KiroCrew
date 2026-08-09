@@ -1336,6 +1336,8 @@ class TestConsolidationOffset:
     def _make_consolidator(self, msg_count=_CONSOLIDATION_THRESHOLD):
         log = MagicMock()
         log._read_messages = MagicMock(return_value=[{}] * msg_count)
+        # A fresh span is eligible; maybe_consolidate's pre-check reads this.
+        log.consolidation_retry_state.return_value = (0, 0.0)
         return HistoryConsolidator(log=log, memory=MagicMock(), sessions=None)
 
     def test_offset_advances_on_success(self):

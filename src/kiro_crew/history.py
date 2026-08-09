@@ -4157,6 +4157,15 @@ class HistoryConsolidator:
         prefs_off = self._prefs_offset.get(key, 0)
         if total - prefs_off < _CONSOLIDATION_THRESHOLD:
             return
+        # Cheap pre-check mirroring the other automatic entry points. This
+        # runs on every user turn, so during a backoff window every message
+        # past the threshold would otherwise schedule a task whose snapshot
+        # takes the per-file lock (the same one appends contend on) and reads
+        # the transcript, only to be refused by the gate inside _consolidate().
+        # retry_eligible costs one metadata-line read and no transcript read;
+        # the inner gate remains the enforcement backstop.
+        if not self.retry_eligible(key, message_count=total):
+            return
         self._running.add(key)
         t = asyncio.create_task(self._consolidate(key, include_history=False))
         self._tasks.add(t)
@@ -4273,23 +4282,29 @@ class HistoryConsolidator:
 
         t.add_done_callback(_on_done)
 
-    async def consolidate_now(self, key: str) -> None:
+    async def consolidate_now(self, key: str) -> bool:
         """Consolidate a session synchronously (blocking).
 
         Unlike consolidate_session() which is fire-and-forget, this awaits
         completion. Used by the CLI command.
+
+        Returns ``False`` when the consolidation retry backoff refused the
+        span — so the CLI can report the skip instead of a false success —
+        and ``True`` for every other completion (including the nothing-to-do
+        and sensitive-session skips, which were already reported as done).
 
         Safety: defense-in-depth — the consolidation retry backoff is also
         checked inside _consolidate(), and _run_skill_detection() re-checks
         the sensitive-session guard over its own window.
         """
         if self._log.unconsolidated_count(key) < 1:
-            return
+            return True
         messages = self._log._read_messages(key)
         if _session_touched_sensitive(messages):
             logger.info("consolidate_now skipped for %s: sensitive session", key)
-            return
-        await self._consolidate(key, include_history=True)
+            return True
+        outcome = await self._consolidate(key, include_history=True)
+        return outcome is not _CONSOLIDATION_REFUSED
 
     async def _consolidate(
         self, key: str, include_history: bool = True
@@ -4332,12 +4347,13 @@ class HistoryConsolidator:
                 return None
             # Retry-eligibility choke point: every entry point funnels through
             # this function, so a span inside its durable backoff is refused
-            # here — before anything that can bill a provider turn — even when
-            # the caller carries no pre-check of its own (maybe_consolidate's
-            # preferences/projects path). Callers keep their cheaper pre-checks
-            # as scheduling short-circuits and UX (the idle sweep's per-tick
-            # skip, the dashboard trigger's 429); this gate is the enforcement
-            # that holds when a new entry point forgets one. The count comes
+            # here — before anything that can bill a provider turn — even if a
+            # caller carries no pre-check of its own (a future entry point, or
+            # a pre-check that raced the backoff being recorded). Callers keep
+            # their cheaper pre-checks as scheduling short-circuits and UX (the
+            # idle sweep's per-tick skip, maybe_consolidate's per-turn skip,
+            # the dashboard trigger's 429); this gate is the enforcement that
+            # holds when a new entry point forgets one. The count comes
             # from the atomic snapshot above — the same consistent read the
             # rest of this function uses — and retry_eligible costs one
             # metadata-line read, so no second transcript read lands on the

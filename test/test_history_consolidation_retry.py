@@ -1651,32 +1651,64 @@ class TestConsolidateIsTheEligibilityChokePoint:
 
     @pytest.mark.asyncio
     async def test_maybe_consolidate_is_refused_inside_the_backoff(self, tmp_path):
-        """The preferences/projects path has no pre-check of its own — the
-        inner gate is the only thing covering it."""
+        """The prefs/projects path carries the same cheap pre-check as the
+        other automatic entry points, so a backed-off span never even
+        schedules a task (this path runs on every user turn)."""
         log = _seed_log(tmp_path, count=history_mod._CONSOLIDATION_THRESHOLD)
         c = _make_consolidator(log)
         self._arm_backoff(log)
 
         with patch.object(c, "_call_llm", new_callable=AsyncMock) as spy:
             c.maybe_consolidate(KEY)
-            assert c._tasks, "premise broken: the threshold did not schedule a task"
+            assert not c._tasks, "a backed-off span still scheduled a task"
+
+        spy.assert_not_awaited()
+        assert KEY not in c._running
+        assert log.consolidation_retry_state(KEY, _total(log))[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_inner_gate_backstops_a_caller_without_a_pre_check(
+        self, tmp_path
+    ):
+        """A caller whose pre-check misses — a future entry point without one,
+        or a pre-check that raced the backoff being recorded — still cannot
+        bill the span: the gate inside _consolidate is the enforcement, the
+        pre-checks are scheduling short-circuits. The first retry_eligible
+        answer (the pre-check) lies True; the second (the inner gate) tells
+        the truth."""
+        log = _seed_log(tmp_path, count=history_mod._CONSOLIDATION_THRESHOLD)
+        c = _make_consolidator(log)
+        self._arm_backoff(log)
+
+        with (
+            patch.object(c, "_call_llm", new_callable=AsyncMock) as spy,
+            patch.object(c, "retry_eligible", side_effect=[True, False]),
+        ):
+            c.maybe_consolidate(KEY)
+            assert c._tasks, "premise broken: the bypassed pre-check did not schedule"
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
 
         spy.assert_not_awaited()
-        assert log.consolidation_retry_state(KEY, _total(log))[0] == 1
+        assert KEY not in c._running, "the refusal leaked the running claim"
+        assert KEY not in c._prefs_offset, "a refused pass advanced the prefs offset"
 
     @pytest.mark.asyncio
     async def test_a_refusal_does_not_strand_the_key_in_running(self, tmp_path):
         """Callers add the key to _running before the task and rely on
         done-callbacks to release it; a refusal path that skipped the release
-        would wedge consolidation for the session permanently."""
+        would wedge consolidation for the session permanently. The pre-check
+        is bypassed (first retry_eligible answer lies True) so the inner
+        gate's refusal path actually runs."""
         log = _seed_log(tmp_path, count=history_mod._CONSOLIDATION_THRESHOLD)
         c = _make_consolidator(log)
         self._arm_backoff(log)
 
-        with patch.object(c, "_call_llm", new_callable=AsyncMock):
+        with (
+            patch.object(c, "_call_llm", new_callable=AsyncMock),
+            patch.object(c, "retry_eligible", side_effect=[True, False]),
+        ):
             c.maybe_consolidate(KEY)
-            assert c._tasks, "premise broken: the threshold did not schedule a task"
+            assert c._tasks, "premise broken: the bypassed pre-check did not schedule"
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
 
         assert KEY not in c._running, "the refusal leaked the running claim"
@@ -1713,14 +1745,19 @@ class TestConsolidateIsTheEligibilityChokePoint:
         """Advancing the offset on a refusal marks the window consolidated with
         no pass run — once the backoff expires the threshold test would skip it
         until a whole new threshold of messages accumulates, silently dropping
-        its preference/project extraction."""
+        its preference/project extraction. The pre-check is bypassed (first
+        retry_eligible answer lies True) so the inner gate's refusal path
+        actually runs."""
         log = _seed_log(tmp_path, count=history_mod._CONSOLIDATION_THRESHOLD)
         c = _make_consolidator(log)
         self._arm_backoff(log)
 
-        with patch.object(c, "_call_llm", new_callable=AsyncMock) as spy:
+        with (
+            patch.object(c, "_call_llm", new_callable=AsyncMock) as spy,
+            patch.object(c, "retry_eligible", side_effect=[True, False]),
+        ):
             c.maybe_consolidate(KEY)
-            assert c._tasks, "premise broken: the threshold did not schedule a task"
+            assert c._tasks, "premise broken: the bypassed pre-check did not schedule"
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
 
         spy.assert_not_awaited()
@@ -1730,10 +1767,41 @@ class TestConsolidateIsTheEligibilityChokePoint:
         # delayed the extraction rather than dropping it.
         with history_mod.allow_on_loop_persist():
             log.update_metadata(KEY, {"consolidation_retry_at": time.time() - 1})
-        with patch.object(c, "_call_llm", AsyncMock(return_value={"noop": True})) as spy:
+        with patch.object(
+            c, "_call_llm", AsyncMock(return_value={"noop": True})
+        ) as spy:
             c.maybe_consolidate(KEY)
             assert c._tasks, "the un-advanced offset did not re-arm the threshold"
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
 
         spy.assert_awaited_once()
         assert c._prefs_offset.get(KEY) == history_mod._CONSOLIDATION_THRESHOLD
+
+    @pytest.mark.asyncio
+    async def test_consolidate_now_reports_a_refusal(self, tmp_path):
+        """consolidate_now's only caller is the CLI, which used to print
+        'done ✓' unconditionally; the returned False is what lets it report
+        the backoff skip instead of a false success."""
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log)
+        self._arm_backoff(log)
+
+        with patch.object(c, "_call_llm", new_callable=AsyncMock) as spy:
+            assert await c.consolidate_now(KEY) is False
+
+        spy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_consolidate_now_reports_success_outside_the_backoff(
+        self, tmp_path
+    ):
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log)
+
+        with patch.object(
+            c, "_call_llm", AsyncMock(return_value={"history_entry": "x"})
+        ) as spy:
+            assert await c.consolidate_now(KEY) is True
+
+        spy.assert_awaited_once()
+        assert log.unconsolidated_count(KEY) == 0

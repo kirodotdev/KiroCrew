@@ -673,8 +673,10 @@ def _consolidate_cmd(args) -> None:
                     print(f"  {key}: no unconsolidated messages, skipping")
                     continue
                 print(f"  {key}: consolidating {count} messages...")
-                await consolidator.consolidate_now(key)
-                print(f"  {key}: done ✓")
+                if await consolidator.consolidate_now(key):
+                    print(f"  {key}: done ✓")
+                else:
+                    print(f"  {key}: skipped (consolidation retry backoff)")
             except Exception:
                 logger.debug("consolidate (or SEL) failed for %s", key, exc_info=True)
 
