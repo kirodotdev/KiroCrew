@@ -147,7 +147,7 @@ _OTHER_SQLITE_DBS = (
     Path.home() / ".local" / "share" / "amazon-q" / "data.sqlite3",
     Path.home() / "Library" / "Application Support" / "amazon-q" / "data.sqlite3",
 )
-_SQLITE_TOKEN_KEYS = ("kirocli:odic:token", "codewhisperer:odic:token")
+_SQLITE_TOKEN_KEYS = ("kirocli:odic:token", "codewhisperer:odic:token", "kirocli:social:token", "kirocli:external-idp:token")
 
 # SEL audit label for the SQLite live-token read. Not an allowlist entry (that
 # gate is for sensitive-path reads via safe_read_file_internal); this is only

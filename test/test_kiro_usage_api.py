@@ -350,6 +350,48 @@ class TestLoadBearerToken:
             assert api._token_from_sqlite(db, datetime.now(timezone.utc)) is None
         audit.assert_any_call(api._SQLITE_AUDIT_READ_ID, "no_token")
 
+    def test_social_login_token_key_is_recognized(self, tmp_path):
+        # GitHub social login stores its bearer token under a different key
+        # (kirocli:social:token) than the OIDC flow (kirocli:odic:token).
+        # The API module must read it from kiro-cli's own store.
+        db = tmp_path / "data.sqlite3"
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        con.execute(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            ("kirocli:social:token",
+             json.dumps({"access_token": "social-tok", "expires_at": future})),
+        )
+        con.commit()
+        con.close()
+        with patch("kiro_crew.hooks.safe_read_file_internal", return_value=None), \
+             patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True), \
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
+            assert api._load_bearer_token() == "social-tok"
+
+    def test_external_idp_token_key_is_recognized(self, tmp_path):
+        # Identity Center (org/enterprise SSO) stores its bearer token under
+        # kirocli:external-idp:token. On Linux the JSON SSO cache is not
+        # refreshed, so this SQLite key is the only live source.
+        db = tmp_path / "data.sqlite3"
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        con.execute(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            ("kirocli:external-idp:token",
+             json.dumps({"access_token": "idp-tok", "expires_at": future})),
+        )
+        con.commit()
+        con.close()
+        with patch("kiro_crew.hooks.safe_read_file_internal", return_value=None), \
+             patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True), \
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
+            assert api._load_bearer_token() == "idp-tok"
+
 
 class TestPostSecurityControls:
     def test_post_sets_headers_method_and_url(self):
