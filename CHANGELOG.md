@@ -2,6 +2,95 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.2.0] — 2026-08-09
+
+The first feature release after launch: a real browser for the agent, four new
+built-in apps, a native Windows desktop build, Korean and Japanese interfaces,
+and several hundred fixes from the first weeks in the open.
+
+### The agent gets a browser
+
+- **Persistent Browser Mode** — Flip one switch in Settings and the agent can
+  operate a real browser: navigate, click, type, and fill forms, with the live
+  view streaming into the dashboard's Browser panel. Installation happens for
+  you and recovers on its own — enabling it never errors out — and the agent can
+  also serve browser work from the native embedded view.
+
+### Four new built-in apps
+
+- **Spec Builder** — a spec-driven development surface: shape requirements into
+  a spec, then hand it to the agent to implement.
+- **Ops Mission Control** — an autonomous ops first responder with an incident
+  board and a knowledge ledger of fix patterns.
+- **Crew Companion** — a desk companion that reflects what your agent is doing.
+- **Auto-Improvement** — measurement-first self-improvement that proposes,
+  lands, and verifies its own changes GitHub-natively.
+- Installed apps are searchable and launchable from the command palette, and
+  third-party apps now run under **per-app trust grants**, with a denial that
+  tells you exactly what to do about it.
+
+### Windows, properly
+
+- The desktop build moved to an **NSIS installer** with an integrated titlebar,
+  launcher spawn/stop fixes, and a configurable sandbox tier for agent
+  subprocesses. Skills, the usage ledger, and build tooling all learned the
+  platform's rules.
+
+### A dashboard you can operate
+
+- **System is now a task manager** — live per-session resource usage, plus a
+  **Storage** screen that reports what sessions cost on disk and reclaims space
+  to a trash, with an inventory that no longer calls idle sessions "in use".
+- **Releases tab** — this changelog, rendered per version in Settings.
+- **Webhooks surface** — named tokens, HMAC signing, and a kill switch for
+  inbound automation, managed from Settings.
+- Redesigned sidebar folders, drag a session into an open chat to reference it,
+  suggested folders for new sessions, consistent empty states with a next step,
+  and a notification sound when an approval prompt needs you.
+- **Continue instead of retyping** — resume an interrupted turn from where it
+  stopped, on any idle session, and recover cleanly from tool-hook blocks and
+  failed restores. Queued messages can be reordered before they send.
+- The terminal panel pops out into its own window, completes subcommands and
+  flags (not just paths), and takes a configurable font.
+
+### Voice, language, and models
+
+- **Korean and Japanese** join the dashboard — twelve interface languages.
+- **On-device Apple speech-to-text** with live streaming; switch the microphone
+  mid-recording; dictation lands at the cursor.
+- The model picker shows each model's **credit multiplier** and scopes itself to
+  what the account can actually use; background and sub-agent work take a
+  **configurable per-role model** and reasoning effort.
+
+### Autonomy with a governor
+
+- Sub-agents can be steered with queued follow-ups, scoped to exactly the
+  context a task needs, and report completions as cards in the chat.
+- Monitoring loops accept a **wall-clock runtime budget**; cron jobs group into
+  collapsible folders and start from a **template gallery** of 15 presets.
+- Skills show their **per-injection context cost** on a budget screen, can opt
+  out of injection, and the knowledge library adds documents automatically,
+  dedupes per document, and honors `.kiroignore`.
+
+### Diagnostics and trust
+
+- **Report a Problem** collects a support bundle from the CLI or the UI, and
+  every error message carries an "Ask the agent" hand-off.
+- Loopback requests no longer leak the internal secret to a proxy; sensitive
+  paths and credential redaction got faster without getting looser.
+- The ACP runtime survives oversize output frames, worker sessions are no longer
+  reaped as orphans, and `kirocrew update` works for wheel and `cli.sh` installs.
+
+Plus roughly 240 further fixes across the dashboard, chat, Slack, ACP transport,
+history consolidation, packaging, and CI.
+
+## [0.1.3] — 2026-08-07
+
+A hot patch for model entitlement: the model picker scopes itself to what the
+account can use, a model the account cannot use is never sent, and an
+unavailable model is reported as an access problem instead of a capacity error
+or a raw JSON-RPC dump.
+
 ## [0.1.2] — 2026-07-30
 
 First public release of KiroCrew — an open-source personal AI agent that runs on
