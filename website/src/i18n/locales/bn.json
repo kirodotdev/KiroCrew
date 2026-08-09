@@ -7857,6 +7857,15 @@
       "worktrees_count": "Worktrees ({{count}})",
       "worktrees_created_under_a_previous_repository_na": "পূর্ববর্তী রিপোজিটরির নামে তৈরি worktree। ডিফল্টভাবে লুকানো; তবুও Prune merged এগুলো পরিষ্কার করে।"
     },
+    "developer": {
+      "previewSurfacesCard": {
+        "inbound_webhook_tokens_registered_contexts_and_r": "ইনবাউন্ড ওয়েবহুক টোকেন, নিবন্ধিত কনটেক্সট ও রান ইতিহাস। API কাজ করে, তবে পেজটি এখনও শেষ হয়নি।",
+        "open_webhooks": "ওয়েবহুক খুলুন",
+        "preview_surfaces": "প্রিভিউ পেজ",
+        "unreleased_pages_hidden_from_the_sidebar_and_fro": "অপ্রকাশিত পেজ। এখানে চালু না করা পর্যন্ত এগুলো সাইডবারে ও সর্বত্র অনুসন্ধান করুন-এ দেখা যায় না। সেটিংটি শুধু এই ডিভাইসে প্রযোজ্য, আর পেজগুলো ইচ্ছাকৃতভাবেই অসম্পূর্ণ।",
+        "webhooks": "ওয়েবহুক"
+      }
+    },
     "developerPage": {
       "developer": "ডেভেলপার",
       "tabs": {
@@ -7865,7 +7874,7 @@
           "label": "আর্কাইভ"
         },
         "config": {
-          "description": "Kiro Crew ও এজেন্ট কনফিগারেশন ভিউয়ার (শুধু পড়া)",
+          "description": "প্রিভিউ পেজ চালু করার সুইচ, সঙ্গে Kiro Crew ও এজেন্ট কনফিগারেশন ভিউয়ার (শুধু পড়ার জন্য)",
           "label": "কনফিগ"
         },
         "logs": {

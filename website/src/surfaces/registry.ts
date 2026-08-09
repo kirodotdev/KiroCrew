@@ -36,6 +36,7 @@ import type { ReactElement } from 'react'
 import { selectUnreadByMode, slotSurfaceKey } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
+import { readPreviewFlag } from '../utils/previewFlags'
 
 import { i18nT } from '../i18n/t'
 export type SurfaceGroup = 'Main' | 'Apps' | 'Platform' | 'Bottom'
@@ -137,6 +138,19 @@ export interface Surface {
    * bell). The route stays registered in `App.tsx`'s `<Routes>`.
    */
   hiddenFromNav?: boolean
+  /**
+   * Gate this surface behind a preview flag (a key from
+   * `utils/previewFlags.ts`). While the flag is off, the surface is not
+   * advertised anywhere in the UI — no rail row, no Search Everywhere result —
+   * so an unpolished page can sit on `main` without being released.
+   *
+   * Unlike `hiddenFromNav` (a permanent "rendered elsewhere" marker), this is
+   * temporary and conditional: the surface stays in `getBuiltinSurfaces()` so
+   * its label/badge wiring is still covered by tests, and consumers read
+   * `getAdvertisedSurfaces()` instead. Its route stays registered in `App.tsx`,
+   * which is what makes the surface reachable once the flag is on.
+   */
+  previewFlag?: string
 }
 
 const _builtins: Surface[] = []
@@ -183,6 +197,40 @@ export function getBuiltinSurfaces(): readonly Surface[] {
 /** Look up a built-in surface by navId. Returns `undefined` for app-only ids. */
 export function getBuiltinSurface(navId: string): Surface | undefined {
   return _builtins.find(s => s.navId === navId)
+}
+
+/**
+ * Whether a surface may be advertised in the UI right now.
+ *
+ * A surface with no `previewFlag` is always advertised; a preview-gated one only
+ * while its flag is on. Prefer `getAdvertisedSurfaces()` at a call site that
+ * renders a LIST — it applies this predicate for you, so a consumer cannot
+ * forget. Use this predicate directly only for a single surface.
+ *
+ * Deliberately NOT folded into `getBuiltinSurfaces()`: that list is also the
+ * source for registry-wide invariants (every surface carries a translatable
+ * `labelKey`), and dropping preview surfaces from it would silently retire that
+ * coverage for exactly the surfaces still under construction. It is also read on
+ * every render, so it stays a cheap synchronous storage read with no allocation.
+ */
+export function surfacePreviewEnabled(s: { previewFlag?: string }): boolean {
+  return !s.previewFlag || readPreviewFlag(s.previewFlag)
+}
+
+/**
+ * The surfaces a consumer may ADVERTISE right now — the rail, the command
+ * palette, or anything else that shows a user where they can go.
+ *
+ * Prefer this over `getBuiltinSurfaces().filter(...)` at a call site. The
+ * distinction between the two lists is the whole point: `getBuiltinSurfaces()`
+ * answers "what is registered" (and so backs registry-wide invariants like
+ * every surface carrying a translatable `labelKey`, which must keep covering
+ * surfaces still under construction), while this answers "what may a user see".
+ * A call site that reaches for the former and forgets the filter leaks an
+ * unreleased surface silently, so the safe list is the one with a name.
+ */
+export function getAdvertisedSurfaces(): readonly Surface[] {
+  return getBuiltinSurfaces().filter(surfacePreviewEnabled)
 }
 
 /**

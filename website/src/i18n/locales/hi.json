@@ -7857,6 +7857,15 @@
       "worktrees_count": "वर्कट्री ({{count}})",
       "worktrees_created_under_a_previous_repository_na": "पिछले रिपॉज़िटरी नाम के तहत बनी वर्कट्री। डिफ़ॉल्ट रूप से छिपी हुई; फिर भी मर्ज हो चुकी वर्कट्री प्रून करने में शामिल।"
     },
+    "developer": {
+      "previewSurfacesCard": {
+        "inbound_webhook_tokens_registered_contexts_and_r": "इनबाउंड वेबहुक टोकन, पंजीकृत संदर्भ और रन इतिहास. API काम करता है, पेज अभी पूरा नहीं हुआ है.",
+        "open_webhooks": "वेबहुक खोलें",
+        "preview_surfaces": "प्रीव्यू पेज",
+        "unreleased_pages_hidden_from_the_sidebar_and_fro": "अप्रकाशित पेज. जब तक आप इन्हें यहाँ चालू नहीं करते, ये साइडबार और हर जगह खोजें में नहीं दिखते. यह सेटिंग इसी डिवाइस पर लागू होती है, और ये पेज जान-बूझकर अपूर्ण हैं.",
+        "webhooks": "वेबहुक"
+      }
+    },
     "developerPage": {
       "developer": "डेवलपर",
       "tabs": {
@@ -7865,7 +7874,7 @@
           "label": "संग्रह"
         },
         "config": {
-          "description": "Kiro Crew और एजेंट कॉन्फ़िगरेशन व्यूअर (केवल पढ़ने के लिए)",
+          "description": "प्रीव्यू पेज के विकल्प, साथ ही Kiro Crew और एजेंट कॉन्फ़िगरेशन व्यूअर (केवल पढ़ने के लिए)",
           "label": "कॉन्फ़िग"
         },
         "logs": {

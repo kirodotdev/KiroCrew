@@ -13,7 +13,7 @@ import {
   LayoutGrid,
 } from 'lucide-react'
 
-import { getBuiltinSurfaces, surfaceLabel } from '../../../surfaces/registry'
+import { getAdvertisedSurfaces, surfaceLabel } from '../../../surfaces/registry'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
 import type { ResourceProvider, Result } from '../types'
@@ -22,7 +22,7 @@ import type { ResourceProvider, Result } from '../types'
  * Pages provider (Search Everywhere).
  *
  * Source of truth is the surface registry (`src/surfaces/registry.ts`) — the
- * very same `getBuiltinSurfaces()` list `App.tsx` renders the left rail from —
+ * very same `getAdvertisedSurfaces()` list `App.tsx` renders the left rail from —
  * so newly registered rail destinations show up here for free and we never
  * duplicate the rail by hand.
  *
@@ -115,7 +115,11 @@ const EXTRA_PAGE_TITLE_KEY: Record<string, string> = {
  */
 function collectPages(): PageEntry[] {
   const byRoute = new Map<string, PageEntry>()
-  for (const s of getBuiltinSurfaces()) {
+  // `getAdvertisedSurfaces()`, not `getBuiltinSurfaces()`: a preview-gated
+  // surface is not released yet, so it must not be reachable from Search
+  // Everywhere either — the palette is a second front door to the rail, and
+  // gating only the rail would leave the unpolished page one ⌘K away.
+  for (const s of getAdvertisedSurfaces()) {
     byRoute.set(s.route, {
       key: s.navId,
       // `surfaceLabel(s)`, not `s.label`: the registry's `label` is a frozen

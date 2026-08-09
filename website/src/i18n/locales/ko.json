@@ -7751,6 +7751,15 @@
       "worktrees_count": "워크트리({{count}})",
       "worktrees_created_under_a_previous_repository_na": "이전 저장소 이름으로 생성된 워크트리입니다. 기본적으로 숨겨지며, 병합된 항목 정리 대상에는 포함됩니다."
     },
+    "developer": {
+      "previewSurfacesCard": {
+        "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
+        "open_webhooks": "Webhooks 열기",
+        "preview_surfaces": "미리 보기 페이지",
+        "unreleased_pages_hidden_from_the_sidebar_and_fro": "아직 출시되지 않은 페이지입니다. 여기서 켜기 전에는 사이드바와 전체 검색에 표시되지 않습니다. 이 기기에만 적용되며, 페이지는 의도적으로 미완성 상태입니다.",
+        "webhooks": "Webhooks"
+      }
+    },
     "developerPage": {
       "developer": "개발자",
       "tabs": {
@@ -7759,7 +7768,7 @@
           "label": "아카이브"
         },
         "config": {
-          "description": "Kiro Crew 및 에이전트 설정 뷰어(읽기 전용)",
+          "description": "미리 보기 페이지 켜기, 그리고 Kiro Crew 및 에이전트 구성 뷰어(읽기 전용)",
           "label": "설정"
         },
         "logs": {

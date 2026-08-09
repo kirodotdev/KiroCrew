@@ -7,7 +7,7 @@ import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeAppro
 // Side-effect: registers every built-in surface in the registry. MUST run
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
-import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel } from './surfaces/registry'
+import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
 import { createSlot, appendMessage, setSlotRunning, switchSlot } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
@@ -19,6 +19,7 @@ import { useTheme } from './hooks/useTheme'
 import { useBranding } from './hooks/useBranding'
 import { useRumPageView } from './hooks/useRumPageView'
 import { useIsMobile } from './hooks/useIsMobile'
+import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
 import { useNativeNotification } from './hooks/useNativeNotification'
 import { useNotificationSound } from './hooks/useNotificationSound'
@@ -151,6 +152,10 @@ const NAV_ITEMS = getBuiltinSurfaces().map(s => ({
   labelKey: s.labelKey,
   group: s.group,
   icon: s.icon,
+  // Carried through so the rail can drop a preview-gated surface at RENDER
+  // time. It cannot be filtered out here: this constant is evaluated once at
+  // module load, so a flag flipped later would not take effect until a reload.
+  previewFlag: s.previewFlag,
 }))
 
 /** Usage color class: green (<70%), yellow (70-90%), red (>90%). */
@@ -1079,6 +1084,23 @@ export default function App() {
   // Dynamic app nav items — all apps (builtin + installed) with UI pages
   const [appNavItems, setAppNavItems] = useState<Array<{ path: string; id: string; label: string; group: string; icon: React.ReactElement }>>([])
   const [appNavOrder, setAppNavOrder] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('mc-app-nav-order') || '[]') } catch { return [] } })
+  // Preview-gated surfaces (see `utils/previewFlags.ts`) must not be advertised
+  // anywhere. `surfacePreviewEnabled` is a synchronous storage read, so the rail
+  // needs this subscription to re-render when Developer > Config flips a flag —
+  // otherwise the row would appear only after a reload. The revision also
+  // invalidates the memo below, which a bare re-render would not recompute.
+  const previewFlagRevision = usePreviewFlagRevision()
+  // ONE derivation feeding BOTH rail list paths (the Apps group just below and
+  // the Main group further down). Filtering per call site is what leaks an
+  // unreleased surface: the first preview-gated Apps-group surface would have
+  // shown up while only the Main branch was gated.
+  const advertisedNavItems = useMemo(
+    () => NAV_ITEMS.filter(surfacePreviewEnabled),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is an
+    // invalidation token: what `surfacePreviewEnabled` reads lives in
+    // localStorage, not in React state, so nothing else here can express the dep.
+    [previewFlagRevision],
+  )
   // Apps nav reorder is dnd-kit sortable (mirrors QueueStack): rows reflow to
   // open a gap as you drag, and a DragOverlay renders the floating ghost.
   // activeAppDragId tracks the app being dragged, for the overlay + source dim.
@@ -1101,11 +1123,11 @@ export default function App() {
   const [appsExpanded, setAppsExpanded] = useState(() => localStorage.getItem('mc-apps-expanded') === '1')
   const toggleAppsExpanded = useCallback(() => setAppsExpanded(v => { const next = !v; safeSetItem('mc-apps-expanded', next ? '1' : '0'); return next }), [])
   const sortedAppGroup = useMemo(() => {
-    const items = [...NAV_ITEMS.filter(n => n.group === 'Apps'), ...appNavItems]
+    const items = [...advertisedNavItems.filter(n => n.group === 'Apps'), ...appNavItems]
     if (appNavOrder.length === 0) return items
     const orderMap = new Map(appNavOrder.map((id, i) => [id, i]))
     return items.sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999))
-  }, [appNavItems, appNavOrder])
+  }, [advertisedNavItems, appNavItems, appNavOrder])
   const handleAppDragStart = useCallback((e: DragStartEvent) => setActiveAppDragId(e.active.id as string), [])
   const handleAppDragEnd = useCallback((e: DragEndEvent) => {
     setActiveAppDragId(null)
@@ -2161,7 +2183,7 @@ export default function App() {
           {/* Hairline under the expanded header (collapsed rail has none —
               the big logo alone separates well). */}
           {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mt-0.5 mb-[7px]" />}
-          {NAV_ITEMS.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
+          {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
           {/* Apps section header. "Explore" (the App Store) rides the header
               row in accent when expanded; collapsed it becomes a regular
               muted icon row like its neighbors. No shared-layout fly-across:

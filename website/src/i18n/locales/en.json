@@ -5418,6 +5418,15 @@
       "worktrees": "Worktrees",
       "worktrees_created_under_a_previous_repository_na": "Worktrees created under a previous repository name. Hidden by default; still covered by Prune merged."
     },
+    "developer": {
+      "previewSurfacesCard": {
+        "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
+        "open_webhooks": "Open Webhooks",
+        "preview_surfaces": "Preview pages",
+        "unreleased_pages_hidden_from_the_sidebar_and_fro": "Unreleased pages, hidden from the sidebar and from Search Everywhere until you turn them on here. Per-device, and unpolished on purpose.",
+        "webhooks": "Webhooks"
+      }
+    },
     "developerPage": {
       "developer": "Developer"
     },

@@ -18,12 +18,18 @@ const { getBuiltinSurfaces } = vi.hoisted(() => ({
   ]),
 }))
 
-// `surfaceLabel` is mocked alongside `getBuiltinSurfaces` because pagesProvider
-// now resolves the display title through it (the registry's `label` is a frozen
+// `surfaceLabel` is mocked alongside the surface list because pagesProvider
+// resolves the display title through it (the registry's `label` is a frozen
 // English fallback beside a `labelKey`). Mirroring the real resolver's
 // fallback order keeps these fixtures asserting on their own `label` values.
+//
+// The provider reads `getAdvertisedSurfaces()` — the list a consumer may SHOW —
+// so that is what the fixture stands in for. Its real implementation drops
+// preview-gated surfaces; the gate itself is covered in
+// `test/previewSurfaces.test.tsx` against the real registry and real
+// localStorage. None of the fixtures below is gated.
 vi.mock('../../../surfaces/registry', () => ({
-  getBuiltinSurfaces,
+  getAdvertisedSurfaces: getBuiltinSurfaces,
   surfaceLabel: (s: { label: string; labelKey?: string }) => s.label,
 }))
 

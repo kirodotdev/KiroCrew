@@ -10,6 +10,7 @@ import LocalStorageDebug from './LocalStorageDebug'
 import { SharedMcpGatewayToggle } from './settings/SharedMcpGatewayToggle'
 import { McpPoolableServers } from './settings/McpPoolableServers'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
+import { PreviewSurfacesCard } from './developer/PreviewSurfacesCard'
 
 /**
  * Lazy: MemoryGraphTab is the only eager owner of the sigma/graphology stack
@@ -70,6 +71,7 @@ export default function DeveloperPage() {
         )}
         {tab === 'config' && (
           <>
+            <PreviewSurfacesCard />
             <KiroCrewCfgTab />
             <AgentCfgTab />
           </>

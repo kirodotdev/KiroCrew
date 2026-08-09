@@ -7857,6 +7857,15 @@
       "worktrees_count": "Worktrees ({{count}})",
       "worktrees_created_under_a_previous_repository_na": "Worktrees, die unter einem früheren Repository-Namen erstellt wurden. Standardmäßig ausgeblendet; werden weiterhin von „Zusammengeführte bereinigen“ abgedeckt."
     },
+    "developer": {
+      "previewSurfacesCard": {
+        "inbound_webhook_tokens_registered_contexts_and_r": "Tokens für eingehende Webhooks, registrierte Kontexte und Ausführungsverlauf. Die API funktioniert, die Seite ist noch nicht fertig.",
+        "open_webhooks": "Webhooks öffnen",
+        "preview_surfaces": "Vorschauseiten",
+        "unreleased_pages_hidden_from_the_sidebar_and_fro": "Nicht veröffentlichte Seiten. Sie erscheinen weder in der Seitenleiste noch in „Überall suchen“, bis du sie hier aktivierst. Gilt nur für dieses Gerät, und die Seiten sind absichtlich unfertig.",
+        "webhooks": "Webhooks"
+      }
+    },
     "developerPage": {
       "developer": "Entwickler",
       "tabs": {
@@ -7865,7 +7874,7 @@
           "label": "Archiv"
         },
         "config": {
-          "description": "Ansichten für Kiro Crew- und Agenten-Konfiguration (nur lesbar)",
+          "description": "Aktivierung von Vorschauseiten sowie Ansichten der Kiro Crew- und Agent-Konfiguration (nur Lesen)",
           "label": "Konfiguration"
         },
         "logs": {

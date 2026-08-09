@@ -12,6 +12,7 @@ import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { registerBuiltinSurface, surfaceMachineValue } from './registry'
 import { selectSubagentActivityCount } from '../store/chatSlice'
+import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import type { RootState } from '../store'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
@@ -85,6 +86,10 @@ registerBuiltinSurface({
 // Inbound webhooks: token store, registered contexts, and run history for
 // POST /api/hooks/agent. A Main-group destination because it is an always-on
 // gateway capability, not an installable app.
+//
+// PREVIEW-GATED: the page works but is not polished enough to release, so it is
+// not advertised until the operator enables it in Developer > Config. Drop
+// `previewFlag` (and the PREVIEW_SURFACES row) to release it.
 registerBuiltinSurface({
   navId: 'webhooks',
   route: '/webhooks',
@@ -92,6 +97,7 @@ registerBuiltinSurface({
   labelKey: 'nav.webhooks',
   icon: <Webhook size={16} />,
   group: surfaceMachineValue('Main'),
+  previewFlag: PREVIEW_WEBHOOKS,
 })
 
 // ── Apps ───────────────────────────────────────────────────────────────────

@@ -7751,6 +7751,15 @@
       "worktrees_count": "ワークツリー（{{count}}）",
       "worktrees_created_under_a_previous_repository_na": "以前のリポジトリ名の下で作成されたワークツリー。デフォルトでは非表示。マージ済み削除の対象です。"
     },
+    "developer": {
+      "previewSurfacesCard": {
+        "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
+        "open_webhooks": "Webhooks を開く",
+        "preview_surfaces": "プレビューページ",
+        "unreleased_pages_hidden_from_the_sidebar_and_fro": "未リリースのページです。ここでオンにするまで、サイドバーと「すべてから検索」には表示されません。この設定はこのデバイスのみに適用され、ページは意図的に未完成のままです。",
+        "webhooks": "Webhooks"
+      }
+    },
     "developerPage": {
       "developer": "デベロッパー",
       "tabs": {
@@ -7759,7 +7768,7 @@
           "label": "アーカイブ"
         },
         "config": {
-          "description": "Kiro Crew とエージェント設定ビューア（読み取り専用）",
+          "description": "プレビューページの有効化と、Kiro Crew およびエージェント設定のビューア（読み取り専用）",
           "label": "設定"
         },
         "logs": {

@@ -3720,7 +3720,7 @@
           "label": "Archive"
         },
         "config": {
-          "description": "Kiro Crew and agent configuration viewers (read-only)",
+          "description": "Preview-page opt-ins, plus Kiro Crew and agent configuration viewers (read-only)",
           "label": "Config"
         },
         "logs": {

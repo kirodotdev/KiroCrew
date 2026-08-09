@@ -7751,6 +7751,15 @@
       "worktrees_count": "工作树（{{count}}）",
       "worktrees_created_under_a_previous_repository_na": "在旧仓库名下创建的工作树。默认隐藏；仍在“清理已合并”范围内。"
     },
+    "developer": {
+      "previewSurfacesCard": {
+        "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
+        "open_webhooks": "打开 Webhook",
+        "preview_surfaces": "预览页面",
+        "unreleased_pages_hidden_from_the_sidebar_and_fro": "尚未发布的页面。在此开启之前，它们不会出现在侧边栏和全局搜索中。设置仅对本设备生效，且这些页面有意保留未完善的状态。",
+        "webhooks": "Webhook"
+      }
+    },
     "developerPage": {
       "developer": "开发者",
       "tabs": {
@@ -7759,7 +7768,7 @@
           "label": "归档"
         },
         "config": {
-          "description": "Kiro Crew 与代理配置查看器（只读）",
+          "description": "预览页面开关，以及 Kiro Crew 和代理配置查看器（只读）",
           "label": "配置"
         },
         "logs": {

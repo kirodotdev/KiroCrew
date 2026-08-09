@@ -7963,6 +7963,15 @@
       "worktrees_count": "Worktrees ({{count}})",
       "worktrees_created_under_a_previous_repository_na": "Worktrees creados con un nombre de repositorio anterior. Ocultos por defecto; aun así los cubre Purgar fusionados."
     },
+    "developer": {
+      "previewSurfacesCard": {
+        "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks entrantes, contextos registrados e historial de ejecuciones. La API funciona; la página no está terminada.",
+        "open_webhooks": "Abrir Webhooks",
+        "preview_surfaces": "Páginas en vista previa",
+        "unreleased_pages_hidden_from_the_sidebar_and_fro": "Páginas sin publicar, ocultas de la barra lateral y de Buscar en todo hasta que las actives aquí. Solo para este dispositivo y sin terminar a propósito.",
+        "webhooks": "Webhooks"
+      }
+    },
     "developerPage": {
       "developer": "Desarrollador",
       "tabs": {
@@ -7971,7 +7980,7 @@
           "label": "Archivo"
         },
         "config": {
-          "description": "Visores de configuración de Kiro Crew y del agente (solo lectura)",
+          "description": "Activación de páginas en vista previa, más los visores de configuración de Kiro Crew y del agente (solo lectura)",
           "label": "Configuración"
         },
         "logs": {
