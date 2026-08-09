@@ -470,6 +470,101 @@ class TestBuildLauncherScript:
             ), f"{level}: launcher references un-importable module(s) {forbidden}"
 
 
+class TestHardlinkScanBudget:
+    """Step-7 pre-exec hardlink scan: per-root budgets + loud truncation.
+
+    The launcher needs ``unshare`` so it cannot run end-to-end in CI; these
+    are text/compile assertions on the generated script, the same pattern as
+    the other launcher-script tests above. A single budget shared across the
+    CWD and /tmp walks let a large worktree consume the whole budget before
+    /tmp (the world-writable root the check exists for) was scanned at all,
+    and an exhausted budget fell through to exec silently — a truncated scan
+    was indistinguishable from a clean one.
+    """
+
+    def test_shared_budget_counter_is_gone(self):
+        script = _build_launcher_script("strict")
+        assert "_scan_count > _MAX_SCAN" not in script
+        assert "_scan_count" not in script
+
+    def test_only_aliased_credential_inodes_arm_the_walk(self):
+        # An inode with st_nlink == 1 has no alias anywhere on the
+        # filesystem, so it must not enter the match set: when every
+        # credential has nlink == 1 the CWD + /tmp walk is skipped and the
+        # common healthy-host spawn pays nothing (and emits no truncation
+        # warning). Both collection loops (SENSITIVE_DIRS and
+        # SENSITIVE_FILES) carry the gate.
+        script = _build_launcher_script("strict")
+        assert script.count("if _st.st_nlink > 1:") == 2
+
+    def test_per_root_budget_covers_a_busy_tmp(self):
+        # The budget only applies once a credential inode is actually
+        # aliased (see the nlink gate above), so it can afford to be
+        # generous: 100k covers the busiest observed /tmp (~11.8k files)
+        # with an order of magnitude to spare, making truncation genuinely
+        # exceptional rather than a steady-state warning.
+        script = _build_launcher_script("strict")
+        assert "_MAX_SCAN_PER_ROOT = 100000" in script
+
+    def test_per_root_budget_with_counter_reset_inside_root_loop(self):
+        script = _build_launcher_script("strict")
+        assert "_MAX_SCAN_PER_ROOT" in script
+        # The counter reset must be a DIRECT child of the per-root loop body:
+        # each root gets exactly one fresh budget, so a large CWD cannot
+        # starve the /tmp scan. AST-based, because a byte-offset check cannot
+        # tell this apart from a reset nested inside the os.walk loop (which
+        # would reset per-directory and make the scan effectively unbounded).
+        root_loops = [
+            node
+            for node in ast.walk(ast.parse(script))
+            if isinstance(node, ast.For)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_scan_root"
+        ]
+        assert len(root_loops) == 1
+        direct_assigns = [
+            stmt
+            for stmt in root_loops[0].body
+            if isinstance(stmt, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "_root_scanned"
+                for t in stmt.targets
+            )
+        ]
+        assert len(direct_assigns) == 1, (
+            "_root_scanned reset must sit directly in the per-root loop body"
+        )
+
+    def test_truncation_warns_on_stderr_without_exiting(self):
+        script = _build_launcher_script("strict")
+        assert "hardlink scan truncated" in script
+        assert "scan incomplete" in script
+        # The diagnostic goes to stderr, which the parent already captures.
+        warn_idx = script.index("hardlink scan truncated")
+        stderr_idx = script.index("file=sys.stderr", warn_idx)
+        # Deliberate fail-open: the truncation path warns, it never exits.
+        assert "sys.exit" not in script[warn_idx:stderr_idx]
+
+    def test_blocked_exit_path_for_found_hardlinks_still_present(self):
+        script = _build_launcher_script("strict")
+        assert "sandbox: BLOCKED — found hardlink" in script
+
+    def test_no_directory_pruning_in_the_scan(self):
+        # /tmp is world-writable and the sandboxed agent shares the uid, so
+        # any name- or prefix-based prune list is a deterministic bypass: the
+        # attacker just names their directory to match. The scan must visit
+        # every directory the depth limit allows; noisy trees are handled by
+        # the per-root budget + truncation warning, never by skipping.
+        script = _build_launcher_script("strict")
+        assert "_SKIP_TMP_DIR_PREFIXES" not in script
+
+    def test_generated_script_compiles_at_every_level(self):
+        # Proves the f-string brace escaping in the template produced
+        # syntactically valid Python for every sandbox level.
+        for level in ("strict", "standard", "cc"):
+            compile(_build_launcher_script(level), "<launcher>", "exec")
+
+
 class TestLauncherStdlibShadowing:
     """End-to-end: a sibling /tmp/struct.py must NOT crash the launcher.
 

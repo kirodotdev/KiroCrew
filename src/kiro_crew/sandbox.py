@@ -1471,6 +1471,16 @@ def main():
         # ── Step 7: Pre-exec hardlink scan ──
         # Scan the agent workspace + /tmp for hardlinks (nlink > 1) whose
         # inode matches a protected credential file. If found, refuse to exec.
+        # Only credential inodes with st_nlink > 1 enter the match set: an
+        # inode with a single link has no alias anywhere on the filesystem, so
+        # when every credential has nlink == 1 the walk is skipped entirely
+        # and the common healthy-host spawn pays nothing. When a walk does
+        # run, each root gets its OWN scan budget so a large workspace cannot
+        # starve the /tmp scan (the world-writable root this check exists
+        # for). On budget exhaustion the scan deliberately degrades OPEN with
+        # a stderr warning rather than failing closed: /tmp on a busy host can
+        # exceed any fixed budget from ordinary telemetry/cache churn, and
+        # exiting here would break every sandbox spawn on such hosts.
         _protected_inodes = set()
         for _pd in SENSITIVE_DIRS:
             if os.path.isdir(_pd):
@@ -1478,25 +1488,29 @@ def main():
                     for _fname in _files_scan:
                         try:
                             _st = os.stat(os.path.join(_root, _fname))
-                            _protected_inodes.add((_st.st_dev, _st.st_ino))
+                            if _st.st_nlink > 1:
+                                _protected_inodes.add((_st.st_dev, _st.st_ino))
                         except OSError:
                             pass
                     break  # depth=1 for credential dirs
         for _pf in SENSITIVE_FILES:
             try:
                 _st = os.stat(_pf)
-                _protected_inodes.add((_st.st_dev, _st.st_ino))
+                if _st.st_nlink > 1:
+                    _protected_inodes.add((_st.st_dev, _st.st_ino))
             except OSError:
                 pass
 
         if _protected_inodes:
-            _scan_count = 0
-            _MAX_SCAN = 10000
+            _MAX_SCAN_PER_ROOT = 100000
             _dangerous_links = []
+            _truncated_roots = []
             _cwd = os.getcwd()
             for _scan_root in (_cwd, "/tmp"):
                 if not os.path.isdir(_scan_root):
                     continue
+                _root_scanned = 0
+                _root_truncated = False
                 for _root2, _dirs2, _files2 in os.walk(_scan_root):
                     # Depth limit: max 5 levels
                     _depth = _root2[len(_scan_root):].count(os.sep)
@@ -1504,9 +1518,10 @@ def main():
                         _dirs2.clear()
                         continue
                     for _fn2 in _files2:
-                        _scan_count += 1
-                        if _scan_count > _MAX_SCAN:
+                        if _root_scanned >= _MAX_SCAN_PER_ROOT:
+                            _root_truncated = True
                             break
+                        _root_scanned += 1
                         _fp2 = os.path.join(_root2, _fn2)
                         try:
                             _st2 = os.lstat(_fp2)
@@ -1515,8 +1530,17 @@ def main():
                                     _dangerous_links.append(_fp2)
                         except OSError:
                             pass
-                    if _scan_count > _MAX_SCAN:
+                    if _root_truncated:
                         break
+                if _root_truncated:
+                    _truncated_roots.append((_scan_root, _root_scanned))
+            for _t_root, _t_count in _truncated_roots:
+                print(
+                    "sandbox: WARNING — pre-exec hardlink scan truncated at "
+                    "%d files in %s; scan incomplete (control degrades open)"
+                    % (_t_count, _t_root),
+                    file=sys.stderr,
+                )
             if _dangerous_links:
                 sys.exit(
                     f"sandbox: BLOCKED — found hardlink(s) to protected credential "
