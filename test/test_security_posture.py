@@ -639,7 +639,7 @@ class TestOmissionDetection:
         src = inspect.getsource(token_auth)
         for marker in (
             "hmac.new",  # HMAC-SHA256 signature
-            "bind_ip",  # IP pinning
+            "bind_peer",  # session pinning (peer-keyed: ip:<addr> / ts:… identity)
             "try_consume",  # single-use link nonce
             "MAX_SESSION_TTL_SECS",  # bounded session lifetime
             "revocation_gen",  # revocation generation

@@ -109,7 +109,10 @@ def _config_cmd(args: argparse.Namespace) -> None:
             # takes precedence over the base file) cannot become the one way to
             # store `true` on a pinned host. Only the enable direction is refused
             # (tightest-wins), matching the PATCH 403 and the startup gate.
-            if key == "dashboard.tailscale.enabled" and parsed is True:
+            if (
+                key in ("dashboard.tailscale.enabled", "dashboard.tailscale.trust_identity")
+                and parsed is True
+            ):
                 from kiro_crew.dashboard import tailnet
 
                 if tailnet.is_governance_pinned_off(audit_tool="config_set_cli_tailnet"):

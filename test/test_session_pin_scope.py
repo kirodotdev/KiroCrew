@@ -77,11 +77,11 @@ def _reset_pin_bindings():
     from kiro_crew.dashboard import token_auth
 
     state = token_auth._state
-    before = dict(state._ip_bindings)
-    state._ip_bindings.clear()
+    before = dict(state._peer_bindings)
+    state._peer_bindings.clear()
     yield
-    state._ip_bindings.clear()
-    state._ip_bindings.update(before)
+    state._peer_bindings.clear()
+    state._peer_bindings.update(before)
 
 
 def _live() -> float:
@@ -98,14 +98,14 @@ class TestPostureReportsEffectivePinScope:
         detail = _pin_detail()
         assert "not known yet" in detail
         # Must not claim the per-client property it has not observed.
-        assert "client address that first used it" not in detail
+        assert "Per-client" not in detail
 
     def test_direct_bind_reports_per_client(self) -> None:
         from kiro_crew.dashboard.token_auth import bind_token_ip, proxied_pin_observed
 
         bind_token_ip("t-direct", "203.0.113.7", _live(), False)
         assert proxied_pin_observed() is False
-        assert "client address that first used it" in _pin_detail()
+        assert "Per-client" in _pin_detail()
 
     def test_proxied_bind_reports_shared_pin(self) -> None:
         """The state the guide used to advertise as a mitigation."""
@@ -138,7 +138,7 @@ class TestPostureReportsEffectivePinScope:
         bind_token_ip("t-proxied", "127.0.0.1", time.time() - 1, True)  # already expired
         bind_token_ip("t-direct", "203.0.113.7", _live(), False)
         assert proxied_pin_observed() is False
-        assert "client address that first used it" in _pin_detail()
+        assert "Per-client" in _pin_detail()
 
     def test_all_sessions_expired_reports_not_known_rather_than_stale(self) -> None:
         from kiro_crew.dashboard.token_auth import bind_token_ip, proxied_pin_observed

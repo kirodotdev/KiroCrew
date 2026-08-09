@@ -1870,6 +1870,86 @@ class TailscaleConfig:
             "still needs a dashboard session.",
         ),
     )
+    trust_identity: bool = field(
+        default=False,
+        metadata=_meta(
+            "Trust Tailnet Identity",
+            "Pin dashboard sessions arriving via `tailscale serve` to the "
+            "daemon-verified tailnet peer instead of the tunnel's shared "
+            "loopback address, and record that identity in the audit trail. "
+            "Explicit opt-in, never inferred, and requires a non-empty "
+            "allowed_logins — enabling it with an empty allowlist is refused at "
+            "load. Every failure to verify a peer falls back to the ordinary "
+            "token path. POSIX only. Takes effect on the next gateway "
+            "start (the trust settings are read once at startup).",
+        ),
+    )
+    allowed_logins: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Tailnet Logins",
+            "Tailscale logins permitted when trust_identity is on. Mandatory: "
+            "a shared tailnet can have hundreds of members, so identity trust "
+            "without an allowlist would hand each of them the dashboard. A "
+            "verified peer whose login is not listed is denied.",
+        ),
+    )
+    pin_scope: str = field(
+        default="node",
+        metadata=_meta(
+            "Pin Scope",
+            "What an identity-pinned session binds to: 'node' (default — a "
+            "leaked cookie is usable only from the original device) or 'login' "
+            "(usable from any device carrying that Tailscale identity). An "
+            "unrecognised value falls back to 'node'. An ACL-tagged node is "
+            "always pinned at node scope regardless of this setting. Takes "
+            "effect on the next gateway start.",
+        ),
+    )
+
+
+def _tailscale_config_from(raw: object) -> TailscaleConfig:
+    """Build the validated :class:`TailscaleConfig` (RFC §3/§3.1 load rules).
+
+    Two rules, both narrowing-only so a typo can never widen access:
+
+    * ``trust_identity: true`` with an empty ``allowed_logins`` is a
+      configuration error — refused with a logged reason, identity trust stays
+      OFF. Never a silently-permissive default: "any tailnet member" on a
+      shared corporate tailnet would hand the dashboard to all of them.
+    * An unrecognised ``pin_scope`` falls back to ``"node"`` (the narrower
+      scope) with a logged warning — never to ``"login"``.
+    """
+    data = _safe_dict(raw)
+    enabled = _safe_bool(data.get("enabled"), False)
+    trust_identity = _safe_bool(data.get("trust_identity"), False)
+    raw_logins = data.get("allowed_logins")
+    allowed_logins = [
+        entry.strip()
+        for entry in (raw_logins if isinstance(raw_logins, list) else [])
+        if isinstance(entry, str) and entry.strip()
+    ]
+    pin_scope = str(data.get("pin_scope") or "node").strip().lower()
+    if pin_scope not in ("node", "login"):
+        logger.warning(
+            "dashboard.tailscale.pin_scope %r is not recognised; falling back to "
+            "'node' (the narrower scope)",
+            pin_scope,
+        )
+        pin_scope = "node"
+    if trust_identity and not allowed_logins:
+        logger.error(
+            "dashboard.tailscale.trust_identity is on but allowed_logins is "
+            "empty — identity trust requires an explicit login allowlist and "
+            "stays OFF. Add the Tailscale logins you want to admit."
+        )
+        trust_identity = False
+    return TailscaleConfig(
+        enabled=enabled,
+        trust_identity=trust_identity,
+        allowed_logins=allowed_logins,
+        pin_scope=pin_scope,
+    )
 
 
 @dataclass
@@ -5208,11 +5288,7 @@ class KiroCrewConfig:
             ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),
-                tailscale=TailscaleConfig(
-                    enabled=_safe_bool(
-                        _safe_dict(dashboard_data.get("tailscale")).get("enabled"), False
-                    ),
-                ),
+                tailscale=_tailscale_config_from(dashboard_data.get("tailscale")),
                 restore_sessions=dashboard_data.get("restore_sessions", False),
                 restore_window_minutes=dashboard_data.get("restore_window_minutes", 30),
                 surface_channel_sessions=dashboard_data.get("surface_channel_sessions", True),

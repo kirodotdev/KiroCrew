@@ -1469,6 +1469,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # enterprise ceiling can refuse the enabling write outright — see the
     # ``capabilities.tailnet_origin`` gate below.
     "dashboard.tailscale.enabled": {"type": "bool"},
+    # Identity trust for tailnet peers (RFC §2–§3.1). Only the boolean opt-in
+    # and the pin scope are editable here; ``allowed_logins`` is a list and is
+    # deliberately config-file-only — the write surface below has no list type,
+    # and the allowlist is the control that decides who gets in, so it should
+    # be an explicit file edit rather than an API-reachable value. Loader-side
+    # validation keeps every bad combination narrowing-only (trust with an
+    # empty allowlist stays off; an unrecognised pin_scope falls back to node).
+    "dashboard.tailscale.trust_identity": {"type": "bool"},
+    "dashboard.tailscale.pin_scope": {"type": "str", "max_len": 8},
     # SSO login flags for an edition that supplies a real sso_login_handler.
     # Bounded to a short string here; the companion login handler re-validates
     # each token against its own flag allowlist before spawning the login PTY
@@ -1680,7 +1689,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # does nothing — `resolve_tailnet_host` already refuses to derive, so without
     # this the config file and the card would both claim "on" while no origin is
     # ever added.
-    if path_key == "dashboard.tailscale.enabled" and value is True:
+    if (
+        path_key in ("dashboard.tailscale.enabled", "dashboard.tailscale.trust_identity")
+        and value is True
+    ):
         pinned = await asyncio.to_thread(_tailnet_governance_pinned_off)
         if pinned:
             return _deny(

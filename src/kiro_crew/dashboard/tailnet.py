@@ -25,19 +25,30 @@ as tailnet-specific (its own example is ``userfoo.tailscale.net``, not
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import re
 import subprocess
-from typing import Any
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.urls import is_loopback
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.governance_profiles import (
     GOVERNANCE_ERROR_REASON,
     governance_permits,
     vet_and_audit,
 )
+from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.sandbox import scrub_env
+
+if TYPE_CHECKING:
+    from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +63,10 @@ _CLI_TIMEOUT_SECS = 3.0
 #: a normal dev box) could plant a ``tailscale`` executable, and the next gateway
 #: start with this feature enabled would execute it. The arguments were never
 #: agent-influenced, but the *binary* was — so resolution is pinned to the
-#: locations the official packages install into, all of which need root to write:
+#: locations the official packages install into. Most need root to write, but
+#: not all (Homebrew chowns its prefix to the console user), so
+#: :func:`_cli_path` additionally refuses any candidate the gateway user can
+#: write:
 #:
 #: * ``/usr/bin`` — Linux distro packages
 #: * ``/usr/local/bin`` — Linux tarball, macOS Homebrew on Intel
@@ -82,11 +96,60 @@ def _cli_path() -> str | None:
     """Locate the ``tailscale`` CLI, or ``None`` if it is not installed.
 
     Deliberately does **not** consult ``PATH`` — see ``_CLI_CANDIDATE_PATHS``.
+
+    A candidate is additionally refused when the binary or its directory is
+    writable by the gateway user (checked on POSIX; the Windows entry needs
+    elevation to write). The pinned list mostly needs root, but two entries do
+    not everywhere: Homebrew chowns ``/opt/homebrew/bin`` (and sometimes
+    ``/usr/local/bin``) to the console user, and identity resolution makes
+    this a request-triggered execution on the auth path — an agent that can
+    write there must not be able to plant a ``tailscale`` the next
+    credential-bearing request executes. A refused Homebrew install degrades
+    exactly like a missing binary: the feature contributes nothing and the
+    documented ``dashboard.url`` fallback still works.
     """
+    # getattr: os.geteuid does not exist on Windows, and tests exercise this
+    # path with IS_POSIX patched True on every platform.
     for candidate in _CLI_CANDIDATE_PATHS:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+        if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+            continue
+        if IS_POSIX and not _posix_candidate_trusted(candidate):
+            logger.debug(
+                "tailscale CLI at %s is in a location this deployment cannot "
+                "trust; refusing to execute it (planted-binary defence). Use "
+                "an explicit dashboard.url instead.",
+                candidate,
+            )
+            continue
+        return candidate
     return None
+
+
+def _posix_candidate_trusted(candidate: str) -> bool:
+    """Whether *candidate* is safe to execute (POSIX planted-binary defence).
+
+    Refused when the binary or its directory is group/world-writable, when the
+    gateway user can write either (a file the executing user owns is always
+    effectively writable), or — when running as root, for whom every path is
+    writable so the access check says nothing — when either is not root-owned.
+    A root gateway therefore accepts only distro-style root-owned installs;
+    everything refused degrades like a missing binary.
+    """
+    directory = os.path.dirname(candidate)
+    try:
+        st_file = os.stat(candidate)
+        st_dir = os.stat(directory)
+    except OSError:
+        return False
+    group_world_write = 0o022
+    if (st_file.st_mode | st_dir.st_mode) & group_world_write:
+        return False
+    # getattr: os.geteuid does not exist on Windows, and tests exercise this
+    # path with IS_POSIX patched True on every platform.
+    euid = getattr(os, "geteuid", lambda: -1)()
+    if euid == 0:
+        return st_file.st_uid == 0 and st_dir.st_uid == 0
+    return not (os.access(candidate, os.W_OK) or os.access(directory, os.W_OK))
 
 
 def _run_json(args: list[str]) -> Any | None:
@@ -97,10 +160,24 @@ def _run_json(args: list[str]) -> Any | None:
     output) means the same thing to it. Failures are logged at debug so a host
     without Tailscale does not emit noise on every start.
     """
+    return _run_json_detail(args)[0]
+
+
+def _run_json_detail(args: list[str]) -> tuple[Any | None, bool]:
+    """Run the CLI and parse stdout as JSON. ``(parsed, transient)``.
+
+    ``transient`` is ``True`` only when the CLI could not be run or did not
+    answer in time (spawn failure, timeout) — the "daemon still starting up"
+    class, expected to clear within seconds. A completed run (any exit code,
+    any output) and a missing binary are definitive for this host right now.
+    The whois cache uses the flag to keep a transient failure on a much
+    shorter TTL, so one startup blip does not hold an identity-pinned session
+    denied for a full cache window.
+    """
     cli = _cli_path()
     if not cli:
         logger.debug("tailscale CLI not found; skipping tailnet origin derivation")
-        return None
+        return None, False
     try:
         proc = subprocess.run(  # noqa: S603 - vetted absolute binary, fixed argv, no shell
             [cli, *args],
@@ -117,7 +194,7 @@ def _run_json(args: list[str]) -> Any | None:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("tailscale %s failed to run: %s", " ".join(args), exc)
-        return None
+        return None, True
     if proc.returncode != 0:
         logger.debug(
             "tailscale %s exited %d: %s",
@@ -125,12 +202,12 @@ def _run_json(args: list[str]) -> Any | None:
             proc.returncode,
             (proc.stderr or "").strip()[:200],
         )
-        return None
+        return None, False
     try:
-        return json.loads(proc.stdout or "")
+        return json.loads(proc.stdout or ""), False
     except (json.JSONDecodeError, ValueError) as exc:
         logger.debug("tailscale %s produced non-JSON output: %s", " ".join(args), exc)
-        return None
+        return None, False
 
 
 def _valid_magicdns_name(raw: object, magic_dns_suffix: object) -> str | None:
@@ -362,3 +439,313 @@ async def resolve_tailnet_host(enabled: bool) -> str:
         )
         return ""
     return name
+
+
+# ---------------------------------------------------------------------------
+# Forwarded-peer resolution (RFC §2–§3.1) — daemon-verified identity behind
+# `tailscale serve`, so the session pin can bind to a person's device instead
+# of the tunnel's loopback address.
+#
+# The organizing rule (RFC §1): the immediate peer decides whether a forwarded
+# header may be read at all; the local daemon, not the header, decides who the
+# peer is; the header is only corroboration.
+# ---------------------------------------------------------------------------
+
+#: The address ranges a tailnet peer can legitimately arrive from. Anything
+#: outside these is not a tailnet address and is never sent to the daemon.
+_TAILNET_RANGES = (
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("fd7a:115c:a1e0::/48"),
+)
+
+#: The login `tailscale whois` reports for EVERY ACL-tagged node
+#: (tailscale/tailscale#4605). Under ``pin_scope: "login"`` that single value
+#: would collapse the pin across the entire tagged fleet, so a resolved login
+#: equal to this is ALWAYS pinned at node scope — a hard override, not a
+#: preference.
+TAGGED_DEVICES_LOGIN = "tagged-devices"
+
+PIN_SCOPE_NODE = "node"
+PIN_SCOPE_LOGIN = "login"
+PIN_SCOPES = (PIN_SCOPE_NODE, PIN_SCOPE_LOGIN)
+
+_FORWARDED_FOR_HEADER = "X-Forwarded-For"
+#: Only this module may read this header, and only to corroborate — the daemon
+#: decides identity. A header is not a credential.
+_USER_LOGIN_HEADER = "Tailscale-User-Login"
+
+#: whois results are cached by address so a request storm cannot fork a daemon
+#: call per request. Short TTL: peer identity is stable over seconds, and a
+#: short window bounds how long a stale daemon answer can outlive reality.
+_WHOIS_CACHE_TTL_SECS = 30.0
+#: A TRANSIENT failure (spawn error, timeout — the daemon-still-starting class)
+#: is cached far shorter, so a single blip does not hold an identity-pinned
+#: session denied for a full cache window. Definitive answers — including a
+#: definitive "no such peer" — keep the full TTL.
+_WHOIS_TRANSIENT_TTL_SECS = 2.0
+
+#: Bounded entry count — a flood of distinct spoofed source addresses must not
+#: grow the cache without limit.
+_WHOIS_CACHE_MAX_ENTRIES = 256
+
+
+@dataclass(frozen=True)
+class ForwardedPeer:
+    """A daemon-verified tailnet peer behind the local `tailscale serve` proxy."""
+
+    login: str
+    node: str
+    address: str
+
+
+@dataclass(frozen=True)
+class TailnetTrust:
+    """The operator's identity-trust opt-in, as validated at config load.
+
+    Carried as a plain value object (not read from config here) so this module
+    stays free of a config import — the same rule :func:`resolve_tailnet_host`
+    follows for ``enabled``.
+    """
+
+    trust_identity: bool = False
+    allowed_logins: tuple[str, ...] = ()
+    pin_scope: str = PIN_SCOPE_NODE
+
+
+_whois_lock = threading.Lock()
+#: address → (monotonic expiry, resolved (login, node) or None). Negative
+#: results are cached too: a stopped daemon must not be re-probed per request.
+_whois_cache: OrderedDict[str, tuple[float, tuple[str, str] | None]] = OrderedDict()
+
+
+#: Charset allowlist for identity components (login, node name) accepted from
+#: the daemon. An allowlist, not a denylist, mirroring ``_valid_magicdns_name``:
+#: the destinations are the session pin key and the SEL ``caller`` field, so the
+#: question is "is this provably a plain identity token". Covers email-shaped
+#: and provider-handle logins, DNS node names, and the literal
+#: ``tagged-devices``. Deliberately EXCLUDES ``|`` (the pin-key separator) and
+#: ``:`` (the pin-key namespace delimiter), which is what makes the composed
+#: key unambiguous.
+_IDENTITY_RE = re.compile(r"^[A-Za-z0-9@._%+-]{1,253}$")
+
+
+def _valid_identity(raw: object) -> str | None:
+    """Return *raw* as a usable identity component, or ``None``.
+
+    The value arrives from a subprocess and its destinations are the session
+    pin key and the SEL audit ``caller`` field — strict allowlist, see
+    ``_IDENTITY_RE``.
+    """
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not _IDENTITY_RE.match(s):
+        return None
+    return s
+
+
+def _whois_node(addr: str) -> tuple[tuple[str, str] | None, bool]:
+    """Ask the local daemon who *addr* is. ``((login, node) | None, transient)``.
+
+    Every failure (no binary, daemon down, timeout, non-zero exit, malformed
+    JSON, unexpected schema) is ``None`` — the module's "nothing here raises"
+    invariant. The second element reports whether the failure was TRANSIENT
+    (could not run / timed out) so the cache can retry it sooner.
+    """
+    data, transient = _run_json_detail(["whois", "--json", addr])
+    if not isinstance(data, dict):
+        return None, transient
+    profile = data.get("UserProfile")
+    node = data.get("Node")
+    login = _valid_identity(profile.get("LoginName") if isinstance(profile, dict) else None)
+    name_raw: object = None
+    if isinstance(node, dict):
+        name_raw = node.get("Name") or node.get("ComputedName")
+    name = _valid_identity(name_raw)
+    if login is None or name is None:
+        logger.debug("tailscale whois for %s returned no usable identity", addr)
+        return None, False
+    return (login, name.rstrip(".")), False
+
+
+def _whois_cached(addr: str) -> tuple[str, str] | None:
+    """Cache wrapper around :func:`_whois_node`, TTL'd and bounded.
+
+    Runs in a worker thread (the daemon call blocks). The lock is held across
+    the miss path deliberately: under a request storm every concurrent miss for
+    the same address waits for the ONE in-flight daemon call and then reads the
+    fresh cache entry, instead of each forking its own subprocess.
+    """
+    with _whois_lock:
+        now = time.monotonic()
+        hit = _whois_cache.get(addr)
+        if hit is not None and hit[0] > now:
+            _whois_cache.move_to_end(addr)
+            return hit[1]
+        result, transient = _whois_node(addr)
+        ttl = _WHOIS_TRANSIENT_TTL_SECS if transient else _WHOIS_CACHE_TTL_SECS
+        _whois_cache[addr] = (now + ttl, result)
+        _whois_cache.move_to_end(addr)
+        while len(_whois_cache) > _WHOIS_CACHE_MAX_ENTRIES:
+            _whois_cache.popitem(last=False)
+        return result
+
+
+def _forwarded_peer_candidate(request: web.Request, trust: TailnetTrust) -> str | None:
+    """The cheap, synchronous gate: RFC §2 conditions (a)–(d), fail-closed.
+
+    Returns the single forwarded tailnet address worth asking the daemon
+    about, or ``None``. No I/O — safe to run inline on the event loop.
+    """
+    # Windows daemon/CLI behaviour is unverified (RFC OQ4): resolution is
+    # POSIX-only and everything degrades to the token+IP path there.
+    if not IS_POSIX:
+        logger.debug("tailnet peer resolution is POSIX-only; skipping on this platform")
+        return None
+    # (b) explicit opt-in AND a non-empty allowlist. Identity trust is never
+    # inferred, and an empty allowlist means trust was refused at config load.
+    if not trust.trust_identity or not trust.allowed_logins:
+        return None
+    # (a) the immediate peer must be the local proxy. A remote peer's forwarded
+    # header is an unverifiable claim and is never read.
+    if not is_loopback(request.remote or ""):
+        return None
+    # (c) EXACTLY one forwarded address. Two or more — whether as repeated
+    # headers or one comma-joined value — is a proxy chain this design cannot
+    # attribute; reject rather than trust the first or the last.
+    values = request.headers.getall(_FORWARDED_FOR_HEADER, [])
+    if len(values) != 1:
+        return None
+    raw = values[0].strip()
+    if not raw or "," in raw:
+        return None
+    # (d) the address must parse and sit inside the tailnet ranges.
+    try:
+        candidate = ipaddress.ip_address(raw)
+    except ValueError:
+        return None
+    if not any(candidate in net for net in _TAILNET_RANGES):
+        return None
+    return str(candidate)
+
+
+async def resolve_forwarded_peer(request: web.Request, trust: TailnetTrust) -> ForwardedPeer | None:
+    """Resolve the daemon-verified peer behind a local proxy, or ``None``.
+
+    ``None`` covers every unresolvable case — trust off, non-loopback peer,
+    zero/multiple forwarded addresses, non-tailnet address, daemon absent or
+    down, timeout, malformed output, or a corroborating header that disagrees
+    with the daemon. The caller falls through to the existing token+IP path:
+    fail-closed on identity, fail-open on availability.
+
+    The blocking daemon call is offloaded to a worker thread so it never runs
+    on the event loop; the WebSocket path resolves once here at upgrade, never
+    per frame.
+    """
+    addr = _forwarded_peer_candidate(request, trust)
+    if addr is None:
+        return None
+    # (e) the daemon decides identity. Offloaded onto the DEDICATED subprocess
+    # executor, not asyncio.to_thread's shared default pool: waiters can hold a
+    # worker for up to the daemon timeout behind _whois_lock, and starving the
+    # process-wide default pool with header-driven work would stall unrelated
+    # gateway offloads (the cross-starvation subprocess_executor exists to stop).
+    resolved = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), _whois_cached, addr
+    )
+    if resolved is None:
+        return None
+    login, node = resolved
+    # (f) the header is only corroboration. Absent costs nothing; a
+    # disagreement is a rejection, not a warning — a proxy relaying an
+    # attacker-chosen header must not win over the daemon.
+    header_login = (request.headers.get(_USER_LOGIN_HEADER) or "").strip()
+    if header_login and header_login.lower() != login.lower():
+        logger.warning(
+            "tailnet peer %s: %s header (%r) disagrees with whois login; rejecting identity",
+            addr,
+            _USER_LOGIN_HEADER,
+            header_login[:64],
+        )
+        return None
+    return ForwardedPeer(login=login, node=node, address=addr)
+
+
+def peer_pin_key(peer: ForwardedPeer, pin_scope: str) -> str:
+    """The session pin key for a resolved peer, per RFC §3.1.
+
+    ``node`` scope (the default, and anything unrecognised — a typo may only
+    ever narrow): ``ts:node:<login>|<node>``. ``login`` scope:
+    ``ts:login:<login>``. Two shape rules keep the key namespace unambiguous:
+    the scope tag in the prefix (logins are emails and contain ``@``, so the
+    RFC's bare shapes cannot be told apart when classifying a mismatch), and a
+    ``|`` separator that ``_IDENTITY_RE`` forbids inside either component, so
+    ``login="a@b", node="c"`` can never collide with ``login="a",
+    node="b@c"``. Keys are only ever compared for full-string equality, never
+    parsed.
+
+    Hard override: an ACL-tagged node reports the literal ``tagged-devices``
+    login for EVERY tagged device, so login scope would make one leaked
+    CI-runner session replayable from the whole tagged fleet. A tagged node is
+    therefore always pinned at node scope, and the override is logged.
+    """
+    if peer.login == TAGGED_DEVICES_LOGIN:
+        if pin_scope == PIN_SCOPE_LOGIN:
+            logger.warning(
+                "tailnet peer %s is an ACL-tagged node (login %r); pin_scope "
+                "'login' is overridden to node scope for it",
+                peer.node,
+                TAGGED_DEVICES_LOGIN,
+            )
+        return f"ts:node:{peer.login}|{peer.node}"
+    if pin_scope == PIN_SCOPE_LOGIN:
+        return f"ts:login:{peer.login}"
+    return f"ts:node:{peer.login}|{peer.node}"
+
+
+def login_allowed(login: str, allowed_logins: tuple[str, ...]) -> bool:
+    """Whether *login* is on the operator's allowlist. Case-insensitive.
+
+    Deny-by-default: an empty allowlist allows no one (and also disables
+    resolution upstream — see :func:`_forwarded_peer_candidate`).
+    """
+    candidate = login.strip().lower()
+    if not candidate:
+        return False
+    return any(candidate == entry.strip().lower() for entry in allowed_logins if entry.strip())
+
+
+async def governed_tailnet_trust(
+    trust_identity: bool, allowed_logins: tuple[str, ...], pin_scope: str
+) -> TailnetTrust:
+    """Build the identity-trust value object, with the governance ceiling applied.
+
+    ONE code path for both server startup surfaces (dashboard and headless API)
+    — a prior round of the tailnet feature shipped a bug from exactly this
+    dual-site drift, so the trust construction lives here rather than being
+    duplicated at each call site. Takes plain values rather than a config
+    object to keep this module free of a config import.
+
+    An enterprise ceiling pinning ``capabilities.tailnet_origin`` off disables
+    identity trust too: the config-set surfaces refuse the enabling WRITE, but
+    a value already stored must not keep request-time whois calls and identity
+    pinning alive under a policy that forbids the tailnet integration. The
+    probe runs in a thread (it reads the trust-root policy from disk) and is
+    audited as a governance decision.
+    """
+    trust = TailnetTrust(
+        trust_identity=trust_identity,
+        allowed_logins=allowed_logins,
+        pin_scope=pin_scope,
+    )
+    if trust.trust_identity and await asyncio.to_thread(
+        is_governance_pinned_off, audit_tool="tailnet_trust_startup"
+    ):
+        logger.warning(
+            "dashboard.tailscale.trust_identity is on, but capabilities."
+            "tailnet_origin is pinned OFF by your administrator's security "
+            "policy — tailnet identity trust stays disabled and sessions keep "
+            "the ordinary token+IP pin."
+        )
+        return TailnetTrust()
+    return trust

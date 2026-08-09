@@ -292,6 +292,38 @@ the same and the difference is the whole security story:
   Tailscale is absent, stopped, or MagicDNS is off it contributes nothing and the
   dashboard starts exactly as before. It does not widen the network bind and does
   not change authentication — every request still needs a dashboard session.
+
+  Optionally, opt in to **identity-pinned sessions** so the session pin binds to
+  your device's daemon-verified tailnet identity instead of the tunnel's shared
+  loopback address (and the audit trail names your login instead of
+  `127.0.0.1`):
+  ```json
+  {
+    "dashboard": {
+      "tailscale": {
+        "enabled": true,
+        "trust_identity": true,
+        "allowed_logins": ["you@example.com"],
+        "pin_scope": "node"
+      }
+    }
+  }
+  ```
+  `allowed_logins` is mandatory — `trust_identity` with an empty list is refused
+  at startup, and a verified peer whose login is not listed is denied. The
+  identity is resolved from the local `tailscale whois` daemon, never from a
+  header. When identity cannot be resolved (daemon stopped, Tailscale absent,
+  Windows — where resolution is not yet verified), a NEW login falls back to
+  the ordinary token path, while a session already pinned to a tailnet
+  identity is refused ("tailnet identity unverified") until the daemon
+  answers again — an unverified proxied request can never satisfy an
+  identity pin. `pin_scope: "node"` (the default) means a leaked session cookie is
+  usable only from the original device; `"login"` relaxes that to any device
+  carrying your Tailscale identity. An ACL-tagged node is always pinned at node
+  scope regardless of `pin_scope`, because every tagged device shares the
+  literal `tagged-devices` login. Identity trust does **not** unlock the
+  config-write or secret-reveal surfaces: a tailnet request is still a proxied
+  request and those stay read-only.
 - [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) does the opposite: it
   puts the service **on the public internet**, like cloudflared and ngrok. Use it
   only if you actually want public ingress.
@@ -332,7 +364,10 @@ service installer such as `cloudflared service install`).
 > indefinitely if the browser keeps rotating its refresh cookie. For the same
 > reason the audit trail records the caller as `127.0.0.1` rather than a client
 > address. Security Posture → Dashboard token auth reports which of the two states
-> you are actually in.
+> you are actually in. The one exception is `tailscale serve` **with
+> `trust_identity` configured** (see above): there the pin binds to the
+> daemon-verified peer identity and is per-client again. For cloudflared, ngrok,
+> and Funnel the pin is always shared.
 >
 > So the real control for a tunnelled dashboard is the provider's own auth layer
 > (Cloudflare Access, or `tailscale serve`, which keeps the service inside your

@@ -171,8 +171,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # version into versions.txt. The binary name is a module constant; a
         # resource ceiling / sandbox adds nothing to a `--version` call.
         "diagnostics.py::_kiro_cli_version",
-        # Tailnet origin derivation (RFC: rfc-tailnet-dashboard-access): one
-        # fixed argv, ``["<tailscale>", "status", "--json"]``, with a 3s timeout,
+        # Tailnet origin derivation + forwarded-peer whois (RFC:
+        # rfc-tailnet-dashboard-access): one fixed argv — ``["<tailscale>",
+        # "status", "--json"]`` or ``["<tailscale>", "whois", "--json",
+        # <validated tailnet address>]`` — with a 3s timeout,
         # no shell and no cwd. The binary is resolved from a vetted absolute
         # allowlist (``_CLI_CANDIDATE_PATHS``) and NOT from ``PATH`` — a ``PATH``
         # lookup made the executable itself agent-selectable even though the
@@ -184,7 +186,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # is that *nothing raises* so the gateway still boots on a host with no
         # Tailscale. Routing it would make dashboard startup depend on sandbox
         # availability, which is exactly the failure that property rules out.
-        "dashboard/tailnet.py::_run_json",
+        "dashboard/tailnet.py::_run_json_detail",
         "apps/backend.py::_proc_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",

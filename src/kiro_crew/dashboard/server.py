@@ -3019,8 +3019,13 @@ async def start_dashboard(
     # Off by default; resolved in a thread so the daemon call cannot stall the
     # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
     # validated.
-    _tailnet_host = await tailnet.resolve_tailnet_host(
-        KiroCrewConfig.load().dashboard.tailscale.enabled
+    _ts_cfg = KiroCrewConfig.load().dashboard.tailscale
+    _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
+    # Identity trust (RFC §2–§3.1): validated at config load, governance
+    # ceiling applied inside the shared helper — ONE code path for both
+    # startup surfaces, so they cannot drift.
+    _tailnet_trust = await tailnet.governed_tailnet_trust(
+        _ts_cfg.trust_identity, tuple(_ts_cfg.allowed_logins), _ts_cfg.pin_scope
     )
     if _tailnet_host:
         logger.info(
@@ -3037,6 +3042,10 @@ async def start_dashboard(
     # already shipped a bug from touching one startup site and not the other.
     app["tailnet_host"] = _tailnet_host
     app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
+    # The governance-filtered identity-trust value the middleware was built
+    # with, for handlers the middleware bypasses (POST /api/auth/refresh must
+    # re-bind a rotated access token to the same verified peer identity).
+    app["tailnet_trust"] = _tailnet_trust
     app["allowed_origins"] = build_allowed_origins(
         port, local_only, configured_host, tailnet_host=_tailnet_host
     )
@@ -3112,6 +3121,7 @@ async def start_dashboard(
             port=port,
             local_only=local_only,
             spa_shell_handler=handlers.index,
+            tailnet_trust=_tailnet_trust,
         ),
         sel_audit_middleware,
         spa_fallback,
@@ -3572,8 +3582,12 @@ async def start_api_server(
     # The MCP route surface is identical to the dashboard's, so the middleware
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
     # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
-    _tailnet_host = await tailnet.resolve_tailnet_host(
-        KiroCrewConfig.load().dashboard.tailscale.enabled
+    _ts_cfg = KiroCrewConfig.load().dashboard.tailscale
+    _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
+    # Same identity-trust value as start_dashboard, via the same shared helper
+    # — the auth surface is identical, so the middleware inputs must be too.
+    _tailnet_trust = await tailnet.governed_tailnet_trust(
+        _ts_cfg.trust_identity, tuple(_ts_cfg.allowed_logins), _ts_cfg.pin_scope
     )
     app["allowed_origins"] = build_allowed_origins(
         port,
@@ -3588,6 +3602,10 @@ async def start_api_server(
     # surface later would silently read "" as "nothing was trusted".
     app["tailnet_host"] = _tailnet_host
     app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
+    # The governance-filtered identity-trust value the middleware was built
+    # with, for handlers the middleware bypasses (POST /api/auth/refresh must
+    # re-bind a rotated access token to the same verified peer identity).
+    app["tailnet_trust"] = _tailnet_trust
     app["local_only"] = local_only
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
@@ -3686,6 +3704,7 @@ async def start_api_server(
             # No SPA shell in headless mode: a no-token request must be denied
             # outright, never served an HTML shell (there is no UI to boot).
             spa_shell_handler=None,
+            tailnet_trust=_tailnet_trust,
         ),
         sel_audit_middleware,
     ]

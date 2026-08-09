@@ -854,7 +854,7 @@ new module/class names.
     deny-by-default, a `PlatformCompositionError` is re-raised. The public
     Default cannot raise, so standalone never reaches the fallback.
   - `DashboardContributor.on_token_consumed(user_id, channel, session_exp,
-    thread_ts)` — fired in `dashboard/token_auth.py` after `bind_token_ip` on the
+    thread_ts)` — fired in `dashboard/token_auth.py` after `bind_token_peer` on the
     first (non-cookie) exchange, with `channel`/`thread_ts` read from the token's
     signed `extra` payload. OBSERVER only; the anchor a challenge auth-window
     opens on. Default no-op. `safe_context_call(fallback=None)` re-raises

@@ -113,8 +113,21 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
     # use_session_exp=True for cookie-based access (validates against session_exp)
     # use_session_exp=False for URL click (validates against exp / link window)
 
+def bind_token_peer(token: str, peer_key: str) -> None: ...
+def check_token_peer(token: str, peer_key: str) -> tuple[bool, str]: ...
+    # The session pin is keyed by a PEER KEY: "ip:<addr>" (the default address
+    # pin, byte-for-byte the pre-peer behaviour) or "ts:node:<login>|<node>" / "ts:login:<login>" for a
+    # daemon-verified tailnet peer (rfc-tailnet-dashboard-access §3). check
+    # returns (ok, mismatch_reason); the reason names what the STORED pin was
+    # bound to — "IP mismatch" for an ip: pin, "device identity mismatch" for a
+    # node-scoped ts: pin, "peer identity mismatch" for a login-scoped one. In
+    # the middleware, a ts:-pinned session checked by a request on which NO
+    # peer resolved is reported as "tailnet identity unverified" instead —
+    # this request could not establish who is behind the proxy, which is not
+    # evidence the device changed.
 def bind_token_ip(token: str, ip: str) -> None: ...
 def check_token_ip(token: str, ip: str) -> bool: ...
+    # Thin compat wrappers over the peer functions for plain address pins.
 
 def mark_consumed(token: str) -> None: ...
 def is_consumed(token: str) -> bool: ...
@@ -475,7 +488,7 @@ HTML 403 page includes instructions to run `!dashboard` in Slack. The middleware
 
 1. Per-process HMAC secret (`os.urandom(32)`) — process restart invalidates all tokens
 2. Dual expiry: 5-minute link click window + configurable session TTL (max 20h)
-3. IP pinning on first use — prevents token theft across networks
+3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity` and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Resolution failure is fail-closed on identity and fail-open on availability for NEW sessions: they degrade to the address pin. A session already pinned to a tailnet identity is denied ("tailnet identity unverified") while the daemon cannot answer — never satisfiable by an unverified proxied request — and transient daemon failures (spawn error, timeout) are cached only ~2s so a startup blip clears quickly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture)
 4. Single-use URL consumption — re-click from different client rejected; same client redirected to strip token
 5. Dashboard link sent via DM only — never posted in channels
 6. Loopback always trusted — local processes (mcp-core, doctor, SSH tunnels) never need tokens

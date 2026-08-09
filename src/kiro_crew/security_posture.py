@@ -1160,7 +1160,10 @@ def _token_auth_items() -> list[PostureItem]:
             "transport that preserves the client address, for the pin to identify one client"
         )
     else:
-        _pin_detail = "A session is bound to the client address that first used it"
+        _pin_detail = (
+            "Per-client: a session is bound to the client address — or the "
+            "daemon-verified tailnet identity — that first used it"
+        )
 
     return [
         PostureItem(
