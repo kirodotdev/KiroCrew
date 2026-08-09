@@ -5023,8 +5023,17 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     - Relative traversal: ``awk '{print}' ~/../../.aws/credentials``
     - Mixed evasion: ``"cat" ~/.aws/credentials``
 
-    Only triggers when a recognized read verb is present in the resolved tokens
-    (avoids false positives on write/create commands).
+    Runs VERB-INDEPENDENTLY, matching the posture the regex first-pass already
+    ships: :func:`_build_sensitive_regex`'s catch-all branch blocks any command
+    that NAMES a sensitive path, whatever the verb, because naming one is itself
+    the signal. This pass previously required a token from
+    :data:`_NORMALIZER_READ_VERBS`, so normalization — the only layer that can
+    decide path equivalence — ran on the read path alone. A single dot segment
+    then turned the keystone fence off for every write verb: ``tee
+    ~/.kiro/crew/live_target.json`` was blocked while ``echo x >
+    ~/.kiro/crew/./live_target.json`` was not, on a default install. The verb
+    allowlist is now used only to skip the command name itself, never to decide
+    whether operands get checked.
 
     Returns denial reason string, or None if clean.
     """
@@ -5036,41 +5045,38 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     if not tokens:
         return None
 
-    # Check if any token resolves to a known read verb or hardlink/symlink
-    # creation verb (by basename, so /usr/bin/cat is recognized as "cat").
-    has_relevant_verb = False
-    for token in tokens:
-        if not token:
-            continue
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
-            has_relevant_verb = True
-            break
-
-    if not has_relevant_verb:
-        return None
-
     # Route each path-like token through is_sensitive_path()
     for token in tokens:
         if not token:
             continue
-        # Skip flags
-        if token.startswith("-"):
-            continue
-        # Skip tokens that ARE the verb itself
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
-            continue
-        # Only check tokens that look like filesystem paths
-        if not _is_path_like(token):
-            continue
-        # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
-        # $HOME expansion, and all sensitive directory checks
-        if is_sensitive_path(token):
-            return (
-                "Blocked: command accesses sensitive credential path "
-                f"(resolved via normalizer: {token[:80]})"
-            )
+        # ``key=value`` operands carry the real path to the RIGHT of the first
+        # ``=``: dd's ``of=…``/``if=…`` and long flags like ``--output=…``.
+        # Checking the raw token cannot work (``of=/x`` resolves to nothing),
+        # and the flag skip below would drop ``--output=/x`` before it is ever
+        # looked at — so split and check the value too.
+        candidates = [token]
+        if "=" in token:
+            value = token.split("=", 1)[1]
+            if value:
+                candidates.append(value)
+        for cand in candidates:
+            # Skip flags
+            if cand.startswith("-"):
+                continue
+            # Skip tokens that ARE the verb itself
+            basename = os.path.basename(cand).lower()
+            if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
+                continue
+            # Only check tokens that look like filesystem paths
+            if not _is_path_like(cand):
+                continue
+            # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
+            # $HOME expansion, and all sensitive directory checks
+            if is_sensitive_path(cand):
+                return (
+                    "Blocked: command accesses sensitive credential path "
+                    f"(resolved via normalizer: {cand[:80]})"
+                )
     return None
 
 
