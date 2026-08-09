@@ -763,6 +763,7 @@ make this tool possible:
 <a href="https://github.com/leozhad" title="Leo Zhadanovsky"><img src="https://github.com/leozhad.png?size=64" width="64" height="64" alt="Leo Zhadanovsky" /></a>
 <a href="https://github.com/lester-gh" title="lester-gh"><img src="https://github.com/lester-gh.png?size=64" width="64" height="64" alt="lester-gh" /></a>
 <a href="https://github.com/LeTeutz" title="Teodor Oprescu"><img src="https://github.com/LeTeutz.png?size=64" width="64" height="64" alt="Teodor Oprescu" /></a>
+<a href="https://github.com/Liam-Wirth" title="Liam Wirth"><img src="https://github.com/Liam-Wirth.png?size=64" width="64" height="64" alt="Liam Wirth" /></a>
 <a href="https://github.com/LiptonJumboTeaBag" title="John Li"><img src="https://github.com/LiptonJumboTeaBag.png?size=64" width="64" height="64" alt="John Li" /></a>
 <a href="https://github.com/lmambr2" title="lmambr2"><img src="https://github.com/lmambr2.png?size=64" width="64" height="64" alt="lmambr2" /></a>
 <a href="https://github.com/Lock128" title="Johannes Koch"><img src="https://github.com/Lock128.png?size=64" width="64" height="64" alt="Johannes Koch" /></a>
