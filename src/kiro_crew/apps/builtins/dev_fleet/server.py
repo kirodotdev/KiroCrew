@@ -2457,6 +2457,7 @@ async def _worktree_remove(
     name: str,
     force: bool = False,
     progress: Callable[[str], None] | None = None,
+    _caller: str = "handler",
 ) -> dict:
     """Remove a feature worktree. All safety gates preserved.
 
@@ -2495,7 +2496,8 @@ async def _worktree_remove(
         dirty = await _real_dirty(path)
         if dirty is not False:
             return {"ok": False, "error": (
-                "worktree has uncommitted changes (use force to override)"
+                "worktree has uncommitted changes"
+                " (force is allowed only when the PR is merged)"
                 if dirty else "cannot verify worktree state (git status failed)"
             )}
 
@@ -2509,17 +2511,200 @@ async def _worktree_remove(
                 "pr": _redact_pr(pr),
             }
 
+    # Teardown guard: even with force=True, refuse to destroy a dirty worktree
+    # whose PR is not merged — that combination means unrecoverable data loss
+    # (uncommitted edits on an unmerged branch). Force retains its meaning for
+    # merged-dirty and diverged-OID overrides where the work IS already shipped.
+    #
+    # force_use_git_force tracks whether the removal command should use --force.
+    # When the unmerged tree verified CLEAN here, we intentionally omit --force
+    # at removal time so git's own dirty check acts as the atomic last-line
+    # guard against edits made in the window between this check and the actual
+    # removal (TOCTOU mitigation).
+    force_use_git_force = force  # default: honour caller's force flag
+    if force and not _is_pr_merged(pr):
+        dirty = await _real_dirty(path)
+        if dirty is True:
+            logger.info(
+                "worktree_removal_audit: worktree=%s branch=%s caller=%s force=%s "
+                "dirty=True own=%s pr_state=%s verdict_oid=n/a "
+                "action=refused_dirty_unmerged",
+                name, branch, _caller, force, own,
+                (pr or {}).get("state", "none"),
+            )
+            return {
+                "ok": False,
+                "error": (
+                    "refusing forced removal: worktree has uncommitted changes "
+                    "and PR is not merged — this would cause unrecoverable data "
+                    f"loss (PR state: {(pr or {}).get('state', 'no PR')})"
+                ),
+                "pr": _redact_pr(pr),
+            }
+        elif dirty is None:
+            logger.info(
+                "worktree_removal_audit: worktree=%s branch=%s caller=%s force=%s "
+                "dirty=unknown own=%s pr_state=%s verdict_oid=n/a "
+                "action=refused_unverifiable",
+                name, branch, _caller, force, own,
+                (pr or {}).get("state", "none"),
+            )
+            return {
+                "ok": False,
+                "error": (
+                    "cannot verify worktree cleanliness (git status failed) — "
+                    "refusing forced removal"
+                ),
+                "pr": _redact_pr(pr),
+            }
+        # Tree verified clean + unmerged: force override allowed, but do NOT
+        # pass --force to git so a late dirty edit is caught at removal time.
+        force_use_git_force = False
+        logger.info(
+            "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+            "force=%s dirty=False own=%s pr_state=%s "
+            "action=unmerged_clean_no_git_force",
+            name, branch, _caller, force, own,
+            (pr or {}).get("state", "none"),
+        )
+
     # Pin the branch ref NOW — the same OID the safety verdict below evaluates
     # is the expected-old-OID for the atomic delete. A commit landing at any
     # point after this pin moves the ref, update-ref -d fails, branch retained.
+    # Hoisted before the fresh-MERGED gate so containment uses the SAME pinned
+    # OID (closing a two-reads inconsistency where the first could fail while
+    # the second succeeds on retry).
     verdict_oid = (await _git(MAIN_REPO, "rev-parse", f"refs/heads/{branch}")) if branch else None
-    if branch and branch != BASE_BRANCH and verdict_oid is None:
+    if branch and branch != BASE_BRANCH and not verdict_oid:
+        logger.info(
+            "worktree_removal_audit: worktree=%s branch=%s caller=%s force=%s "
+            "dirty=n/a own=%s pr_state=%s verdict_oid=None "
+            "action=refused_unpinnable",
+            name, branch, _caller, force, own,
+            (pr or {}).get("state", "none"),
+        )
         return {"ok": False, "error": (
             "cannot pin branch OID (git rev-parse failed) — refusing removal"
         )}
 
+    # Fresh-MERGED gate: when force=True and the CACHED verdict says MERGED,
+    # confirm with a live gh query before allowing destruction of a dirty or
+    # unverifiable worktree. A permanently cached MERGED verdict (reused branch
+    # name whose old PR merged) would otherwise skip the unmerged guard above.
+    #
+    # CRITICAL: even when fresh verification CONFIRMS the PR is merged,
+    # a dirty or unverifiable worktree must NOT be removed with --force.
+    # Containment proves the branch's COMMITS are shipped; it says nothing
+    # about working-tree edits. `git worktree remove --force` bypasses git's
+    # own dirty check and would irrecoverably destroy uncommitted edits.
+    # Contract: NO path from this gate ever passes --force to git:
+    #   - dirty is not False → refuse outright (round 5)
+    #   - dirty is False → drop --force so git's own dirty check is the
+    #     atomic last line against edits arriving in the check-to-removal
+    #     window (round 6, mirrors the unmerged-clean TOCTOU pattern)
+    if force and _is_pr_merged(pr) and branch:
+        dirty = await _real_dirty(path)
+        if dirty is not False:
+            fresh_head = await _fetch_pr_head_oid(
+                branch, repo=(pr or {}).get("_repo")
+            )
+            if fresh_head is None:
+                logger.info(
+                    "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+                    "force=%s dirty=%s own=%s pr_state=MERGED(cached) "
+                    "fresh_merged=False verdict_oid=%s "
+                    "action=refused_stale_merged",
+                    name, branch, _caller, force,
+                    "unknown" if dirty is None else "True", own,
+                    (verdict_oid or "").strip()[:12] if verdict_oid else "none",
+                )
+                return {
+                    "ok": False,
+                    "error": (
+                        "refusing forced removal: cached PR state is MERGED but "
+                        "fresh verification failed (stale cache or reused branch "
+                        "name) — cannot confirm work is shipped"
+                    ),
+                    "pr": _redact_pr(pr),
+                }
+            # Containment check: the branch's pinned OID must be contained in
+            # the freshly verified PR head. A reused branch name whose OLD PR
+            # merged returns a valid fresh_head, but the current branch OID
+            # (carrying new unmerged commits) won't be contained in it.
+            # Uses the single verdict_oid pin (hoisted above) — no second
+            # rev-parse that could diverge from the first.
+            assert verdict_oid  # guaranteed by the refused_unpinnable guard above
+            if not await _head_contained_in_pr(
+                MAIN_REPO, verdict_oid.strip(), fresh_head.strip()
+            ):
+                logger.info(
+                    "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+                    "force=%s dirty=%s own=%s pr_state=MERGED(cached) "
+                    "fresh_head=%s verdict_oid=%s "
+                    "action=refused_uncontained_fresh_head",
+                    name, branch, _caller, force,
+                    "unknown" if dirty is None else "True", own,
+                    fresh_head.strip()[:12], verdict_oid.strip()[:12],
+                )
+                return {
+                    "ok": False,
+                    "error": (
+                        "refusing forced removal: branch has commits not "
+                        "contained in the verified PR head (possible reused "
+                        "branch name with new unmerged work)"
+                    ),
+                    "pr": _redact_pr(pr),
+                }
+            # Fresh verification confirms the PR is merged, but the worktree
+            # has uncommitted edits (dirty=True) or unverifiable state
+            # (dirty=None). Refuse: --force would bypass git's dirty check
+            # and destroy working-tree edits that containment cannot vouch for.
+            action = (
+                "refused_dirty_merged" if dirty is True
+                else "refused_unverifiable_merged"
+            )
+            logger.info(
+                "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+                "force=%s dirty=%s own=%s pr_state=MERGED(fresh) "
+                "fresh_merged=True verdict_oid=%s "
+                "action=%s",
+                name, branch, _caller, force,
+                "unknown" if dirty is None else "True", own,
+                (verdict_oid or "").strip()[:12] if verdict_oid else "none",
+                action,
+            )
+            return {
+                "ok": False,
+                "error": (
+                    "refusing forced removal: PR is merged but worktree has "
+                    + (
+                        "uncommitted changes"
+                        if dirty is True
+                        else "unverifiable state (git status failed)"
+                    )
+                    + " — commit, stash, or clean the working tree first"
+                ),
+                "pr": _redact_pr(pr),
+            }
+        else:
+            # dirty is False: tree is clean NOW, but an editor save during the
+            # check-to-removal window could dirty it. Drop --force so git's own
+            # dirty check is the atomic last line of defence (mirrors the
+            # unmerged-clean TOCTOU pattern). No path from the fresh-MERGED gate
+            # ever passes --force to git.
+            force_use_git_force = False
+            logger.info(
+                "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+                "force=%s dirty=False own=%s pr_state=MERGED(cached) "
+                "action=merged_clean_no_git_force",
+                name, branch, _caller, force, own,
+            )
+
     # Squash-safe race guard: for merged PRs, verify the branch tip matches
     # the PR's merged headRefOid. A commit pushed after merge moves the OID.
+    # The pr_head_oid is reused later in the ref-delete gate for squash-safe
+    # containment — hoist to this scope so both code paths see it.
+    pr_head_oid: str | None = None
     if not force and _is_pr_merged(pr) and branch:
         branch_oid = verdict_oid
         if branch_oid is None:
@@ -2608,15 +2793,55 @@ async def _worktree_remove(
                     "error": f"cannot re-verify pod state before removal: {_redact(str(exc))}",
                 }
         cmd = ["git", "-C", MAIN_REPO, "worktree", "remove", path]
-        if force:
+        if force_use_git_force:
             cmd.append("--force")
         rc, stdout, stderr = await _run_cmd(cmd, timeout=60)
         if rc != 0:
+            # When the removal runs without --force (TOCTOU guard for
+            # clean-unmerged override), a git refusal means the tree became
+            # dirty in the window — surface it as a specific audit event.
+            if force and not force_use_git_force:
+                logger.info(
+                    "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+                    "force=%s dirty_at_removal=True verdict_oid=%s "
+                    "action=refused_dirty_at_removal",
+                    name, branch, _caller, force,
+                    (verdict_oid or "").strip()[:12] if verdict_oid else "none",
+                )
             return {"ok": False, "error": _redact((stderr or stdout).strip()[:300])}
 
-        # delete branch if shipped/empty — atomically against the pinned OID
+        # Delete branch if shipped/empty — atomically against the pinned OID.
+        # Fail-closed ancestry gate: even when the cached PR status says MERGED,
+        # verify the branch OID is actually contained in the base branch. A stale
+        # or wrong merged verdict cannot delete the only local pointer to unmerged
+        # commits — leaving a dangling ref is recoverable; deleting one is not.
+        # OR: squash-safe containment — a squash-merged branch head is never an
+        # ancestor of the base, but IS contained in the PR head (the squash
+        # commit). When ancestry fails, verify containment via _head_contained_in_pr
+        # using the pr_head_oid already fetched above (or fresh if needed).
         if branch and branch != BASE_BRANCH and verdict_oid:
+            should_delete = False
             if _is_pr_merged(pr) or own == 0:
+                remote = await _upstream_remote()
+                rc_anc, _, _ = await _run_cmd(
+                    [
+                        "git", "-C", MAIN_REPO, "merge-base", "--is-ancestor",
+                        verdict_oid.strip(), f"{remote}/{BASE_BRANCH}",
+                    ],
+                    timeout=10,
+                )
+                should_delete = rc_anc == 0
+                # Squash-safe fallback: ancestry fails for squash/rebase merges.
+                # Use the containment check (branch OID is ancestor of PR head).
+                if not should_delete and _is_pr_merged(pr):
+                    head_oid = pr_head_oid or await _fetch_pr_head_oid(
+                        branch, repo=(pr or {}).get("_repo")
+                    )
+                    if head_oid:
+                        should_delete = await _head_contained_in_pr(
+                            MAIN_REPO, verdict_oid.strip(), head_oid.strip()
+                        )
+            if should_delete:
                 await _git(
                     MAIN_REPO, "update-ref", "-d",
                     f"refs/heads/{branch}", verdict_oid.strip(), timeout=10,
@@ -2625,6 +2850,13 @@ async def _worktree_remove(
     # Every removal path lands here — the single-worktree handler, each parallel
     # prune worker, and the auto-prune reaper — so this is the one place the
     # cached snapshot has to be told the row is gone.
+    logger.info(
+        "worktree_removal_audit: worktree=%s branch=%s caller=%s force=%s "
+        "dirty=%s own=%s pr_state=%s verdict_oid=%s action=removed",
+        name, branch, _caller, force, "unknown", own,
+        (pr or {}).get("state", "none"),
+        (verdict_oid or "").strip()[:12] if verdict_oid else "none",
+    )
     _fleet_forget(name)
     return {"ok": True, "removed": True, "stopped_pod": stopped_pod, "pr": _redact_pr(pr)}
 
@@ -2984,7 +3216,9 @@ async def _prune_run(names: list[str]) -> dict:
                             # phase in {"stopping_pod", "removing"}
                             items[_nm]["status"] = phase
 
-                        res = await _worktree_remove(nm, force=False, progress=_progress)
+                        res = await _worktree_remove(
+                            nm, force=False, progress=_progress, _caller="prune"
+                        )
                         result = {"name": nm, **res}
                         if res.get("ok"):
                             status, error = "done", None
@@ -3115,7 +3349,7 @@ async def _auto_prune_once() -> dict:
         if not name or row.get("code") != "merged":
             continue
         try:
-            res = await _worktree_remove(name, force=False)
+            res = await _worktree_remove(name, force=False, _caller="reaper")
         except Exception as exc:  # noqa: BLE001
             res = {"ok": False, "error": _redact(str(exc))}
         if res.get("ok"):

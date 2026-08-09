@@ -712,3 +712,37 @@ the request is refused with a descriptive error — regardless of the `force` fl
 
 The check uses `_live_worktree_path()` which performs a fresh filesystem resolution
 (no caching) to avoid TOCTOU issues where a previously-cached path is stale.
+
+## Forced Removal Refusal Matrix
+
+The `_worktree_remove` decision surface evaluates `force × PR-merged × dirty`
+and emits one audit action per outcome. `--force` is NEVER passed to
+`git worktree remove`; every path either refuses or removes without `--force`
+so that git's own dirty check is the atomic last line of defence.
+
+| force | PR merged | dirty | Outcome | Audit action |
+|-------|-----------|-------|---------|--------------|
+| True | No | True | **Refuse** — uncommitted changes on unmerged branch | `refused_dirty_unmerged` |
+| True | No | None | **Refuse** — cannot verify cleanliness | `refused_unverifiable` |
+| True | No | False | **Remove** (no `--force`); git's own check guards the TOCTOU window | `unmerged_clean_no_git_force` |
+| True | Yes | True | **Refuse** — fresh-MERGED confirms merge but tree is dirty | `refused_dirty_merged` |
+| True | Yes | None | **Refuse** — fresh-MERGED confirms merge but tree is unverifiable | `refused_unverifiable_merged` |
+| True | Yes | False | **Remove** (no `--force`); mirrors unmerged-clean TOCTOU pattern | `merged_clean_no_git_force` |
+| False | Yes | * | Non-forced path (squash-safe OID race guard) | n/a (no force audit) |
+| False | No | * | Non-forced path | n/a (no force audit) |
+
+Additional pre-gates (evaluated before the matrix above):
+
+| Condition | Outcome | Audit action |
+|-----------|---------|--------------|
+| Branch OID unpinnable | **Refuse** | `refused_unpinnable` |
+| Cached MERGED but fresh verification fails | **Refuse** | `refused_stale_merged` |
+| Fresh-MERGED but branch OID not contained in PR head | **Refuse** | `refused_uncontained_fresh_head` |
+| Target is the live gateway worktree | **Refuse** | (live-worktree guard) |
+| Worktree inside another worktree (containment) | **Refuse** | `refused_containment` |
+
+**Invariant:** `git worktree remove --force` is unreachable from any code path.
+Both clean-removal branches (unmerged and merged) set `force_use_git_force = False`
+explicitly, and every non-clean state is a hard refusal. A late dirty edit in the
+check-to-removal window is caught by git's own atomic dirty check (exit code != 0),
+surfaced as `refused_dirty_at_removal`.
