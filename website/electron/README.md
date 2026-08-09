@@ -1,7 +1,8 @@
 # KiroCrew Desktop (Electron)
 
-Desktop shell for the Kiro Crew web dashboard on macOS and Linux. It
-automatically starts `kirocrew gateway` and connects to `localhost:5476`.
+Desktop shell for the Kiro Crew web dashboard on macOS, Linux, and Windows
+(Windows is in preview — see the build note below). It automatically starts
+`kirocrew gateway` and connects to `localhost:5476`.
 
 ## Quick Start
 
@@ -59,6 +60,35 @@ npm run dist
 ```
 
 Output goes to `electron/dist/`.
+
+## Build Windows Installer (NSIS)
+
+The Windows desktop build is wired end to end: `package.json` declares an
+`nsis` target under `build.win`, and `packaging/build-desktop.sh` has a full
+Windows branch. Run it from Git Bash (or MSYS/Cygwin — the script normalizes
+those to `windows`) at the repo root:
+
+```bash
+bash packaging/build-desktop.sh
+```
+
+Notes:
+
+- **The build must run natively on Windows**, not cross-built from macOS or
+  Linux: the script provisions a Windows python-build-standalone interpreter
+  via `uv` and executes its `python.exe` to install and verify the bundled
+  backend, then runs `electron-builder --win` to produce the NSIS installer.
+- **Signing is optional for a local build.** The `signtoolOptions.sign` hook
+  (`scripts/sign-windows.js`) skips cleanly when none of the
+  `WINDOWS_SIGNING_*` environment variables are set, so a credential-less
+  build produces a working unsigned installer. (Setting only some of the five
+  variables is treated as a misconfiguration and fails the build.)
+- The result is an assisted (non-one-click, per-user) NSIS installer,
+  `KiroCrew Setup <version>.exe` (nightly builds:
+  `KiroCrew Nightly Setup <version>.exe`), in `website/electron/dist/`.
+
+See `../../docs/guides/windows-install.md` for the CI-built installer and the
+current Windows support status.
 
 ## Updating
 
