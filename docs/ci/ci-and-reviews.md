@@ -61,8 +61,16 @@ Out-of-band lanes that never gate a PR:
   balanced by recorded runtime, and opens a PR with the update), `issue-triage.yml`
   (a model picks `type:` / `area:` / `platform:` labels from the repository's own
   live label set, because keyword rules mislabel often enough to be worse than no
-  label), `pr-merge-conflict-label.yml` and `fork-pr-label.yml` (both mirror a fact
-  GitHub does not surface in the `/pulls` list onto a label), and
+  label), `issue-summary.yml` (a second, deliberately separate lane posts ONE
+  comment per new issue: the report restated for a maintainer, the information
+  still missing, and the recent issues most likely to be duplicates. Split from
+  triage because publishing prose gives a prompt injection an audience that the
+  label path does not have — so this lane, and only this lane, carries the
+  markdown neutralizer and the candidate-pool intersection that stop an issue
+  body from minting a `#N` reference or a mention. It gets no checkout on
+  purpose; grounded, file-level investigation is Issue Radar's Investigate
+  button, not a CI comment), `pr-merge-conflict-label.yml` and `fork-pr-label.yml`
+  (both mirror a fact GitHub does not surface in the `/pulls` list onto a label), and
   `add-contributor.yml` (a daily cron, plus manual dispatch, adds each merged
   PR's author to the README Contributors block via
   `scripts/update_contributors.py`; because the default branch is protected it
