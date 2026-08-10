@@ -1,6 +1,7 @@
 import { safeSetItem } from '../../utils/safeStorage'
 import { STORAGE_KEY } from './constants'
 import { fmtBytes, fmtDateTimeNumeric } from '../../i18n/format'
+import { hasCommandModifier } from '../../utils/commandModifier'
 
 export const extOf = (p: string) => {
   const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
@@ -50,7 +51,11 @@ export const formatTime = (sec: number | null | undefined) => {
   return fmtDateTimeNumeric(new Date(sec * 1000))
 }
 
-export const isShortcut = (e: KeyboardEvent) => e.metaKey || e.ctrlKey
+/**
+ * The platform command modifier is held — Cmd on macOS, Ctrl elsewhere.
+ * See `hasCommandModifier` for why Cmd+Ctrl together does not count.
+ */
+export const isShortcut = (e: KeyboardEvent) => hasCommandModifier(e)
 
 const SENSITIVE_PATTERNS = [
   /\/\.ssh\//, /\/\.aws\//, /\/\.gnupg\//, /\/\.env$/, /\/\.env\./,

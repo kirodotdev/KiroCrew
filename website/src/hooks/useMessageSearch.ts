@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { ChatMessage } from '../types'
 import { searchableTextMemo } from '../utils/searchableText'
+import { hasCommandModifier } from '../utils/commandModifier'
 
 export interface SearchMatch {
   /** Index into the messages[] Redux array. */
@@ -90,7 +91,7 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+      if (hasCommandModifier(e) && e.key === 'f') {
         // Yield Cmd/Ctrl+F to app surfaces that own their own in-file find
         // (e.g. the file explorer). Without this, an in-file search hijacks
         // the key and opens the chat message-search pane instead. This

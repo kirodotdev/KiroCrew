@@ -287,6 +287,16 @@ describe('useMessageSearch keyboard shortcuts', () => {
     expect(result.current.isOpen).toBe(false)
   })
 
+  it('Ctrl+Cmd+F is left to the OS (macOS Toggle Full Screen), not captured', () => {
+    const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
+    const e = new KeyboardEvent('keydown', { key: 'f', metaKey: true, ctrlKey: true, cancelable: true })
+    act(() => { document.dispatchEvent(e) })
+    // Both modifiers held is an OS chord: the bar must stay shut AND the event
+    // must not be consumed, or the application menu never receives it.
+    expect(result.current.isOpen).toBe(false)
+    expect(e.defaultPrevented).toBe(false)
+  })
+
   it('Escape does nothing when not open', () => {
     const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
     act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
