@@ -61,6 +61,7 @@ from kiro_crew.platform import (
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import sel
+from kiro_crew.session_pid_sig import signing_health
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
 
 logger = logging.getLogger(__name__)
@@ -346,6 +347,41 @@ def _doctor_data_home() -> None:
             print(
                 f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)"
             )
+
+
+def _doctor_trust_root() -> None:
+    """Report whether session identities can be signed, and from which file.
+
+    A gateway whose SEL trust root stops resolving keeps signing its audit
+    chain from bytes cached at init, so nothing looks wrong — while every
+    ``session_pid`` mapping goes out unsigned and the MCP tools that need a
+    verified session are refused. Publication logs that once per process, but
+    only once a session is actually claimed; asking here needs no claim.
+
+    Read-only on purpose: it never constructs ``SecurityEventLog``, so a
+    missing key is reported rather than created as a side effect of the
+    question.
+    """
+    ok, key_path = signing_health()
+    if ok:
+        print(f"  trust root:  ✅ {key_path}")
+        return
+    if not key_path.parent.is_dir():
+        # The trust dir and the key are created together, on the first
+        # SecurityEventLog init. Neither present means no instance has ever run
+        # against this home — a fresh install, not a broken one.
+        print(f"  trust root:  ⏹ {key_path} not created yet (the gateway writes it on first start)")
+        return
+    print(f"  ⚠ trust root: {key_path} is unreadable or shorter than 32 bytes.")
+    print(
+        "               Session identities go out unsigned, so sub-agent "
+        "dispatch and memory"
+    )
+    print(
+        "               writes are refused in sandboxed sessions. Restore the "
+        "key file, or"
+    )
+    print("               restart the gateway if another process relocated it.")
 
 
 def _linger_enabled(user: str) -> bool | None:
@@ -694,6 +730,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Data Home (+ leftover migration archive) ──
     _doctor_data_home()
+    _doctor_trust_root()
 
     # ── Pods (systemd --user session bus) ──
     _doctor_pod_session_bus(issues)

@@ -337,6 +337,38 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
 )
 
 
+async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
+    """Record a middleware refusal in the SEL, off the event loop, best-effort.
+
+    Shared by every middleware that denies BEFORE ``sel_audit_middleware`` runs
+    (that one is registered inner to them, so a bare raise produces a 403 that
+    appears nowhere in the audit log). One helper rather than per-site calls
+    because both properties below are easy to omit at a new deny site and
+    invisible when omitted:
+
+    * OFF THE LOOP — ``log_api_access`` only enqueues, but the first ``sel()``
+      of a process CONSTRUCTS the log: trust-dir creation, key validation, and
+      on Windows an ``icacls`` subprocess to lock the key file's DACL. A fresh
+      dashboard whose first state-changing request is cross-origin would run
+      that synchronously on the event loop and stall every other request.
+    * BEST-EFFORT — a trust root too short to sign the chain makes construction
+      raise, and an unguarded write would turn the refusal into a 500: losing
+      the denial in order to report it.
+    """
+    try:
+        await asyncio.to_thread(
+            lambda: sel().log_api_access(
+                caller=caller,
+                operation=f"{request.method} {request.path}",
+                outcome="denied",
+                resources=request.path,
+                error=error,
+            )
+        )
+    except Exception:
+        logger.warning("Failed to log a middleware denial to SEL", exc_info=True)
+
+
 def _make_host_validation_middleware(caller: str) -> Callable:
     """Build the DNS-rebinding ``Host``-header barrier middleware.
 
@@ -376,14 +408,11 @@ def _make_host_validation_middleware(caller: str) -> Callable:
         if request.path not in PROBE_PATHS and not check_host(request):
             # SEL audit (security-relevant permission decision): make
             # DNS-rebinding attempts visible in the audit log, mirroring the
-            # API-access audit. Non-critical write (no fail-closed fsync) so
-            # it never wedges the event loop.
-            sel().log_api_access(
-                caller=caller,
-                operation=f"{request.method} {request.path}",
-                outcome="denied",
-                resources=request.path,
-                error=f"host header not allowed: {request.headers.get('Host', '')[:100]}",
+            # API-access audit.
+            await _audit_denied(
+                caller,
+                request,
+                f"host header not allowed: {request.headers.get('Host', '')[:100]}",
             )
             raise web.HTTPForbidden(
                 text="Host header not allowed.",
@@ -3174,6 +3203,12 @@ async def start_dashboard(
     ) -> web.StreamResponse:
         if request.method not in _safe_methods:
             if not check_origin(request, require=True, fallback_header="Referer"):
+                await _audit_denied(
+                    "dashboard_user",
+                    request,
+                    "CSRF check failed: origin not allowed: "
+                    f"{request.headers.get('Origin', '')[:100]}",
+                )
                 raise web.HTTPForbidden(
                     text="CSRF check failed: request origin not allowed.",
                     content_type="text/plain",
@@ -3785,14 +3820,11 @@ async def start_api_server(
         # Origin, so a cross-site page is rejected here even before token auth.
         if request.method not in _safe_methods:
             if not check_origin(request, require=True, fallback_header="Referer"):
-                # Audit the CSRF denial (security-relevant permission decision),
-                # mirroring host_validation_middleware.
-                sel().log_api_access(
-                    caller="mcp_tool",
-                    operation=f"{request.method} {request.path}",
-                    outcome="denied",
-                    resources=request.path,
-                    error=f"CSRF check failed: origin not allowed: {request.headers.get('Origin', '')[:100]}",
+                await _audit_denied(
+                    "mcp_tool",
+                    request,
+                    "CSRF check failed: origin not allowed: "
+                    f"{request.headers.get('Origin', '')[:100]}",
                 )
                 raise web.HTTPForbidden(
                     text="CSRF check failed: request origin not allowed.",

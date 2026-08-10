@@ -297,3 +297,47 @@ class TestLingerProbe:
     def test_absent_loginctl_is_unknown(self, monkeypatch) -> None:
         monkeypatch.setattr(cli_doctor.shutil, "which", lambda _n: None)
         assert cli_doctor._linger_enabled("tester") is None
+
+
+class TestTrustRoot:
+    """`kirocrew doctor` reports whether session identities can be signed.
+
+    Publication reports the same failure, but only once a session is actually
+    claimed; doctor answers without waiting for one. It must not, however, cry
+    wolf on a fresh install whose key has legitimately never been created.
+    """
+
+    def test_healthy_trust_root_prints_the_resolved_path(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        key = tmp_path / "trust" / "sel_hmac.key"
+        key.parent.mkdir(parents=True)
+        key.write_bytes(b"\x01" * 32)
+        monkeypatch.setattr(cli_doctor, "signing_health", lambda: (True, key))
+        cli_doctor._doctor_trust_root()
+        out = capsys.readouterr().out
+        assert "trust root:  ✅" in out
+        assert str(key) in out
+
+    def test_broken_trust_root_names_what_stops_working(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        key = tmp_path / "trust" / "sel_hmac.key"
+        key.parent.mkdir(parents=True)  # dir exists, key gone → genuinely broken
+        monkeypatch.setattr(cli_doctor, "signing_health", lambda: (False, key))
+        cli_doctor._doctor_trust_root()
+        out = capsys.readouterr().out
+        assert "⚠ trust root" in out
+        assert "sub-agent" in out and "memory" in out
+
+    def test_fresh_home_is_informational_not_a_warning(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        """Trust dir and key are created together, so neither present means no
+        instance has ever run here — not a broken install."""
+        key = tmp_path / "trust" / "sel_hmac.key"
+        monkeypatch.setattr(cli_doctor, "signing_health", lambda: (False, key))
+        cli_doctor._doctor_trust_root()
+        out = capsys.readouterr().out
+        assert "not created yet" in out
+        assert "⚠" not in out
