@@ -62,6 +62,7 @@ from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
+from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     cgroup_scope_argv,
@@ -703,6 +704,11 @@ class AcpRuntime:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Memory-aware cap for pytest-xdist's ``-n auto`` (subagent spawn path —
+        # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
+        # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
+        # Respects a pre-set value; see resource_status.inject_xdist_auto_cap.
+        inject_xdist_auto_cap(env)
 
         self._process = await create_subprocess_limited(
             *argv,

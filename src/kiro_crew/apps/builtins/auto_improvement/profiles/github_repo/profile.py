@@ -382,6 +382,13 @@ _MEASURE_ENV_PASSTHROUGH = (
     "TERM",  # some suites probe it; absent TERM makes output differ between arms
     "SYSTEMROOT",  # Windows: CPython needs it to initialize
     "COMSPEC",  # Windows
+    # Memory-aware cap for xdist's ``-n auto`` (_XDIST_ARGV below adds it
+    # unconditionally when xdist is importable). Seeded at the agent spawn
+    # boundary (see resource_status.inject_xdist_auto_cap); without this
+    # passthrough the allowlist would strip it and the suite would size to the
+    # CPU count regardless of memory. Same value for both A/B arms, so arm
+    # fairness is preserved. Not credential-shaped.
+    "PYTEST_XDIST_AUTO_NUM_WORKERS",
 )
 
 
