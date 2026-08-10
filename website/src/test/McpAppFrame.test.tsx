@@ -78,7 +78,10 @@ describe('McpAppFrame', () => {
     expect(target).toBe('*')
     expect(reply.jsonrpc).toBe('2.0')
     expect(reply.id).toBe(1)
-    expect(reply.result.protocolVersion).toBe('2025-11-21')
+    // A PUBLISHED SEP-1865 revision id, not the SEP's creation date. If this
+    // assertion fails, check the new value exists under
+    // ext-apps/specification/ before updating it to match the source.
+    expect(reply.result.protocolVersion).toBe('2026-01-26')
     expect(reply.result.hostInfo).toEqual({ name: 'kirocrew', version: '0.1' })
     expect(reply.result.hostContext.displayMode).toBe('inline')
     expect(reply.result.hostContext.availableDisplayModes).toEqual(['inline', 'fullscreen'])

@@ -5,8 +5,9 @@ alongside its text, the dashboard mounts that resource as a live, interactive
 component in the chat instead of showing you a wall of JSON. Ask for a diagram and
 the excalidraw server gives you an editable Excalidraw canvas in the conversation;
 other servers ship PDF viewers, forms, and dashboards the same way. This is the
-[SEP-1865](https://modelcontextprotocol.io) `ui` extension, and it works with any
-conforming server — nothing is hardcoded per vendor.
+[SEP-1865](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)
+`ui` extension — Kiro Crew targets the **Stable 2026-01-26** revision — and it works
+with any conforming server: nothing is hardcoded per vendor.
 
 If you just want it working: **Developer → Shared MCP gateway → on**, then switch
 your server on under **Poolable MCP servers**. The rest of this page explains why
@@ -187,6 +188,54 @@ The per-result `_meta` is optional and some servers omit it, which is why
 Kiro Crew harvests declared URIs from `tools/list` when the backend starts — a
 tool that declared a `ui://` resource renders even when its individual results
 carry no `_meta`.
+
+## Deviations from SEP-1865
+
+Kiro Crew targets the Stable 2026-01-26 revision. Two things an app author should
+know, because a spec-conforming app may otherwise wait for something that never
+arrives.
+
+**No sandbox proxy — the frame is null-origin instead.** The spec requires a web
+host to wrap the view in an intermediate *sandbox proxy* at a different origin
+(`allow-scripts allow-same-origin` on the outer frame) and to hand the HTML over
+via a `ui/notifications/sandbox-proxy-ready` → `ui/notifications/sandbox-resource-ready`
+handshake. Kiro Crew does not do this. It renders app HTML in a **single
+null-origin iframe** — `sandbox="allow-scripts allow-forms"`, deliberately
+without `allow-same-origin` — with the CSP injected as a `<meta>` element ahead
+of any server-supplied byte.
+
+This is a deliberate trade, not an oversight: the spec's proxy arrangement gives
+the *inner* frame `allow-same-origin` relative to the proxy origin, whereas a
+null-origin frame has no origin to share at all. The consequences for an app:
+
+- The two `sandbox-*` notifications are never sent and never answered. Do not
+  wait for them; the `ui/initialize` handshake is the only entry point.
+- There is no stable per-app origin, so `_meta.ui.domain` has no effect. Anything
+  keyed to an origin — OAuth callbacks, CORS allowlists, API-key origin pinning —
+  will not work. Cookies and `localStorage` are unavailable for the same reason.
+- Because the frame has no storage, unmounting it loses in-canvas state. That is
+  why the panel goes to such lengths to keep frames mounted (see above).
+
+**Methods this host does not implement yet.** A conforming app must tolerate
+these being absent, per the spec's own graceful-degradation rule:
+
+| Method | Status |
+|---|---|
+| `ui/message` | not implemented |
+| `ui/update-model-context` | answered `-32601` |
+| `ui/resource-teardown` | not sent |
+| `ui/notifications/tool-cancelled` | not sent |
+| app-initiated `resources/read`, `ping` | not answered |
+| `pip` display mode | not offered (`availableDisplayModes` is `inline`, `fullscreen`) |
+
+`HostContext` carries `theme`, `displayMode`, `availableDisplayModes` and
+`containerDimensions`. The spec's `styles.variables` theming channel is not sent,
+so an app should declare its own fallbacks for every CSS variable it consumes and
+key off `theme` for light/dark.
+
+Everything in the spec's `draft` revision — app-provided tools,
+`sampling/createMessage`, `ui/download-file` — is out of scope until that revision
+stabilises.
 
 ## How a render actually reaches your screen
 
