@@ -104,6 +104,7 @@ from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
     read_effective_agent,
+    read_effective_model,
 )
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.dashboard.state import (
@@ -946,6 +947,7 @@ def _attach_turn_stats(
     credits: float,
     cost_usd: float,
     turn_boundary: int = 0,
+    client: Any = None,
 ) -> None:
     """Attach per-turn stats to the last assistant message's meta.
 
@@ -964,6 +966,10 @@ def _attach_turn_stats(
     back into the PREVIOUS turn's assistant message and overwrite its stats
     with the failed turn's numbers. No-op when the turn produced no assistant
     message or when there is nothing to show.
+
+    ``client`` is the LLM provider; when supplied the resolved model id is
+    included in the stats so the frontend can display which model served the
+    turn (especially useful under the "auto" router).
     """
     if elapsed_ms <= 0:
         return
@@ -972,6 +978,10 @@ def _attach_turn_stats(
         stats["credits"] = round(credits, 4)
     if cost_usd > 0:
         stats["cost_usd"] = round(cost_usd, 6)
+    if client is not None:
+        model = read_effective_model(client)
+        if model:
+            stats["model"] = model
     boundary = max(0, turn_boundary)
     for m in reversed(slot.messages[boundary:]):
         if m.get("role") == "assistant":
@@ -6091,6 +6101,7 @@ async def _run_chat(
                 _turn_credits,
                 _turn_cost_usd,
                 turn_boundary=_turn_msg_boundary,
+                client=client,
             )
             # Attach accumulated file changes to last assistant message before persist
             _flush_file_changes(slot)

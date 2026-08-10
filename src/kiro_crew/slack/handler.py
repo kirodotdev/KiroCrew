@@ -2132,6 +2132,14 @@ def build_timing_footer(
             footer_text = f"Finished in {duration} · {ctx_icon} ctx {ctx_pct}%"
         except Exception:
             logger.debug("Failed to retrieve context usage", exc_info=True)
+        try:
+            from kiro_crew.dashboard.handlers.usage import read_effective_model
+
+            model = read_effective_model(client)
+            if model:
+                footer_text += f" · {model}"
+        except Exception:
+            logger.debug("Failed to retrieve model for footer", exc_info=True)
     blocks: list[dict] = [
         {"type": "context", "elements": [{"type": "mrkdwn", "text": footer_text}]}
     ]

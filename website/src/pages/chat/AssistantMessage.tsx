@@ -22,7 +22,7 @@ import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
  *  completed turn (chat_runner._attach_turn_stats). Parity with the end-of-turn
  *  line kiro-cli prints natively: elapsed wall clock + credits (kiro) or
  *  API cost (claude_code). Zero fields are omitted by the backend. */
-export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number }
+export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string }
 
 /** "8.4s" under 10s, "42s" under a minute, "2m 34s" beyond. */
 export function fmtTurnElapsed(ms: number): string {
@@ -238,6 +238,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             {billed && <span>{billed} ·</span>}
             <Clock size={11} aria-hidden="true" />
             <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>
+            <span className="text-muted/40">· {turnStats.model || 'Auto'}</span>
           </>
         })()}
       </div>
