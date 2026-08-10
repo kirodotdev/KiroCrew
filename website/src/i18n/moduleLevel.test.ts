@@ -112,5 +112,7 @@ describe('i18nT is never evaluated at module load', () => {
         + 'table and translate at render (see `labelKey` + `surfaceLabel()` in '
         + '`surfaces/registry.ts`).',
     ).toEqual([])
-  })
+    // O(repo) scan: parses ~1k files, so the 15s default leaves too little
+    // margin once a parallel suite contends for CPU.
+  }, 120_000)
 })
