@@ -276,3 +276,74 @@ async def test_upload_corrupted_docx_emits_zipfile_false_diagnostic(
         assert resp.status == 400, await resp.text()
         body = await resp.json()
         assert "does not match its type" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_upload_har_is_accepted_as_plain_text(
+    upload_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    mock_sel,
+) -> None:
+    """A ``.har`` upload is accepted exactly like ``.json`` (#2555).
+
+    HAR exports are JSON text, so they ride the text-extension allowlist:
+    no magic-byte signature to enforce, and — because HAR files routinely
+    carry ``Authorization`` headers, cookies, and session tokens — the
+    upload path must NOT log or echo their content. The diagnostic block
+    only fires for DOC/IMAGE extensions; this test pins that a .har upload
+    succeeds AND stays out of the diagnostic log.
+    """
+    har_body = (
+        b'{"log": {"version": "1.2", "creator": {"name": "devtools"}, '
+        b'"entries": []}}'
+    )
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        har_body,
+        filename="session-export.har",
+        content_type="application/json",
+    )
+    with caplog.at_level(
+        logging.INFO, logger="kiro_crew.dashboard.handlers.files",
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/upload/file", data=form)
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+    # The file landed in the upload dir with its (sanitized) name intact.
+    assert body["paths"], body
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith("_session-export.har")
+    assert saved.read_bytes() == har_body
+    # No diagnostic (and therefore no content-adjacent logging) for text.
+    diagnostics = [
+        r for r in caplog.records if "upload.file diagnostic" in r.getMessage()
+    ]
+    assert not diagnostics, (
+        f"Did not expect a diagnostic for .har upload; got: "
+        f"{[r.getMessage() for r in diagnostics]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_upload_unrelated_extension_still_rejected(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """Adding ``.har`` must not loosen the allowlist: an unrelated
+    extension (``.exe``) is still rejected with 400 before any write."""
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        b"MZ\x90\x00",
+        filename="payload.exe",
+        content_type="application/octet-stream",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+        assert "Unsupported file type" in body["error"]
+    # Nothing reached disk.
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())

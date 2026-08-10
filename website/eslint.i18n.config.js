@@ -458,6 +458,25 @@ export default [
               // slash-prefixed string (`'/Delete'`) is exempt.
               '^https?://\\S*$',
               '^[.~]?/\\S*$',
+              // A FILE-PICKER `accept` EXTENSION LIST, e.g.
+              // `,.txt,.md,.json,.har,.yaml` — the comma-joined dot-extension
+              // string handed to `<input type="file" accept=…>`. These live at
+              // module level under an ALL-CAPS name (`FILE_ACCEPT`), so
+              // `i18n-strict` looks inside them, and no identifier pattern above
+              // reaches them: the dotted-token shape requires a leading letter
+              // and the path shapes require a slash. The string is DOM protocol
+              // data — the browser matches it against filenames and no character
+              // of it is rendered as copy; translating a fragment would break
+              // the picker's filtering.
+              //
+              // Deliberately narrow: an optional LEADING comma (the literal is
+              // concatenated after a MIME list), then one-or-more comma-joined
+              // `.lower09` tokens, full-string. Prose cannot match — every token
+              // must begin with a dot and the char class holds no spaces or
+              // capitals. Known false negative, stated: a string that is ONLY
+              // dot-extensions (`'.har'`) would be exempt anywhere — it is not a
+              // shape UI copy takes.
+              '^,?\\.[a-z0-9]+(?:,\\.[a-z0-9]+)*$',
               // A GATEWAY WIRE MARKER, e.g. `[Tool refusal — automatic recovery]` or
               // `[Continue — requested by the user]`. These are matched with
               // `startsWith` against gateway-authored transcript rows and must stay

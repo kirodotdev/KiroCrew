@@ -767,6 +767,7 @@ _ALLOWED_TEXT_EXT = {
     ".txt",
     ".md",
     ".json",
+    ".har",
     ".yaml",
     ".yml",
     ".xml",
