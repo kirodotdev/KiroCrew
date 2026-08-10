@@ -73,7 +73,7 @@ class FakeSessions:
         self.channels: list = []
         self.last_agent = None
 
-    async def get_or_create(self, key, *, agent, channel_id):
+    async def get_or_create(self, key, *, agent, channel_id, **_kw):
         self.last_agent = agent
         if self._raise is not None:
             raise self._raise

@@ -310,7 +310,7 @@ class TestHandlerChannelAgent:
             def __init__(self):
                 self.last_agent: str | None = None
 
-            async def get_or_create(self, key, agent=None, channel_id=None):
+            async def get_or_create(self, key, agent=None, channel_id=None, **_kw):
                 self.last_agent = agent
                 return FakeProvider(), True, False
 

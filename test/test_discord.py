@@ -211,7 +211,7 @@ class FakeSessions:
         self.origin_links: dict[str, Any] = {}
         self.inbound_mirror_keys: set[str] = set()
 
-    async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
+    async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None, **_kw: Any) -> Any:
         self.last_agent = agent
         if self.raise_on_get:
             raise RuntimeError("cold-start failed")

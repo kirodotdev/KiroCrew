@@ -49,7 +49,7 @@ class _CapturingSessions(FakeSessions):
         super().__init__(provider)
         self.agents: list = []
 
-    async def get_or_create(self, session_key, agent=None, channel_id=None):
+    async def get_or_create(self, session_key, agent=None, channel_id=None, **_kw):
         self.agents.append(agent)
         return await super().get_or_create(session_key, agent=agent, channel_id=channel_id)
 

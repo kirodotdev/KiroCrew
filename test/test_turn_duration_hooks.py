@@ -51,7 +51,7 @@ class _FakeSessions:
     def __init__(self, client: _FakeClient) -> None:
         self._client = client
 
-    async def get_or_create(self, _session_key: str, agent: str | None = None):
+    async def get_or_create(self, _session_key: str, agent: str | None = None, **_kw):
         # is_new=False so _run_hook_inner skips context building (no embed pool).
         return (self._client, False, False)
 

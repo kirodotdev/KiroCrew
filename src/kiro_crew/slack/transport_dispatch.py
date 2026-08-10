@@ -48,6 +48,7 @@ from kiro_crew.slack.handler import (
     maybe_handle_keyword_command,
     maybe_route_linked_thread,
 )
+from kiro_crew.slack.project_resolver import resolve_channel_project
 from kiro_crew.slack.renderer import SlackApprovalDecider, SlackRenderer
 from kiro_crew.stats import Stats
 
@@ -389,8 +390,43 @@ async def handle_message_transport(
             or _get_default_agent()
             or _DEFAULT_KIROCREW_AGENT
         )
+
+        # ── Auto-project CWD resolution (channel name → project folder) ──
+        _auto_cwd: str | None = None
+        _orch_cfg = get_orch_cfg()
+        if _orch_cfg and _orch_cfg.slack.auto_project_dir and not channel.startswith("D"):
+            _ch_name: str | None = None
+            _ds = get_dashboard_state()
+            if _ds and hasattr(_ds, "_channel_resolver"):
+                _resolver = getattr(_ds, "_channel_resolver", None)
+                if _resolver is not None:
+                    _ch_name = _resolver.get_cached(channel)
+            if not _ch_name:
+                from kiro_crew.slack.handler import _auto_project_channel_names
+
+                _ch_name = _auto_project_channel_names.get(channel)
+            if not _ch_name:
+                _web = getattr(slack, "_web", None)
+                if _web is not None:
+                    try:
+                        _info_resp = await _web.conversations_info(channel=channel)
+                        _ch_data = (
+                            _info_resp.data.get("channel", {})
+                            if hasattr(_info_resp, "data")
+                            else {}
+                        )
+                        _ch_name = _ch_data.get("name") or None
+                        if _ch_name:
+                            from kiro_crew.slack.handler import _auto_project_channel_names
+
+                            _auto_project_channel_names[channel] = _ch_name
+                    except Exception:
+                        pass
+            if _ch_name:
+                _auto_cwd = resolve_channel_project(_ch_name, _orch_cfg.slack.auto_project_dir)
+
         client, is_new, resumed = await sessions.get_or_create(
-            session_key, agent=_agent, channel_id=channel
+            session_key, agent=_agent, channel_id=channel, cwd=_auto_cwd
         )
         _acquired = True
         # Expire AGAIN, now that the turn is serialized. The pass above (just

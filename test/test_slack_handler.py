@@ -82,7 +82,7 @@ class FakeSessionManager:
         self._is_new = True
         self.removed: list[str] = []
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, **_kw):
         self.keys_seen.append(key)
         self.last_agent = agent
         self.last_channel_id = channel_id
@@ -679,7 +679,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_session_create_failure_does_not_raise_unbound_client(self):
         class _FailingSessions(FakeSessionManager):
-            async def get_or_create(self, key, agent=None, channel_id=None):
+            async def get_or_create(self, key, agent=None, channel_id=None, **_kw):
                 raise ConnectionResetError("Connection lost")
 
         slack = MockSlackClient()

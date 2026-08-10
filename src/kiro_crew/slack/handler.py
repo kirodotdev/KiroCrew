@@ -116,6 +116,7 @@ from kiro_crew.slack.format import (
     strip_thinking_tags,
 )
 from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.slack.project_resolver import resolve_channel_project
 from kiro_crew.slack.sessions_view import (
     _SESSIONS_DEFAULT_LIMIT,
     _build_sessions_blocks,
@@ -581,6 +582,10 @@ _thread_agents: dict[str, str] = {}
 # Per-thread project directory overrides: session_key → absolute path.
 # Set via !project command.
 _thread_projects: dict[str, str] = {}
+
+# Channel ID → name cache for auto_project_dir resolution.
+# Avoids repeated conversations.info calls on every message.
+_auto_project_channel_names: dict[str, str] = {}
 
 # Guard set for _hydrate_thread_overrides to avoid repeated I/O per session.
 _hydrated_sessions: set[str] = set()
@@ -2255,9 +2260,7 @@ async def _handle_compact_command(
                 outcome = "completed"
             elif cr["type"] == "failed":
                 error = cr.get("summary", "")
-                result_text = (
-                    f"❌ Compaction failed: {error}" if error else "❌ Compaction failed."
-                )
+                result_text = f"❌ Compaction failed: {error}" if error else "❌ Compaction failed."
                 outcome = "failed"
             else:
                 result_text = "⚠️ Compaction timed out."
@@ -3025,8 +3028,41 @@ async def handle_message(
         # Re-resolve _agent against (possibly linked) session_key for the main
         # LLM path — linked dashboard sessions may carry a different thread agent.
         _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
+
+        # ── Auto-project CWD resolution (channel name → project folder) ──
+        _auto_cwd: str | None = None
+        if _orch_cfg and _orch_cfg.slack.auto_project_dir and not channel.startswith("D"):
+            _ch_name: str | None = None
+            # Try the dashboard channel-name cache first (zero-cost sync lookup)
+            if _dashboard_state and hasattr(_dashboard_state, "_channel_resolver"):
+                _resolver = getattr(_dashboard_state, "_channel_resolver", None)
+                if _resolver is not None:
+                    _ch_name = _resolver.get_cached(channel)
+            # Fallback: module-level LRU so conversations.info fires at most once
+            # per channel. Only triggers on the very first message from an
+            # uncached channel — acceptable cold-start cost.
+            if not _ch_name:
+                _ch_name = _auto_project_channel_names.get(channel)
+            if not _ch_name:
+                _web = getattr(slack, "_web", None)
+                if _web is not None:
+                    try:
+                        _info_resp = await _web.conversations_info(channel=channel)
+                        _ch_data = (
+                            _info_resp.data.get("channel", {})
+                            if hasattr(_info_resp, "data")
+                            else {}
+                        )
+                        _ch_name = _ch_data.get("name") or None
+                        if _ch_name:
+                            _auto_project_channel_names[channel] = _ch_name
+                    except Exception:
+                        pass
+            if _ch_name:
+                _auto_cwd = resolve_channel_project(_ch_name, _orch_cfg.slack.auto_project_dir)
+
         client, is_new, resumed = await sessions.get_or_create(
-            session_key, agent=_agent, channel_id=channel
+            session_key, agent=_agent, channel_id=channel, cwd=_auto_cwd
         )
         _acquired = True
         # Expire AGAIN now the turn is serialized — see the same call in

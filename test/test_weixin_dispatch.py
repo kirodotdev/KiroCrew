@@ -99,7 +99,7 @@ class FakeSessions:
     def is_busy(self, key):
         return self._busy
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, **_kw):
         return self.provider, True, False
 
     async def set_channel(self, key, channel_id):

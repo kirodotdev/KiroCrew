@@ -24,7 +24,7 @@ class _Sessions:
         self.failures = 0
         self._raise_on_acquire = raise_on_acquire
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, **_kw):
         if self._raise_on_acquire:
             raise RuntimeError("cold start failed")
         return object(), False, False

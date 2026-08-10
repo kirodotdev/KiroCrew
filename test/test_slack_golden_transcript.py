@@ -151,7 +151,7 @@ class FakeSessions:
     def get_session_for_thread(self, thread_ts: str):
         return None
 
-    async def get_or_create(self, session_key, agent=None, channel_id=None):
+    async def get_or_create(self, session_key, agent=None, channel_id=None, **_kw):
         return self._provider, False, False  # (client, is_new, resumed)
 
     async def set_channel(self, session_key, channel):
