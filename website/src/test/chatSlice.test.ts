@@ -437,6 +437,131 @@ describe('switchSlot.pending', () => {
     expect(tail.content).toBe('partial repl')
     expect(state.messages.filter(m => m.role === 'streaming')).toHaveLength(1)
   })
+  it('fulfilled keeps the existing array when the fetched history is identical', () => {
+    const bCache: ChatMessage[] = [
+      { role: 'user', content: 'question', cls: '' },
+      { role: 'assistant', content: 'the latest reply', cls: 'msg msg-a' },
+    ]
+    let state = { ...initial, activeSlot: 'A',
+      messages: [{ role: 'user' as const, content: 'A msg', cls: '' }],
+      slotMessages: { 'B': bCache } }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'B', requestId: 'r1', requestStatus: 'pending' } })
+    // Positive control: pending restores the cached array BY REFERENCE, so the
+    // assertion below can tell a preserved array from a re-created one.
+    expect(state.messages).toBe(bCache)
+    state = reducer(state, {
+      type: 'chat/switchSlot/fulfilled',
+      meta: { arg: 'B', requestId: 'r1', requestStatus: 'fulfilled' },
+      payload: { key: 'B', messages: [
+        { role: 'user', content: 'question', cls: '' },
+        { role: 'assistant', content: 'the latest reply', cls: 'msg msg-a' },
+      ], running: false, stopping: false, hasMore: false, total: 2, queue: [] },
+    })
+    expect(state.messages).toBe(bCache)
+    expect(state.slotLoading).toBe(false)
+  })
+
+  it('fulfilled replaces the array when the fetched history appends a message', () => {
+    const bCache: ChatMessage[] = [
+      { role: 'user', content: 'question', cls: '' },
+      { role: 'assistant', content: 'the latest reply', cls: 'msg msg-a' },
+    ]
+    let state = { ...initial, activeSlot: 'A',
+      messages: [{ role: 'user' as const, content: 'A msg', cls: '' }],
+      slotMessages: { 'B': bCache } }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'B', requestId: 'r1', requestStatus: 'pending' } })
+    state = reducer(state, {
+      type: 'chat/switchSlot/fulfilled',
+      meta: { arg: 'B', requestId: 'r1', requestStatus: 'fulfilled' },
+      payload: { key: 'B', messages: [
+        { role: 'user', content: 'question', cls: '' },
+        { role: 'assistant', content: 'the latest reply', cls: 'msg msg-a' },
+        { role: 'user', content: 'follow-up', cls: '' },
+      ], running: false, stopping: false, hasMore: false, total: 3, queue: [] },
+    })
+    expect(state.messages).not.toBe(bCache)
+    expect(state.messages).toHaveLength(3)
+    expect(state.messages[2].content).toBe('follow-up')
+  })
+
+  it('fulfilled replaces the array when a message body changed', () => {
+    const bCache: ChatMessage[] = [
+      { role: 'user', content: 'question', cls: '' },
+      { role: 'assistant', content: 'the latest reply', cls: 'msg msg-a' },
+    ]
+    let state = { ...initial, activeSlot: 'A',
+      messages: [{ role: 'user' as const, content: 'A msg', cls: '' }],
+      slotMessages: { 'B': bCache } }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'B', requestId: 'r1', requestStatus: 'pending' } })
+    // Same shape, one differing body — the guard must not mask a real change.
+    state = reducer(state, {
+      type: 'chat/switchSlot/fulfilled',
+      meta: { arg: 'B', requestId: 'r1', requestStatus: 'fulfilled' },
+      payload: { key: 'B', messages: [
+        { role: 'user', content: 'question (edited)', cls: '' },
+        { role: 'assistant', content: 'the latest reply', cls: 'msg msg-a' },
+      ], running: false, stopping: false, hasMore: false, total: 2, queue: [] },
+    })
+    expect(state.messages).not.toBe(bCache)
+    expect(state.messages).toHaveLength(2)
+    expect(state.messages[0].content).toBe('question (edited)')
+  })
+
+  it('fulfilled populates messages when the slot had no cache', () => {
+    let state = { ...initial, activeSlot: 'A',
+      messages: [{ role: 'user' as const, content: 'A msg', cls: '' }] }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'B', requestId: 'r1', requestStatus: 'pending' } })
+    expect(state.messages).toEqual([])
+    state = reducer(state, {
+      type: 'chat/switchSlot/fulfilled',
+      meta: { arg: 'B', requestId: 'r1', requestStatus: 'fulfilled' },
+      payload: { key: 'B', messages: [{ role: 'user', content: 'B msg', cls: '' }], running: false, stopping: false, hasMore: false, total: 1, queue: [] },
+    })
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0].content).toBe('B msg')
+  })
+
+  it('fulfilled still appends the in-flight streaming tail past the guard', () => {
+    const bCache: ChatMessage[] = [{ role: 'user', content: 'question', cls: '' }]
+    let state = { ...initial, activeSlot: 'A',
+      messages: [{ role: 'user' as const, content: 'A msg', cls: '' }],
+      slotMessages: { 'B': bCache } }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'B', requestId: 'r1', requestStatus: 'pending' } })
+    state = reducer(state, sseChatMessage({ slot: 'B', role: 'chunk', content: 'live text' }))
+    expect(state.messages[state.messages.length - 1].role).toBe('streaming')
+    // Server history is behind the live stream: the WS branch must still win.
+    state = reducer(state, {
+      type: 'chat/switchSlot/fulfilled',
+      meta: { arg: 'B', requestId: 'r1', requestStatus: 'fulfilled' },
+      payload: { key: 'B', messages: [
+        { role: 'user', content: 'question', cls: '' },
+        { role: 'assistant', content: 'older reply', cls: 'msg msg-a' },
+      ], running: true, stopping: false, hasMore: false, total: 2, queue: [] },
+    })
+    expect(state.messages).toHaveLength(3)
+    expect(state.messages[state.messages.length - 1].role).toBe('streaming')
+    expect(state.messages[state.messages.length - 1].content).toBe('live text')
+    expect(state.messages.filter(m => m.role === 'streaming')).toHaveLength(1)
+  })
+
+  it('fulfilled still adopts the stale-permission sweep past the guard', () => {
+    const bCache: ChatMessage[] = [{ role: 'permission', content: 'approve?', cls: '', meta: { tool: 'x' } }]
+    let state = { ...initial, activeSlot: 'A',
+      messages: [{ role: 'user' as const, content: 'A msg', cls: '' }],
+      slotMessages: { 'B': bCache } }
+    state = reducer(state, { type: 'chat/switchSlot/pending', meta: { arg: 'B', requestId: 'r1', requestStatus: 'pending' } })
+    expect(state.messages[0].meta?.resolved).toBeUndefined()
+    // The sweep marks the fetched row resolved, so the guard must see a
+    // difference in meta and adopt the fetched history rather than keep ours.
+    state = reducer(state, {
+      type: 'chat/switchSlot/fulfilled',
+      meta: { arg: 'B', requestId: 'r1', requestStatus: 'fulfilled' },
+      payload: { key: 'B', messages: [{ role: 'permission', content: 'approve?', cls: '', meta: { tool: 'x' } }], running: false, stopping: false, hasMore: false, total: 1, queue: [] },
+    })
+    expect(state.messages).not.toBe(bCache)
+    expect(state.messages[0].meta?.resolved).toBe('stale')
+  })
+
   it('pending restores cached messages instantly without loading', () => {
     let state = { ...initial, activeSlot: 'A',
       messages: [{ role: 'user' as const, content: 'A msg', cls: '' }],
