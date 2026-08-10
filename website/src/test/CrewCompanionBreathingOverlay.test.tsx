@@ -7,8 +7,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { StrictMode } from 'react'
 import { render, screen, act } from '@testing-library/react'
-import BreathingOverlay from '../apps/crew-companion/BreathingOverlay'
-import { READY_MS, TOTAL_MS } from '../apps/crew-companion/breathing'
+import BreathingOverlay, { breathingAvatarState, CUSTOM_PHASE_TRANSITION } from '../apps/crew-companion/BreathingOverlay'
+import { breathStateAt, READY_MS, TOTAL_MS } from '../apps/crew-companion/breathing'
 
 /** Frame driver: hands the component whatever timestamp we choose. */
 let frames: Array<(ts: number) => void> = []
@@ -151,5 +151,22 @@ describe('BreathingOverlay', () => {
     render(<BreathingOverlay onDone={vi.fn()} onEnd={vi.fn()} />)
     stepTo(0)
     expect(screen.getByRole('dialog')).toBeTruthy()
+  })
+})
+
+
+describe('breathing avatar state routing', () => {
+  it('uses custom phase categories only during their exact timeline phase', () => {
+    expect(breathingAvatarState(breathStateAt(0))).toBe('idle')
+    expect(breathingAvatarState(breathStateAt(READY_MS + 100))).toBe('inhale')
+    expect(breathingAvatarState(breathStateAt(READY_MS + 4_100))).toBe('hold')
+    expect(breathingAvatarState(breathStateAt(READY_MS + 11_100))).toBe('exhale')
+    expect(breathingAvatarState(breathStateAt(TOTAL_MS))).toBe('idle')
+  })
+})
+
+describe('breathing custom-phase motion', () => {
+  it('smooths the scale handoff when custom phase artwork resolves', () => {
+    expect(CUSTOM_PHASE_TRANSITION).toBe('transform 180ms ease-out')
   })
 })

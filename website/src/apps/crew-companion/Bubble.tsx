@@ -11,7 +11,7 @@
  * Hovering pauses both the dismissal and the bar — reading a bubble must not be the
  * thing that loses it.
  */
-import { X } from 'lucide-react'
+import { ArrowRight, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import './bubble.css'
 import { i18nT } from '../../i18n/t'
@@ -97,6 +97,8 @@ export function Bubble({ text, kind, onDismiss, onAction }: BubbleProps) {
         role="status"
         data-kind={kind}
       >
+        {/* The countdown anchors to this row so it cannot overlap the footer. */}
+        <div className="cc-bubble-body-row">
         {/*
           Text and ✕ are FLEX SIBLINGS, so the ✕ takes its own space and the text
           shrinks to make room. Absolutely positioning it over the corner instead —
@@ -170,17 +172,11 @@ export function Bubble({ text, kind, onDismiss, onAction }: BubbleProps) {
           />
         ) : null}
 
-      </div>
+        </div>
 
-      {/*
-        The CTA sits BELOW the bubble box, not inside it — a sibling, as in the source.
-        Two reasons it cannot live in the box: the box is a flex ROW carrying the text
-        and the ✕, so a block child would line up beside the words; and the box clips
-        its overflow for the countdown bar. Stopping propagation still matters, since
-        the whole bubble above is a dismiss target.
-      */}
+      {/* Keep the action inside the same card as the notification it resolves. */}
       {policy.ctaKey ? (
-        <div className="cc-bubble-cta-row">
+        <div className="cc-bubble-foot">
           <button
             type="button"
             className="cc-bubble-cta"
@@ -190,10 +186,12 @@ export function Bubble({ text, kind, onDismiss, onAction }: BubbleProps) {
               setLeaving(true)
             }}
           >
-            {i18nT(policy.ctaKey as Parameters<typeof i18nT>[0])}
+            <span>{i18nT(policy.ctaKey as Parameters<typeof i18nT>[0])}</span>
+            <ArrowRight className="lucide-inline" aria-hidden="true" />
           </button>
         </div>
       ) : null}
+      </div>
 
     </div>
   )

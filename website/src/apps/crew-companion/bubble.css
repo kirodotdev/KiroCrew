@@ -44,26 +44,35 @@
   max-width: 240px;
   width: fit-content;
   box-sizing: border-box;
-  /* 10px 14px / radius 14 / 13px-1.5 type: the source app's measurements, matched
-     rather than approximated — 9/12 and radius 13 read subtly tighter side by side. */
-  /* Bottom padding is deeper than the top: the countdown bar is pinned inside
-     the card's bottom edge, and this is the room it sits in. A bubble with no
-     countdown just carries the slightly deeper base. */
-  padding: 10px 14px 13px;
-  border: none;
-  border-radius: 14px;
-  /* The ✕ is a sibling of the text, not an overlay on it. */
+  /* A column keeps the message and action together while giving the footer a full-width divider. */
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  background: var(--card, #fdfaf3);
-  color: var(--card-fg, #2b2b2b);
+  flex-direction: column;
+  border-radius: 14px;
+  /* Joins the dashboard's SURFACE language instead of reading as a paper note. The
+     hairline is what makes the divided footer legible; `--card` alone had no edge. */
+  background: var(--bg-elevated, var(--card, #22222a));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.10));
+  color: var(--text, var(--card-fg, #e8e8ea));
   font: 13px/1.5 var(--cc-panel-font);
   text-align: left;
   cursor: pointer;
-  box-shadow: 0 4px 16px var(--shadow, rgba(0, 0, 0, 0.22));
+  box-shadow: 0 6px 20px var(--shadow, rgba(0, 0, 0, 0.45));
   position: relative;
   overflow: hidden;
+}
+
+/* The message row owns the countdown's positioning context. */
+.cc-bubble-body-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px 13px;
+  position: relative;
+}
+
+/* The full-width action stays visibly attached to the notification it resolves. */
+.cc-bubble-foot {
+  display: flex;
 }
 
 /*
@@ -118,7 +127,7 @@
   background: none;
   /* The bubble's own text colour at low opacity, brightening on hover — a fixed
      grey neither matches the bubble nor acknowledges the pointer. */
-  color: var(--card-fg, #2b2b2b);
+  color: var(--card-fg, #e8e8ea);
   font-size: 11px;
   line-height: 1;
   padding: 0;
@@ -165,29 +174,42 @@
 /* Keyboard path: a visible ring only for keyboard focus (not mouse clicks). */
 .cc-bubble-x:focus-visible {
   opacity: 1;
-  outline: 2px solid var(--card-fg, #2b2b2b);
+  outline: 2px solid var(--card-fg, #e8e8ea);
   outline-offset: 1px;
   border-radius: 4px;
 }
 
-/* Right-aligned under the bubble, as in the source. */
-.cc-bubble-cta-row {
+.cc-bubble-cta {
+  /* The full-width row is both the visual footer and the interaction target. */
+  flex: 1;
   display: flex;
-  justify-content: flex-end;
-  margin-top: 6px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.10));
+  padding: 9px 14px;
+  color: var(--text, var(--card-fg, #e8e8ea));
+  font: 600 12px/1 var(--cc-panel-font);
+  text-align: left;
+  cursor: pointer;
 }
 
-.cc-bubble-cta {
-  /* Inverted from the bubble itself — the bubble's text colour as the fill, the
-     bubble's background as the label. Brand purple here competed with the
-     companion's own accent and read as a different product's button. */
-  background: var(--card-fg, #2b2b2b);
-  color: var(--card, #fdfaf3);
-  border: none;
-  border-radius: 999px;
-  padding: 5px 12px;
-  font: 700 11px/1 var(--cc-panel-font);
-  cursor: pointer;
+.cc-bubble-cta .lucide-inline {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.cc-bubble-cta:hover {
+  /* The row is the target, so the row is what responds. */
+  background: color-mix(in srgb, var(--text, #e8e8ea) 7%, transparent);
+}
+
+.cc-bubble-cta:focus-visible {
+  outline: 2px solid var(--text, var(--card-fg, #e8e8ea));
+  outline-offset: -2px;
 }
 
 /*
@@ -197,14 +219,18 @@
  * would promise it is about to leave, and it is not.
  */
 .cc-bubble-countdown {
-  /* Pinned to the bubble's own bottom edge, INSIDE the card.
-  
+  /* Pinned to the MESSAGE ROW's bottom edge, inside the card.
+
+     Its positioning parent is `.cc-bubble-body-row`, not the card. That distinction is
+     load-bearing now the card has a footer: anchored to the card it would slide down
+     under the divider and sit on top of the action row.
+
      It used to be a block element below the box, and there it was invisible: these
      colours are mixed from `--card-fg`, the bubble's dark ink, which only reads
      against the bubble's light surface. Below the box there is no surface — just the
      transparent overlay over the user's desktop — so a dark bar at 18%/55% over a
      dark desktop showed as nothing.
-  
+
      Inset from both sides so the 14px corner radius never clips it, which is the
      reason it was moved out of the card in the first place. */
   position: absolute;
@@ -213,7 +239,7 @@
   bottom: 5px;
   height: 3px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--card-fg, #2b2b2b) 18%, transparent);
+  background: color-mix(in srgb, var(--card-fg, #e8e8ea) 18%, transparent);
   overflow: hidden;
   transform-origin: left center;
 }
@@ -223,7 +249,7 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: color-mix(in srgb, var(--card-fg, #2b2b2b) 55%, transparent);
+  background: color-mix(in srgb, var(--card-fg, #e8e8ea) 55%, transparent);
   transform-origin: left center;
   animation: inherit;
 }

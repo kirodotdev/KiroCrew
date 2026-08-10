@@ -40,6 +40,8 @@ export function useIdleFidget(opts: {
   getPos: () => { x: number; y: number }
   walkPath: (points: Array<{ x: number; y: number }>) => void
   setMood: (m: PetMood) => void
+  /** Custom art has no separate eye layer, so only the built-in ghost can flicker expressions. */
+  allowMood?: boolean
   /**
    * Play one in-place body fidget for `holdMs`, then go still.
    *
@@ -53,6 +55,7 @@ export function useIdleFidget(opts: {
   const getPosRef = useRef(opts.getPos); getPosRef.current = opts.getPos
   const walkPathRef = useRef(opts.walkPath); walkPathRef.current = opts.walkPath
   const setMoodRef = useRef(opts.setMood); setMoodRef.current = opts.setMood
+  const allowMoodRef = useRef(opts.allowMood !== false); allowMoodRef.current = opts.allowMood !== false
   const playFidgetRef = useRef(opts.playFidget); playFidgetRef.current = opts.playFidget
 
   useEffect(() => {
@@ -102,10 +105,8 @@ export function useIdleFidget(opts: {
          * At night the body motions drop out: the night behaviour is dozing off, and
          * a ghost that glances and nods while asleep contradicts the sleepy mood.
          */
-        const actions: Array<() => void> = [
-          () => flickerMood(night),
-          smallHop,
-        ]
+        const actions: Array<() => void> = [smallHop]
+        if (allowMoodRef.current) actions.unshift(() => flickerMood(night))
         if (!night) {
           for (const { anim, holdMs } of IDLE_FIDGET_ANIMS) {
             actions.push(() => playFidgetRef.current(anim, holdMs))

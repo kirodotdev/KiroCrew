@@ -8,7 +8,7 @@
  * ignored. Reachability itself has to be the assertion.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, cleanup, waitFor } from '@testing-library/react'
+import { render, renderHook, cleanup, waitFor, act } from '@testing-library/react'
 
 const CUSTOM_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="8" height="8"/></svg>'
 const WAVE_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>'
@@ -32,7 +32,11 @@ vi.mock('../apps/crew-companion/petBridge', () => ({
 
 const { PetAvatar } = await import('../apps/crew-companion/PetAvatar')
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 describe('PetDex import consumes every usable row', () => {
   it('maps all nine rows except the deliberately-skipped running-left', async () => {
@@ -77,5 +81,61 @@ describe('PetDex random clips', () => {
       expect(img).not.toBeNull()
       expect(decodeURIComponent(img.src)).toContain('rect') // idle's art
     })
+  })
+})
+
+
+describe('custom random override pool', () => {
+  it('is Idle plus every uploaded moment, with duplicates removed', async () => {
+    const { customRandomPool } = await import('../apps/crew-companion/useRandomClips')
+    expect(customRandomPool([])).toEqual([null])
+    expect(customRandomPool(['wave'])).toEqual([null, 'wave'])
+    expect(customRandomPool(['wave', 'spin', 'wave'])).toEqual([null, 'wave', 'spin'])
+  })
+
+  it('normalizes walking across pack formats without double weight', async () => {
+    const { normaliseCustomRandomNames } = await import('../apps/crew-companion/useRandomClips')
+    const animations = { idle: CUSTOM_SVG, walking: WAVE_SVG, wave: WAVE_SVG }
+    expect(normaliseCustomRandomNames(animations, ['walking', 'wave'])).toEqual([
+      'walking', 'wave',
+    ])
+  })
+
+  it('does not leak legacy mood art into the random pool', async () => {
+    const { normaliseCustomRandomNames } = await import('../apps/crew-companion/useRandomClips')
+    const animations = { idle: CUSTOM_SVG, happy: WAVE_SVG, wave: WAVE_SVG }
+    expect(normaliseCustomRandomNames(animations, ['wave'])).toEqual(['wave'])
+  })
+})
+
+
+describe('legacy walking random moment', () => {
+  it('keeps walking as one flat-pool entry but moves away and back', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-10T12:00:00'))
+    vi.spyOn(Math, 'random')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0.75)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+    const walkPath = vi.fn()
+    const playClip = vi.fn()
+    const { useRandomClips } = await import('../apps/crew-companion/useRandomClips')
+    renderHook(() => useRandomClips({
+      enabled: true,
+      getClips: () => ['walking'],
+      getPos: () => ({ x: 200, y: 200 }),
+      walkPath,
+      showIdle: vi.fn(),
+      playClip,
+    }))
+
+    act(() => { vi.advanceTimersByTime(150_000) })
+
+    expect(walkPath).toHaveBeenCalledWith([
+      { x: 230, y: 200 },
+      { x: 200, y: 200 },
+    ])
+    expect(playClip).not.toHaveBeenCalled()
   })
 })

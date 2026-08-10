@@ -40,7 +40,7 @@ describe('make-your-own save routing', () => {
     // follow the picked appearance. It used to import the built-in kiro_idle.svg
     // directly, which showed the default ghost even under a custom pack.
     const src = readFileSync('src/apps/crew-companion/BreathingOverlay.tsx', 'utf8')
-    expect(src).toMatch(/import\s*\{\s*PetAvatar\s*\}/)
+    expect(src).toMatch(/import\s*\{[^}]*\bPetAvatar\b[^}]*\}/)
     // No import of, or reference to, the hardcoded built-in asset. Scoped to real
     // statements (import / src=) so the historical note in a comment does not match.
     expect(src).not.toMatch(/import\s+\w+\s+from\s+['"][^'"]*kiro_idle/)

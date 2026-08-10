@@ -45,22 +45,17 @@ export type PetState =
   // Guided-breathing phases. Optional in a pack; each falls back to idle.
   | 'inhale' | 'hold' | 'exhale'
 
-type PackSlot = 'idle' | 'loading' | 'done' | 'inhale' | 'hold' | 'exhale'
+type PackSlot = 'idle' | 'loading' | 'done' | 'error' | 'inhale' | 'hold' | 'exhale'
 
 const STATE_TO_SLOT: Record<PetState, PackSlot> = {
   idle: 'idle',
   loading: 'loading',
   done: 'done',
-  // Packs are not required to ship error art; the resolver falls back to idle
-  // and the shake carries the meaning.
-  error: 'idle',
+  error: 'error',
   inhale: 'inhale',
   hold: 'hold',
   exhale: 'exhale',
 }
-
-/** Slots whose only sensible fallback is idle — never the busy aliases. */
-const BREATHING_SLOTS = new Set<PackSlot>(['inhale', 'hold', 'exhale'])
 
 /**
  * The motion a bare state implies, for surfaces that just hand us a state (the
@@ -156,11 +151,13 @@ export interface PetAvatarProps {
    * fidget pool. Cleared (undefined) means "render the state slot as always".
    */
   clipName?: string
+  /** Reports whether this exact state has custom art and therefore replaces Kiro's motion. */
+  onCustomOverrideChange?: (active: boolean) => void
   className?: string
 }
 
 export const PetAvatar: React.FC<PetAvatarProps> = ({
-  size, state = 'idle', mood, docked = false, eyeDx = 0, eyeDy = 0, trackCursor = false, flipX = false, anim, animEpoch = 0, clipName, className,
+  size, state = 'idle', mood, docked = false, eyeDx = 0, eyeDy = 0, trackCursor = false, flipX = false, anim, animEpoch = 0, clipName, onCustomOverrideChange, className,
   accessory = 'none',
 }) => {
   /**
@@ -182,12 +179,14 @@ export const PetAvatar: React.FC<PetAvatarProps> = ({
    * and must not fall back to the state's own motion. `undefined` means the caller
    * has no opinion, so the state decides.
    */
-  const animName: PetAnim = anim !== undefined ? anim : STATE_TO_ANIM[state]
+  const requestedAnim: PetAnim = anim !== undefined ? anim : STATE_TO_ANIM[state]
   /**
    * A posed reaction holds the eyes where the footage puts them: live cursor gaze
    * would fight the pose and read as a twitch. The offset is ART-relative, so it is
    * added to whatever the caller asked for rather than replacing it.
    */
+  const [usesCustomOverride, setUsesCustomOverride] = useState(false)
+  const animName: PetAnim = usesCustomOverride ? null : requestedAnim
   const posed = POSED_ANIMS.has(animName ?? '')
   const eyeOff = ghostEyeOffsetFor(animName)
   const [art, setArt] = useState<Art>({ kind: 'default' })
@@ -219,30 +218,29 @@ export const PetAvatar: React.FC<PetAvatarProps> = ({
         const cm = await api?.presetsGetColorMap?.(DEFAULT_PACK).catch(() => null)
         if (!alive) return
         setColorMap(cm && Object.keys(cm).length > 0 ? cm : null)
+        setUsesCustomOverride(false)
         setArt({ kind: 'default' })
         return
       }
 
       const detail = await api?.galleryGetPackDetail?.(packId).catch(() => null)
-      if (!alive || !detail?.animations) return
+      if (!alive || !detail?.animations) {
+        if (alive) setUsesCustomOverride(false)
+        return
+      }
 
-      // Requested slot first, then the legacy busy aliases, then idle. `thinking`
-      // and `working` mean the same thing as `loading` for packs authored before
-      // the status/random split.
-      //
-      // Breathing phases skip the busy aliases: a pack with no `inhale` should show
-      // its calm idle body, not the art it drew for "working".
       const a = detail.animations
-      /*
-       * A requested clip outranks the state slot — it IS the reason we are
-       * rendering. Falling back to idle when the clip is missing (a stale name
-       * after a pack edit) keeps the companion visible rather than blank.
-       */
-      const entry = clipName
-        ? (a[clipName] || a.idle)
-        : BREATHING_SLOTS.has(slot)
-          ? (a[slot] || a.idle)
-          : (a[slot] || a.loading || a.thinking || a.working || a.idle)
+      const requestedEntry = clipName
+        ? a[clipName]
+        : state === 'loading'
+          ? (a.loading || a.thinking || a.working)
+          : state === 'idle'
+            ? null
+            : a[slot]
+      // A missing optional state inherits Kiro's motion on idle art. Exact custom
+      // art replaces only that state and is never combined with the Kiro motion.
+      const entry = requestedEntry || a.idle
+      setUsesCustomOverride(Boolean(requestedEntry))
       if (!entry) return
 
       const content = typeof entry === 'string' ? entry : entry.content
@@ -266,7 +264,11 @@ export const PetAvatar: React.FC<PetAvatarProps> = ({
     })()
 
     return () => { alive = false }
-  }, [slot, clipName, rev])
+  }, [slot, state, clipName, rev])
+
+  useEffect(() => {
+    onCustomOverrideChange?.(usesCustomOverride)
+  }, [onCustomOverrideChange, usesCustomOverride])
 
   const isDefault = art.kind === 'default'
 

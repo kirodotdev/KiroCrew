@@ -52,9 +52,8 @@ import { useMood } from './useMood'
 import { useEdgeHide } from './useEdgeHide'
 import { useWalking } from './useWalking'
 import { useIdleFidget } from './useIdleFidget'
-import { useRandomClips, type RandomBehaviors } from './useRandomClips'
+import { normaliseCustomRandomNames, useRandomClips } from './useRandomClips'
 import { activeAnimFor, CELEBRATE_MS, CELEBRATE_PROP_HOLD_MS, type PetAnim } from './petAnim'
-import { ALL_MOODS } from './appearanceTypes'
 
 /** Well inside the backend's 90s presence TTL, so one dropped request is harmless. */
 /**
@@ -255,17 +254,11 @@ function Companion() {
    * desktop app gates it.
    */
   const [isDefaultPack, setIsDefaultPack] = useState(true)
-  /**
-   * The random behaviours the ACTIVE custom pack ships, for `useRandomClips`. Empty
-   * for the built-in ghost, which fidgets through `useIdleFidget` instead. `extras` is
-   * left empty: this build's `PetAvatar` renders by state slot, not by arbitrary
-   * author-named clips, so there is nothing to play them through yet.
-   */
-  const [customBehaviors, setCustomBehaviors] = useState<RandomBehaviors>({
-    walking: false, moods: [], extras: [],
-  })
+  /** Uploaded random moments replace only Kiro's idle-motion pool. */
+  const [customRandomNames, setCustomRandomNames] = useState<string[]>([])
+  const hasCustomRandomPool = !isDefaultPack && customRandomNames.length > 0
   const motionEnabledRef = useRef(true)
-  motionEnabledRef.current = isDefaultPack
+  motionEnabledRef.current = isDefaultPack || !hasCustomRandomPool
   useEffect(() => {
     const release = () => window.crewCompanion?.panelHold?.(false)
     // Window-level: a drag usually ends with the pointer well away from the companion.
@@ -307,30 +300,15 @@ function Companion() {
         const isDefault = packId === 'kiro-ghost'
         setIsDefaultPack(isDefault)
         if (isDefault) {
-          setCustomBehaviors({ walking: false, moods: [], extras: [] })
+          setCustomRandomNames([])
           return
         }
         const detail = await petBridge.galleryGetPackDetail?.(packId).catch(() => null)
         if (!alive) return
         const anims = detail?.animations ?? {}
-        const has = (k: string) => Object.prototype.hasOwnProperty.call(anims, k)
-        /*
-         * `extras` was hardcoded empty with a comment admitting there was "nothing
-         * to play them through yet" — so every PetDex pack's wave / waiting / run
-         * clips were imported, stored, listed, and never once shown. PetAvatar now
-         * has a clip channel (`clipName`), so the names the pack actually ships can
-         * finally enter the idle rotation. `randomNames` is the backend's
-         * authoritative list; the flat-map filter is only a guard against a stale
-         * name pointing at art that failed to read.
-         */
-        const randomNames: string[] = Array.isArray(detail?.randomNames)
-          ? (detail.randomNames as string[]).filter((n) => has(n))
-          : []
-        setCustomBehaviors({
-          walking: has('walking'),
-          moods: (ALL_MOODS as readonly string[]).filter((m) => has(m)),
-          extras: randomNames,
-        })
+        // Walking is stored under either states or random depending on pack format.
+        // Normalize both shapes once so it receives exactly one pool entry.
+        setCustomRandomNames(normaliseCustomRandomNames(anims, detail?.randomNames))
       }).catch(() => {})
     }
     read()
@@ -976,6 +954,12 @@ function Companion() {
   const clipTimer = useRef<number | null>(null)
   const CLIP_HOLD_MS = 3_000
 
+  const showIdleClip = useCallback(() => {
+    if (clipTimer.current !== null) window.clearTimeout(clipTimer.current)
+    clipTimer.current = null
+    setActiveClip(undefined)
+  }, [])
+
   const playExtraClip = useCallback((name: string) => {
     if (clipTimer.current !== null) window.clearTimeout(clipTimer.current)
     // Same epoch bump as every other one-off motion: repeating the SAME clip must
@@ -990,21 +974,21 @@ function Companion() {
   }, [])
 
   useIdleFidget({
-    enabled: isDefaultPack && settled,
+    enabled: settled && !hasCustomRandomPool,
     getPos: () => pos,
     walkPath,
     setMood,
+    allowMood: isDefaultPack,
     playFidget,
   })
 
-  // Custom packs: only the random content the pack itself ships.
   useRandomClips({
-    enabled: !isDefaultPack && settled,
-    getBehaviors: () => customBehaviors,
+    enabled: settled && hasCustomRandomPool,
+    getClips: () => customRandomNames,
     getPos: () => pos,
     walkPath,
-    setMood,
-    playExtra: playExtraClip,
+    showIdle: showIdleClip,
+    playClip: playExtraClip,
   })
 
   // Report the companion's and bubble's hitboxes to the main process; it polls the
