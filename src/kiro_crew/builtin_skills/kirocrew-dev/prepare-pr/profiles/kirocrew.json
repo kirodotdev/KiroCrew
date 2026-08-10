@@ -26,8 +26,8 @@
     },
     {
       "name": "opus",
-      "model": "claude-opus-5",
-      "model_tier": "claude-opus-4.8",
+      "model": "claude-opus-4.8",
+      "model_tier": "claude-opus-4.7",
       "contract": ".github/workflows/claude-review.yml",
       "rubric": null
     }

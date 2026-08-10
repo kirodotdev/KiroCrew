@@ -14,6 +14,7 @@ because tomllib is 3.11+.
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -108,7 +109,83 @@ def test_kirocrew_markers_load_bundled_profile(tmp_path):
     assert prof["readiness"]["status_context"] == "PR Readiness"
     models = {r["name"]: r["model"] for r in prof["reviewers"]}
     assert models["gpt"] == "gpt-5.6-sol"
-    assert models["opus"] == "claude-opus-5"
+    assert models["opus"] == "claude-opus-4.8"
+
+
+def test_opus_profile_model_matches_the_ci_workflow():
+    """The local reviewer must mirror the model CI actually runs.
+
+    prepare-pr's whole value is that local-green predicts server-green. When the
+    profile pinned claude-opus-5 while claude-review.yml had moved to
+    opus-4-8, the local gate was reviewing with a different model than the gate
+    it claims to mirror. This test fails the next time they diverge.
+
+    The ids differ by namespace on purpose -- CI uses the Bedrock regional
+    inference profile (`us.anthropic.claude-opus-4-8`), the local harness uses
+    the kiro-cli id (`claude-opus-4.8`) -- so compare the normalized version.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "claude-review.yml").read_text(
+        encoding="utf-8"
+    )
+    # Match the real claude_args entry -- a line whose content IS the flag --
+    # not the prose mention of "--model below" in the comment above the job.
+    ci_models = re.findall(r"(?m)^\s*--model\s+(\S+)\s*$", workflow)
+    assert ci_models, "could not find the --model argument in claude-review.yml"
+    assert len(ci_models) == 1, f"expected one --model arg, got {ci_models}"
+    ci_model = ci_models[0]
+
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    local_model = next(r["model"] for r in data["reviewers"] if r["name"] == "opus")
+
+    def _normalize(model_id: str) -> str:
+        # us.anthropic.claude-opus-4-8 -> claude-opus-4.8
+        tail = model_id.rsplit(".", 1)[-1] if "anthropic." in model_id else model_id
+        return re.sub(r"-(\d)-(\d)$", r"-\1.\2", tail)
+
+    assert _normalize(ci_model) == _normalize(local_model), (
+        f"prepare-pr opus reviewer ({local_model}) no longer mirrors "
+        f"claude-review.yml ({ci_model})"
+    )
+
+
+def test_charter_budgets_match_the_ci_workflows():
+    """The budget numbers restated in SKILL.md must match the workflows.
+
+    The charter hand-copies CI's budget ("≤5 BLOCKING, ≤6 advisory FINDING").
+    That copy is exactly what drifted before -- the skill still claimed ≤2
+    BLOCKING long after CI moved to 5 -- so pin the numbers rather than trusting
+    prose to be kept in sync. Parses the authoritative BUDGET lines out of both
+    review workflows and asserts the charter quotes them.
+    """
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+
+    def _budget(workflow_name: str) -> str:
+        text = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(
+            encoding="utf-8"
+        )
+        match = re.search(r"BUDGET: at most (\d+) BLOCKING", text)
+        assert match, f"no BUDGET line in {workflow_name}"
+        return match.group(1)
+
+    opus_blocking = _budget("claude-review.yml")
+    gpt_blocking = _budget("codex-review.yml")
+
+    claude = (REPO_ROOT / ".github" / "workflows" / "claude-review.yml").read_text(
+        encoding="utf-8"
+    )
+    advisory_match = re.search(r"At most (\d+) advisory FINDING", claude)
+    assert advisory_match, "no advisory-FINDING budget in claude-review.yml"
+    opus_advisory = advisory_match.group(1)
+
+    assert (
+        f"≤{opus_blocking} BLOCKING, ≤{opus_advisory} advisory FINDING" in skill
+    ), (
+        "the opus charter's budget no longer matches claude-review.yml "
+        f"({opus_blocking} BLOCKING / {opus_advisory} advisory)"
+    )
+    assert f"≤{gpt_blocking} BLOCKING" in skill, (
+        f"the gpt charter's budget no longer matches codex-review.yml ({gpt_blocking})"
+    )
 
 
 def test_bundled_kirocrew_profile_is_valid_json():
