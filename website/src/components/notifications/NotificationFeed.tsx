@@ -210,7 +210,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           floating card (search above the disclosure); panel mode puts the
           disclosure first, directly on the popover surface. */}
       {mac ? (
-        <div className="rounded-2xl bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] border border-[color-mix(in_srgb,var(--border)_55%,transparent)] px-2.5 pt-2 pb-1 mb-2 shrink-0">
+        <div className="notif-material rounded-2xl bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] border border-[color-mix(in_srgb,var(--border)_55%,transparent)] px-2.5 pt-2 pb-1 mb-2 shrink-0">
           <div className="flex items-center gap-1.5">
             <div className="flex-1 min-w-0">{header}</div>
             {unread > 0 && (
@@ -258,6 +258,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const silenced = !!n.silenced
                 // Priority tiers: critical gets a danger edge, passive dims,
                 // silenced renders as a dashed-border ghost.
+                // The row div below also carries `notif-material`: index.css solidifies
+                // these cards to var(--card) where backdrop-filter is unsupported
+                // (#1817). Keep the hook on every translucent mac-variant surface.
                 const macCard = silenced
                   ? 'bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-xl border border-dashed border-[color-mix(in_srgb,var(--border)_70%,transparent)]'
                   : `bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] ${active ? 'border border-accent bg-accent-subtle' : 'border border-[color-mix(in_srgb,var(--border)_55%,transparent)] hover:bg-[color-mix(in_srgb,var(--card)_70%,transparent)]'}`
@@ -287,7 +290,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                   <div key={n.ts} className={isStackChild && !mac ? 'ml-4' : ''}>
                     <div data-notif-row
                       className={mac
-                        ? `group flex flex-col px-3 py-2.5 rounded-2xl ${promptChannel || collapsedStack ? 'mb-0' : 'mb-2'} ${promptChannel ? 'rounded-b-none' : ''} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''} transition-all ${macCard}`
+                        ? `notif-material group flex flex-col px-3 py-2.5 rounded-2xl ${promptChannel || collapsedStack ? 'mb-0' : 'mb-2'} ${promptChannel ? 'rounded-b-none' : ''} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''} transition-all ${macCard}`
                         : `group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
                     >
                       <div className={`flex ${mac ? 'items-start' : 'items-center'} gap-2.5`}>
@@ -370,13 +373,13 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         stack -- click anywhere on the head to expand. */}
                     {mac && collapsedStack && (
                       <div aria-hidden className="mb-2">
-                        <div className={`relative z-[1] h-3 -mt-1.5 mx-2 rounded-b-2xl ${silenced ? 'bg-[color-mix(in_srgb,var(--card)_30%,transparent)]' : 'bg-[color-mix(in_srgb,var(--card)_45%,transparent)]'} backdrop-blur-xl border border-t-0 border-[color-mix(in_srgb,var(--border)_45%,transparent)] shadow-[0_4px_12px_rgba(0,0,0,.06)]`} />
-                        <div className="relative z-0 h-3 -mt-1.5 mx-4 rounded-b-2xl bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-lg border border-t-0 border-[color-mix(in_srgb,var(--border)_35%,transparent)]" />
+                        <div className={`notif-material relative z-[1] h-3 -mt-1.5 mx-2 rounded-b-2xl ${silenced ? 'bg-[color-mix(in_srgb,var(--card)_30%,transparent)]' : 'bg-[color-mix(in_srgb,var(--card)_45%,transparent)]'} backdrop-blur-xl border border-t-0 border-[color-mix(in_srgb,var(--border)_45%,transparent)] shadow-[0_4px_12px_rgba(0,0,0,.06)]`} />
+                        <div className="notif-material relative z-0 h-3 -mt-1.5 mx-4 rounded-b-2xl bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-lg border border-t-0 border-[color-mix(in_srgb,var(--border)_35%,transparent)]" />
                       </div>
                     )}
                     {promptChannel && (
                       <div className={`flex items-center gap-2 px-3 py-2 border border-t-0 ${mac
-                        ? 'rounded-b-2xl mb-2 bg-accent-subtle backdrop-blur-2xl border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
+                        ? 'notif-material rounded-b-2xl mb-2 bg-accent-subtle backdrop-blur-2xl border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
                         : 'rounded-b-md mb-1 bg-accent-subtle border-border'}`}>
                         <Bell className="lucide-inline shrink-0 text-accent" />
                         <div className="flex-1 min-w-0 text-[12px] text-text">{i18nT('components.notifications.notificationFeed.first_notification_from')} <span className="font-semibold">{promptChannel.label}</span>{i18nT('components.notifications.notificationFeed.keep_receiving_these')}</div>
