@@ -9,6 +9,7 @@ tamper/degradation path.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +17,31 @@ import pytest
 from kiro_crew import session_pid_sig
 
 SESSION_KEY = "dashboard:chat-7-123456"
+LOGGER_NAME = "kiro_crew.session_pid_sig"
+
+
+def records_from_this_module(caplog, level="ERROR"):
+    """Captured records this module emitted — scoped by LOGGER as well as level.
+
+    ``caplog.at_level(..., logger=LOGGER_NAME)`` scopes the *level* it captures
+    at; it does not scope *which* loggers land in ``caplog.records``, which
+    still collects everything that propagates to the root handler. So counting
+    by level alone makes every assertion below depend on whether an unrelated
+    test happened to emit an ERROR inside the same window.
+
+    That is not hypothetical: CI saw nine ``asyncio`` "Task was destroyed but it
+    is pending!" records — leaked ``SessionManager._cleanup_loop()`` tasks from
+    other tests sharing the xdist worker, reported whenever those task objects
+    were collected — turn ``assert len(errors) == 1`` into ``assert 10 == 1``.
+    Nothing about this module had changed.
+
+    Scoping by logger name is strictly narrower than scoping by level: these
+    assertions still require an exact count, they just no longer count other
+    people's records as ours.
+    """
+    return [
+        r for r in caplog.records if r.levelname == level and r.name == LOGGER_NAME
+    ]
 
 
 @pytest.fixture
@@ -298,9 +324,9 @@ class TestTrustRootRecovery:
         (cfg / "sel_hmac.key").unlink()
         with patch.object(
             session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ), caplog.at_level("ERROR", logger="kiro_crew.session_pid_sig"):
+        ), caplog.at_level("ERROR", logger=LOGGER_NAME):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        errors = records_from_this_module(caplog)
         assert len(errors) == 1
         message = errors[0].getMessage()
         assert str(cfg / "sel_hmac.key") in message
@@ -311,17 +337,17 @@ class TestTrustRootRecovery:
         (cfg / "sel_hmac.key").unlink()
         with patch.object(
             session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ), caplog.at_level("DEBUG", logger="kiro_crew.session_pid_sig"):
+        ), caplog.at_level("DEBUG", logger=LOGGER_NAME):
             session_pid_sig.publish_session_pid(1, SESSION_KEY)
             session_pid_sig.publish_session_pid(2, SESSION_KEY)
             session_pid_sig.publish_session_pid(3, SESSION_KEY)
-        assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1
+        assert len(records_from_this_module(caplog)) == 1
         assert (
             len(
                 [
                     r
-                    for r in caplog.records
-                    if r.levelname == "DEBUG" and "signing from memory" in r.getMessage()
+                    for r in records_from_this_module(caplog, "DEBUG")
+                    if "signing from memory" in r.getMessage()
                 ]
             )
             == 2
@@ -363,38 +389,38 @@ class TestSigningUnavailableReport:
         throttled independently. Sharing one key would let whichever fired first
         silence the other for the rest of the process."""
         (cfg / "sel_hmac.key").unlink()
-        with caplog.at_level("ERROR", logger="kiro_crew.session_pid_sig"):
+        with caplog.at_level("ERROR", logger=LOGGER_NAME):
             with patch.object(
                 session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
             ):
                 session_pid_sig.publish_session_pid(4242, SESSION_KEY)
             # Same path, but the in-memory fallback is gone now.
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        messages = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+        messages = [r.getMessage() for r in records_from_this_module(caplog)]
         assert len(messages) == 2, messages
         assert "every other process" in messages[0]
         assert "cannot sign session identities" in messages[1]
 
     def test_reported_once_per_process_then_debug(self, cfg, caplog):
         (cfg / "sel_hmac.key").unlink()
-        with caplog.at_level("DEBUG", logger="kiro_crew.session_pid_sig"):
+        with caplog.at_level("DEBUG", logger=LOGGER_NAME):
             session_pid_sig.publish_session_pid(1, SESSION_KEY)
             session_pid_sig.publish_session_pid(2, SESSION_KEY)
             session_pid_sig.publish_session_pid(3, SESSION_KEY)
-        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        errors = records_from_this_module(caplog)
         assert len(errors) == 1
         debugs = [
             r
-            for r in caplog.records
-            if r.levelname == "DEBUG" and "still unavailable" in r.getMessage()
+            for r in records_from_this_module(caplog, "DEBUG")
+            if "still unavailable" in r.getMessage()
         ]
         assert len(debugs) == 2
 
     def test_message_names_the_consequence_and_the_path(self, cfg, caplog):
         (cfg / "sel_hmac.key").unlink()
-        with caplog.at_level("ERROR", logger="kiro_crew.session_pid_sig"):
+        with caplog.at_level("ERROR", logger=LOGGER_NAME):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        message = caplog.records[0].getMessage()
+        message = records_from_this_module(caplog)[0].getMessage()
         assert str(cfg / "sel_hmac.key") in message
         assert "sub-agent dispatch" in message
         assert "memory writes" in message
@@ -403,7 +429,7 @@ class TestSigningUnavailableReport:
         """Suppression is keyed on the resolved path, so a genuine relocation
         is not swallowed by the first failure's entry."""
         (cfg / "sel_hmac.key").unlink()
-        with caplog.at_level("ERROR", logger="kiro_crew.session_pid_sig"):
+        with caplog.at_level("ERROR", logger=LOGGER_NAME):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
             with patch.object(
                 session_pid_sig,
@@ -411,20 +437,49 @@ class TestSigningUnavailableReport:
                 return_value=cfg / "trust" / "sel_hmac.key",
             ):
                 session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 2
+        assert len(records_from_this_module(caplog)) == 2
 
     def test_recovery_rearms_the_report_for_the_same_path(self, cfg, caplog):
         """Break -> restore -> break again on ONE path must produce a second
         ERROR: on a long-lived gateway that is never restarted, the log is the
         only signal the operator gets."""
-        with caplog.at_level("ERROR", logger="kiro_crew.session_pid_sig"):
+        with caplog.at_level("ERROR", logger=LOGGER_NAME):
             (cfg / "sel_hmac.key").unlink()
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
             (cfg / "sel_hmac.key").write_bytes(b"\x01" * 32)
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
             (cfg / "sel_hmac.key").unlink()
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 2
+        assert len(records_from_this_module(caplog)) == 2
+
+    def test_a_stray_error_from_another_logger_is_not_counted_as_ours(
+        self, cfg, caplog
+    ):
+        """Guards `records_from_this_module` against being narrowed back to a
+        level-only filter.
+
+        Every count in this class is exact, and `caplog.records` collects every
+        record that propagates — not only this module's. A leaked asyncio task
+        being destroyed inside the window (observed in CI) must therefore not be
+        counted as one of our reports, or these assertions fail for a reason
+        that has nothing to do with the code under test.
+        """
+        (cfg / "sel_hmac.key").unlink()
+        with caplog.at_level("ERROR", logger=LOGGER_NAME):
+            logging.getLogger("asyncio").error(
+                "Task was destroyed but it is pending!\n"
+                "task: <Task pending coro=<SessionManager._cleanup_loop()>>"
+            )
+            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+
+        ours = records_from_this_module(caplog)
+        assert len(ours) == 1
+        assert str(cfg / "sel_hmac.key") in ours[0].getMessage()
+        # The stray record really was captured — this test would be vacuous if
+        # caplog had filtered it out for us.
+        assert any(
+            r.name == "asyncio" and r.levelname == "ERROR" for r in caplog.records
+        )
 
 
 class TestSigningHealth:
