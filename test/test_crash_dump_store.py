@@ -195,6 +195,89 @@ def test_dump_first_stack_lines_header_only(dumps_dir: Path) -> None:
     assert lines == []
 
 
+def _create_multi_thread_dump(dumps_dir: Path, name: str, *, idle_workers: int = 3) -> Path:
+    """Create a dump mirroring a REAL faulthandler loop-stall dump.
+
+    ``faulthandler.dump_traceback_later`` writes a ``Timeout (...)!`` preamble
+    then every thread newest-first: idle thread-pool workers (parked in
+    ``Queue.get``) come first, and the MAIN thread — the one the asyncio loop
+    wedged on — comes LAST.
+    """
+    idle_block = (
+        "Thread 0x00007f000000{i:04x} (most recent call first):\n"
+        '  File "/usr/lib/python3.12/queue.py", line 171 in get\n'
+        '  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 90 in _worker\n'
+        '  File "/usr/lib/python3.12/threading.py", line 1032 in _bootstrap\n'
+    )
+    main_block = (
+        "Thread 0x00007f0000beef (most recent call first):\n"
+        '  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 166 in submit\n'
+        '  File "/usr/lib/python3.12/asyncio/base_events.py", line 867 in run_in_executor\n'
+        '  File "/home/user/.kirocrew/src/kiro_crew/dashboard/server.py", line 246 in _should_prevent_sleep\n'
+        '  File "/usr/lib/python3.12/asyncio/base_events.py", line 645 in run_forever\n'
+        '  File "/home/user/.kirocrew/src/kiro_crew/cli.py", line 2046 in main\n'
+    )
+    p = dumps_dir / name
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T020000Z\n"  # brand-ok: mirrors production dump header
+        "# PID: 12345\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+        "Timeout (0:00:25)!\n"
+        + "".join(idle_block.format(i=i) for i in range(idle_workers))
+        + main_block
+    )
+    return p
+
+
+def test_dump_first_stack_lines_surfaces_wedged_thread(dumps_dir: Path) -> None:
+    """The extracted lines must show the WEDGED (last) thread, not an idle worker.
+
+    Regression: doctor labelled the first thread in the file "MainThread stuck
+    at:" — always an idle ``Queue.get`` thread-pool worker on real dumps —
+    while the actually-wedged main thread sat unread at the bottom.
+    """
+    p = _create_multi_thread_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    lines = dump_first_stack_lines(p, max_lines=8)
+    body = "\n".join(lines)
+    assert lines[0] == "Timeout (0:00:25)!"
+    assert "_should_prevent_sleep" in body  # the wedged thread's Kiro Crew frame
+    assert "queue.py" not in body  # no idle-worker frames
+
+
+def test_dump_first_stack_lines_prefers_current_thread_marker(dumps_dir: Path) -> None:
+    """A block explicitly marked ``Current thread`` wins over positional choice."""
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T020000Z\n"  # brand-ok: mirrors production dump header
+        "# PID: 12345\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+        "Current thread 0x00007f00000001 (most recent call first):\n"
+        '  File "/home/user/.kirocrew/src/kiro_crew/dashboard/state.py", line 100 in _flush\n'
+        "Thread 0x00007f00000002 (most recent call first):\n"
+        '  File "/usr/lib/python3.12/queue.py", line 171 in get\n'
+    )
+    lines = dump_first_stack_lines(p, max_lines=4)
+    assert lines[0].startswith("Current thread")
+    assert "_flush" in lines[1]
+
+
+def test_dump_first_stack_lines_fallback_without_thread_headers(dumps_dir: Path) -> None:
+    """Unrecognizable content degrades to the raw top-of-file lines."""
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T020000Z\n"  # brand-ok: mirrors production dump header
+        "# PID: 12345\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+        "some free-form line 1\n"
+        "some free-form line 2\n"
+    )
+    lines = dump_first_stack_lines(p, max_lines=5)
+    assert lines == ["some free-form line 1", "some free-form line 2"]
+
+
 # ── Age calculation ──
 
 
@@ -413,6 +496,29 @@ def test_dump_replay_lines_header_only(dumps_dir: Path) -> None:
     lines, truncated = dump_replay_lines(p)
     assert lines == []
     assert not truncated
+
+
+def test_dump_replay_lines_wedged_thread_survives_truncation(dumps_dir: Path) -> None:
+    """The wedged thread's stack is replayed FIRST so caps can't cut it.
+
+    Regression: real dumps carry 200+ lines of idle thread-pool workers before
+    the main thread; top-down replay hit the 120-line/8KB caps and the journal
+    showed only ``Queue.get`` workers plus ``[truncated]`` — omitting the one
+    stack that explains the stall (observed on the 2026-08-09 stall dumps).
+    """
+    from kiro_crew.dashboard.crash_dump_store import dump_replay_lines
+
+    # 40 idle workers x 4 lines >> the 12-line cap below; main thread is last.
+    p = _create_multi_thread_dump(
+        dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}", idle_workers=40
+    )
+    lines, truncated = dump_replay_lines(p, max_lines=12)
+    body = "\n".join(lines)
+    assert truncated
+    assert lines[0] == "Timeout (0:00:25)!"
+    # The wedged thread's frames made it into the replay despite truncation.
+    assert "_should_prevent_sleep" in body
+    assert "run_forever" in body
 
 
 # ── Journal replay integration test ──
