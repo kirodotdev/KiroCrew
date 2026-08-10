@@ -39,13 +39,6 @@ from kiro_crew.dashboard.refresh_tokens import (
     generate_refresh_token,
     refresh_cookie_name,
 )
-from kiro_crew.dashboard.tailnet import (
-    ForwardedPeer,
-    TailnetTrust,
-    login_allowed,
-    peer_pin_key,
-    resolve_forwarded_peer,
-)
 
 # Canonical revocation-generation definitions live in revocation_gen so the
 # refresh-token module can consult the counter without recreating the
@@ -59,6 +52,13 @@ from kiro_crew.dashboard.revocation_gen import (  # noqa: F401  # re-exports
     bump_revocation_gen,
     current_revocation_gen,
     current_revocation_gen_or_none,
+)
+from kiro_crew.dashboard.tailnet import (
+    ForwardedPeer,
+    TailnetTrust,
+    login_allowed,
+    peer_pin_key,
+    resolve_forwarded_peer,
 )
 
 # Canonical HMAC-secret definitions live in token_secret to break the import
