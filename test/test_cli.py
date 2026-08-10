@@ -1746,6 +1746,13 @@ class TestArgsLookLikeKirocrew:
             "python3 -m kiro_crew gateway",
             "python -m kiro_crew dashboard",
             "python3.10 -m kiro_crew start",
+            # macOS framework build: the vendored interpreter's basename is
+            # "Python" (capital P) — a case-sensitive startswith("python") missed
+            # it, so stop/restart no-oped on macOS framework-build installs
+            # (Toolbox being the common one).
+            "/Library/Frameworks/Python.framework/Versions/3.10/Resources/"
+            "Python.app/Contents/MacOS/Python -m kiro_crew gateway --no-open",
+            "Python -m kiro_crew gateway",
             # Subcommand followed by trailing flags.
             "python -m kiro_crew gateway --no-open --port 7777",
             # Legacy dotted-submodule form.

@@ -5934,7 +5934,9 @@
       "updated": "更新済み",
       "view_only_clicks_here_don_t_reach_the_page": "表示のみ — ここのクリックはページに到達しません",
       "waiting_for_the_browser_to_take_a_screenshot": "ブラウザーがスクリーンショットを撮るのを待機中…",
-      "web_preview": "ウェブプレビュー"
+      "web_preview": "ウェブプレビュー",
+      "can_t_preview_this_dashboard_here": "このダッシュボードはここでプレビューできません",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "この URL はダッシュボード自身のサーバーであり、埋め込みは許可されていません。代わりに開発サーバーの URL を入力してください。"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "エージェントのみ — Kiro Crew コンテキストまたは MCP なし",
@@ -7092,8 +7094,6 @@
         "ask_a_side_question_2": "サイドで質問…",
         "ask_a_side_question_main_agent_keeps_working": "サイドで質問 — メインエージェントは作業を続けます",
         "context_from": "コンテキスト元",
-        "copied": "コピーしました！",
-        "copy": "コピー",
         "queue_cancel_failed": "キューに入っている質問をキャンセルできませんでした",
         "queue_edit_failed": "キューに入っている質問を更新できませんでした",
         "refresh_context": "コンテキストを更新",
@@ -7101,7 +7101,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "送信",
         "steer_demoted_to_queue": "ターンが終了したためキューに入れました",
-        "steered": "指示を追加",
         "thinking": "考え中…",
         "turn_other": "{{count}} ターン"
       },
@@ -7480,7 +7479,6 @@
       "older": "以前",
       "older_sessions": "以前のセッション",
       "older_sessions_2": "以前のセッション",
-      "open_split_view": "分割表示を開く",
       "pick_a_model_for_every_session_switching_a_sessi": "各セッションのモデルを選択します。セッションを切り替えると",
       "pinned": "固定済み",
       "pinned_sessions_are_kept": "固定したセッションは保持されます。",
@@ -7516,8 +7514,6 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "新しい順",
       "sort_oldest": "古い順",
-      "split_view": "分割表示",
-      "split_view_multi_pane_session_grid_d": "分割表示 — 複数ペインのセッショングリッド (⌘D)",
       "streaming": "ストリーミング中",
       "switch_all_sessions": "すべてのセッションを切り替え",
       "switch_all_to_model": "すべてのモデルを切り替え…",
@@ -7781,6 +7777,7 @@
       "rows": "行",
       "running_pods": "実行中のポッド",
       "safely_removes_worktrees_whose_pr_has_already_me": "PR がすでにマージ済みのワークツリーを安全に削除します。",
+      "scanning_merged": "マージ済みをスキャン中…",
       "select": "{{name}} を選択",
       "sort_behind": "ソート：遅延",
       "sort_name": "ソート：名前",
@@ -10550,6 +10547,14 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "受信 Webhooks",
+        "endpoint_status": "エンドポイント",
+        "lets_an_outside_system_start_one_agent_turn": "CI ジョブ、レビューボット、デプロイスクリプトなどの外部システムが、アクセストークンを添えてメッセージを POST することで、エージェントのターンを 1 回開始できます。",
+        "manage_webhooks": "Webhooks を管理",
+        "tokens_count_other": "アクセストークン {{count}} 個",
+        "could_not_read_webhook_status": "webhook の状態を取得できませんでした — ゲートウェイが起動していない可能性があります"
       }
     },
     "settingsPage": {
@@ -11020,6 +11025,10 @@
       "voice": {
         "description": "テキスト読み上げとスピーチ認識（ディクテーション）の設定",
         "label": "音声"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "外部システムからエージェントのターンを 1 回開始できます"
       }
     }
   },

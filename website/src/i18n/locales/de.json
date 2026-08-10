@@ -6019,7 +6019,9 @@
       "updated": "aktualisiert",
       "view_only_clicks_here_don_t_reach_the_page": "Nur ansehen — Klicks hier erreichen die Seite nicht",
       "waiting_for_the_browser_to_take_a_screenshot": "Warten darauf, dass der Browser einen Screenshot erstellt…",
-      "web_preview": "Web-Vorschau"
+      "web_preview": "Web-Vorschau",
+      "can_t_preview_this_dashboard_here": "Dieses Dashboard kann hier nicht in der Vorschau angezeigt werden",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Diese URL ist der Server des Dashboards selbst, der das Einbetten ablehnt. Geben Sie stattdessen die URL eines Dev-Servers ein."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Nur Agent — kein Kiro Crew-Kontext oder MCP",
@@ -7190,8 +7192,6 @@
         "ask_a_side_question_2": "Stelle eine Nebenfrage…",
         "ask_a_side_question_main_agent_keeps_working": "Nebenfrage stellen — der Hauptagent arbeitet weiter",
         "context_from": "Kontext von",
-        "copied": "Kopiert!",
-        "copy": "Kopieren",
         "queue_cancel_failed": "Diese Frage in der Warteschlange konnte nicht abgebrochen werden",
         "queue_edit_failed": "Diese Frage in der Warteschlange konnte nicht aktualisiert werden",
         "refresh_context": "Kontext aktualisieren",
@@ -7199,7 +7199,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "Senden",
         "steer_demoted_to_queue": "Der Zug endete — stattdessen in die Warteschlange gestellt",
-        "steered": "Gesteuert",
         "thinking": "Denkt nach…",
         "turn_one": "{{count}} Zug",
         "turn_other": "{{count}} Züge"
@@ -7583,7 +7582,6 @@
       "older_sessions": "Ältere Sitzungen",
       "older_sessions_2": "Ältere Sitzungen",
       "open_source_link_in_side_panel": "{{url}} im Seitenpanel öffnen ({{modifier}} zum Öffnen im Browser)",
-      "open_split_view": "Geteilte Ansicht öffnen",
       "pick_a_model_for_every_session_switching_a_sessi": "Wählen Sie ein Modell für jede Sitzung. Das Wechseln einer Sitzung",
       "pinned": "Angepinnt",
       "pinned_sessions_are_kept": "Angepinnte Sitzungen werden beibehalten.",
@@ -7621,8 +7619,6 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "Neueste",
       "sort_oldest": "Älteste",
-      "split_view": "Geteilte Ansicht",
-      "split_view_multi_pane_session_grid_d": "Geteilte Ansicht — Sitzungsraster mit mehreren Bereichen (⌘D)",
       "streaming": "Streaming",
       "switch_all_sessions": "Alle Sitzungen wechseln",
       "switch_all_to_model": "Alle auf Modell umstellen…",
@@ -7887,6 +7883,7 @@
       "rows": "Zeilen",
       "running_pods": "Laufende Pods",
       "safely_removes_worktrees_whose_pr_has_already_me": "entfernt sicher Worktrees, deren PR bereits zusammengeführt wurde.",
+      "scanning_merged": "Suche nach Zusammengeführten…",
       "select": "{{name}} auswählen",
       "sort_behind": "Sortierung: zurück",
       "sort_name": "Sortierung: Name",
@@ -10664,6 +10661,15 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Eingehende Webhooks",
+        "endpoint_status": "Endpunkt",
+        "lets_an_outside_system_start_one_agent_turn": "Ermöglicht es einem externen System – einem CI-Job, einem Review-Bot, einem Deploy-Skript –, einen Agentendurchlauf zu starten, indem es eine Nachricht mit einem Zugriffstoken per POST sendet.",
+        "manage_webhooks": "Webhooks verwalten",
+        "tokens_count_one": "{{count}} Zugriffstoken",
+        "tokens_count_other": "{{count}} Zugriffstoken",
+        "could_not_read_webhook_status": "Webhook-Status konnte nicht gelesen werden — prüfe, ob das Gateway läuft"
       }
     },
     "settingsPage": {
@@ -11141,6 +11147,10 @@
       "voice": {
         "description": "Einstellungen für Text-zu-Sprache und Sprache-zu-Text (Diktat)",
         "label": "Sprache"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Externes System einen Agentendurchlauf starten lassen"
       }
     }
   },

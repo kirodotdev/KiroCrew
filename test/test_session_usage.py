@@ -5,6 +5,7 @@ _fetch_usage_bg gating/redaction logic.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -352,6 +353,90 @@ class TestFetchUsageBg:
         assert sessions_mod._usage_cache == {"available": False}
         proc.kill.assert_called_once()
         proc.wait.assert_awaited_once()  # reaped (FDs closed) on the error path
+
+
+class TestFetchUsageDeadline:
+    """A hung refresh must release the in-flight guard, not park it forever.
+
+    `_usage_fetching` gates every refresh, and it is only cleared in
+    `_fetch_usage_bg`'s `finally`. That `finally` does run on cancellation — but
+    not on a hang, so without an overall deadline one wedged call leaves the
+    guard True for the process lifetime: the cache is never populated and the
+    dashboard's credit pill shows "Checking usage..." indefinitely.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        _reset_usage_globals()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+        yield
+        _reset_usage_globals()
+
+    @pytest.mark.asyncio
+    async def test_hung_api_read_still_clears_the_guard(self, monkeypatch):
+        # Short deadline so the test does not wait on the production ceiling.
+        # raising=False keeps the test independent of the constant existing, so
+        # on unfixed code it exercises the real hang instead of erroring on a
+        # missing attribute.
+        monkeypatch.setattr(
+            sessions_mod, "_USAGE_FETCH_DEADLINE_SECS", 0.2, raising=False
+        )
+        released = threading.Event()
+
+        def _hang(*_args, **_kwargs):
+            # Blocks like a wedged TLS handshake or a DNS lookup with no
+            # resolver: urlopen's own timeout does not cover either.
+            released.wait(30)
+            return None
+
+        try:
+            with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+                 patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value={})), \
+                 patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", _hang):
+                # The outer wait_for is the assertion: unfixed, _fetch_usage_bg
+                # never returns and this raises instead of hanging the suite.
+                await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+        finally:
+            released.set()
+
+        assert sessions_mod._usage_fetching is False, "in-flight guard was left set"
+        # The pill must resolve rather than spin: no credit plan was obtained, so
+        # usage is reported unavailable.
+        assert sessions_mod._usage_cache.get("available") is False
+        assert sessions_mod._usage_cache_ts > 0
+
+    @pytest.mark.asyncio
+    async def test_refresh_after_a_hang_can_still_succeed(self, monkeypatch):
+        monkeypatch.setattr(
+            sessions_mod, "_USAGE_FETCH_DEADLINE_SECS", 0.2, raising=False
+        )
+        released = threading.Event()
+
+        def _hang(*_args, **_kwargs):
+            released.wait(30)
+            return None
+
+        try:
+            with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+                 patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value={})), \
+                 patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", _hang):
+                await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+        finally:
+            released.set()
+
+        api_dict = {"credits_used": 12.0, "credits_plan": 100.0, "source": "api"}
+        arn = "arn:aws:codewhisperer:us-east-1:1:profile/A"
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami",
+                          AsyncMock(return_value={"email": "me@corp.com", "_profile_arn": arn})), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value={**api_dict, "_profile_arn": arn}):
+            await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+
+        assert sessions_mod._usage_cache.get("credits_plan") == 100.0
 
 
 class TestNormalizeTextUsage:

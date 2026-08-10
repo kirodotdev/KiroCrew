@@ -6,11 +6,31 @@ All AWS I/O is mocked at the cloud.aws chokepoint (run_aws / checked / checked_j
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
 from kiro_crew.cloud import aws, ec2, sizes
 from kiro_crew.validation import ValidationError
+
+
+class TestSubTemplateSyntax:
+    def test_every_sub_variable_is_legal(self):
+        # The UserData is one big CloudFormation !Sub. Every "${...}" is parsed as a
+        # Sub reference -- INCLUDING ones inside bash "#" comments, which are still part
+        # of the Sub string. Each must be the "${!...}" literal escape or a plausible
+        # reference: an AWS:: pseudo-param, or an identifier starting with a letter
+        # (a Parameter, a Resource logical id, a Sub variable-map key, optionally with
+        # a ".Attribute"). A bare "${...}" ellipsis in a comment matches neither and
+        # broke change-set creation twice, so it must fail here.
+        text = ec2.load_template()
+        ref = re.compile(r"AWS::[A-Za-z0-9]+|[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)*\Z")
+        bad = [
+            inner
+            for inner in re.findall(r"\$\{([^}]*)\}", text)
+            if not inner.startswith("!") and not ref.match(inner)
+        ]
+        assert not bad, f"illegal !Sub variable(s): {bad}"
 
 
 class TestValidation:

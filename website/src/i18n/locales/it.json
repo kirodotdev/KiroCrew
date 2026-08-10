@@ -6104,7 +6104,9 @@
       "updated": "aggiornata",
       "view_only_clicks_here_don_t_reach_the_page": "Solo visualizzazione — i clic qui non raggiungono la pagina",
       "waiting_for_the_browser_to_take_a_screenshot": "In attesa che il browser acquisisca uno screenshot…",
-      "web_preview": "Anteprima web"
+      "web_preview": "Anteprima web",
+      "can_t_preview_this_dashboard_here": "Impossibile visualizzare l'anteprima di questa dashboard qui",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Questo URL è il server della dashboard stessa, che rifiuta di essere incorporato. Inserisci invece l'URL di un server di sviluppo."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Solo agente — nessun contesto Kiro Crew né MCP",
@@ -7288,8 +7290,6 @@
         "ask_a_side_question_2": "Fai una domanda a parte…",
         "ask_a_side_question_main_agent_keeps_working": "Fai una domanda a parte — l'agente principale continua a lavorare",
         "context_from": "Contesto da",
-        "copied": "Copiato!",
-        "copy": "Copia",
         "queue_cancel_failed": "Impossibile annullare quella domanda in coda",
         "queue_edit_failed": "Impossibile aggiornare quella domanda in coda",
         "refresh_context": "Aggiorna il contesto",
@@ -7297,7 +7297,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "Invia",
         "steer_demoted_to_queue": "Il turno è terminato: messo in coda invece",
-        "steered": "Indirizzato",
         "thinking": "Riflessione…",
         "turn_many": "{{count}} turni",
         "turn_one": "{{count}} turno",
@@ -7686,7 +7685,6 @@
       "older_sessions": "Sessioni più vecchie",
       "older_sessions_2": "Sessioni più vecchie",
       "open_source_link_in_side_panel": "Apri {{url}} nel pannello laterale ({{modifier}} per aprirlo nel browser)",
-      "open_split_view": "Apri la vista divisa",
       "pick_a_model_for_every_session_switching_a_sessi": "Scegli un modello per ogni sessione. Il cambio di una sessione",
       "pinned": "Fissata",
       "pinned_sessions_are_kept": "Le sessioni fissate vengono mantenute.",
@@ -7726,8 +7724,6 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "Più recenti",
       "sort_oldest": "Più vecchie",
-      "split_view": "Vista divisa",
-      "split_view_multi_pane_session_grid_d": "Vista divisa — griglia delle sessioni a più riquadri (⌘D)",
       "streaming": "Streaming",
       "switch_all_sessions": "Cambia tutte le sessioni",
       "switch_all_to_model": "Passa tutte al modello…",
@@ -7993,6 +7989,7 @@
       "rows": "righe",
       "running_pods": "Pod in esecuzione",
       "safely_removes_worktrees_whose_pr_has_already_me": "rimuove in sicurezza i worktree la cui PR è già stata unita.",
+      "scanning_merged": "Ricerca dei worktree uniti…",
       "select": "Seleziona {{name}}",
       "sort_behind": "Ordinamento: in ritardo",
       "sort_name": "Ordinamento: nome",
@@ -10778,6 +10775,16 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Webhook in entrata",
+        "endpoint_status": "Endpoint",
+        "lets_an_outside_system_start_one_agent_turn": "Consente a un sistema esterno — un job CI, un bot di revisione, uno script di deploy — di avviare un turno dell'agente inviando un messaggio in POST con un token di accesso.",
+        "manage_webhooks": "Gestisci webhook",
+        "tokens_count_one": "{{count}} token di accesso",
+        "tokens_count_other": "{{count}} token di accesso",
+        "tokens_count_many": "{{count}} token di accesso",
+        "could_not_read_webhook_status": "Impossibile leggere lo stato del webhook — verifica che il gateway sia in esecuzione"
       }
     },
     "settingsPage": {
@@ -11262,6 +11269,10 @@
       "voice": {
         "description": "Impostazioni per la sintesi vocale e il riconoscimento vocale (dettatura)",
         "label": "Voce"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Consenti a un sistema esterno di avviare un turno dell'agente"
       }
     }
   },

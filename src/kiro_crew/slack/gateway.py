@@ -81,7 +81,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
-from kiro_crew.dashboard import start_dashboard
+from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _run_chat
 from kiro_crew.dashboard.chat_utils import (
@@ -6313,6 +6313,13 @@ class GatewayOrchestrator:
         from kiro_crew.slack.events import SeenCache, init_socket_mode
         from kiro_crew.slack.interactions import init as init_interactions
 
+        # Cautious boot: decide ONCE — off-loop — whether the previous instance
+        # left a recent loop-stall crash dump. If it did, the pause_before()
+        # calls below (and in start_dashboard) stagger the startup battery so
+        # a host that is possibly still under the same memory pressure is not
+        # hit with everything at once. Fails open: any error means normal boot.
+        await cautious_boot.initialize()
+
         seen = SeenCache()
         self._init_services()
 
@@ -6331,8 +6338,13 @@ class GatewayOrchestrator:
         # rewriter writes the agent-JSON overlay first so kiro-cli picks up
         # the broker-wired MCP entries the moment a session starts.  No-op
         # when ``mcp_gateway.enabled`` is False.
+        await cautious_boot.pause_before("MCP gateway sidecar")
         await self._init_mcp_gateway()
 
+        # Arming the cron scheduler fires any overdue jobs immediately, so
+        # under cautious boot this pause also defers the post-restart cron
+        # catch-up burst out of the app/MCP launch window.
+        await cautious_boot.pause_before("cron scheduler")
         await self._init_cron()
         await self._init_heartbeat()
         self._init_mcp_discovery()

@@ -960,7 +960,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             if _age_s < 7 * 86400:  # Less than 7 days old
                 _age_h = _age_s / 3600
                 print(f"  last dump:   ⚠️  {_latest.name} ({_age_h:.1f}h ago)")
-                _stack = dump_first_stack_lines(_latest, max_lines=5)
+                # 8 lines = preamble + thread header + ~6 frames: enough to
+                # reach past the asyncio plumbing into the Kiro Crew frame
+                # that identifies WHERE the loop wedged.
+                _stack = dump_first_stack_lines(_latest, max_lines=8)
                 if _stack:
                     print("  MainThread stuck at:")
                     for _line in _stack:

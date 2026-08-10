@@ -722,6 +722,43 @@ _SANDBOX_ERR_MAX = 900
 # an arbitrarily long stderr from a broken repo.
 _GIT_ERR_MAX = 300
 
+# Identity for the "no trusted executable" failure, so callers can branch on
+# the CLASS of failure instead of re-matching prose: `_run_cmd` puts this
+# prefix on the stderr it synthesizes when `_trusted_bin` resolves nothing,
+# and error paths that want to name the remedy (set the per-tool override in
+# the service environment) test `startswith` on it. Deliberately a constant,
+# not an exception type: `_run_cmd` reports every failure through its
+# (rc, stdout, stderr) tuple and callers already handle it that way.
+_UNRESOLVED_TOOL_PREFIX = "no trusted executable for "
+
+
+def _bin_override_var(name: str) -> str:
+    """Env var that overrides trusted-bin resolution for *name*.
+
+    Single source of truth shared by `_trusted_bin` (which reads it) and the
+    user-facing remedy messages (which name it) — deriving it twice is how the
+    advertised remedy drifts from the one that works.
+    """
+    return f"KIROCREW_DEVFLEET_BIN_{name.upper().replace('-', '_')}"
+
+
+def _unresolved_tool_message(name: str) -> str:
+    """User-facing message for an unresolved trusted tool.
+
+    Blames the HOST toolchain, not the checkout (issue #2530: the previous
+    wording folded this failure into "git worktree discovery failed in
+    <repo>", sending users to debug a healthy repository), and names the
+    operator remedy in the same voice as the missing-checkout branch. The
+    trusted-PATH detail stays in the log line, not here: it is unactionable
+    noise in a UI banner.
+    """
+    return (
+        f"no trusted {name!r} executable found on this host — the checkout "
+        f"itself is not the problem. Set {_bin_override_var(name)} to an "
+        f"absolute path in the gateway's service environment (it needs a "
+        "restart to be seen)."
+    )
+
 
 def _trusted_bin(name: str) -> str | None:
     """Resolve *name* to a canonical executable in a system or Homebrew bin dir.
@@ -739,7 +776,7 @@ def _trusted_bin(name: str) -> str | None:
     # system dirs (e.g. gh in ~/.local/bin): an explicit absolute path set
     # in the SERVICE environment (operator-owned unit file), never derived
     # from the inherited PATH.
-    override = os.environ.get(f"KIROCREW_DEVFLEET_BIN_{name.upper().replace('-', '_')}")
+    override = os.environ.get(_bin_override_var(name))
     if override and Path(override).is_absolute() and Path(override).is_file() \
             and os.access(override, os.X_OK):
         _TRUSTED_BIN_CACHE[name] = override
@@ -830,7 +867,9 @@ async def _run_cmd(
     if cmd and "/" not in cmd[0]:
         trusted = _trusted_bin(cmd[0])
         if trusted is None:
-            return -1, "", f"no trusted executable for {cmd[0]!r} in {_TRUSTED_PATH}"
+            return -1, "", (
+                f"{_UNRESOLVED_TOOL_PREFIX}{cmd[0]!r} in {_TRUSTED_PATH}"
+            )
         cmd = [trusted, *cmd[1:]]
     base_env["PATH"] = _TRUSTED_PATH
     base_env.update(_GIT_ENV_NEUTRALIZERS)
@@ -1509,6 +1548,15 @@ async def _discover_worktrees() -> list[dict]:
             # swallow the fix. Keep a generous bound purely to stop an unbounded
             # stderr reaching the UI.
             raise RuntimeError(raw[:_SANDBOX_ERR_MAX])  # already prefixed by _run_cmd
+        if raw.startswith(_UNRESOLVED_TOOL_PREFIX):
+            # git never ran: the HOST has no git the resolver is willing to
+            # execute. Checked before the .git probe because the probe's
+            # outcome is irrelevant here — wrapping this in "worktree
+            # discovery failed in <repo>" (the old behavior) sent users to
+            # debug a healthy checkout (#2530). The trusted-PATH detail is
+            # operator-diagnostic, so it goes to the log, not the banner.
+            logger.warning("dev-fleet: %s", raw)
+            raise RuntimeError(_unresolved_tool_message("git"))
         # Every other git failure was previously swallowed into a silent [] —
         # which the UI renders as the "No worktrees found / Nothing under the
         # worktrees root yet" empty state. When MAIN_REPO is wrong that empty
@@ -2970,9 +3018,17 @@ async def _sync_start_locked() -> dict:
         ),
     )
     if git_bin is None:
-        return {"ok": False, "error": (
-            f"no trusted executable for 'git' in {_TRUSTED_PATH}"
-        )}
+        # Same failure class as the discovery path: name the remedy in the
+        # response; the log records the event. The searched dirs are the
+        # static _TRUSTED_BIN_DIRS constant (and the discovery-path warning
+        # already prints them when it fires) — repeating them here trips
+        # CodeQL's name-based secret heuristic on _TRUSTED_PATH for no
+        # diagnostic gain.
+        logger.warning(
+            "dev-fleet: %s'git' — no trusted-dir candidate passed vetting "
+            "and no override is set", _UNRESOLVED_TOOL_PREFIX
+        )
+        return {"ok": False, "error": _unresolved_tool_message("git")}
     if npm_bin is None:
         # Drop the memoized resolution so the remedy this message advertises
         # actually works. `node_bin_dirs()` is lru_cached and `_BUILD_PATH_CACHE`

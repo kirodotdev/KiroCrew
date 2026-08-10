@@ -529,6 +529,8 @@ class FolderWatcher:
 
         self._flush_last_seen(last_seen_batch)
         self.store.db.commit()  # Batch commit for all non-crash-recovery updates
+        # Always report chunks consumed so the caller can track global budget.
+        stats["chunks_ingested"] = chunks_ingested
         # Targeted cross-source dedup for each newly ingested/changed file, so a folder
         # copy collapses any matching one-shot upload. O(k*n) over the k changed files
         # rather than a full O(n^2) corpus sweep (knowledge/dedup.py).

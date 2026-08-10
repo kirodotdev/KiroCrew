@@ -45,6 +45,7 @@ const voice = vi.hoisted(() => {
     // the discard path has to set it alongside firing onPartial.
     partial: '',
     onPartial: null as ((t: string) => void) | null,
+    onEndpoint: null as (() => void) | null,
     onText: null as ((t: string) => void) | null,
     toggle: (() => {}) as () => void,
     start: (() => {}) as () => void,
@@ -58,8 +59,9 @@ voice.start = vi.fn(() => { voice.recording = true })
 voice.stop = vi.fn(() => { voice.recording = false })
 voice.cancel = vi.fn(() => { voice.recording = false })
 vi.mock('../hooks/useVoiceInput', () => ({
-  useVoiceInput: (onText: (t: string) => void, opts?: { onPartial?: (t: string) => void; streaming?: boolean }) => {
+  useVoiceInput: (onText: (t: string) => void, opts?: { onPartial?: (t: string) => void; onEndpoint?: () => void; streaming?: boolean }) => {
     voice.onPartial = opts?.onPartial ?? null
+    voice.onEndpoint = opts?.onEndpoint ?? null
     voice.onText = onText
     return ({
     recording: voice.recording,
@@ -406,5 +408,343 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { fireEvent.change(ta, { target: { value: 'edited by hand' } }) })
     await act(async () => { voice.onText?.('hello there') })
     expect(ta.value).toBe('edited by hand')
+  })
+
+  it('lets a drain-time correction replace the hypothesis after a manual stop', async () => {
+    // The point of the two flags. `stop()` leaves the socket draining on purpose,
+    // and Transcribe keeps stabilising: the hook re-emits `finals.join(' ')`
+    // through onPartial as each segment settles. That route REPLACES the region
+    // at the frozen boundary, so it cannot duplicate anything — and it carries
+    // the words the release beat. Suppressing it left the user holding the last
+    // UNSTABLE hypothesis, which on a short push-to-talk hold is the common case.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('remind me to') })
+    expect(ta.value).toBe('remind me to')
+
+    await act(async () => { fireEvent.click(mic) })
+    expect(voice.recording).toBe(false)
+
+    // Drain: Transcribe finalises the segment, adding the tail the release cut off.
+    await act(async () => { voice.onPartial?.('remind me to call Ana') })
+    expect(ta.value).toBe('remind me to call Ana')
+
+    // The close-time route still APPENDS, so it must stay suppressed — otherwise
+    // the composer would read "remind me to call Ana remind me to call Ana".
+    await act(async () => { voice.onText?.('remind me to call Ana') })
+    expect(ta.value).toBe('remind me to call Ana')
+  })
+
+  it('keeps text typed after the release when a drain correction lands', async () => {
+    // Release the key and the user reasonably starts typing straight away —
+    // dictation is over as far as they can tell. A drain-time replace must take
+    // the correction WITHOUT deleting what they typed, so the region is verified
+    // and the suffix carried across rather than rebuilt from the snapshot.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('remind me to') })
+    expect(ta.value).toBe('remind me to')
+    await act(async () => { fireEvent.click(mic) })
+
+    // Typing immediately after the release.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'remind me to — urgent' } }) })
+    // The drain then finalises the segment.
+    await act(async () => { voice.onPartial?.('remind me to call Ana') })
+
+    expect(ta.value).toBe('remind me to call Ana — urgent')
+  })
+
+  it('leaves the composer alone when the dictated region was edited', async () => {
+    // If the region cannot be verified the user rewrote it, and a suffix-match
+    // heuristic there would delete text they authored. Same policy cancelVoice
+    // takes: change nothing rather than guess.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('remind me to') })
+    await act(async () => { fireEvent.click(mic) })
+
+    // The user replaces the dictation entirely.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'never mind' } }) })
+    await act(async () => { voice.onPartial?.('remind me to call Ana') })
+
+    expect(ta.value).toBe('never mind')
+  })
+
+  it('keeps a mid-draft correction and everything after it', async () => {
+    // Dictation splices at the caret, so it can land in the MIDDLE of a draft
+    // with an existing tail after it — and typing after the release goes to the
+    // restored caret, i.e. between the dictated words and that tail. The drain
+    // correction must replace only the dictated region: both the typed text and
+    // the original tail have to come through untouched.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    // Draft with the caret parked before "world".
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: 'hello world', selectionStart: 6, selectionEnd: 6 } })
+    })
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('remind me') })
+    expect(ta.value).toBe('hello remind me world')
+    await act(async () => { fireEvent.click(mic) })
+
+    // Typing lands where the caret was restored — right after the dictation.
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: 'hello remind me NOW world' } })
+    })
+    await act(async () => { voice.onPartial?.('remind me to call Ana') })
+
+    expect(ta.value).toBe('hello remind me to call Ana NOW world')
+  })
+
+  it('carries the user caret across a drain correction', async () => {
+    // Not arming the caret is not the same as leaving it alone: React replaces the
+    // textarea value and the browser resets the DOM caret to the END. Mid-draft
+    // that end is past the tail, i.e. nowhere near where the user was. Their
+    // logical position must be re-armed, shifted by how much the region ahead of
+    // it grew.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    // Draft with the caret before 'later', so dictation lands mid-draft.
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: 'call later', selectionStart: 5, selectionEnd: 5 } })
+    })
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('remind') })
+    expect(ta.value).toBe('call remind later')
+    await act(async () => { fireEvent.click(mic) })
+
+    // Type ' NOW' right after the dictation; their caret sits at offset 15.
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: 'call remind NOW later', selectionStart: 15, selectionEnd: 15 } })
+    })
+    // The correction grows the region from 'call remind' (11) to
+    // 'call remind me to call Ana' (26) — a shift of 15.
+    await act(async () => { voice.onPartial?.('remind me to call Ana') })
+    expect(ta.value).toBe('call remind me to call Ana NOW later')
+
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    // 15 + 15 = 30, right after ' NOW'. A caret left unarmed would have been
+    // reset to the end of the value (36), past the ' later' tail.
+    expect(ta.selectionStart).toBe('call remind me to call Ana NOW'.length)
+  })
+
+  it('does not reclaim the caret on a later correction in the same drain', async () => {
+    // A drain emits several corrections as segments stabilise. The first one sees
+    // the typed suffix and leaves the caret alone — but it also rewrites the
+    // composer to include that suffix, so a per-update "was it edited?" test
+    // would say no on the SECOND correction and pull the caret back to the end of
+    // the dictation, in front of the user's text. The edited state has to stay
+    // sticky for the whole drain.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('remind me') })
+    await act(async () => { fireEvent.click(mic) })
+
+    await act(async () => { fireEvent.change(ta, { target: { value: 'remind me NOW' } }) })
+    // First drain correction: carries the suffix, must not steer the caret.
+    await act(async () => { voice.onPartial?.('remind me to call') })
+    expect(ta.value).toBe('remind me to call NOW')
+    // Second correction, user has not touched anything since.
+    await act(async () => { voice.onPartial?.('remind me to call Ana') })
+    expect(ta.value).toBe('remind me to call Ana NOW')
+
+    // Let the caret-restore frame run. Nothing should have armed it, so the
+    // caret is wherever the value commit left it — NOT at the end of the
+    // dictated region ('remind me to call Ana' = offset 21), which sits in
+    // front of the typed ' NOW'.
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(ta.selectionStart).not.toBe('remind me to call Ana'.length)
+  })
+
+  it('inserts a cold-stream transcript where the user was speaking', async () => {
+    // Release, then type BEFORE the drain's first partial arrives. Nothing has
+    // pinned the insertion point yet, so without a caret frozen at the release
+    // the partial would snapshot the edited composer and land the transcript
+    // AFTER the newly typed text — reordering the utterance.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    // A real value change (not a repeat of the same string) is what fires
+    // onChange -> records the caret AND re-renders the button so the next click
+    // reads the flipped `recording`. Caret parked before 'later'.
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: 'call later', selectionStart: 5, selectionEnd: 5 } })
+    })
+    await act(async () => { fireEvent.click(mic) })
+
+    // Typing lands at the end (a fresh change resets the caret there), so the
+    // release-time caret and the live caret genuinely disagree.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'call later today' } }) })
+    await act(async () => { voice.onPartial?.('Ana') })
+
+    // Dictation goes where they were speaking (offset 5), not after 'today'.
+    expect(ta.value).toBe('call Ana later today')
+  })
+
+  it('rebases a frozen caret when the user edits before it', async () => {
+    // A frozen OFFSET only means what it meant at the release if the text before
+    // it is unchanged. Prepend after releasing and offset 5 no longer points at
+    // the same spot — splicing there cuts into the word they just wrote.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    // Caret before 'later'; no partial fires, so this is the cold-stream path.
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: 'call later', selectionStart: 5, selectionEnd: 5 } })
+    })
+    await act(async () => { fireEvent.click(mic) })
+
+    // Prepend 'Hi, ' — everything after it shifts right by 4.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'Hi, call later' } }) })
+    await act(async () => { voice.onPartial?.('remind') })
+
+    // Offset rebased 5 -> 9, so the transcript lands before 'later' as intended.
+    // Trusting the stale 5 would have produced 'Hi, c remind all later'.
+    expect(ta.value).toBe('Hi, call remind later')
+  })
+
+  it('does not delete a typed replacement for a selection frozen at release', async () => {
+    // Dictating over a selection replaces it, so the frozen caret is a RANGE.
+    // If the user then types over that selection after releasing, the range is
+    // stale: splicing with it would delete exactly the replacement they wrote.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    // 'Bob' selected (offsets 5..8) at the moment of release.
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: 'call Bob later', selectionStart: 5, selectionEnd: 8 } })
+    })
+    await act(async () => { fireEvent.click(mic) })
+
+    // The user types over the selection, replacing 'Bob' with 'Ana'.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'call Ana later' } }) })
+    await act(async () => { voice.onPartial?.('remind') })
+
+    // 'Ana' must survive: the transcript is inserted at the selection start
+    // rather than overwriting the range that no longer exists.
+    expect(ta.value).toContain('Ana')
+    expect(ta.value).toBe('call remind Ana later')
+  })
+
+  it('keeps post-release typing through a cold-stream drain', async () => {
+    // Cold-stream stop: no partial landed, so the append route stays armed on
+    // purpose. The drain still delivers the utterance through onPartial, and the
+    // suffix-preservation branch must engage there too — gating it on the append
+    // flag would skip it in exactly this case and delete the typed text.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    // A real value change is what re-renders the button so the second click
+    // reads the flipped `recording` — an unchanged value does not, and the click
+    // would re-run start (resetting every flag) instead of stop. No onPartial
+    // fires, so frozenInputRef is still null at stop: the cold-stream path.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'draft' } }) })
+    await act(async () => { fireEvent.click(mic) })
+
+    // The drain's first partial lands after the release and seeds the anchor.
+    await act(async () => { voice.onPartial?.('remind me') })
+    expect(ta.value).toBe('draft remind me')
+    // The user types, then a later correction arrives.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'draft remind me NOW' } }) })
+    await act(async () => { voice.onPartial?.('remind me to call Ana') })
+
+    expect(ta.value).toBe('draft remind me to call Ana NOW')
+
+    // The socket then closes and delivers its final. On the streaming path
+    // applyVoiceText re-splices from frozenInputRef and OVERWRITES — it does not
+    // append — so letting it through here would delete the typed ' NOW'. The
+    // drain already put the stabilised text in the composer, so the final has
+    // nothing to add and must be suppressed.
+    await act(async () => { voice.onText?.('remind me to call Ana') })
+    expect(ta.value).toBe('draft remind me to call Ana NOW')
+  })
+
+  it('does not auto-send on an endpoint verdict after a cold-stream stop', async () => {
+    // Release before the server's first partial: no partial landed, so the append
+    // route stays OPEN on purpose (the close-time final is the only copy of the
+    // utterance). That must not leave the endpointer armed — "stop capturing" is
+    // not "send". With an existing draft in the composer there IS something to
+    // submit, so a trailing final's verdict would send the user's draft for them.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    // Typing while holding — this is also what re-renders the button so the
+    // second click reads the mock's flipped `recording` (see the other tests).
+    // No onPartial fires, so frozenInputRef stays null: the cold-stream case.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'draft in progress' } }) })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onEndpoint?.() })
+
+    expect(vi.mocked(api.sendChat)).not.toHaveBeenCalled()
+    expect(ta.value).toBe('draft in progress')
+  })
+
+  it('does not auto-send on a drain-time endpoint verdict after a manual stop', async () => {
+    // A manual stop is the user saying "stop capturing", not "send". The backend
+    // can still emit its semantic-endpoint verdict while the socket drains, and
+    // splitting the flag must not quietly re-arm that auto-submit.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    expect(typeof voice.onEndpoint).toBe('function')
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('send this later') })
+    expect(ta.value).toBe('send this later')
+    await act(async () => { fireEvent.click(mic) })
+
+    await act(async () => { voice.onEndpoint?.() })
+    expect(vi.mocked(api.sendChat)).not.toHaveBeenCalled()
   })
 })

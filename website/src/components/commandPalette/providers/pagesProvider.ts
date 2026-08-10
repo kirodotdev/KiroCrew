@@ -7,6 +7,7 @@ import {
   ScrollText,
   Code2,
   Webhook,
+  ArrowDownToLine,
   ListChecks,
   Bot,
   Server,
@@ -15,6 +16,7 @@ import {
 
 import { getAdvertisedSurfaces, surfaceLabel } from '../../../surfaces/registry'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
+import { PREVIEW_WEBHOOKS, readPreviewFlag } from '../../../utils/previewFlags'
 import { i18nT } from '../../../i18n/t'
 import type { ResourceProvider, Result } from '../types'
 
@@ -73,12 +75,28 @@ interface PageEntry {
  * Titles live in {@link EXTRA_PAGE_TITLE_KEY}, not here: the entry's `title` is
  * what the palette both DISPLAYS and fuzzy-matches against, so it has to be
  * resolved per search (see {@link collectPages}) rather than frozen at import.
+ *
+ * `previewFlag` mirrors the registry field of the same name. The
+ * `getAdvertisedSurfaces()` loop in {@link collectPages} applies that gate for
+ * REGISTRY surfaces, but these extras bypass the registry entirely, so a
+ * preview-gated one has to carry and be filtered on its own flag — otherwise
+ * hiding a surface from the rail would smuggle it back in through ⌘K.
  */
-const EXTRA_PAGES: readonly Omit<PageEntry, 'title'>[] = [
+const EXTRA_PAGES: readonly (Omit<PageEntry, 'title'> & { previewFlag?: string })[] = [
   // The App Store surface is `hiddenFromNav` (it renders as the Apps-header
   // "Explore" accent link, not a rail row), so it must be listed here to
   // stay reachable from the palette.
   { key: 'apps', route: '/apps', icon: inlineIcon(LayoutGrid) },
+  // Inbound webhooks is `hiddenFromNav` too (reached from Settings → Webhooks),
+  // so the registry no longer offers it and the palette needs it from here. It
+  // is ALSO preview-gated, so it carries `previewFlag` and stays out of the
+  // palette until the operator turns it on — `hiddenFromNav` moved it out of
+  // the registry's reach, which is where that gate would otherwise be applied.
+  // Distinct from the `hooks` entry below (the agent-hooks page) in BOTH title
+  // and icon: the two sit adjacent on a "hooks" query, and a shared glyph left
+  // the route as the only thing telling them apart. The inbound arrow also says
+  // which direction this one runs.
+  { key: 'webhooks', route: '/webhooks', icon: inlineIcon(ArrowDownToLine), previewFlag: PREVIEW_WEBHOOKS },
   { key: 'logs', route: '/logs', icon: inlineIcon(ScrollText) },
   { key: 'developer', route: '/developer', icon: inlineIcon(Code2) },
   { key: 'hooks', route: '/hooks', icon: inlineIcon(Webhook) },
@@ -98,6 +116,10 @@ const EXTRA_PAGES: readonly Omit<PageEntry, 'title'>[] = [
  */
 const EXTRA_PAGE_TITLE_KEY: Record<string, string> = {
   apps: 'components.commandPalette.providers.pagesProvider.explore',
+  // Reuses strings that already exist in every catalog rather than adding new
+  // ones. Titled "Inbound webhooks", not "Webhooks", to stay distinguishable
+  // from the `hooks` entry (the agent-hooks page) that sits beside it.
+  webhooks: 'pages.settings.webhooksPanel.inbound_webhooks',
   logs: 'components.commandPalette.providers.pagesProvider.logs',
   developer: 'components.commandPalette.providers.pagesProvider.developer',
   hooks: 'components.commandPalette.providers.pagesProvider.hooks',
@@ -133,6 +155,9 @@ function collectPages(): PageEntry[] {
     })
   }
   for (const p of EXTRA_PAGES) {
+    // Same gate the `getAdvertisedSurfaces()` loop above applies to registry
+    // surfaces: an unreleased page must not be one ⌘K away either.
+    if (p.previewFlag && !readPreviewFlag(p.previewFlag)) continue
     if (!byRoute.has(p.route)) {
       byRoute.set(p.route, {
         ...p,

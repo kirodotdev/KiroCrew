@@ -5934,7 +5934,9 @@
       "updated": "已更新",
       "view_only_clicks_here_don_t_reach_the_page": "仅供查看 — 在此处点击不会作用于页面",
       "waiting_for_the_browser_to_take_a_screenshot": "正在等待浏览器截图…",
-      "web_preview": "网页预览"
+      "web_preview": "网页预览",
+      "can_t_preview_this_dashboard_here": "无法在此预览此仪表板",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "此 URL 是仪表板自身的服务器，不允许被嵌入。请改为输入开发服务器 URL。"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "仅代理 — 无 Kiro Crew 上下文或 MCP",
@@ -7092,8 +7094,6 @@
         "ask_a_side_question_2": "问一个旁支问题…",
         "ask_a_side_question_main_agent_keeps_working": "问一个旁支问题 — 主代理继续工作",
         "context_from": "上下文来自",
-        "copied": "已复制！",
-        "copy": "复制",
         "queue_cancel_failed": "无法取消排队中的这个问题",
         "queue_edit_failed": "无法更新排队中的这个问题",
         "refresh_context": "刷新上下文",
@@ -7101,7 +7101,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "发送",
         "steer_demoted_to_queue": "本轮已结束 — 已改为排队",
-        "steered": "已引导",
         "thinking": "思考中…",
         "turn_other": "{{count}} 轮"
       },
@@ -7480,7 +7479,6 @@
       "older_sessions": "较早的会话",
       "older_sessions_2": "较早的会话",
       "open_source_link_in_side_panel": "在侧边面板中打开 {{url}} ({{modifier}} 在浏览器中打开)",
-      "open_split_view": "打开分屏视图",
       "pick_a_model_for_every_session_switching_a_sessi": "为每个会话选择一个模型。切换会话会",
       "pinned": "已置顶",
       "pinned_sessions_are_kept": "置顶的会话会被保留。",
@@ -7516,8 +7514,6 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "最新",
       "sort_oldest": "最早",
-      "split_view": "分屏视图",
-      "split_view_multi_pane_session_grid_d": "分屏视图 — 多窗格会话网格 (⌘D)",
       "streaming": "流式输出中",
       "switch_all_sessions": "切换所有会话",
       "switch_all_to_model": "全部切换到模型…",
@@ -7781,6 +7777,7 @@
       "rows": "行",
       "running_pods": "运行中的 pod",
       "safely_removes_worktrees_whose_pr_has_already_me": "可安全移除 PR 已合并的工作树。",
+      "scanning_merged": "正在扫描已合并…",
       "select": "选择 {{name}}",
       "sort_behind": "排序：落后",
       "sort_name": "排序：名称",
@@ -10550,6 +10547,14 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "入站 webhook",
+        "endpoint_status": "端点",
+        "lets_an_outside_system_start_one_agent_turn": "让外部系统——CI 任务、审查机器人、部署脚本——通过 POST 发送带访问令牌的消息，启动一次助手轮次。",
+        "manage_webhooks": "管理 webhook",
+        "tokens_count_other": "{{count}} 个访问令牌",
+        "could_not_read_webhook_status": "无法读取 webhook 状态 — 检查网关是否正在运行"
       }
     },
     "settingsPage": {
@@ -11020,6 +11025,10 @@
       "voice": {
         "description": "文字转语音与语音转文字（听写）设置",
         "label": "语音"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "让外部系统启动一次助手轮次"
       }
     }
   },

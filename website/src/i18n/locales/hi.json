@@ -6019,7 +6019,9 @@
       "updated": "अपडेट किया गया",
       "view_only_clicks_here_don_t_reach_the_page": "केवल देखने के लिए — यहाँ क्लिक करने से पेज पर असर नहीं होता",
       "waiting_for_the_browser_to_take_a_screenshot": "ब्राउज़र के स्क्रीनशॉट लेने की प्रतीक्षा…",
-      "web_preview": "वेब पूर्वावलोकन"
+      "web_preview": "वेब पूर्वावलोकन",
+      "can_t_preview_this_dashboard_here": "इस डैशबोर्ड का पूर्वावलोकन यहाँ नहीं किया जा सकता",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "यह URL डैशबोर्ड का ही सर्वर है, जो एम्बेड होने से इनकार करता है। इसके बजाय कोई dev-server URL डालें।"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "केवल एजेंट — कोई Kiro Crew संदर्भ या MCP नहीं",
@@ -7190,8 +7192,6 @@
         "ask_a_side_question_2": "एक साइड प्रश्न पूछें…",
         "ask_a_side_question_main_agent_keeps_working": "एक साइड प्रश्न पूछें — मुख्य एजेंट काम करता रहेगा",
         "context_from": "संदर्भ:",
-        "copied": "कॉपी किया गया!",
-        "copy": "कॉपी करें",
         "queue_cancel_failed": "कतार में लगे उस प्रश्न को रद्द नहीं किया जा सका",
         "queue_edit_failed": "कतार में लगे उस प्रश्न को अपडेट नहीं किया जा सका",
         "refresh_context": "संदर्भ ताज़ा करें",
@@ -7199,7 +7199,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "भेजें",
         "steer_demoted_to_queue": "टर्न समाप्त हो गया — इसके बजाय कतार में डाला गया",
-        "steered": "स्टीयर किया गया",
         "thinking": "सोच रहा है…",
         "turn_one": "{{count}} टर्न",
         "turn_other": "{{count}} टर्न"
@@ -7583,7 +7582,6 @@
       "older_sessions": "पुराने सत्र",
       "older_sessions_2": "पुराने सत्र",
       "open_source_link_in_side_panel": "{{url}} को साइड पैनल में खोलें (इसे ब्राउज़र में खोलने के लिए {{modifier}})",
-      "open_split_view": "स्प्लिट व्यू खोलें",
       "pick_a_model_for_every_session_switching_a_sessi": "हर सत्र के लिए मॉडल चुनें। किसी सत्र को स्विच करने पर",
       "pinned": "पिन किए गए",
       "pinned_sessions_are_kept": "पिन किए गए सत्र रखे जाते हैं।",
@@ -7621,8 +7619,6 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "नवीनतम",
       "sort_oldest": "सबसे पुराने",
-      "split_view": "स्प्लिट व्यू",
-      "split_view_multi_pane_session_grid_d": "स्प्लिट व्यू — बहु-पैन सत्र ग्रिड (⌘D)",
       "streaming": "स्ट्रीमिंग",
       "switch_all_sessions": "सभी सत्र बदलें",
       "switch_all_to_model": "सभी को इस मॉडल पर बदलें…",
@@ -7887,6 +7883,7 @@
       "rows": "पंक्तियां",
       "running_pods": "चल रहे पॉड",
       "safely_removes_worktrees_whose_pr_has_already_me": "उन वर्कट्री को सुरक्षित रूप से हटा देता है जिनका PR पहले ही मर्ज हो चुका है।",
+      "scanning_merged": "मर्ज्ड खोजे जा रहे हैं…",
       "select": "{{name}} चुनो",
       "sort_behind": "क्रम: पीछे",
       "sort_name": "क्रम: नाम",
@@ -10664,6 +10661,15 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "इनबाउंड webhooks",
+        "endpoint_status": "एंडपॉइंट",
+        "lets_an_outside_system_start_one_agent_turn": "किसी बाहरी सिस्टम — कोई CI जॉब, रिव्यू बॉट, डिप्लॉय स्क्रिप्ट — को ऐक्सेस टोकन के साथ मैसेज POST करके एक एजेंट टर्न शुरू करने देता है।",
+        "manage_webhooks": "Webhooks प्रबंधन",
+        "tokens_count_one": "{{count}} ऐक्सेस टोकन",
+        "tokens_count_other": "{{count}} ऐक्सेस टोकन",
+        "could_not_read_webhook_status": "webhook स्थिति नहीं पढ़ी जा सकी — देखो कि गेटवे चल रहा है"
       }
     },
     "settingsPage": {
@@ -11142,6 +11148,10 @@
       "voice": {
         "description": "टेक्स्ट-टू-स्पीच और स्पीच-टू-टेक्स्ट (डिक्टेशन) सेटिंग्स",
         "label": "वॉइस"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "किसी बाहरी सिस्टम को एक एजेंट टर्न शुरू करने दो"
       }
     }
   },

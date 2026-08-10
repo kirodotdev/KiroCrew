@@ -1144,6 +1144,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
  // forensic attribution. Set on widget pre-fill, consumed
   // and cleared in send(). A genuine from-scratch turn never sets this.
   const widgetPrefillRef = useRef<string | null>(null)
+  // Token (`${slotKey}:${ts}`) of the most recently consumed composer prefill.
+  // Guards the per-slot draft-restore effect against React.StrictMode's mount
+  // double-invoke: the first invoke consumes+removes PREFILL_STORAGE_KEY and
+  // seeds the composer, so without this the second invoke would find no stored
+  // prefill and reset the composer to the (empty) incoming draft — the artifact
+  // companion panel mounts ChatPage fresh, so it hits this double-invoke every
+  // first open. See the draft-restore effect below.
+  const consumedPrefillRef = useRef<string | null>(null)
 
   // Auto-dismiss prefill hint after 10 seconds
   useEffect(() => {
@@ -1349,6 +1357,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
+    const prevSlotVal = prevSlot.current
     prevSlot.current = activeSlot
     const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
     const draftFallback = activeSlot ? drafts.current[activeSlot] ?? '' : ''
@@ -1356,9 +1365,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       try {
         const { slotKey, prompt, ts } = JSON.parse(raw)
         if (Date.now() - (ts ?? 0) > 30_000) { sessionStorage.removeItem(PREFILL_STORAGE_KEY); setInput(draftFallback) }
-        else if (slotKey === activeSlot) { sessionStorage.removeItem(PREFILL_STORAGE_KEY); setInput(prompt) }
+        else if (slotKey === activeSlot) { sessionStorage.removeItem(PREFILL_STORAGE_KEY); consumedPrefillRef.current = `${slotKey}:${ts}`; setInput(prompt) }
         else { setInput(draftFallback) }
       } catch { sessionStorage.removeItem(PREFILL_STORAGE_KEY); setInput(draftFallback) }
+    } else if (prevSlotVal === activeSlot && !!activeSlot && consumedPrefillRef.current?.startsWith(`${activeSlot}:`)) {
+      // StrictMode re-invoked this mount effect for the SAME active slot after
+      // the first invoke already consumed+removed the prefill. The composer
+      // already holds the staged prompt; a setInput(draftFallback) here would
+      // wipe it back to the empty draft. Leave the composer as-is. (A genuine
+      // slot switch changes activeSlot, so prevSlotVal !== activeSlot and this
+      // branch cannot mask a real draft restore.)
     } else { setInput(draftFallback) }
     // Restore the incoming slot's staged file attachments (copy so the
     // live state array and the stored draft don't share a reference).
@@ -1579,6 +1595,82 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // sent. Cross-SLOT safety is handled separately by session-scoped routing
   // (see applyVoiceText + voice.sessionOwner).
   const sttDisarmedRef = useRef(false)
+  // Narrower sibling of `sttDisarmedRef`, for a MANUAL STOP of a streaming
+  // recording that already put a hypothesis in the composer.
+  //
+  // One flag was doing two jobs, and a manual stop only wants one of them.
+  // `applyVoiceText` APPENDS (`base + ' ' + text`), so the close-time final
+  // landing on a composer that already holds the hypothesis duplicates the
+  // utterance ("hello hello") — that has to stay suppressed. But `onPartial`
+  // REPLACES the region at the frozen boundary, and the hook re-emits
+  // `finals.join(' ')` through it on every `final` message while `stop()`
+  // deliberately leaves the socket draining. Suppressing that too meant every
+  // segment Transcribe stabilised AFTER the release was dropped, so the user
+  // was left holding the last UNSTABLE hypothesis. On a push-to-talk hold that
+  // is the common case, not a corner: the hold is short, so the tail of the
+  // utterance is exactly the part still unstable at release.
+  //
+  // So: this flag suppresses the append only, and leaves the drain's own
+  // corrections free to keep replacing the region until the socket closes.
+  // Cancel, send and slot-switch still want EVERYTHING suppressed and keep
+  // using `sttDisarmedRef` — the user discarded, already sent, or left.
+  const sttAppendDisarmedRef = useRef(false)
+  // The composer content UP TO the end of the region onPartial last inserted,
+  // plus the whole value it wrote. Dictation splices at the caret, so it can sit
+  // mid-draft with an existing tail after it — and typing after the release
+  // lands at the restored caret, i.e. between the two. Anchoring on the PREFIX
+  // (not the whole value) is what lets a drain-time update replace the corrected
+  // region and keep everything after it verbatim; anchoring on the whole value
+  // would fail its own startsWith check mid-draft and drop the correction.
+  // The full value distinguishes "the user typed" from "nothing changed", which
+  // decides whether the caret may be moved.
+  const lastDictationAnchorRef = useRef<string | null>(null)
+  const lastDictationValueRef = useRef<string | null>(null)
+  // Sticky for the whole post-stop drain: once the user has typed, the caret is
+  // theirs until dictation restarts. Recomputing "did they edit?" per update is
+  // not enough — after the first correction carries the suffix across, the
+  // composer matches what we wrote again, so a second correction would decide
+  // nothing was edited and yank the caret back in front of the typed text.
+  const postStopEditedRef = useRef(false)
+  // Suppresses ONLY the auto-submit route, and unlike the append flag it is set
+  // by EVERY manual stop of a streaming recording — including a cold-stream stop
+  // where no partial landed. "Stop capturing" is never "send": without this, a
+  // short press against a cold stream leaves the endpointer armed, and a
+  // trailing final's endpoint verdict submits the turn the user never asked to
+  // send. The append flag cannot carry this, because with no partial landed the
+  // close-time final is the only copy of the utterance and must still land.
+  const sttEndpointDisarmedRef = useRef(false)
+  // A frozen caret is a position in the composer as it stood at the release. Once
+  // the user edits after that, it can go stale in two ways, and both corrupt the
+  // splice: a RANGE (dictating over a selection replaces it) whose selection they
+  // have since typed over, and an OFFSET whose meaning shifts when they edit text
+  // BEFORE it. Rebase it onto the current text instead of trusting or discarding
+  // it wholesale — discarding it would put the transcript after text they wrote
+  // later, trusting it would cut into text they wrote earlier.
+  const rebaseFrozenCaret = useCallback(() => {
+    if (!sttEndpointDisarmedRef.current) return
+    const frozen = frozenCaretRef.current
+    const released = lastDictationValueRef.current
+    const cur = inputRef.current ?? ''
+    // Untouched composer: a selection here is still a legitimate replacement
+    // target, which is what dictating over a selection is supposed to do.
+    if (!frozen || released === null || cur === released) return
+    // Bound the edit to the region between the longest common prefix and suffix.
+    let lcp = 0
+    while (lcp < released.length && lcp < cur.length && released[lcp] === cur[lcp]) lcp++
+    let lcs = 0
+    while (
+      lcs < released.length - lcp && lcs < cur.length - lcp &&
+      released[released.length - 1 - lcs] === cur[cur.length - 1 - lcs]
+    ) lcs++
+    const start = frozen.start
+    let next: number
+    if (start <= lcp) next = start                                    // edit is after it
+    else if (start >= released.length - lcs) next = start + (cur.length - released.length)
+    else next = voiceCaretRef.current?.start ?? start                 // edit straddles it
+    next = Math.max(0, Math.min(next, cur.length))
+    frozenCaretRef.current = { start: next, end: next }
+  }, [])
   // The hook's EFFECTIVE streaming mode: streaming is only truly active when the
   // config asks for it AND the browser supports it (AudioWorklet/WS). Mirrored
   // from voice.streamEnabled (set by the effect below, once `voice` exists) so
@@ -1629,7 +1721,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // drop it for EVERY route. Checked FIRST (before the cross-slot branch) so a
     // late final can't slip the already-sent text back into the originating
     // slot's draft.
-    if (sttDisarmedRef.current) return
+    //
+    // `sttAppendDisarmedRef` covers the narrower case: a manual stop whose
+    // hypothesis is already in the composer. This route APPENDS, so letting the
+    // close-time final through there would duplicate the utterance.
+    if (sttDisarmedRef.current || sttAppendDisarmedRef.current) return
     const target = sessionId ?? activeSlotRef.current
     const append = (base: string) => (base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text)
     // Splice into the LIVE composer only when the target slot is both the active
@@ -1662,6 +1758,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // are null — fall back to the live composer text + caret so the transcript
     // inserts at the cursor instead of overwriting (or blindly appending to)
     // what the user typed.
+    rebaseFrozenCaret()
     const spliced = spliceDictation(frozenInputRef.current ?? inputRef.current ?? '', text)
     // Only arm the caret restore when the value actually changes. If a streaming
     // final equals the last partial, setInput is a no-op and the restore effect
@@ -1672,8 +1769,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       voicePendingCaretRef.current = spliced.caret
     }
     frozenInputRef.current = null
+    lastDictationAnchorRef.current = null
+    lastDictationValueRef.current = null
+    postStopEditedRef.current = false
     frozenCaretRef.current = null
-  }, [saveDrafts, spliceDictation])
+  }, [saveDrafts, spliceDictation, rebaseFrozenCaret])
   const voice = useVoiceInput(
     applyVoiceText,
     {
@@ -1685,6 +1785,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // other slot is a late straggler — drop it rather than smear a
         // half-word into the wrong session.
         if (sessionId && sessionId !== activeSlotRef.current) return
+        // Deliberately NOT gated on `sttAppendDisarmedRef`: after a manual stop
+        // the socket is still draining, and this is the route that carries the
+        // stabilised text. It REPLACES the region at the frozen boundary rather
+        // than appending, so letting it keep firing cannot duplicate anything —
+        // it is what turns the last unstable hypothesis into the real transcript.
         if (sttDisarmedRef.current) return
         // Snapshot the pre-dictation text AND caret on the first partial
         // (before setInput, so the updater stays pure — no ref mutation inside a
@@ -1692,21 +1797,103 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // insert at the same spot, replacing the growing hypothesis.
         if (frozenInputRef.current === null) {
           frozenInputRef.current = inputRef.current
-          frozenCaretRef.current = voiceCaretRef.current
+          // Do not clobber a caret a cold-stream stop already froze: that one is
+          // the release-time insertion point, and the live caret is now wherever
+          // the user has typed since.
+          frozenCaretRef.current = frozenCaretRef.current ?? voiceCaretRef.current
         }
+        rebaseFrozenCaret()
         const spliced = spliceDictation(frozenInputRef.current ?? '', text)
-        if (spliced.value !== inputRef.current) {
-          setInput(spliced.value)
-          voicePendingCaretRef.current = spliced.caret
+        // Everything up to and including the dictated insertion. What follows it
+        // in the composer (an existing tail, and anything typed after release) is
+        // carried across untouched rather than rebuilt from the snapshot.
+        const anchor = spliced.value.slice(0, spliced.caret)
+        let next = spliced.value
+        // Where the caret should end up. Defaults to the end of the dictated
+        // region (the ordinary "we own the composer" case); the post-stop branch
+        // overrides it when the text is the user's to steer.
+        let caretTarget: number | null = spliced.caret
+        if (sttEndpointDisarmedRef.current) {
+          // POST-STOP DRAIN. The user has let go, so as far as they are concerned
+          // dictation is over and they may already be typing — at the restored
+          // caret, which for mid-draft dictation sits in the MIDDLE of the text.
+          // Rebuilding from the frozen snapshot would delete that typing, so
+          // verify our own prefix is still intact and splice the correction in
+          // ahead of whatever now follows it. If the prefix cannot be verified
+          // the user edited inside the dictated region; leave the composer alone
+          // rather than guess — same policy as cancelVoice, for the same reason:
+          // a heuristic here deletes user-authored text.
+          //
+          // Gated on the ENDPOINT flag, not the append flag: a cold-stream stop
+          // deliberately leaves the append armed (the close-time final is the
+          // only copy of the utterance), so keying off it would skip this branch
+          // in exactly the case where it is still needed.
+          //
+          // During recording this does not apply: the region is being actively
+          // rewritten and that behaviour is unchanged.
+          const prev = lastDictationAnchorRef.current
+          const cur = inputRef.current ?? ''
+          // The composer now holds a copy of the utterance, which is the exact
+          // condition the append flag encodes — so close the close-time route
+          // here rather than at stop time. stopVoice could not decide this: with
+          // frozenInputRef still null it had to leave the append armed, because
+          // back then the close-time final really was the only copy. Once a drain
+          // partial has landed that is no longer true, and letting the final
+          // through would re-splice from the snapshot and delete whatever the
+          // user typed after the release.
+          sttAppendDisarmedRef.current = true
+          // Checked OUTSIDE the anchor guard: on a cold stream the first drain
+          // partial has no anchor yet, but the user may already have typed since
+          // the release, and their caret must still be left alone.
+          if (cur !== lastDictationValueRef.current) postStopEditedRef.current = true
+          // A null anchor means no partial has landed yet — the cold-stream stop.
+          // This IS the first write: there is nothing to preserve and nothing to
+          // verify, and returning here would drop the utterance. Fall through to
+          // the plain write, which establishes the anchor for the next update.
+          // The typed text is inside the snapshot (taken from the LIVE composer)
+          // and the insertion point is the caret stopVoice froze at the release,
+          // so the transcript lands where the user was speaking rather than after
+          // what they wrote afterwards.
+          if (prev !== null) {
+            if (!cur.startsWith(prev)) return
+            next = anchor + cur.slice(prev.length)
+            if (postStopEditedRef.current) {
+              // Their caret is in their own text, so it must not be dragged to the
+              // end of the dictation — but NOT arming it is not "leaving it
+              // alone" either: React replaces the textarea value and the browser
+              // resets the DOM caret to the end. Re-arm it at the same LOGICAL
+              // spot, shifted by how much the region ahead of it grew or shrank.
+              const live = voiceCaretRef.current
+              caretTarget = live && live.start >= prev.length
+                ? live.start + (anchor.length - prev.length)
+                : null
+            }
+          } else if (postStopEditedRef.current) {
+            // Cold-stream first write with typing already done: there is no old
+            // anchor to measure a shift against, and the value commit leaves the
+            // caret at the end — which is past their text, a sane place to be.
+            caretTarget = null
+          }
         }
-      }, [spliceDictation]),
+        if (next !== inputRef.current) {
+          setInput(next)
+          if (caretTarget !== null) voicePendingCaretRef.current = caretTarget
+        }
+        lastDictationAnchorRef.current = anchor
+        lastDictationValueRef.current = next
+      }, [spliceDictation, rebaseFrozenCaret]),
       // Semantic endpointing (stt.endpointing) judged the utterance complete:
       // auto-submit. The composer already holds the streamed transcript via
       // onPartial, and send() reads inputRef.current + stops the live capture
       // itself (its recording+streaming branch), so this is the same path as
       // pressing Enter mid-dictation — just triggered by the backend verdict.
       onEndpoint: useCallback(() => {
-        if (sttDisarmedRef.current) return
+        // A manual stop is the user saying "stop capturing", so a backend
+        // endpoint verdict arriving during the drain must not turn that into an
+        // unrequested send. The endpoint flag is what covers a COLD-stream stop,
+        // where no partial landed and the append flag is deliberately left unset
+        // so the close-time final can still deliver the utterance.
+        if (sttDisarmedRef.current || sttAppendDisarmedRef.current || sttEndpointDisarmedRef.current) return
         sendRef.current?.()
       }, []),
     }
@@ -1769,10 +1956,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // needs only a single owner and can never be misattributed.
     if (voice.transcribing) return
     sttDisarmedRef.current = false
+    sttAppendDisarmedRef.current = false
+    sttEndpointDisarmedRef.current = false
     // Reset stale snapshot from a prior session that ended without
     // finals — otherwise onPartial sees a non-null ref, skips
     // re-snapshotting, and text typed between sessions is dropped.
     frozenInputRef.current = null
+    lastDictationAnchorRef.current = null
+    lastDictationValueRef.current = null
+    postStopEditedRef.current = false
     frozenCaretRef.current = null
     return voice.start()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1781,21 +1973,50 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   /** Stop voice capture. Always allowed — only starting is gated. */
   const stopVoice = useCallback(() => {
     // Manual stop of a STREAMING recording: streamStop() drains the socket
-    // asynchronously and a final can still arrive. Disarming drops that draining
-    // final — but ONLY do so once the composer actually holds a copy of the
-    // speech, which is exactly what frozenInputRef being set means (onPartial
-    // snapshots it on the FIRST partial, then writes each hypothesis into
-    // `input`). Then the final is redundant and dropping it prevents a rebuild
-    // from the stale snapshot clobbering text typed while the socket drains.
+    // asynchronously, so more of the utterance can still arrive. Two routes are
+    // in play and they need OPPOSITE treatment, which is why this sets the
+    // narrow flag rather than the blanket one:
+    //
+    //   - `applyVoiceText` (close-time) APPENDS. The composer already holds the
+    //     hypothesis, so letting it through duplicates the utterance. Suppress.
+    //   - `onPartial` (drain-time) REPLACES the region at the frozen boundary,
+    //     and the hook re-emits `finals.join(' ')` through it as Transcribe
+    //     stabilises each segment. That is the authoritative text. Keep armed.
+    //
+    // Only suppress once the composer actually holds a copy of the speech, which
+    // is exactly what frozenInputRef being set means (onPartial snapshots it on
+    // the FIRST partial, then writes each hypothesis into `input`).
     //
     // With frozenInputRef still null NO partial has landed, so the composer
-    // holds nothing and the draining final is the ONLY copy of the utterance:
-    // disarming there silently deletes what the user just said. That is the
+    // holds nothing and the close-time final is the ONLY copy of the utterance:
+    // suppressing there silently deletes what the user just said. That is the
     // ordinary case for a short press against a COLD stream, where the release
-    // beats the server's first partial. (Batch is likewise never disarmed here:
-    // its onstop transcript is always the only copy.)
+    // beats the server's first partial. (Batch is likewise never suppressed
+    // here: its onstop transcript is always the only copy.)
     if (streamEnabledRef.current && frozenInputRef.current !== null) {
-      sttDisarmedRef.current = true
+      sttAppendDisarmedRef.current = true
+    }
+    // Unconditional for a streaming stop: the auto-submit route must close even
+    // when the append route stays open (the cold-stream case above).
+    if (streamEnabledRef.current) {
+      sttEndpointDisarmedRef.current = true
+    }
+    if (streamEnabledRef.current && frozenInputRef.current === null) {
+      // COLD STREAM: no partial landed, so nothing has pinned the insertion point
+      // yet. Freeze the CARET at the release, so a drain partial arriving after
+      // the user has started typing still inserts where they were speaking
+      // instead of after the text they wrote afterwards.
+      //
+      // Deliberately NOT freezing the text as well: with no partial landed the
+      // close-time final is the only copy of the utterance and must splice into
+      // the LIVE composer. Pinning the text here would make it rebuild from the
+      // release-time snapshot and delete anything typed after the release —
+      // trading a wrong insertion point for lost text.
+      //
+      // The value fingerprint is seeded too, so the first drain partial can tell
+      // that the user has typed since the release and leave their caret alone.
+      frozenCaretRef.current = voiceCaretRef.current
+      lastDictationValueRef.current = inputRef.current
     }
     voice.stop()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1863,6 +2084,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // onPartial and a surviving caret would aim the next session's first
       // splice at a position from the discarded one.
       frozenInputRef.current = null
+      lastDictationAnchorRef.current = null
+      lastDictationValueRef.current = null
+      postStopEditedRef.current = false
       frozenCaretRef.current = null
     }
     voiceRef.current.cancel()
@@ -1900,6 +2124,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // are preserved rather than clobbered by a stale snapshot.
   useEffect(() => {
     frozenInputRef.current = null
+    lastDictationAnchorRef.current = null
+    lastDictationValueRef.current = null
+    postStopEditedRef.current = false
     frozenCaretRef.current = null
     // Drop the previous slot's caret so dictating in a freshly switched-to slot
     // (without touching its composer) appends to that slot's draft instead of
@@ -3325,6 +3552,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (voiceRef.current.recording && streamEnabledRef.current) {
       sttDisarmedRef.current = true
       frozenInputRef.current = null
+      lastDictationAnchorRef.current = null
+      lastDictationValueRef.current = null
+      postStopEditedRef.current = false
       voiceRef.current.toggle()
     }
 
@@ -5662,9 +5892,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           onWidthChange={setSidebarWidth}
           onDragChange={setSidebarDragging}
           collapsible={!isMobile}
-          splitEnabled={splitFeatureEnabled}
-          splitActive={splitMode}
-          onOpenSplit={() => enterSplit(activeSlot)}
           onSelectSlot={() => setSplitMode(false)}
           onOpenSource={revealSourceLink}
           // Only offer the pane as a drop target when a composer exists to show

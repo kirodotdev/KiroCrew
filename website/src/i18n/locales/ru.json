@@ -6189,7 +6189,9 @@
       "updated": "обновлено",
       "view_only_clicks_here_don_t_reach_the_page": "Только просмотр — нажатия здесь не доходят до страницы",
       "waiting_for_the_browser_to_take_a_screenshot": "Ожидание снимка экрана от браузера…",
-      "web_preview": "Веб-предпросмотр"
+      "web_preview": "Веб-предпросмотр",
+      "can_t_preview_this_dashboard_here": "Эту панель нельзя показать здесь",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Этот URL — сервер самой панели, который запрещает встраивание. Введите вместо него URL dev-сервера."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Только агент — без контекста Kiro Crew и MCP",
@@ -7386,8 +7388,6 @@
         "ask_a_side_question_2": "Задать дополнительный вопрос...",
         "ask_a_side_question_main_agent_keeps_working": "Задать дополнительный вопрос — основной агент продолжает работу",
         "context_from": "Контекст из",
-        "copied": "Скопировано!",
-        "copy": "Копировать",
         "queue_cancel_failed": "Не удалось отменить этот вопрос из очереди",
         "queue_edit_failed": "Не удалось обновить этот вопрос из очереди",
         "refresh_context": "Обновить контекст",
@@ -7395,7 +7395,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "Отправить",
         "steer_demoted_to_queue": "Ход завершился — вместо этого добавлено в очередь",
-        "steered": "Направлено",
         "thinking": "Размышление…",
         "turn_few": "{{count}} хода",
         "turn_many": "{{count}} ходов",
@@ -7789,7 +7788,6 @@
       "older_sessions": "Более старые сессии",
       "older_sessions_2": "Более старые сессии",
       "open_source_link_in_side_panel": "Открыть {{url}} в боковой панели ({{modifier}} — открыть в браузере)",
-      "open_split_view": "Открыть разделённый вид",
       "pick_a_model_for_every_session_switching_a_sessi": "Выберите модель для всех сессий. Переключение сессии",
       "pinned": "Закреплено",
       "pinned_sessions_are_kept": "Закреплённые сессии сохраняются.",
@@ -7831,8 +7829,6 @@
       "sort_name_desc": "Я → А",
       "sort_newest": "Сначала новые",
       "sort_oldest": "Сначала старые",
-      "split_view": "Разделённый вид",
-      "split_view_multi_pane_session_grid_d": "Разделённый вид — сетка сессий из нескольких панелей (⌘D)",
       "streaming": "Потоковая передача",
       "switch_all_sessions": "Переключить все сессии",
       "switch_all_to_model": "Переключить все на модель…",
@@ -8099,6 +8095,7 @@
       "rows": "строк",
       "running_pods": "Запущенные pod",
       "safely_removes_worktrees_whose_pr_has_already_me": "безопасно удаляет worktree, чей PR уже влит.",
+      "scanning_merged": "Поиск влитых…",
       "select": "Выбрать {{name}}",
       "sort_behind": "Сортировка: отставание",
       "sort_name": "Сортировка: имя",
@@ -10892,6 +10889,17 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Входящие webhooks",
+        "endpoint_status": "Конечная точка",
+        "lets_an_outside_system_start_one_agent_turn": "Позволяет внешней системе — задаче CI, боту-ревьюеру, скрипту развёртывания — запустить один ход агента, отправив сообщение методом POST с токеном доступа.",
+        "manage_webhooks": "Управление webhooks",
+        "tokens_count_one": "{{count}} токен доступа",
+        "tokens_count_few": "{{count}} токена доступа",
+        "tokens_count_many": "{{count}} токенов доступа",
+        "tokens_count_other": "{{count}} токена доступа",
+        "could_not_read_webhook_status": "Не удалось получить статус webhook — проверь, запущен ли шлюз"
       }
     },
     "settingsPage": {
@@ -11384,6 +11392,10 @@
       "voice": {
         "description": "Настройки синтеза речи и распознавания речи (диктовки)",
         "label": "Голос"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Разрешите внешней системе запустить один ход агента"
       }
     }
   },

@@ -1962,6 +1962,31 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 
+/* ── No-backdrop-filter fallback (issue #1817) ──
+ * Every glass surface gets ALL of its real opacity from backdrop-filter: the
+ * background tints are 3-8% alpha (.glass-surface) or a transparent color-mix
+ * (.topbar-glass, .notif-material). Where the engine does not support the
+ * property — older Chromium/Electron builds where it was flag-gated, or Linux
+ * builds compiled without it — the blur declaration is dropped at parse time
+ * and only the near-invisible tint remains, i.e. a transparent panel
+ * (issue #1817, Linux AppImage).
+ *
+ * Mirror of the prefers-reduced-transparency fallback below so there is ONE
+ * degradation story: solid themed background, borders/shadows untouched so
+ * panels stay delimited. !important is required — the dark-theme and :hover
+ * glass rules outrank these selectors on specificity, and Tailwind hover
+ * utilities outrank .notif-material — and it matches the a11y overrides,
+ * which stay later in source order so they still win when both apply.
+ * Test BOTH prefixes: Electron/Chromium historically supported one or the
+ * other. Scoped to the glass classes: platforms with working backdrop-filter
+ * never match this query and keep the glass look. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topbar-glass,.glass-surface{ background:var(--bg) !important }
+  /* Floating notification cards (NotificationFeed mac variant) sit OVER page
+     content, so they solidify to the card color, not the page background. */
+  .notif-material{ background:var(--card) !important }
+}
+
 /* ── TIER1 a11y: reduced motion / transparency / contrast ── */
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{ transition-duration:0.01ms !important; scroll-behavior:auto !important }

@@ -1715,7 +1715,9 @@
       "exit_expanded_preview": "Collapse",
       "expand_preview": "Expand preview",
       "expand_preview_hide_nav_sessions": "Expand (hide nav and sessions)",
-      "responsive_desktop": "Responsive (desktop)"
+      "responsive_desktop": "Responsive (desktop)",
+      "can_t_preview_this_dashboard_here": "Can't preview this dashboard here",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "This URL is the dashboard's own server, which refuses to be embedded. Enter a dev server URL instead."
     },
     "welcomeView": {
       "autopilot": "Autopilot",
@@ -2340,11 +2342,9 @@
       },
       "sideChat": {
         "ask_a_side_question_2": "Ask a side question…",
-        "copied": "Copied!",
         "queue_cancel_failed": "Could not cancel that queued question",
         "queue_edit_failed": "Could not update that queued question",
-        "steer_demoted_to_queue": "The turn ended — queued instead",
-        "steered": "Steered"
+        "steer_demoted_to_queue": "The turn ended — queued instead"
       },
       "sidePanel": {
         "hide_line_numbers": "Hide line numbers",
@@ -2632,6 +2632,7 @@
       "restart_gateway_2": "Restart gateway?",
       "restart_pod": "Restart pod",
       "restarting_reconnecting": "Restarting — reconnecting…",
+      "scanning_merged": "Scanning for merged…",
       "select": "Select {{name}}",
       "spin_up_pod": "Spin up pod",
       "start": "Start",

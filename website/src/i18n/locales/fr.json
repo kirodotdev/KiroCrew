@@ -6104,7 +6104,9 @@
       "updated": "mis à jour",
       "view_only_clicks_here_don_t_reach_the_page": "Affichage seul — les clics ici n'atteignent pas la page",
       "waiting_for_the_browser_to_take_a_screenshot": "En attente de la capture d'écran du navigateur…",
-      "web_preview": "Aperçu web"
+      "web_preview": "Aperçu web",
+      "can_t_preview_this_dashboard_here": "Impossible de prévisualiser ce tableau de bord ici",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Cette URL est le serveur du tableau de bord lui-même, qui refuse d'être intégré. Saisissez plutôt l'URL d'un serveur de développement."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Agent seul — aucun contexte Kiro Crew ni MCP",
@@ -7288,8 +7290,6 @@
         "ask_a_side_question_2": "Poser une question annexe…",
         "ask_a_side_question_main_agent_keeps_working": "Poser une question annexe — l'agent principal continue de travailler",
         "context_from": "Contexte de",
-        "copied": "Copié !",
-        "copy": "Copier",
         "queue_cancel_failed": "Impossible d'annuler cette question en file d'attente",
         "queue_edit_failed": "Impossible de modifier cette question en file d'attente",
         "refresh_context": "Actualiser le contexte",
@@ -7297,7 +7297,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "Envoyer",
         "steer_demoted_to_queue": "Le tour s'est terminé — mis en file d'attente à la place",
-        "steered": "Réorienté",
         "thinking": "Réflexion…",
         "turn_many": "{{count}} tours",
         "turn_one": "{{count}} tour",
@@ -7686,7 +7685,6 @@
       "older_sessions": "Sessions plus anciennes",
       "older_sessions_2": "Sessions plus anciennes",
       "open_source_link_in_side_panel": "Ouvrir {{url}} dans le panneau latéral ({{modifier}} pour l'ouvrir dans le navigateur)",
-      "open_split_view": "Ouvrir la vue divisée",
       "pick_a_model_for_every_session_switching_a_sessi": "Choisissez un modèle pour chaque session. Changer le modèle d'une session",
       "pinned": "Épinglées",
       "pinned_sessions_are_kept": "Les sessions épinglées sont conservées.",
@@ -7726,8 +7724,6 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "Plus récentes",
       "sort_oldest": "Plus anciennes",
-      "split_view": "Vue divisée",
-      "split_view_multi_pane_session_grid_d": "Vue divisée — grille de sessions multi-volets (⌘D)",
       "streaming": "Diffusion en cours",
       "switch_all_sessions": "Basculer toutes les sessions",
       "switch_all_to_model": "Basculer toutes vers le modèle…",
@@ -7993,6 +7989,7 @@
       "rows": "lignes",
       "running_pods": "Pods en cours",
       "safely_removes_worktrees_whose_pr_has_already_me": "supprime en toute sécurité les worktrees dont la PR a déjà été fusionnée.",
+      "scanning_merged": "Recherche des fusionnés…",
       "select": "Sélectionner {{name}}",
       "sort_behind": "Tri : retard",
       "sort_name": "Tri : nom",
@@ -10778,6 +10775,16 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Webhooks entrants",
+        "endpoint_status": "Point de terminaison",
+        "lets_an_outside_system_start_one_agent_turn": "Permet à un système externe — une tâche CI, un bot de revue, un script de déploiement — de lancer un tour d'agent en envoyant un message en POST avec un jeton d'accès.",
+        "manage_webhooks": "Gérer les webhooks",
+        "tokens_count_one": "{{count}} jeton d'accès",
+        "tokens_count_other": "{{count}} jetons d'accès",
+        "tokens_count_many": "{{count}} jetons d'accès",
+        "could_not_read_webhook_status": "Impossible de lire l'état du webhook — vérifie que la passerelle est démarrée"
       }
     },
     "settingsPage": {
@@ -11263,6 +11270,10 @@
       "voice": {
         "description": "Paramètres de synthèse vocale et de reconnaissance vocale (dictée)",
         "label": "Voix"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Permettre à un système externe de lancer un tour d'agent"
       }
     }
   },

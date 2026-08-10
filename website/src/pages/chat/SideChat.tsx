@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Send, MessageSquare, Copy, Check, RotateCcw, Target } from 'lucide-react'
+import { Send, MessageSquare, RotateCcw } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt } from '../../store/chatSlice'
-import { copyToClipboard } from '../../utils/clipboard'
-import MarkdownRenderer from '../../components/MarkdownRenderer'
 import QueueStack from '../../components/QueueStack'
+import ChatMessageList from '../../app-sdk/ChatMessageList'
+import FollowUpBar from '../../components/FollowUpBar'
+import { deriveFollowUpOptions } from '../../utils/deriveFollowUpOptions'
 import BusySendButton, { useBusySendMode } from '../../components/BusySendButton'
 import type { SideMessage } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
@@ -20,61 +21,15 @@ const MAX_INPUT_H = 240
 // turn it has nothing to do with.
 const NOTICE_TTL_MS = 8_000
 
-function SideMessageBubble({ msg, isStreaming }: { msg: SideMessage; isStreaming: boolean }) {
-  const [copied, setCopied] = useState(false)
-
-  if (msg.role === 'user') {
-    return (
-      <div className="rounded-md bg-accent/10 px-2.5 py-1.5 text-[13px] text-text whitespace-pre-wrap">
-        {msg.steer && (
-          <span className="flex items-center gap-1 text-[11px] font-medium text-accent mb-0.5">
-            <Target size={11} />
-            {i18nT('pages.chat.sideChat.steered')}
-          </span>
-        )}
-        {msg.content}
-      </div>
-    )
-  }
-
-  if (msg.is_error) {
-    return (
-      <div className="rounded-md bg-danger/10 px-2.5 py-1.5 text-[13px] text-danger whitespace-pre-wrap">
-        {msg.content}
-      </div>
-    )
-  }
-
-  return (
-    <div className="group/side-msg rounded-md bg-bg-hover px-2.5 py-1.5 text-sm leading-relaxed text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
-      <MarkdownRenderer content={msg.content} streaming={isStreaming} />
-      {!isStreaming && msg.content.length > 0 && (
-        <div className="flex items-center gap-1 mt-0.5 opacity-0 transition-opacity group-hover/side-msg:opacity-100">
-          <button
-            className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            title={i18nT('pages.chat.sideChat.copy')}
-            aria-label={copied ? i18nT('pages.chat.sideChat.copied') : i18nT('pages.chat.sideChat.copy')}
-            onClick={() => {
-              copyToClipboard(msg.content).then(() => {
-                setCopied(true)
-                setTimeout(() => setCopied(false), 1500)
-              }).catch(() => {})
-            }}
-          >
-            {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
 /** One composer submit. `steer` and `optimistic` are decided at submit time and
  *  carried along, so a mutation callback that runs later never re-derives them
  *  from state its own optimistic update already changed. */
 /** `slot` is captured at submit time: the panel's prop can change under an in-flight
  *  request, and a response must land where the question was asked. */
-type SideSubmit = { q: string; steer: boolean; optimistic: boolean; slot: string }
+type SideSubmit = { q: string; steer: boolean; optimistic: boolean; slot: string;
+  /** True when `q` came from a follow-up chip rather than the composer, so the draft the
+   *  user is still writing must survive the send. */
+  override?: boolean }
 
 /** Put `released` text back in the composer without discarding what is there.
  *
@@ -100,6 +55,25 @@ function relativeTime(iso: string): string | null {  const diff = Date.now() - n
   if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)}m`
   if (diff < 24 * 3600_000) return `${Math.floor(diff / 3600_000)}h`
   return `${Math.floor(diff / (24 * 3600_000))}d`
+}
+
+/** Options forming the `, `-joined tail of `text`, in the order they appear.
+ *
+ *  Longest match wins so an option that contains another plus the separator (`foo, bar` next to
+ *  `bar`) peels as itself. An option already peeled is not peeled twice: the tail belongs to the
+ *  picks, and an earlier occurrence is the user's own text. */
+function pickedFromDraft(text: string, options: readonly string[]): string[] {
+  const picked: string[] = []
+  let rest = text
+  for (;;) {
+    const hit = options
+      .filter(o => o && !picked.includes(o) && (rest === o || rest.endsWith(`, ${o}`)))
+      .sort((a, b) => b.length - a.length)[0]
+    if (!hit) break
+    picked.unshift(hit)
+    rest = rest === hit ? '' : rest.slice(0, rest.length - hit.length - 2)
+  }
+  return picked
 }
 
 export default function SideChat({ slot }: { slot: string }) {
@@ -191,14 +165,16 @@ export default function SideChat({ slot }: { slot: string }) {
       await api.sideOpen(target)
       return api.sideTurn(target, q, steer ? { steer: true } : undefined)
     },
-    onMutate: ({ q, optimistic, slot: target }: SideSubmit) => {
+    onMutate: ({ q, optimistic, slot: target, override }: SideSubmit) => {
       setLocalError(null)
       setLocalNotice(null)
       if (optimistic) {
         const message: SideMessage = { role: 'user', content: q, ts: new Date().toISOString() }
         dispatch(sideOptimisticAppend({ slot: target, message }))
       }
-      setDraft('')
+      // Only a composer submit owns the composer's text. An override send carries its own
+      // text, so clearing here would throw away a draft the user has not sent yet.
+      if (!override) setDraft('')
     },
     onSuccess: (res, vars) => {
       // Same two-path convergence as cancel/edit: a queued submit's card comes
@@ -491,8 +467,11 @@ export default function SideChat({ slot }: { slot: string }) {
     el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_H)}px`
   }, [draft])
 
-  const send = useCallback(() => {
-    const q = draft.trim()
+  /** `override` carries the text a follow-up chip's send arrow supplies; without it the draft
+   *  is the source of truth. Every call site wraps this in an arrow, so a click event can never
+   *  arrive here as the override. */
+  const send = useCallback((override?: string) => {
+    const q = (override ?? draft).trim()
     if (!q || sendMutation.isPending || !slot) return
     if (new Blob([q]).size > MAX_QUESTION_BYTES) {
       setLocalError(`Question too long (max ${MAX_QUESTION_BYTES.toLocaleString()} bytes)`)
@@ -504,7 +483,7 @@ export default function SideChat({ slot }: { slot: string }) {
     // bubble has to land above the streaming answer and a queued one is a card,
     // so the server frame places both.
     const steer = isBusy && busySendMode === 'steer'
-    sendMutation.mutate({ q, steer, optimistic: !isBusy, slot })
+    sendMutation.mutate({ q, steer, optimistic: !isBusy, slot, override: override != null })
   }, [draft, slot, sendMutation, isBusy, busySendMode])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -518,6 +497,75 @@ export default function SideChat({ slot }: { slot: string }) {
   const lastMsg = messages[lastIdx]
   const isStreaming = reduxSide?.streaming ?? false
   const isStreamingLast = lastMsg?.role === 'assistant' && isStreaming
+
+  /** The side buffer carries only `user` / `assistant` plus an `is_error` flag, so the
+   *  roles the shared transcript understands are derived here rather than stored. The last
+   *  assistant message becomes `streaming` while the turn runs, which is what drives the
+   *  cursor and holds the footer back until the answer settles. */
+  const transcript = useMemo<ChatMessage[]>(
+    () => messages.map((m, i) => {
+      const streaming = i === lastIdx && isStreamingLast
+      const role = m.role === 'user' ? 'user' : m.is_error ? 'error' : streaming ? 'streaming' : 'assistant'
+      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts }
+    }),
+    [messages, lastIdx, isStreamingLast]
+  )
+
+  /** Derived from the same helper the main chat uses, so "options only after the answer
+   *  settles" and "a later user message clears them" behave identically. */
+  const { followUpOptions } = useMemo(
+    () => deriveFollowUpOptions(transcript, isStreaming),
+    [transcript, isStreaming]
+  )
+  const pickedOptions = useMemo(
+    () => new Set(pickedFromDraft(draft, followUpOptions)),
+    [draft, followUpOptions],
+  )
+  // The exact text a toggle wrote, with the base it was built from, so removing the block can put
+  // punctuation back verbatim. Only trusted while the draft still equals `produced`.
+  const lastJoinRef = useRef<{ produced: string; base: string } | null>(null)
+
+  /** Picking edits the DRAFT rather than sending, matching the main chat: the text in the
+   *  composer is what gets submitted, so a choice stays amendable.
+   *
+   *  The draft is the only record of what is picked, so the picked block is read back off it and
+   *  rewritten whole. Editing the text is therefore not a case to defend against: it simply
+   *  changes what the tail is, and an option the user has since woven into their own sentence
+   *  stops being highlighted because it is no longer a block this can remove. */
+  const toggleOption = useCallback((option: string) => {
+    setDraft(prev => {
+      const current = pickedFromDraft(prev, followUpOptions)
+      const block = current.join(', ')
+      const memo = lastJoinRef.current
+      let base: string
+      if (block && memo && memo.produced === prev) {
+        // Untouched since this wrote it, so the base is known exactly rather than inferred.
+        base = memo.base
+      } else if (block) {
+        // `pickedFromDraft` only reports a tail, so the block is at the end by construction.
+        base = prev.slice(0, prev.length - block.length)
+        if (base.endsWith(', ')) base = base.slice(0, -2)
+      } else {
+        base = prev
+      }
+      const next = current.includes(option)
+        ? current.filter(o => o !== option)
+        : [...current, option]
+      const newBlock = next.join(', ')
+      if (!newBlock) {
+        lastJoinRef.current = null
+        return base
+      }
+      const tail = base.trimEnd()
+      // A draft mid-sentence may already end with the separator; a second one would be submitted
+      // verbatim. Appending just the space still lands on the `, ` shape the block is read back by.
+      const produced = !tail
+        ? newBlock
+        : tail.endsWith(',') ? `${tail} ${newBlock}` : `${tail}, ${newBlock}`
+      lastJoinRef.current = { produced, base }
+      return produced
+    })
+  }, [followUpOptions])
 
   const sendErr = sendMutation.error
   const displayError = sendErr
@@ -569,13 +617,7 @@ export default function SideChat({ slot }: { slot: string }) {
             <span className="text-[13px]">{i18nT('pages.chat.sideChat.ask_a_side_question_main_agent_keeps_working')}</span>
           </div>
         ) : (
-          messages.map((m, i) => (
-            <SideMessageBubble
-              key={i}
-              msg={m}
-              isStreaming={i === lastIdx && isStreamingLast}
-            />
-          ))
+          <ChatMessageList messages={transcript} running={isBusy} />
         )}
         {isPending && lastMsg?.role === 'user' && (
           <div className="flex items-center gap-1.5 px-2.5 py-2 text-muted">
@@ -602,6 +644,16 @@ export default function SideChat({ slot }: { slot: string }) {
             pendingIds={blockedQueueIds}
             onCancel={qid => { if (!blockedQueueIds.has(qid)) cancelQueued.mutate({ queueId: qid, slot }) }}
             onEdit={(qid, content) => { if (!blockedQueueIds.has(qid)) editQueued.mutate({ queueId: qid, content, slot }) }}
+          />
+        </div>
+      )}
+      {followUpOptions.length > 0 && (
+        <div className="shrink-0 px-2 pb-1">
+          <FollowUpBar
+            options={followUpOptions}
+            picked={pickedOptions}
+            onSelect={toggleOption}
+            onSend={text => { void send(text) }}
           />
         </div>
       )}

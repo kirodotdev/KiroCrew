@@ -59,6 +59,13 @@ _EDIT_THROTTLE_S = 1.0
 # Interactive approval wait; deny-by-default when it elapses with no press.
 _APPROVAL_TIMEOUT_S = 300.0
 
+# Fallback placeholder for a turn that failed without a user-safe reason. The
+# retry wording is only correct for transient failures; a permanent failure
+# (e.g. the account lacks the selected model) passes its own bounded reason via
+# ``close(failure_reason=...)`` so the user is never told to retry an error
+# that says retrying will not help.
+_GENERIC_ERROR_TEXT = "⚠️ Error — please try again"
+
 # Trailing "[OPTIONS: a | b | c]" -- extracted for inline-keyboard rendering.
 # Matched only at the very END of the message, so use the DOTALL/trailer
 # canonical parser. Defined once in constants.py (shared with the Slack/
@@ -424,6 +431,13 @@ class TelegramRenderer(Renderer):
         self._tool = ""
         self._finalized = False
         self._closed = False
+        # Pre-sanitized, user-safe reason for a failed turn, set by
+        # ``close(failure_reason=...)``. When present it replaces the generic
+        # error placeholder at finalization so a permanent failure (wrong
+        # model entitlement, misconfiguration) surfaces its actionable message
+        # instead of misleading retry advice. The caller owns sanitization
+        # (bounded, single-line, redacted); this field is display-only.
+        self._failure_reason: str | None = None
         self._typing_task: "asyncio.Task[None] | None" = None
         # Live edit-streaming (send one real message, edit it in place as text
         # arrives — no draft, which fails for bots / ghosts). On a steer boundary
@@ -764,7 +778,7 @@ class TelegramRenderer(Renderer):
             # the user — attach it to the placeholder instead of dropping it.
             if self._seal_count > 0 and keyboard is None:
                 return
-            placeholder = "…" if ok else "⚠️ Error — please try again"
+            placeholder = "…" if ok else (self._failure_reason or _GENERIC_ERROR_TEXT)
             if self._stream_mid is not None:
                 await self._client.edit_message(
                     self._chat_id,
@@ -811,11 +825,19 @@ class TelegramRenderer(Renderer):
             return f"> {t}" if t else None
         return None
 
-    async def close(self) -> None:
+    async def close(self, failure_reason: str | None = None) -> None:
         """Idempotent teardown: stop the typing indicator and finalize the turn
-        if it never reached on_done."""
+        if it never reached on_done.
+
+        ``failure_reason`` is an optional, already-sanitized user-safe message
+        (see ``transport_dispatch._user_safe_failure_reason``) shown instead of
+        the generic error placeholder. It is display-only and ignored once the
+        turn is finalized, so every existing no-argument caller is unaffected.
+        """
         self._stop_typing()
         if not self._finalized:
+            if failure_reason:
+                self._failure_reason = failure_reason
             await self.on_done(stop_reason="error")
 
     # -- helpers ------------------------------------------------------------

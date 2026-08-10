@@ -580,14 +580,80 @@ def dump_age_seconds(dump_path: Path) -> float:
     return max(0.0, time.time() - dump_path.stat().st_mtime)
 
 
+#: Matches a faulthandler per-thread stack header, e.g.
+#: ``Thread 0x00007f72c082b640 (most recent call first):`` or
+#: ``Current thread 0x... (most recent call first):``.
+_THREAD_HEADER_RE = re.compile(r"^(?:Current thread|Thread) 0x[0-9a-fA-F]+")
+
+
+def _split_stack_content(stack_lines: list[str]) -> tuple[list[str], list[list[str]]]:
+    """Split dump stack content into (preamble, per-thread blocks).
+
+    *stack_lines* is the dump content AFTER the file header, empty lines
+    removed.  The preamble is anything before the first thread header
+    (faulthandler's ``Timeout (0:00:25)!`` marker).  Each block starts with a
+    ``Thread 0x...`` / ``Current thread 0x...`` header line and carries that
+    thread's frames.
+    """
+    preamble: list[str] = []
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for ln in stack_lines:
+        if _THREAD_HEADER_RE.match(ln.strip()):
+            current = [ln]
+            blocks.append(current)
+        elif current is None:
+            preamble.append(ln)
+        else:
+            current.append(ln)
+    return preamble, blocks
+
+
+def _wedged_thread_block(blocks: list[list[str]]) -> list[str] | None:
+    """Return the stack block of the thread the event loop wedged on.
+
+    ``faulthandler.dump_traceback_later`` (what the loop watchdog arms) fires
+    from an internal C thread, so no block carries the ``Current thread``
+    marker — and CPython dumps Python threads newest-first, which puts the
+    MAIN thread (where the gateway's asyncio loop runs) LAST in the file.
+    The blocks at the top are typically idle thread-pool workers parked in
+    ``Queue.get``, useless for diagnosing the stall.
+
+    Prefer an explicit ``Current thread`` marker when one exists (dumps taken
+    synchronously from Python mark the dumping thread); otherwise take the
+    last block.
+    """
+    if not blocks:
+        return None
+    for block in blocks:
+        if block[0].lstrip().startswith("Current thread"):
+            return block
+    return blocks[-1]
+
+
 def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
-    """Extract the first N lines of actual stack content from a dump file."""
+    """Extract the most diagnostic stack lines from a dump file.
+
+    Returns the faulthandler preamble (``Timeout (...)!``) followed by the top
+    frames of the WEDGED thread's stack — not merely the first lines of the
+    file.  faulthandler writes threads newest-first, so the top of the file is
+    typically an idle thread-pool worker; labelling that "stuck at" (as
+    ``kirocrew doctor`` does) actively misleads whoever is diagnosing the
+    stall, while the actually-wedged main thread sits at the bottom.
+
+    Falls back to the raw top-of-file lines when no thread headers are
+    recognizable (malformed or foreign dump content).
+    """
     try:
         lines = dump_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        stack_lines = [ln for ln in lines[_HEADER_LINES:] if ln.strip()]
-        return stack_lines[:max_lines]
     except OSError:
         return []
+    stack_lines = [ln for ln in lines[_HEADER_LINES:] if ln.strip()]
+    preamble, blocks = _split_stack_content(stack_lines)
+    wedged = _wedged_thread_block(blocks)
+    if wedged is None:
+        return stack_lines[:max_lines]
+    return (preamble + wedged)[:max_lines]
 
 
 def dump_replay_lines(
@@ -598,6 +664,14 @@ def dump_replay_lines(
     Returns (lines, truncated) — up to *max_lines* non-empty stack lines
     totalling at most *max_bytes* of text.  *truncated* is True when the
     dump exceeded either limit.
+
+    The wedged thread's stack (see :func:`_wedged_thread_block`) is replayed
+    FIRST, before the other threads, so the one stack that explains the stall
+    always survives the caps.  Real dumps routinely exceed them — a gateway
+    with a saturated default executor produces 200+ stack lines of idle
+    workers, and top-down order truncated the replay before ever reaching the
+    main thread (observed on the 2026-08-09 stall dumps: the journal showed
+    only ``Queue.get`` workers and ``[truncated]``).
     """
     try:
         content = dump_path.read_text(encoding="utf-8", errors="replace")
@@ -605,6 +679,11 @@ def dump_replay_lines(
         return [], False
     all_lines = content.splitlines()
     stack_lines = [ln for ln in all_lines[_HEADER_LINES:] if ln.strip()]
+    preamble, blocks = _split_stack_content(stack_lines)
+    wedged = _wedged_thread_block(blocks)
+    if wedged is not None:
+        others = [ln for block in blocks if block is not wedged for ln in block]
+        stack_lines = preamble + wedged + others
     result: list[str] = []
     total = 0
     for ln in stack_lines:

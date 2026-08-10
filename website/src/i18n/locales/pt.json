@@ -6104,7 +6104,9 @@
       "updated": "atualizado",
       "view_only_clicks_here_don_t_reach_the_page": "Apenas visualização — os cliques aqui não chegam à página",
       "waiting_for_the_browser_to_take_a_screenshot": "Aguardando o navegador tirar uma captura de tela…",
-      "web_preview": "Prévia web"
+      "web_preview": "Prévia web",
+      "can_t_preview_this_dashboard_here": "Não é possível visualizar este painel aqui",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL é o próprio servidor do painel, que não permite ser incorporado. Informe a URL de um servidor de desenvolvimento."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Somente agente — sem contexto do Kiro Crew nem MCP",
@@ -7288,8 +7290,6 @@
         "ask_a_side_question_2": "Faça uma pergunta paralela…",
         "ask_a_side_question_main_agent_keeps_working": "Faça uma pergunta paralela — o agente principal continua trabalhando",
         "context_from": "Contexto de",
-        "copied": "Copiado!",
-        "copy": "Copiar",
         "queue_cancel_failed": "Não foi possível cancelar essa pergunta na fila",
         "queue_edit_failed": "Não foi possível atualizar essa pergunta na fila",
         "refresh_context": "Atualizar contexto",
@@ -7297,7 +7297,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "Enviar",
         "steer_demoted_to_queue": "O turno terminou — enfileirado em vez disso",
-        "steered": "Direcionado",
         "thinking": "Pensando…",
         "turn_many": "{{count}} turnos",
         "turn_one": "{{count}} turno",
@@ -7686,7 +7685,6 @@
       "older_sessions": "Sessões antigas",
       "older_sessions_2": "Sessões antigas",
       "open_source_link_in_side_panel": "Abrir {{url}} no painel lateral ({{modifier}} para abrir no navegador)",
-      "open_split_view": "Abrir visualização dividida",
       "pick_a_model_for_every_session_switching_a_sessi": "Escolha um modelo para cada sessão. Trocar o modelo de uma sessão",
       "pinned": "Fixada",
       "pinned_sessions_are_kept": "As sessões fixadas são mantidas.",
@@ -7726,8 +7724,6 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "Mais recentes",
       "sort_oldest": "Mais antigas",
-      "split_view": "Visualização dividida",
-      "split_view_multi_pane_session_grid_d": "Visualização dividida — grade de sessões em vários painéis (⌘D)",
       "streaming": "Transmitindo",
       "switch_all_sessions": "Trocar todas as sessões",
       "switch_all_to_model": "Trocar todas para o modelo…",
@@ -7993,6 +7989,7 @@
       "rows": "linhas",
       "running_pods": "Pods em execução",
       "safely_removes_worktrees_whose_pr_has_already_me": "remove com segurança as worktrees cujo PR já foi mesclado.",
+      "scanning_merged": "Procurando mescladas…",
       "select": "Selecionar {{name}}",
       "sort_behind": "Ordenar: atrás",
       "sort_name": "Ordenar: nome",
@@ -10778,6 +10775,16 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Webhooks de entrada",
+        "endpoint_status": "Endpoint",
+        "lets_an_outside_system_start_one_agent_turn": "Permite que um sistema externo — um job de CI, um bot de revisão, um script de implantação — inicie um turno do agente enviando uma mensagem via POST com um token de acesso.",
+        "manage_webhooks": "Gerenciar webhooks",
+        "tokens_count_one": "{{count}} token de acesso",
+        "tokens_count_other": "{{count}} tokens de acesso",
+        "tokens_count_many": "{{count}} tokens de acesso",
+        "could_not_read_webhook_status": "Não foi possível ler o status do webhook — verifique se o gateway está em execução"
       }
     },
     "settingsPage": {
@@ -11262,6 +11269,10 @@
       "voice": {
         "description": "Configurações de texto para fala e fala para texto (ditado)",
         "label": "Voz"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Permite que um sistema externo inicie um turno do agente"
       }
     }
   },

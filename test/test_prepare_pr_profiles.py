@@ -14,6 +14,7 @@ because tomllib is 3.11+.
 import importlib.util
 import json
 import os
+import pathlib
 import re
 import sys
 from pathlib import Path
@@ -131,7 +132,13 @@ def test_opus_profile_model_matches_the_ci_workflow():
     # not the prose mention of "--model below" in the comment above the job.
     ci_models = re.findall(r"(?m)^\s*--model\s+(\S+)\s*$", workflow)
     assert ci_models, "could not find the --model argument in claude-review.yml"
-    assert len(ci_models) == 1, f"expected one --model arg, got {ci_models}"
+    # The lane runs two stages (discovery, then validation), so there is one
+    # --model per stage. They must agree with each other -- a lane that
+    # discovers with one model and validates with another has no single model
+    # for the local gate to mirror -- and that one value must match the profile.
+    assert len(set(ci_models)) == 1, (
+        f"claude-review.yml's stages disagree on the model: {ci_models}"
+    )
     ci_model = ci_models[0]
 
     data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
@@ -159,22 +166,24 @@ def test_charter_budgets_match_the_ci_workflows():
     """
     skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
 
-    def _budget(workflow_name: str) -> str:
-        text = (REPO_ROOT / ".github" / "workflows" / workflow_name).read_text(
-            encoding="utf-8"
-        )
-        match = re.search(r"BUDGET: at most (\d+) BLOCKING", text)
-        assert match, f"no BUDGET line in {workflow_name}"
+    def _budget(source: pathlib.Path) -> str:
+        text = source.read_text(encoding="utf-8")
+        # The two lanes word the cap differently because they own their own
+        # contracts: the GPT lane keeps a "BUDGET:" heading inline, the Opus
+        # lane states it as a sentence in its validation prompt.
+        match = re.search(r"(?:BUDGET: at most|At most) (\d+) BLOCKING", text)
+        assert match, f"no BLOCKING budget in {source.name}"
         return match.group(1)
 
-    opus_blocking = _budget("claude-review.yml")
-    gpt_blocking = _budget("codex-review.yml")
+    # The Opus lane's budgets live with the contract that applies them -- the
+    # validation prompt -- not in the workflow that merely invokes it.
+    opus_contract = REPO_ROOT / ".github" / "review-prompts" / "opus-validate.md"
+    opus_blocking = _budget(opus_contract)
+    gpt_blocking = _budget(REPO_ROOT / ".github" / "workflows" / "codex-review.yml")
 
-    claude = (REPO_ROOT / ".github" / "workflows" / "claude-review.yml").read_text(
-        encoding="utf-8"
-    )
+    claude = opus_contract.read_text(encoding="utf-8")
     advisory_match = re.search(r"At most (\d+) advisory FINDING", claude)
-    assert advisory_match, "no advisory-FINDING budget in claude-review.yml"
+    assert advisory_match, f"no advisory-FINDING budget in {opus_contract.name}"
     opus_advisory = advisory_match.group(1)
 
     assert (

@@ -39,6 +39,7 @@ def _cfg(folder_budget: int):
     """A loaded-config stand-in carrying just the knob under test."""
     cfg = MagicMock()
     cfg.knowledge.folder_ingest_chunk_budget = folder_budget
+    cfg.knowledge.sweep_chunk_budget = 0  # unbounded by default in tests
     return cfg
 
 

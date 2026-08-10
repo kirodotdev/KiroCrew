@@ -489,8 +489,15 @@ Resources:
             # actual npm/vite/tsc error out of the log and fold it into the reason --
             # fail() otherwise only carries the log's tail, which at this point is
             # install.sh's success banner, not the earlier build error.
+            # NB: use only plain "$var" below, never a brace expansion. This whole
+            # UserData is a CloudFormation !Sub, so any dollar-brace token -- even
+            # inside a comment -- is parsed as a Sub variable and breaks change-set
+            # creation (a real bash brace default must be written as the !-escaped form).
             fe_err="$(grep -aiE 'npm error|npm ERR|error TS[0-9]|vite|Killed|Cannot find module|ENOSPC|no space left|out of memory|FATAL ERROR|Skipping frontend build' "$LOG" 2>/dev/null | tr -d '\r"\\' | tail -n 12 | tr '\n' '|' | tail -c 500)"
-            fail "dashboard frontend build missing (no static/dist). Build errors: ${fe_err:-<none captured; check /var/log/kirocrew-setup.log on the instance>}"
+            if [ -z "$fe_err" ]; then
+              fe_err="<none captured; check /var/log/kirocrew-setup.log on the instance>"
+            fi
+            fail "dashboard frontend build missing (no static/dist). Build errors: $fe_err"
           fi
 
           echo "--- installing the systemd service ---"

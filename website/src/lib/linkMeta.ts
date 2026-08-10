@@ -23,6 +23,10 @@ export interface LinkMeta {
   siteName: string
   domain: string
   icon: string
+  /** The site's `prefers-color-scheme: dark` icon, or `''` when it ships one
+   *  icon for every surface. The backend sends both because the choice is the
+   *  client's: the theme switches at runtime, while a cached payload does not. */
+  iconDark: string
   fetchedAt: number
 }
 
@@ -72,6 +76,7 @@ interface LinkMetaWire {
   site_name?: unknown
   domain?: unknown
   icon?: unknown
+  icon_dark?: unknown
   fetched_at?: unknown
 }
 
@@ -123,6 +128,10 @@ async function requestLinkMeta(url: string): Promise<CacheEntry> {
     siteName: str(d.site_name),
     domain,
     icon: safeIcon(str(d.icon)),
+    // Held to the same data:-only rule as `icon`: a second icon field is a
+    // second `<img src>`, so it is exactly as attractive a place to smuggle a
+    // remote URL or active content.
+    iconDark: safeIcon(str(d.icon_dark)),
     fetchedAt: typeof d.fetched_at === 'number' ? d.fetched_at : 0,
   }
 }

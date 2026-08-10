@@ -440,6 +440,13 @@ export default defineConfig({
     // costs nothing.
     environmentOptions: {
       happyDOM: {
+        // Serve the test document on the gateway's real default port. happy-dom
+        // otherwise defaults to localhost:3000, which is one of the Web Preview
+        // panel's own dev-server quick-picks — and the panel refuses to frame a
+        // target on the dashboard's own port (it can only ever be this gateway,
+        // which forbids being embedded). Matching production keeps "the
+        // dashboard" and "a dev server" distinguishable in tests.
+        url: 'http://localhost:6776/',
         settings: {
           disableIframePageLoading: true,
           disableJavaScriptFileLoading: true,

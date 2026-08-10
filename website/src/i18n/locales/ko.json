@@ -5934,7 +5934,9 @@
       "updated": "업데이트됨",
       "view_only_clicks_here_don_t_reach_the_page": "보기 전용 — 여기서의 클릭은 페이지에 전달되지 않습니다",
       "waiting_for_the_browser_to_take_a_screenshot": "브라우저가 스크린샷을 찍기를 기다리는 중…",
-      "web_preview": "웹 미리 보기"
+      "web_preview": "웹 미리 보기",
+      "can_t_preview_this_dashboard_here": "이 대시보드는 여기에서 미리 볼 수 없습니다",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "이 URL은 대시보드 자체의 서버이며 삽입이 허용되지 않습니다. 대신 개발 서버 URL을 입력하세요."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "에이전트 전용 — Kiro Crew 컨텍스트나 MCP 없음",
@@ -7092,8 +7094,6 @@
         "ask_a_side_question_2": "사이드 질문하기…",
         "ask_a_side_question_main_agent_keeps_working": "사이드 질문하기 — 메인 에이전트는 계속 작업합니다",
         "context_from": "컨텍스트 출처",
-        "copied": "복사했습니다!",
-        "copy": "복사",
         "queue_cancel_failed": "대기열에 있는 해당 질문을 취소할 수 없습니다",
         "queue_edit_failed": "대기열에 있는 해당 질문을 수정할 수 없습니다",
         "refresh_context": "컨텍스트 새로 고침",
@@ -7101,7 +7101,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "보내기",
         "steer_demoted_to_queue": "턴이 끝나 대기열에 추가했습니다",
-        "steered": "방향 지시함",
         "thinking": "생각 중…",
         "turn_other": "{{count}}턴"
       },
@@ -7480,7 +7479,6 @@
       "older_sessions": "이전 세션",
       "older_sessions_2": "이전 세션",
       "open_source_link_in_side_panel": "{{url}}을(를) 사이드 패널에서 열기 ({{modifier}}(으)로 누르면 브라우저에서 열기)",
-      "open_split_view": "분할 보기 열기",
       "pick_a_model_for_every_session_switching_a_sessi": "모든 세션의 모델을 선택합니다. 세션을 전환하면",
       "pinned": "고정됨",
       "pinned_sessions_are_kept": "고정된 세션은 유지됩니다.",
@@ -7516,8 +7514,6 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "최신순",
       "sort_oldest": "오래된순",
-      "split_view": "분할 보기",
-      "split_view_multi_pane_session_grid_d": "분할 보기 — 다중 창 세션 그리드 (⌘D)",
       "streaming": "스트리밍 중",
       "switch_all_sessions": "모든 세션 전환",
       "switch_all_to_model": "모두 다른 모델로 전환…",
@@ -7781,6 +7777,7 @@
       "rows": "행",
       "running_pods": "실행 중인 포드",
       "safely_removes_worktrees_whose_pr_has_already_me": "PR이 이미 병합된 워크트리를 안전하게 삭제합니다.",
+      "scanning_merged": "병합된 항목 검색 중…",
       "select": "{{name}} 선택",
       "sort_behind": "정렬: 뒤처짐",
       "sort_name": "정렬: 이름",
@@ -10550,6 +10547,14 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "인바운드 webhook",
+        "endpoint_status": "엔드포인트",
+        "lets_an_outside_system_start_one_agent_turn": "외부 시스템(CI 작업, 리뷰 봇, 배포 스크립트)이 액세스 토큰과 함께 메시지를 POST하여 에이전트 턴을 한 번 시작할 수 있습니다.",
+        "manage_webhooks": "Webhook 관리",
+        "tokens_count_other": "액세스 토큰 {{count}}개",
+        "could_not_read_webhook_status": "Webhook 상태를 읽을 수 없습니다 — 게이트웨이가 실행 중인지 확인하세요"
       }
     },
     "settingsPage": {
@@ -11020,6 +11025,10 @@
       "releases": {
         "description": "각 버전의 릴리스 노트",
         "label": "릴리스"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "외부 시스템이 에이전트 턴을 한 번 시작할 수 있습니다"
       }
     }
   },

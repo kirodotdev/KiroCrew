@@ -1501,6 +1501,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.folder_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
+    "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": 50000},
+    "knowledge.max_sources": {"type": "int", "min": 0, "max": 1000},
+    "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.extraction_model": {"type": "str"},
+    "knowledge.extraction_pool_size": {"type": "int", "min": 1, "max": 10},
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone
     # ``computer_use.json`` (see config.loader.computer_use_state_path) so the

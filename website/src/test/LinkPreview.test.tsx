@@ -12,6 +12,7 @@ const meta = (over: Partial<LinkMeta> = {}): LinkMeta => ({
   siteName: 'Example',
   domain: 'example.com',
   icon: 'data:image/png;base64,AAAA',
+  iconDark: '',
   fetchedAt: 1770000000,
   ...over,
 })

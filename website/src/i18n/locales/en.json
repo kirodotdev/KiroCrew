@@ -5094,7 +5094,6 @@
         "ask_a_side_question": "Ask a side question",
         "ask_a_side_question_main_agent_keeps_working": "Ask a side question — main agent keeps working",
         "context_from": "Context from",
-        "copy": "Copy",
         "refresh_context": "Refresh context",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
@@ -5317,7 +5316,6 @@
       "no_sessions_match": "No sessions match",
       "older_sessions": "Older sessions",
       "older_sessions_2": "Older Sessions",
-      "open_split_view": "Open Split View",
       "pick_a_model_for_every_session_switching_a_sessi": "Pick a model for every session. Switching a session",
       "pinned": "Pinned",
       "pinned_sessions_are_kept": "Pinned sessions are kept.",
@@ -5345,8 +5343,6 @@
       "sort_and_filter_sessions": "Sort and filter sessions",
       "sort_by": "Sort by",
       "sort_filter_sessions": "Sort & filter sessions",
-      "split_view": "Split View",
-      "split_view_multi_pane_session_grid_d": "Split View — multi-pane session grid (⌘D)",
       "switch_all_sessions": "Switch All Sessions",
       "switch_all_to_model": "Switch all to model…",
       "temporary_no_memory_reads_or_writes": "Temporary — no memory reads or writes",
@@ -7245,6 +7241,15 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Inbound webhooks",
+        "endpoint_status": "Endpoint",
+        "lets_an_outside_system_start_one_agent_turn": "Lets an outside system — a CI job, a review bot, a deploy script — start one agent turn by POSTing a message with an access token.",
+        "manage_webhooks": "Manage webhooks",
+        "tokens_count_one": "{{count}} access token",
+        "tokens_count_other": "{{count}} access tokens",
+        "could_not_read_webhook_status": "Could not read webhook status — check that the gateway is running"
       }
     },
     "settingsPage": {
@@ -7607,5 +7612,13 @@
       "slot_other": "{{count}} slots"
     },
     "sessionMemoryCard": {}
+  },
+  "settings": {
+    "tabs": {
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Let an outside system start one agent turn"
+      }
+    }
   }
 }

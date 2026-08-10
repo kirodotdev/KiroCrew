@@ -144,6 +144,8 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **Symlink resolution (CWE-59)**: `is_sensitive_path()` resolves symlinks before matching — it checks multiple candidate forms (`os.path.realpath` + `Path.resolve`, plus the lexically-normalized path as a fail-safe when resolution can't complete) and returns True if ANY lands in a sensitive location, `casefold`-comparing against sensitive dirs anchored at BOTH the logical home and its realpath (defeats a home-prefix OS symlink like macOS `/var`→`/private/var`). So a workspace symlink pointing at `~/.aws/credentials` (absolute or `../../.aws/credentials` traversal) cannot be read through the link
 - **Relative-traversal block (verb-agnostic)**: home-anchored/absolute references to a sensitive dir are caught by the primary matcher (`_get_sensitive_re()`), but relative-traversal forms (`../../.aws/credentials`) escape it. `is_sensitive_bash_command()` therefore blocks **any** command whose tokens name a sensitive dir via dot-slash traversal (`_RELATIVE_SENSITIVE_RE`), regardless of verb — so `dd`/`base64`/`xxd`/`head`/`tail`/`cp`/`ln` are all covered (it was previously gated on `ln`/`cp` only, letting the others slip past). Returns "command references a sensitive credential path via relative traversal"
 - `is_sensitive_bash_command(cmd)` — regex matches `cat`, `head`, `tail`, `less`, `cp`, `scp`, `python open()`, pipe redirects targeting sensitive paths
+- **Normalizer second pass (verb-independent)**: the regex first-pass matches raw shell text, so it sees only the path spellings it is authored for — two textually different strings naming the same file are not decidable by a regex over an unnormalized command line, and the set of equivalent spellings (dot segments, `..`, repeated slashes, `$HOME` vs the resolved home, quote splitting) is open-ended by construction. `_check_sensitive_via_normalizer()` therefore tokenizes via `normalize_shell_command()` and routes **every** path-like operand through `is_sensitive_path()` — the same normalizing checker the file gate uses — so one implementation is authoritative on both surfaces and a newly registered keystone leaf is protected on both by registration alone. The pass runs regardless of verb, mirroring the verb-independent backstop the sensitive-dir matcher applies: naming a sensitive path is itself the signal, and normalization is the only layer able to decide equivalence, so restricting it to a verb allowlist would leave a spelling such as `~/.kiro/crew/./live_target.json` unchecked for every verb outside that list. `_NORMALIZER_READ_VERBS` / `_LINK_CREATE_VERBS` are consulted only to skip the command name itself, never to decide whether operands are checked. `key=value` operands are split on the first `=` and the value checked as well: `of=/path` does not resolve as a path, and `--output=/path` is otherwise dropped by the flag skip. **Attached redirections** (`>~/path`, `>>~/path`, `2>~/path`) are kept as a single token by `shlex.split`; the leading operator prefix is stripped via `_REDIR_PREFIX_RE` before the path portion is checked, so `printf x >~/.kiro/crew/./live_target.json` is blocked just as `echo x > ~/.kiro/crew/./live_target.json` (with a space) is
+  - **Not covered**: a bare relative operand (`live_target.json` run with the cwd inside the data home). `is_sensitive_path` is called without a `base_dir`, so such a token resolves against the gateway process cwd rather than the command's — a command line inspected before execution does not carry its cwd. Closing it requires a fail-closed decision for relative tokens whose basename matches a keystone leaf
 - `hooks.on_tool_call` runs **both** `is_sensitive_path` and `is_sensitive_bash_command` on the **normalized** tool title regardless of the kiro-cli `Reading: `/`Running: ` display prefix. The claude-agent-acp adapter sets a file-read tool's title to the bare path and a Bash tool's title to the bare command (no prefix), so gating either check on the prefix would let credential reads through on an alternate ACP backend. `is_sensitive_path` resolves the title as a path (a bare `~/.aws/credentials` matches; a `cat ~/.aws/credentials` command resolves to a non-sensitive path and is caught by `is_sensitive_bash_command` instead).
 - Sensitive paths: `~/.aws`, `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.config/gcloud`, `~/.azure`, `~/.docker/config.json`, `~/.kube/config`, `~/.npmrc`, `~/.pypirc`, `~/.netrc`, `~/.git-credentials`, `~/.kiro/crew/.env`, `~/.kiro/crew/sel_hmac.key`, `~/.kiro/crew/trust`, `~/.kiro/crew/security_events.jsonl`, `~/.kiro/crew/app_admission.json`, `~/.kiro/crew/run`
 - **Crew data-home secret/trust-root leaves are covered under EVERY known home prefix.** Since the data home moved from top-level `~/.kirocrew` to `~/.kiro/crew`, each Kiro Crew secret / governance trust-root leaf (`.env`, `browser-cookies.txt`, `playwright-storage-state.json`, `sel_hmac.key`, `trust`, `security_events.jsonl`, `app_admission.json`, `security_policy.json`, `profiles`, `admission_policy.json`, `denied_commands.json`, `oauth_endpoints.json`, `live_target.json`, `token_signing.key`, `refresh_chains.json`, `.local_secret`, `run`) is expanded onto `_SENSITIVE_HOME_DIRS` under each entry of `_CREW_HOME_PREFIXES = (".kiro/crew", ".kirocrew")`. So the same leaf is read+write-blocked in (1) the current home `~/.kiro/crew` and (2) a not-yet-migrated pre-move legacy `~/.kirocrew`. The migration force-deletes `~/.kirocrew` once the move completes — there is no rollback copy to gate. A new secret is added to `_CREW_SECRET_LEAVES` once and is covered in both locations.
@@ -938,7 +940,17 @@ official installer receives a system-only `PATH`. Explicit login
 inherits only the allowlisted user-path, UI/device-flow, TLS, and proxy values;
 passive probes receive a narrower environment that excludes proxy credentials
 and desktop-session IPC as well as ambient cloud, Slack, SSH-agent, and
-application credentials.
+application credentials. The one deliberate *credential* exception is Kiro CLI's
+OWN model credential (`KIRO_API_KEY`, `_IDENTITY_PROBE_ENV_KEYS`), forwarded to the
+`whoami` identity probe only: the CLI reports an API-key session as signed in only
+when it can see that variable, so filtering it out reports a host that ACP
+authenticates on as signed out. The exposure delta is that one probe's argv — the
+credential reaches the same resolved binary the same probe already executes, in the
+same standard sandbox posture, against the same real home. The `--version` probe,
+which is the first execution of a candidate that has not yet answered anything,
+stays credential-free. `whoami` decides identity from the CLI's exit status alone,
+and that status reports which credential kind is configured rather than whether the
+credential is accepted, so a stale or mistyped key reads as signed in.
 
 Output and client-visible errors are bounded and credential/exfiltration-
 redacted. Only HTTPS URLs on the exact official `app.kiro.dev` host or the
@@ -1184,7 +1196,19 @@ SEL audit events are emitted on every lifecycle transition:
 - `safety_override:activate` — override enabled
 - `safety_override:renew` — session extended within grace window
 - `safety_override:expired` — TTL reached, auto-deactivated
-- `safety_override:deactivate` — manually disabled
+- `safety_override:deactivate` — manually disabled; emitted for every explicit deactivation against a grant that exists in any form, including one whose TTL already lapsed (`resources` records the pre-call state: `was_active`, `was_permanent`, `remaining`, `prior_source`). Only a never-activated instance stays silent.
+
+Transitions that create or extend auto-approval authority (`activate`,
+`activate_scoped`, `renew`) are audited fail-closed: the SEL event is written
+with `critical=True` before the state commits, and a failed write refuses the
+grant or extension (`renew` returns `reason: audit_failed` with the deadline
+unmoved). Because the SEL write runs outside the state lock, `renew` re-verifies
+under the re-acquired lock before committing: a grant deactivated during the
+audit window is not resurrected, a fresh activation that landed in that
+window keeps its own deadline instead of being overwritten by the stale
+renewal, and a renewal that began on a live grant refuses to commit through
+the grace window (so a grant that lapsed or was switched off mid-audit stays
+off).
 
 Fleet governance endpoints:
 - `/api/status` now reports `yolo_active` (bool) and `yolo_expires_at` (ISO 8601) fields

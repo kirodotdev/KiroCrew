@@ -45,11 +45,29 @@ class TestNormalizeColumn:
         state = self._state_with_tags(tmp_path)
         assert _normalize_column(state, "not-a-dict") is None
 
-    def test_filters_unknown_tag_ids(self, tmp_path):
+    def test_rejects_unknown_tag_ids(self, tmp_path):
+        # An unknown id must reject the payload, not be silently dropped —
+        # a drop lands the column on tag_ids [] (match-all), which presents
+        # to the user as "the filter does nothing".
         state = self._state_with_tags(tmp_path)
-        col = _normalize_column(state, {"tag_ids": ["t1", "ghost", "t2"]})
+        assert _normalize_column(state, {"tag_ids": ["t1", "ghost", "t2"]}) is None
+
+    def test_accepts_known_tag_ids(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {"tag_ids": ["t1", "t2"]})
         assert col is not None
         assert col["tag_ids"] == ["t1", "t2"]
+
+    def test_accepts_empty_tag_ids_as_match_all(self, tmp_path):
+        # [] is the documented clear-filter/match-all state; it must stay valid.
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {"tag_ids": []})
+        assert col is not None
+        assert col["tag_ids"] == []
+
+    def test_rejects_non_string_tag_id_entries(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        assert _normalize_column(state, {"tag_ids": ["t1", 42]}) is None
 
     def test_rejects_non_list_tag_ids(self, tmp_path):
         state = self._state_with_tags(tmp_path)
@@ -587,6 +605,92 @@ class TestColumns:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_update_column_valid_tag_id_persists(self, tmp_path, monkeypatch):
+        """The board filter round-trip: a tag id taken from the same list the
+        popover renders (GET /api/chat/tags) must survive the PATCH."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Jira"})).json()
+            listed = await (await client.get("/api/chat/tags")).json()
+            assert tag["id"] in {t["id"] for t in listed}
+            col = await (await client.post("/api/chat/tag-columns", json={"name": "L"})).json()
+            resp = await client.patch(
+                f"/api/chat/tag-columns/{col['id']}", json={"tag_ids": [tag["id"]]}
+            )
+            assert resp.status == 200
+            assert (await resp.json())["tag_ids"] == [tag["id"]]
+            persisted = next(c for c in state._tag_boards if c["id"] == col["id"])
+            assert persisted["tag_ids"] == [tag["id"]]
+
+    @pytest.mark.asyncio
+    async def test_update_column_unknown_tag_id_rejected_400(self, tmp_path, monkeypatch):
+        """An unknown tag id must fail LOUDLY (400 + code), never return 200
+        with the id silently dropped — the drop is what made the board filter
+        appear to do nothing (column falls back to match-all)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Real"})).json()
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"tag_ids": [tag["id"]], "mode": "any"}
+                )
+            ).json()
+            resp = await client.patch(
+                f"/api/chat/tag-columns/{col['id']}", json={"tag_ids": ["ghost123"]}
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_column_payload"
+            # The column's previous filter is untouched by the rejected write.
+            persisted = next(c for c in state._tag_boards if c["id"] == col["id"])
+            assert persisted["tag_ids"] == [tag["id"]]
+
+    @pytest.mark.asyncio
+    async def test_update_column_empty_tag_ids_clears_filter(self, tmp_path, monkeypatch):
+        """[] is the clear-filter (match-all) state the board UI sends; it
+        must stay accepted."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "T"})).json()
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"tag_ids": [tag["id"]], "mode": "any"}
+                )
+            ).json()
+            resp = await client.patch(f"/api/chat/tag-columns/{col['id']}", json={"tag_ids": []})
+            assert resp.status == 200
+            assert (await resp.json())["tag_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_create_column_unknown_tag_id_rejected_400(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/tag-columns", json={"tag_ids": ["ghost123"]})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_column_payload"
+
+    @pytest.mark.asyncio
+    async def test_create_column_empty_tag_ids_allowed(self, tmp_path, monkeypatch):
+        """The board creates columns with tag_ids [] (add-column flows);
+        validation must keep that working."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/tag-columns", json={"name": "", "tag_ids": [], "mode": "any"}
+            )
+            assert resp.status == 201
+            assert (await resp.json())["tag_ids"] == []
+
+    @pytest.mark.asyncio
     async def test_update_column_invalid_json_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -823,6 +927,43 @@ class TestLoadTagsSafety:
         assert state._tags == []
         # And the file content is preserved (no re-seed write).
         assert (tmp_path / "tags.json").read_text(encoding="utf-8") == "[]"
+
+    def test_load_prunes_dangling_column_tag_ids(self, tmp_path, monkeypatch):
+        """A crash mid-tag-delete can leave a deleted tag id on a column.
+        Load must prune it: the column API rejects unknown ids, so a dangling
+        id left in place would make that column's filter un-editable."""
+        import json as _json
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        (tmp_path / "tags.json").write_text(
+            _json.dumps([{"id": "live1", "name": "Live", "color": "#111111", "order": 0}]),
+            encoding="utf-8",
+        )
+        (tmp_path / "tag_boards.json").write_text(
+            _json.dumps(
+                [{"id": "c1", "name": "L", "tag_ids": ["live1", "ghost"], "mode": "any", "order": 0}]
+            ),
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path)
+        state.load_tags()
+        assert state._tag_boards[0]["tag_ids"] == ["live1"]
+
+    def test_load_keeps_column_tag_ids_when_vocabulary_unknown(self, tmp_path, monkeypatch):
+        """A corrupt tags.json means the vocabulary is UNKNOWN — pruning
+        against it would wipe every column filter. Fail open, same rule as
+        the slot-restore prune."""
+        import json as _json
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        (tmp_path / "tags.json").write_text("not-json-at-all", encoding="utf-8")
+        (tmp_path / "tag_boards.json").write_text(
+            _json.dumps([{"id": "c1", "name": "L", "tag_ids": ["t1"], "mode": "any", "order": 0}]),
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path)
+        state.load_tags()
+        assert state._tag_boards[0]["tag_ids"] == ["t1"]
 
 
 class TestReorderUniqueOrders:
