@@ -1249,6 +1249,9 @@ export const api = {
   telemetryContextTrace: (slot: string) =>
     fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot)).then(j),
   beaconStatus: () => fetch('/api/telemetry/beacon').then(j),
+  /** Local metric-collection posture for the Privacy panel's recording switch.
+   *  Separate from telemetryStartup(), which parses every shard in the window. */
+  collectionStatus: () => fetch('/api/telemetry/collection').then(j),
   // Background polls read the gateway's latched state (no kiro-cli subprocess).
   // `refresh` is the explicit user action (Refresh / Check again) that forces a
   // real host probe.

@@ -10044,6 +10044,17 @@
         "volume": "वॉल्यूम",
         "preset_pulse": "पल्स"
       },
+      "privacyPanel": {
+        "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",
+        "recordMetricsDescriptionExporting": "परफ़ॉर्मेंस मेट्रिक इकट्ठा करो और उन्हें config.json में तय किए गए कलेक्टर को भेजो।",
+        "recordMetricsEnvPinned": "{{envVar}} एनवायरनमेंट वेरिएबल इस सेटिंग को तय कर रहा है — यहाँ बदलने के लिए उसे एनवायरनमेंट से हटा दो।",
+        "recordMetricsLabel": "मेट्रिक रिकॉर्ड करो",
+        "recordMetricsOverlayPinned": "config.local.json की एक एंट्री इस सेटिंग को तय कर रही है — यहाँ बदलने के लिए उसे हटा दो।",
+        "recordMetricsEgressOff": "telemetry.otlp_endpoint सेट है, इसलिए रिकॉर्डिंग मेट्रिक को इस मशीन से बाहर भी भेजेगी। अगर तुम्हें यही चाहिए, तो इसे config.json में चालू करो।",
+        "recordMetricsEgressOn": "मेट्रिक इस मशीन से बाहर, telemetry.otlp_endpoint पर मौजूद कलेक्टर को भेजे जा रहे हैं।",
+        "recordMetricsSaveRefusedEgress": "रिकॉर्डिंग चालू नहीं की गई: telemetry.otlp_endpoint सेट है, इसलिए इसे यहाँ चालू करने से मेट्रिक इस मशीन से बाहर भेजे जाने लगेंगे। इसके बजाय इसे config.json में चालू करो।",
+        "recordMetricsSaveFailed": "यह सेटिंग बदली नहीं जा सकी। फिर कोशिश करो।"
+      },
       "postureDisclosure": {
         "filter": "{{label}} फ़िल्टर करो",
         "filter_items": "{{n}} {{unit}} फ़िल्टर करो…",

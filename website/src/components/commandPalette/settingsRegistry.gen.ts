@@ -580,6 +580,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "privacy.record-metrics",
+    "label": "Record metrics",
+    "tab": "privacy",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "telemetry.enabled"
+  },
+  {
     "id": "security.trust-every-third-party-app",
     "label": "Trust every third-party app",
     "description": "Off by default. When on, every third-party app you install can run its own code straight away, without asking you first.",

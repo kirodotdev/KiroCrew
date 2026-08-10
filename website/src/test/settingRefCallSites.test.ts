@@ -198,3 +198,25 @@ describe('SettingRef env-key drift guard (integration)', () => {
     expect(ENV_VARS_FIXTURE.length).toBeGreaterThan(0)
   })
 })
+
+describe('telemetry.enabled reaches its own control', () => {
+  it('resolves to a settings link on the privacy tab, not a command to paste', () => {
+    // The Telemetry panel's off-state banner renders
+    // <SettingRef configKey="telemetry.enabled" />. With no UI control for the key
+    // that fell through to file mode — a CLI command the user copies — which is
+    // the dead end the recording switch exists to close. The link only resolves
+    // because PrivacyPanel.tsx is mapped in the extractor's PANEL_TAB_MAP, so this
+    // fails if the switch moves to a panel the registry cannot see.
+    const result = resolveSettingRef('telemetry.enabled', buildSchemaIndex(SCHEMA_FIXTURE))
+    expect(result.mode).toBe('ui')
+    if (result.mode === 'ui') {
+      expect(result.entry.tab).toBe('privacy')
+      expect(result.entry.type).toBe('toggle')
+    }
+  })
+
+  it('is registered exactly once, so the deep link is unambiguous', () => {
+    const hits = SETTINGS_REGISTRY.filter(e => e.configKey === 'telemetry.enabled')
+    expect(hits).toHaveLength(1)
+  })
+})

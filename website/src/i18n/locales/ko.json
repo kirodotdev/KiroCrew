@@ -9885,6 +9885,17 @@
         "toggle_all": "전체 전환",
         "used_by": "사용 중:"
       },
+      "privacyPanel": {
+        "recordMetricsLabel": "메트릭 기록",
+        "recordMetricsDescription": "이 컴퓨터에서 성능 메트릭을 수집합니다.",
+        "recordMetricsDescriptionExporting": "성능 메트릭을 수집하고 config.json에 지정된 수집기로 전송합니다.",
+        "recordMetricsSaveFailed": "이 설정을 변경할 수 없습니다. 다시 시도하세요.",
+        "recordMetricsEnvPinned": "{{envVar}} 환경 변수가 이 설정을 고정하고 있습니다. 여기에서 변경하려면 해제하세요.",
+        "recordMetricsOverlayPinned": "config.local.json의 항목이 이 설정을 고정하고 있습니다. 여기에서 변경하려면 그 항목을 삭제하세요.",
+        "recordMetricsEgressOff": "telemetry.otlp_endpoint가 설정되어 있으므로 기록하면 메트릭이 이 컴퓨터 외부로도 전송됩니다. 그렇게 하려면 config.json에서 켜세요.",
+        "recordMetricsEgressOn": "메트릭이 이 컴퓨터 외부로, telemetry.otlp_endpoint에 지정된 수집기로 전송되고 있습니다.",
+        "recordMetricsSaveRefusedEgress": "기록을 켜지 않았습니다: telemetry.otlp_endpoint가 설정되어 있어 여기에서 켜면 메트릭이 이 컴퓨터 외부로 전송되기 시작합니다. 대신 config.json에서 켜세요."
+      },
       "notificationsPanel": {
         "always_interrupts_cannot_be_muted_or_lowered": "항상 알림을 표시합니다 — 음소거하거나 낮출 수 없습니다",
         "app": "앱",

@@ -10161,6 +10161,17 @@
         "volume": "Volume",
         "preset_pulse": "Pulsion"
       },
+      "privacyPanel": {
+        "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",
+        "recordMetricsDescriptionExporting": "Collecter les métriques de performance et les envoyer au collecteur configuré dans config.json.",
+        "recordMetricsEnvPinned": "La variable d’environnement {{envVar}} fixe ce réglage — supprime-la de l’environnement pour le modifier ici.",
+        "recordMetricsLabel": "Enregistrer les métriques",
+        "recordMetricsOverlayPinned": "Une entrée de config.local.json fixe ce réglage — supprime-la pour le modifier ici.",
+        "recordMetricsEgressOff": "telemetry.otlp_endpoint est défini, donc l’enregistrement enverrait aussi les métriques hors de cette machine. Active-le dans config.json si c’est ce que tu veux.",
+        "recordMetricsEgressOn": "Les métriques sont envoyées hors de cette machine, vers le collecteur défini par telemetry.otlp_endpoint.",
+        "recordMetricsSaveRefusedEgress": "L’enregistrement n’a pas été activé : telemetry.otlp_endpoint est défini, donc l’activer ici commencerait à envoyer des métriques hors de cette machine. Active-le plutôt dans config.json.",
+        "recordMetricsSaveFailed": "Impossible de modifier ce réglage. Réessaie."
+      },
       "postureDisclosure": {
         "filter": "Filtrer {{label}}",
         "filter_items": "Filtrer {{n}} {{unit}}…",

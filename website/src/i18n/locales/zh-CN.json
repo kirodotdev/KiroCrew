@@ -9927,6 +9927,17 @@
         "volume": "音量",
         "preset_pulse": "脉冲"
       },
+      "privacyPanel": {
+        "recordMetricsLabel": "记录指标",
+        "recordMetricsDescription": "在本机收集性能指标。",
+        "recordMetricsDescriptionExporting": "收集性能指标，并发送到 config.json 中配置的收集器。",
+        "recordMetricsEgressOff": "已设置 telemetry.otlp_endpoint，因此开启记录会把指标同时发送到本机之外。如果确实需要，在 config.json 中开启。",
+        "recordMetricsEgressOn": "指标正在发送到本机之外，接收方是 telemetry.otlp_endpoint 指定的收集器。",
+        "recordMetricsSaveFailed": "无法更改此设置。再试一次。",
+        "recordMetricsSaveRefusedEgress": "未开启记录：已设置 telemetry.otlp_endpoint，在此开启会开始把指标发送到本机之外。改为在 config.json 中开启。",
+        "recordMetricsEnvPinned": "环境变量 {{envVar}} 已锁定此设置 — 从环境中移除该变量后才能在此更改。",
+        "recordMetricsOverlayPinned": "config.local.json 中的某个条目已锁定此设置 — 移除该条目后才能在此更改。"
+      },
       "postureDisclosure": {
         "filter": "筛选 {{label}}",
         "filter_items": "筛选 {{n}} 个 {{unit}}…",

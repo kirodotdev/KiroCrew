@@ -10278,6 +10278,17 @@
         "volume": "Громкость",
         "preset_pulse": "Пульс"
       },
+      "privacyPanel": {
+        "recordMetricsLabel": "Записывать метрики",
+        "recordMetricsDescription": "Собирать метрики производительности на этом компьютере.",
+        "recordMetricsDescriptionExporting": "Собирать метрики производительности и отправлять их сборщику, указанному в config.json.",
+        "recordMetricsSaveFailed": "Не удалось изменить настройку. Попробуй ещё раз.",
+        "recordMetricsSaveRefusedEgress": "Запись не включена: задан telemetry.otlp_endpoint, поэтому её включение здесь начало бы отправлять метрики за пределы этого компьютера. Включи запись вместо этого в config.json.",
+        "recordMetricsEnvPinned": "Значение закреплено переменной окружения {{envVar}} — удали её из окружения, чтобы менять настройку здесь.",
+        "recordMetricsOverlayPinned": "Значение закреплено записью в config.local.json — удали её, чтобы менять настройку здесь.",
+        "recordMetricsEgressOff": "Задан telemetry.otlp_endpoint, поэтому запись ещё и отправляла бы метрики за пределы этого компьютера. Включи её в config.json, если тебе нужно именно это.",
+        "recordMetricsEgressOn": "Метрики отправляются за пределы этого компьютера — сборщику по адресу telemetry.otlp_endpoint."
+      },
       "postureDisclosure": {
         "filter": "Фильтр: {{label}}",
         "filter_items": "Фильтр: {{n}} {{unit}}...",

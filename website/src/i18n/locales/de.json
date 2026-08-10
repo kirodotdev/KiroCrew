@@ -10044,6 +10044,17 @@
         "volume": "Lautstärke",
         "preset_pulse": "Puls"
       },
+      "privacyPanel": {
+        "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",
+        "recordMetricsDescriptionExporting": "Leistungsmetriken erfassen und an den in config.json konfigurierten Collector senden.",
+        "recordMetricsEnvPinned": "Die Umgebungsvariable {{envVar}} legt diese Einstellung fest — entferne sie aus der Umgebung, um sie hier zu ändern.",
+        "recordMetricsLabel": "Metriken aufzeichnen",
+        "recordMetricsOverlayPinned": "Ein Eintrag in config.local.json legt diese Einstellung fest — entferne ihn, um sie hier zu ändern.",
+        "recordMetricsEgressOff": "telemetry.otlp_endpoint ist gesetzt, deshalb würde die Aufzeichnung Metriken auch von diesem Rechner nach außen senden. Aktiviere sie in config.json, wenn du das möchtest.",
+        "recordMetricsEgressOn": "Metriken werden von diesem Rechner nach außen gesendet, an den Collector unter telemetry.otlp_endpoint.",
+        "recordMetricsSaveRefusedEgress": "Die Aufzeichnung wurde nicht aktiviert: telemetry.otlp_endpoint ist gesetzt, deshalb würde das Aktivieren hier damit beginnen, Metriken von diesem Rechner nach außen zu senden. Aktiviere sie stattdessen in config.json.",
+        "recordMetricsSaveFailed": "Diese Einstellung konnte nicht geändert werden. Versuche es erneut."
+      },
       "postureDisclosure": {
         "filter": "{{label}} filtern",
         "filter_items": "{{n}} {{unit}} filtern…",

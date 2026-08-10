@@ -9927,6 +9927,17 @@
         "use_default": "デフォルトを使用",
         "volume": "ボリューム"
       },
+      "privacyPanel": {
+        "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",
+        "recordMetricsDescriptionExporting": "パフォーマンスメトリクスを収集し、config.json で設定されたコレクターに送信します。",
+        "recordMetricsEgressOff": "telemetry.otlp_endpoint が設定されているため、記録するとメトリクスがこのマシンの外にも送信されます。それを望む場合は config.json で有効にしてください。",
+        "recordMetricsEgressOn": "メトリクスは telemetry.otlp_endpoint のコレクターへ、このマシンの外に送信されています。",
+        "recordMetricsEnvPinned": "環境変数 {{envVar}} がこの設定を固定しています — ここで変更するには、この環境変数を解除してください。",
+        "recordMetricsLabel": "メトリクスを記録",
+        "recordMetricsOverlayPinned": "config.local.json のエントリがこの設定を固定しています — ここで変更するには、そのエントリを削除してください。",
+        "recordMetricsSaveFailed": "設定を変更できませんでした。もう一度お試しください。",
+        "recordMetricsSaveRefusedEgress": "記録は有効になりませんでした。telemetry.otlp_endpoint が設定されているため、ここで有効にするとメトリクスがこのマシンの外に送信され始めます。代わりに config.json で有効にしてください。"
+      },
       "postureDisclosure": {
         "filter": "{{label}} をフィルター",
         "filter_items": "{{n}} 件の {{unit}} をフィルター…",

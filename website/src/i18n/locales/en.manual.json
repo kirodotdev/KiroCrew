@@ -3373,6 +3373,17 @@
         "unknown_error": "unknown error",
         "update_setting_failed": "Failed to update setting: {{error}}"
       },
+      "privacyPanel": {
+        "recordMetricsLabel": "Record metrics",
+        "recordMetricsDescription": "Collect performance metrics on this machine.",
+        "recordMetricsDescriptionExporting": "Collect performance metrics and send them to the collector configured in config.json.",
+        "recordMetricsSaveFailed": "Could not change this setting. Try again.",
+        "recordMetricsSaveRefusedEgress": "Recording was not turned on: telemetry.otlp_endpoint is set, so enabling it here would start sending metrics off this machine. Turn it on in config.json instead.",
+        "recordMetricsEnvPinned": "The {{envVar}} environment variable is pinning this setting — unset it to change it here.",
+        "recordMetricsOverlayPinned": "A config.local.json entry is pinning this setting — remove it to change it here.",
+        "recordMetricsEgressOn": "Metrics are being sent off this machine, to the collector at telemetry.otlp_endpoint.",
+        "recordMetricsEgressOff": "telemetry.otlp_endpoint is set, so recording would also send metrics off this machine. Turn it on in config.json if that is what you want."
+      },
       "notificationsPanel": {
         "always_interrupts_cannot_be_muted_or_lowered": "Always interrupts — cannot be muted or lowered",
         "channel_not_active_app_disabled_setting_retained": "Channel not active (app disabled) — setting retained",
