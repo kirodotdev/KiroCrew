@@ -4,9 +4,15 @@ import type { Notification } from '../types'
 
 interface NotificationsState {
   items: Notification[]
+  /** Bumped by every clear-all (local thunk or the `notifications_clear` WS
+   *  frame from another view). A fetch stamps the generation it started under,
+   *  so a response rendered BEFORE a clear is recognised as stale and dropped
+   *  instead of replacing the emptied list — which would resurrect the rows
+   *  and the bell badge with them. */
+  clearSeq: number
 }
 
-const initialState: NotificationsState = { items: [] }
+const initialState: NotificationsState = { items: [], clearSeq: 0 }
 
 /** Ring-buffer cap on the notifications list. Without it, `items` grows
  *  monotonically for the tab's lifetime (ack only flips a flag) — part of
@@ -21,12 +27,25 @@ const capped = (items: Notification[]): Notification[] =>
 
 export const fetchNotifications = createAsyncThunk(
   'notifications/fetch',
-  async () => { const d = await api.notifications(); return (d.notifications || []) as Notification[] },
+  async (_arg: void, { getState }) => {
+    // Captured BEFORE the request so a clear landing mid-flight changes the
+    // generation and marks this payload stale.
+    const seq = (getState() as { notifications: NotificationsState }).notifications.clearSeq
+    const d = await api.notifications()
+    return { items: (d.notifications || []) as Notification[], seq }
+  },
 )
 
 export const clearNotifications = createAsyncThunk(
   'notifications/clear',
-  async () => { await api.clearNotifications() },
+  async (_arg: void, { getState }) => {
+    // Captured BEFORE the request: if the generation has moved by the time
+    // this resolves, the `notifications_clear` frame for this very clear
+    // already emptied the list and the reducer must not empty it again.
+    const seq = (getState() as { notifications: NotificationsState }).notifications.clearSeq
+    await api.clearNotifications()
+    return { seq }
+  },
 )
 
 export const deleteNotification = createAsyncThunk(
@@ -76,11 +95,34 @@ const notificationsSlice = createSlice({
     removeNotificationByTs(state, action: PayloadAction<string>) {
       state.items = state.items.filter(n => n.ts !== action.payload)
     },
+    /** WS `notifications_clear` sync: another view cleared the inbox, so this
+     *  view drops its copy too (the bell badge derives from `items`).
+     *  Idempotent — clearing an already-empty list is a no-op. */
+    clearAllNotifications(state) {
+      state.items = []
+      state.clearSeq += 1
+    },
   },
   extraReducers: (builder) => {
     builder
-      .addCase(fetchNotifications.fulfilled, (state, action) => { state.items = capped(action.payload) })
-      .addCase(clearNotifications.fulfilled, (state) => { state.items = [] })
+      .addCase(fetchNotifications.fulfilled, (state, action) => {
+        // Stale response: a clear landed while this fetch was in flight, so
+        // its payload predates the clear. Applying it would restore the rows
+        // and the badge with them.
+        if (action.payload.seq !== state.clearSeq) return
+        state.items = capped(action.payload.items)
+      })
+      .addCase(clearNotifications.fulfilled, (state, action) => {
+        // The generation moved while the request was in flight, so the
+        // `notifications_clear` frame for this clear already emptied the list.
+        // Anything present now was delivered AFTER the clear and is still held
+        // by the backend — emptying again would delete a live notification.
+        // This reducer remains the fallback for a view whose socket is down;
+        // such a view converges here, and on reconnect via the refetch.
+        if (action.payload.seq !== state.clearSeq) return
+        state.items = []
+        state.clearSeq += 1
+      })
       .addCase(deleteNotification.fulfilled, (state, action) => {
         state.items = state.items.filter(n => n.ts !== action.payload)
       })
@@ -99,5 +141,5 @@ const notificationsSlice = createSlice({
   },
 })
 
-export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs } = notificationsSlice.actions
+export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications } = notificationsSlice.actions
 export default notificationsSlice.reducer

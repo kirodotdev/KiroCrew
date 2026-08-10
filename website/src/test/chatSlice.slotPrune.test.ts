@@ -96,7 +96,9 @@ describe('notificationsSlice ring cap', () => {
   })
 
   it('caps the fetch path too, keeping the newest entries', () => {
-    const payload = Array.from({ length: NOTIFICATIONS_RING_CAP + 50 }, (_, i) => notif(i))
+    const items = Array.from({ length: NOTIFICATIONS_RING_CAP + 50 }, (_, i) => notif(i))
+    // seq 0 matches the initial clear generation, so the payload is applied.
+    const payload = { items, seq: 0 }
     const state = notifReducer(undefined, { type: fetchNotifications.fulfilled.type, payload })
     expect(state.items).toHaveLength(NOTIFICATIONS_RING_CAP)
     expect(state.items[0].ts).toBe('50')

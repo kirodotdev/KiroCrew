@@ -3129,9 +3129,29 @@ class DashboardState:
         return False
 
     async def clear_notifications(self) -> None:
-        """Remove all notifications from memory and disk."""
+        """Remove all notifications from memory and disk.
+
+        Broadcasts ``notifications_clear`` so every connected dashboard view
+        drops its copy of the list. Without the broadcast only the clearing
+        view converges — any other live view (second window, another tab, an
+        embedded viewport) keeps stale items and therefore a stale bell badge.
+        Clearing an already-empty list is a no-op on every client, never an
+        error.
+
+        The broadcast is emitted at the instant memory becomes empty, BEFORE
+        the awaited rewrite, unlike the ack path which broadcasts after it.
+        The difference is that an ack frame is ``ts``-scoped while this one is
+        global: awaiting first yields the loop, so a note delivered during the
+        rewrite would broadcast its own ``notification`` frame first and then
+        be discarded by a clear frame arriving after it — leaving the clients
+        empty while the backend (and the file, since the append lands after
+        the empty-snapshot rewrite on the same ordered executor) still holds
+        that note. Emitting first means any later delivery's frame sequences
+        after the clear and survives on both sides.
+        """
         self._notification_log.clear()
         self._unread_count = 0
+        self.broadcast_ws("notifications_clear", {})
         await self._rewrite_notifications_async()
 
     def get_slot(self, name: str) -> _ChatSlot | None:

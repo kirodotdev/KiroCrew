@@ -4,7 +4,7 @@ import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
-import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
+import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications } from '../store/notificationsSlice'
 import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
 import {
@@ -545,6 +545,11 @@ export function useWebSocket() {
             break
           case 'notification_unack':
             dispatch(unackNotificationByTs(data.ts))
+            break
+          case 'notifications_clear':
+            // Another view cleared the inbox; drop this view's copy so the
+            // bell badge (derived from items) converges to 0. Idempotent.
+            dispatch(clearAllNotifications())
             break
           case 'approval': {
             queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
