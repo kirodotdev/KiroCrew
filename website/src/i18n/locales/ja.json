@@ -7785,6 +7785,7 @@
       "rows": "行",
       "running_pods": "実行中のポッド",
       "safely_removes_worktrees_whose_pr_has_already_me": "PR がすでにマージ済みのワークツリーを安全に削除します。",
+      "scanning_merged": "マージ済みをスキャン中…",
       "select": "{{name}} を選択",
       "sort_behind": "ソート：遅延",
       "sort_name": "ソート：名前",

@@ -2632,6 +2632,7 @@
       "restart_gateway_2": "Restart gateway?",
       "restart_pod": "Restart pod",
       "restarting_reconnecting": "Restarting — reconnecting…",
+      "scanning_merged": "Scanning for merged…",
       "select": "Select {{name}}",
       "spin_up_pod": "Spin up pod",
       "start": "Start",

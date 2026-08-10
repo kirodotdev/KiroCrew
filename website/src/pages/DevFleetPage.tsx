@@ -1592,8 +1592,13 @@ export default function DevFleetPage() {
                 {/* The merged-scan runs git per worktree, so a large fleet keeps
                     the button pressed for seconds with no other surface to
                     report on: the trash glyph becomes a spinner in place so the
-                    click is visibly still working rather than merely disabled. */}
-                <Btn danger onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.prune_merged'))}</Btn>
+                    click is visibly still working rather than merely disabled.
+                    While the scan runs the label names the read-only action and
+                    the `danger` variant is suppressed: a spinner on a
+                    destructive-styled "Prune merged" reads as "deletion in
+                    progress", but nothing is deleted until the review dialog is
+                    confirmed. `aria-busy` stays as-is for assistive tech. */}
+                <Btn danger={!busy['__prune']} onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT(busy['__prune'] ? 'pages.devFleetPage.scanning_merged' : 'pages.devFleetPage.prune_merged'))}</Btn>
                 <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
               </div>
               {body}

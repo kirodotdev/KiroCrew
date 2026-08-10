@@ -7785,6 +7785,7 @@
       "rows": "행",
       "running_pods": "실행 중인 포드",
       "safely_removes_worktrees_whose_pr_has_already_me": "PR이 이미 병합된 워크트리를 안전하게 삭제합니다.",
+      "scanning_merged": "병합된 항목 검색 중…",
       "select": "{{name}} 선택",
       "sort_behind": "정렬: 뒤처짐",
       "sort_name": "정렬: 이름",

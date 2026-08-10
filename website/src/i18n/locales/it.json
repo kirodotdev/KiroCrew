@@ -7997,6 +7997,7 @@
       "rows": "righe",
       "running_pods": "Pod in esecuzione",
       "safely_removes_worktrees_whose_pr_has_already_me": "rimuove in sicurezza i worktree la cui PR è già stata unita.",
+      "scanning_merged": "Ricerca dei worktree uniti…",
       "select": "Seleziona {{name}}",
       "sort_behind": "Ordinamento: in ritardo",
       "sort_name": "Ordinamento: nome",

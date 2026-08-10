@@ -7785,6 +7785,7 @@
       "rows": "行",
       "running_pods": "运行中的 pod",
       "safely_removes_worktrees_whose_pr_has_already_me": "可安全移除 PR 已合并的工作树。",
+      "scanning_merged": "正在扫描已合并…",
       "select": "选择 {{name}}",
       "sort_behind": "排序：落后",
       "sort_name": "排序：名称",

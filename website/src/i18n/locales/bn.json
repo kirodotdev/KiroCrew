@@ -7891,6 +7891,7 @@
       "rows": "সারি",
       "running_pods": "চলমান Pod",
       "safely_removes_worktrees_whose_pr_has_already_me": "যেসব worktree-এর PR ইতিমধ্যে মার্জ হয়ে গেছে সেগুলো নিরাপদে সরিয়ে দেয়।",
+      "scanning_merged": "মার্জ হওয়াগুলো স্ক্যান করা হচ্ছে…",
       "select": "{{name}} নির্বাচন করো",
       "sort_behind": "সাজান: পিছিয়ে",
       "sort_name": "সাজান: নাম",

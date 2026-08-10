@@ -7891,6 +7891,7 @@
       "rows": "पंक्तियां",
       "running_pods": "चल रहे पॉड",
       "safely_removes_worktrees_whose_pr_has_already_me": "उन वर्कट्री को सुरक्षित रूप से हटा देता है जिनका PR पहले ही मर्ज हो चुका है।",
+      "scanning_merged": "मर्ज्ड खोजे जा रहे हैं…",
       "select": "{{name}} चुनो",
       "sort_behind": "क्रम: पीछे",
       "sort_name": "क्रम: नाम",

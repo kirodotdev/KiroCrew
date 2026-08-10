@@ -7997,6 +7997,7 @@
       "rows": "lignes",
       "running_pods": "Pods en cours",
       "safely_removes_worktrees_whose_pr_has_already_me": "supprime en toute sécurité les worktrees dont la PR a déjà été fusionnée.",
+      "scanning_merged": "Recherche des fusionnés…",
       "select": "Sélectionner {{name}}",
       "sort_behind": "Tri : retard",
       "sort_name": "Tri : nom",

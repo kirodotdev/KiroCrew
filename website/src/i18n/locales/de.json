@@ -7891,6 +7891,7 @@
       "rows": "Zeilen",
       "running_pods": "Laufende Pods",
       "safely_removes_worktrees_whose_pr_has_already_me": "entfernt sicher Worktrees, deren PR bereits zusammengeführt wurde.",
+      "scanning_merged": "Suche nach Zusammengeführten…",
       "select": "{{name}} auswählen",
       "sort_behind": "Sortierung: zurück",
       "sort_name": "Sortierung: Name",

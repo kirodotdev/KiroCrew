@@ -7997,6 +7997,7 @@
       "rows": "linhas",
       "running_pods": "Pods em execução",
       "safely_removes_worktrees_whose_pr_has_already_me": "remove com segurança as worktrees cujo PR já foi mesclado.",
+      "scanning_merged": "Procurando mescladas…",
       "select": "Selecionar {{name}}",
       "sort_behind": "Ordenar: atrás",
       "sort_name": "Ordenar: nome",
