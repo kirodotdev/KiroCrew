@@ -25,7 +25,7 @@ import { join, relative } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
 
-import { unitLiteralHits, walk, inScope } from '../../scripts/lib/unit-literals.mjs'
+import { unitLiteralHits, walk, inScope, mayHoldUnitLiteral } from '../../scripts/lib/unit-literals.mjs'
 
 const SRC = join(__dirname, '..')
 
@@ -71,5 +71,30 @@ describe('a number is never glued to a unit literal', () => {
       "const c = fmtPercent(ratio)",
     ].join('\n')
     expect(unitLiteralHits('ok.tsx', ok)).toEqual([])
+  })
+
+  /**
+   * The fast path decides which files the gate parses at all, so a shape it rejects
+   * is a shape the gate is blind to -- the same silent-exemption failure the two
+   * older gates had. Every case below is a REAL finding, and each is admitted by one
+   * clause alone: drop `RAW_DIFFERS` and the escape and comment cases go dark, drop
+   * `RAW_CONCAT` and the concatenations do. Asserting the matcher still reports each
+   * one keeps the pairing from going vacuous.
+   */
+  it('the fast path never hides a finding the matcher would report', () => {
+    const tricky = [
+      'const a = `${m}m ${s}s`',                    // RAW_BRACE: template continuation
+      'const b = <span>{pct.toFixed(0)}%</span>',   // RAW_BRACE: JSX text after {expr}
+      "const c = bytes + ' KB'",                    // RAW_CONCAT: one space allowed
+      "const d = Math.round(pct) + '%'",            // RAW_CONCAT
+      'const e = `${x}\\u006d`',                    // RAW_DIFFERS: unit as an escape
+      'const h = `${x}\\m`',                        // RAW_DIFFERS: unit as an identity escape
+      "const f = n + '\\x25'",                      // RAW_DIFFERS: '%' as an escape
+      "const g = n + /* keep bare */ 's'",          // RAW_DIFFERS: comment after +
+    ]
+    for (const src of tricky) {
+      expect(mayHoldUnitLiteral(src), `fast path rejected: ${src}`).toBe(true)
+      expect(unitLiteralHits('t.tsx', src).length, `matcher missed: ${src}`).toBeGreaterThan(0)
+    }
   })
 })

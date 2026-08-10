@@ -34,6 +34,57 @@ export const ROUND_TRIP = new Map([
 /** Measurement units this UI renders. Symbols only. */
 export const UNIT = /^(ms|s|m|h|d|B|KB|MB|GB|TB|kB|K|M|%|x)(?![a-zA-Z])/
 
+/**
+ * The fast path: can this file hold a finding at all, judged from raw text?
+ *
+ * The scan parses every in-scope file to find sites in a few dozen of them, and the
+ * parse is ~95% of its runtime. So reject a file from its raw text when it provably
+ * cannot contain any of the three shapes, and parse only what survives. This is a
+ * pure early-out: the matcher below is unchanged and still decides every finding.
+ *
+ * ## Why it cannot hide a finding
+ *
+ * All three shapes need a literal chunk whose text starts with an optional space
+ * then a unit. In raw source such a chunk is preceded by:
+ *
+ *  - `}` -- a template continuation (the chunk after an interpolation is a
+ *    TemplateMiddle/Tail token, which always opens with `}`), and equally JSX text
+ *    following an expression, since the JsxText begins where the JsxExpression's `}`
+ *    ends. `RAW_BRACE`.
+ *  - a quote, for `expr + 'm'`, with only whitespace between, since `+` binds its
+ *    operand directly. `RAW_CONCAT`.
+ *
+ * Both read the unit vocabulary out of `UNIT` itself rather than restating it, so
+ * adding a unit cannot make the fast path narrower than the matcher.
+ *
+ * That leaves the two ways raw text and a cooked literal legitimately disagree, and
+ * `RAW_DIFFERS` admits those files without reasoning about them at all:
+ *
+ *  - An escape. A unit can be spelled `\u006d`, `%` as `\x25`, or `m` as the
+ *    identity escape `\m`, and a backslash before a newline continues the line and
+ *    cooks to nothing, shifting what "first character" means. Any backslash admits
+ *    the file: enumerating which escapes can cook to a unit character is exactly
+ *    the kind of reasoning this clause exists to avoid, and a stray backslash in a
+ *    literal is rare enough that the admission costs almost nothing.
+ *  - A comment between `+` and its operand, which `RAW_CONCAT`'s `\s*` cannot cross.
+ *
+ * JSX text needs no such clause: it carries no escapes, and TypeScript does not
+ * decode HTML entities into `JsxText.text` (`{x}&#37;` stays `&#37;`), so its raw
+ * and cooked forms are the same string.
+ *
+ * The matcher's own vitest file pins this with a case per clause that IS a real
+ * finding and is admitted by that clause alone, so removing a clause fails loudly
+ * rather than going quietly blind.
+ */
+const UNIT_TAIL = UNIT.source.replace(/^\^/, '')
+const RAW_BRACE = new RegExp(`\\}[ ]?${UNIT_TAIL}`)
+const RAW_CONCAT = new RegExp(`\\+\\s*['"][ ]?${UNIT_TAIL}`)
+const RAW_DIFFERS = /\\|\+\s*\/[/*]/
+
+export function mayHoldUnitLiteral(source) {
+  return RAW_BRACE.test(source) || RAW_CONCAT.test(source) || RAW_DIFFERS.test(source)
+}
+
 /** Units that only ever mean CSS. A literal containing one is a CSS value. */
 export const CSS_UNIT = /\d\s*(px|r?em|vh|vw|vmin|vmax|fr|deg|ch|pt|cm|mm|dvh|svh)\b|\bcalc\(/
 
@@ -66,20 +117,35 @@ export function inScope(rel) {
 }
 
 export function walk(dir, out = []) {
-  for (const entry of readdirSync(dir)) {
-    if (entry === 'node_modules' || entry === 'locales') continue
-    const full = join(dir, entry)
-    if (statSync(full).isDirectory()) walk(full, out)
-    else if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) out.push(full)
+  // `withFileTypes` answers directory-or-file from the one `readdir` syscall the
+  // traversal already makes, instead of a `stat` per entry -- a thousand extra
+  // syscalls over a tree this size. A symlink is the one entry kind a Dirent cannot
+  // classify (it reports the link, not the target), so those alone still get a
+  // `stat`, which keeps the population identical to the pre-Dirent walk.
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === 'locales') continue
+    const full = join(dir, entry.name)
+    const isDir = entry.isSymbolicLink() ? statSync(full).isDirectory() : entry.isDirectory()
+    if (isDir) walk(full, out)
+    else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) out.push(full)
   }
   return out
 }
 
-/** Is this node lexically inside a position whose value is CSS? */
-function inCssContext(node) {
-  for (let n = node; n; n = n.parent) {
+/**
+ * Is this node lexically inside a position whose value is CSS?
+ *
+ * The ancestor chain is passed in, innermost first, rather than followed through
+ * `node.parent`. Parent pointers are not free: asking `createSourceFile` for them
+ * costs about as much again as the parse itself, and this is the only consumer of
+ * them here. The visitor already knows the chain it descended, so it hands that over
+ * instead. `sf` is passed to every `getText` for the same reason -- the no-argument
+ * form finds its source file by walking `.parent`.
+ */
+function inCssContext(chain, sf) {
+  for (const n of chain) {
     // style={{ ... }} or style="..."
-    if (ts.isJsxAttribute(n) && CSS_JSX_ATTR.has(n.name.getText())) return true
+    if (ts.isJsxAttribute(n) && CSS_JSX_ATTR.has(n.name.getText(sf))) return true
     // { width: `...` }
     if (ts.isPropertyAssignment(n)) {
       const key = ts.isIdentifier(n.name) || ts.isStringLiteral(n.name) ? n.name.text : ''
@@ -87,33 +153,60 @@ function inCssContext(node) {
     }
     // el.style.height = ... / setProperty('--x', ...)
     if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      if (/\.style\b/.test(n.left.getText())) return true
+      if (/\.style\b/.test(n.left.getText(sf))) return true
     }
     if (ts.isCallExpression(n)) {
-      const callee = n.expression.getText()
+      const callee = n.expression.getText(sf)
       if (/setProperty$/.test(callee) || /useMotionTemplate$/.test(callee)) return true
     }
     // Tagged template: useMotionTemplate`...`
-    if (ts.isTaggedTemplateExpression(n) && /MotionTemplate/.test(n.tag.getText())) return true
+    if (ts.isTaggedTemplateExpression(n) && /MotionTemplate/.test(n.tag.getText(sf))) return true
   }
   return false
 }
 
-/** Line numbers where a numeric span is glued to a unit literal. */
+/** Does this literal chunk start with a unit? One space is allowed, as CLDR does. */
+function startsWithUnit(text) {
+  return UNIT.test(text) || UNIT.test(text.replace(/^ /, ''))
+}
+
+/**
+ * Line numbers where a numeric span is glued to a unit literal.
+ *
+ * Ordered cheap-test-first throughout. The unit check reads a string already on the
+ * node; the two CSS checks re-scan source text (`getText`) and walk the ancestor
+ * chain. Since a site is a finding only if ALL of them agree, asking the cheap one
+ * first is free and leaves the expensive pair running on the handful of candidates
+ * rather than on every template, JSX element and `+` in the repo.
+ */
 export function unitLiteralHits(file, source) {
-  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  // Cheap raw-text rejection before the parse; provably a superset of what the walk
+  // below can match, so this only ever skips files with nothing to find.
+  if (!mayHoldUnitLiteral(source)) return []
+
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX)
   const hits = new Set()
   const line = (n) => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1
 
+  /** Ancestors of the node being visited, outermost first; see `inCssContext`. */
+  const ancestry = []
+  /** The chain `inCssContext` wants: `inner` (when given) then self, then upwards. */
+  const chainFor = (inner) => {
+    const chain = inner ? [inner] : []
+    for (let i = ancestry.length - 1; i >= 0; i--) chain.push(ancestry[i])
+    return chain
+  }
+
   const visit = (node) => {
+    ancestry.push(node)
+
     // `${expr}UNIT`: the literal chunk that FOLLOWS an interpolation.
     if (ts.isTemplateExpression(node)) {
-      const whole = node.getText(sf)
-      if (!CSS_UNIT.test(whole) && !inCssContext(node)) {
+      if (node.templateSpans.some((span) => startsWithUnit(span.literal.text))
+        && !CSS_UNIT.test(node.getText(sf))
+        && !inCssContext(chainFor(), sf)) {
         for (const span of node.templateSpans) {
-          const text = span.literal.text
-          // Allow one space between value and unit (`5 KB`), as CLDR does.
-          if (UNIT.test(text) || UNIT.test(text.replace(/^ /, ''))) hits.add(line(span.literal))
+          if (startsWithUnit(span.literal.text)) hits.add(line(span.literal))
         }
       }
     }
@@ -124,10 +217,11 @@ export function unitLiteralHits(file, source) {
         const cur = kids[i]
         const next = kids[i + 1]
         if (!ts.isJsxExpression(cur) || !ts.isJsxText(next)) continue
-        if (inCssContext(cur)) continue
         const text = next.text
+        if (!startsWithUnit(text)) continue
         if (CSS_UNIT.test(text)) continue
-        if (UNIT.test(text) || UNIT.test(text.replace(/^ /, ''))) hits.add(line(cur))
+        if (inCssContext(chainFor(cur), sf)) continue
+        hits.add(line(cur))
       }
     }
     // expr + 'UNIT'
@@ -135,13 +229,15 @@ export function unitLiteralHits(file, source) {
       ts.isBinaryExpression(node)
       && node.operatorToken.kind === ts.SyntaxKind.PlusToken
       && ts.isStringLiteral(node.right)
-      && !inCssContext(node)
+      && startsWithUnit(node.right.text)
       && !CSS_UNIT.test(node.right.text)
+      && !inCssContext(chainFor(), sf)
     ) {
-      const text = node.right.text
-      if (UNIT.test(text) || UNIT.test(text.replace(/^ /, ''))) hits.add(line(node.right))
+      hits.add(line(node.right))
     }
     ts.forEachChild(node, visit)
+
+    ancestry.pop()
   }
 
   visit(sf)
