@@ -7096,8 +7096,6 @@
         "ask_a_side_question_2": "사이드 질문하기…",
         "ask_a_side_question_main_agent_keeps_working": "사이드 질문하기 — 메인 에이전트는 계속 작업합니다",
         "context_from": "컨텍스트 출처",
-        "copied": "복사했습니다!",
-        "copy": "복사",
         "queue_cancel_failed": "대기열에 있는 해당 질문을 취소할 수 없습니다",
         "queue_edit_failed": "대기열에 있는 해당 질문을 수정할 수 없습니다",
         "refresh_context": "컨텍스트 새로 고침",
@@ -7105,7 +7103,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "보내기",
         "steer_demoted_to_queue": "턴이 끝나 대기열에 추가했습니다",
-        "steered": "방향 지시함",
         "thinking": "생각 중…",
         "turn_other": "{{count}}턴"
       },

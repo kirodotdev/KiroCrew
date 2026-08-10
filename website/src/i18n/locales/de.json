@@ -7194,8 +7194,6 @@
         "ask_a_side_question_2": "Stelle eine Nebenfrage…",
         "ask_a_side_question_main_agent_keeps_working": "Nebenfrage stellen — der Hauptagent arbeitet weiter",
         "context_from": "Kontext von",
-        "copied": "Kopiert!",
-        "copy": "Kopieren",
         "queue_cancel_failed": "Diese Frage in der Warteschlange konnte nicht abgebrochen werden",
         "queue_edit_failed": "Diese Frage in der Warteschlange konnte nicht aktualisiert werden",
         "refresh_context": "Kontext aktualisieren",
@@ -7203,7 +7201,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "Senden",
         "steer_demoted_to_queue": "Der Zug endete — stattdessen in die Warteschlange gestellt",
-        "steered": "Gesteuert",
         "thinking": "Denkt nach…",
         "turn_one": "{{count}} Zug",
         "turn_other": "{{count}} Züge"

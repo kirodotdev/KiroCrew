@@ -7096,8 +7096,6 @@
         "ask_a_side_question_2": "问一个旁支问题…",
         "ask_a_side_question_main_agent_keeps_working": "问一个旁支问题 — 主代理继续工作",
         "context_from": "上下文来自",
-        "copied": "已复制！",
-        "copy": "复制",
         "queue_cancel_failed": "无法取消排队中的这个问题",
         "queue_edit_failed": "无法更新排队中的这个问题",
         "refresh_context": "刷新上下文",
@@ -7105,7 +7103,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "发送",
         "steer_demoted_to_queue": "本轮已结束 — 已改为排队",
-        "steered": "已引导",
         "thinking": "思考中…",
         "turn_other": "{{count}} 轮"
       },

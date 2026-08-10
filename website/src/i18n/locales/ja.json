@@ -7096,8 +7096,6 @@
         "ask_a_side_question_2": "サイドで質問…",
         "ask_a_side_question_main_agent_keeps_working": "サイドで質問 — メインエージェントは作業を続けます",
         "context_from": "コンテキスト元",
-        "copied": "コピーしました！",
-        "copy": "コピー",
         "queue_cancel_failed": "キューに入っている質問をキャンセルできませんでした",
         "queue_edit_failed": "キューに入っている質問を更新できませんでした",
         "refresh_context": "コンテキストを更新",
@@ -7105,7 +7103,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "送信",
         "steer_demoted_to_queue": "ターンが終了したためキューに入れました",
-        "steered": "指示を追加",
         "thinking": "考え中…",
         "turn_other": "{{count}} ターン"
       },

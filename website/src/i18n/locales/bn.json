@@ -7194,8 +7194,6 @@
         "ask_a_side_question_2": "একটি সাইড প্রশ্ন করো…",
         "ask_a_side_question_main_agent_keeps_working": "একটি সাইড প্রশ্ন করুন — মূল এজেন্ট কাজ চালিয়ে যাবে",
         "context_from": "কনটেক্সটের উৎস",
-        "copied": "কপি হয়েছে!",
-        "copy": "কপি করুন",
         "queue_cancel_failed": "সেই কিউ করা প্রশ্নটি বাতিল করা যায়নি",
         "queue_edit_failed": "সেই কিউ করা প্রশ্নটি আপডেট করা যায়নি",
         "refresh_context": "কনটেক্সট রিফ্রেশ করুন",
@@ -7203,7 +7201,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "পাঠান",
         "steer_demoted_to_queue": "টার্ন শেষ হয়েছে — পরিবর্তে কিউ করা হয়েছে",
-        "steered": "স্টিয়ার করা হয়েছে",
         "thinking": "ভাবছে…",
         "turn_one": "{{count}}টি টার্ন",
         "turn_other": "{{count}}টি টার্ন"

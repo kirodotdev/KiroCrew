@@ -7194,8 +7194,6 @@
         "ask_a_side_question_2": "एक साइड प्रश्न पूछें…",
         "ask_a_side_question_main_agent_keeps_working": "एक साइड प्रश्न पूछें — मुख्य एजेंट काम करता रहेगा",
         "context_from": "संदर्भ:",
-        "copied": "कॉपी किया गया!",
-        "copy": "कॉपी करें",
         "queue_cancel_failed": "कतार में लगे उस प्रश्न को रद्द नहीं किया जा सका",
         "queue_edit_failed": "कतार में लगे उस प्रश्न को अपडेट नहीं किया जा सका",
         "refresh_context": "संदर्भ ताज़ा करें",
@@ -7203,7 +7201,6 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "भेजें",
         "steer_demoted_to_queue": "टर्न समाप्त हो गया — इसके बजाय कतार में डाला गया",
-        "steered": "स्टीयर किया गया",
         "thinking": "सोच रहा है…",
         "turn_one": "{{count}} टर्न",
         "turn_other": "{{count}} टर्न"
