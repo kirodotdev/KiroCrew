@@ -3,7 +3,7 @@
 Content-bearing local artifacts (markdown/text documents the user saves and
 iterates) are mirrored into the Knowledge Library so they become searchable and
 stay in sync as the artifact changes, and are removed when the artifact is
-deleted. On by default (``knowledge.auto_ingest_artifacts``).
+deleted. Off by default, opt in with ``knowledge.auto_ingest_artifacts``.
 
 Design (plugs into the existing Knowledge source framework rather than adding a
 parallel watcher):
@@ -23,12 +23,13 @@ parallel watcher):
   observes every write path. ``upsert`` -> ingest/replace the artifact's item
   group; ``delete`` -> remove it.
 
-* **First-enable backfill tied to source-row creation.** Because the feature is
-  on by default, the store may already hold artifacts created before the
-  listener existed. The one-time pass that ingests them is tied to the *creation
-  of the aggregate source row*: when :func:`ensure_artifact_source` actually
-  creates the row (its existence is the idempotency marker), the backfill runs
-  once. On every later boot the row already exists, so nothing re-runs.
+* **First-enable backfill tied to source-row creation.** The feature is opt-in,
+  so when it is switched on the store already holds every artifact created
+  before the listener existed. The one-time pass that ingests them is tied to
+  the *creation of the aggregate source row*: when :func:`ensure_artifact_source`
+  actually creates the row (its existence is the idempotency marker), the
+  backfill runs once. On every later boot the row already exists, so nothing
+  re-runs.
 
 Content (and the artifact name used as the source title) are redacted for
 credentials/exfiltration URLs before they cross into the store, and file-backed

@@ -315,12 +315,14 @@ class TestArtifactKnowledgeSync:
 
 
 class TestKnowledgeConfigDefaults:
-    def test_defaults_on(self):
+    def test_auto_ingest_defaults_off(self):
+        # Opt-in: the dataclass default and the loader must agree, or the
+        # dashboard toggle and the running gateway disagree about the state.
         from kiro_crew.config.loader import KiroCrewConfig, KnowledgeConfig
         kc = KnowledgeConfig()
-        assert kc.auto_ingest_artifacts is True
+        assert kc.auto_ingest_artifacts is False
         assert kc.auto_ingest_artifact_kinds == ["markdown", "text", "html", "json"]
-        assert KiroCrewConfig().knowledge.auto_ingest_artifacts is True
+        assert KiroCrewConfig().knowledge.auto_ingest_artifacts is False
 
 
 class TestGroupLabelAndRename:

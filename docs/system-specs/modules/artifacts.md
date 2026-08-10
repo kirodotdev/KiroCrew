@@ -543,10 +543,10 @@ comment never disappears without a trace.
 
 ## Knowledge Library Auto-Ingest
 
-Content-bearing local artifacts (markdown/text documents) are automatically
+Content-bearing local artifacts (markdown/text documents) can be automatically
 ingested into the Knowledge Library so they become searchable, stay in sync as
-the artifact changes, and are removed when the artifact is deleted. On by
-default via `knowledge.auto_ingest_artifacts`; the eligible kinds are
+the artifact changes, and are removed when the artifact is deleted. Off by
+default, opt in with `knowledge.auto_ingest_artifacts`; the eligible kinds are
 `knowledge.auto_ingest_artifact_kinds` (default `["markdown", "text", "html",
 "json"]`). `widget` is excluded (widgets/dashboards are UI, not documents — and
 a remote widget round-trips back to `kind="widget"` on clone) and `svg` is

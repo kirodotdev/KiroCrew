@@ -139,7 +139,7 @@ async def _start_artifact_ingest_async(app: web.Application) -> None:
     through the store in the gateway process) ingests or removes that
     artifact's item group in the aggregate "Artifacts" Knowledge source. On the
     first run that creates the source row, a one-time backfill ingests
-    pre-existing artifacts. Gated on ``knowledge.auto_ingest_artifacts`` (on by
+    pre-existing artifacts. Gated on ``knowledge.auto_ingest_artifacts`` (off by
     default). See ``kiro_crew.knowledge.artifact_ingest`` for the full design.
     """
     cfg = KiroCrewConfig.load()

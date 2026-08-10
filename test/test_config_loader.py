@@ -3039,8 +3039,10 @@ def test_heartbeat_default_deliver_invalid_falls_back_to_slack():
 class TestKnowledgeAutoIngest:
     """The auto-add / project-docs / budget / dedup-cadence keys."""
 
-    def test_auto_add_documents_defaults_on(self) -> None:
-        assert _load_from_dict({}).knowledge.auto_add_documents is True
+    def test_auto_add_documents_defaults_off(self) -> None:
+        # Auto-ingest is opt-in: a config that never mentions the key must not
+        # start writing to the Library or spending extraction calls.
+        assert _load_from_dict({}).knowledge.auto_add_documents is False
 
     def test_auto_add_documents_reads_canonical_key(self) -> None:
         cfg = _load_from_dict({"knowledge": {"auto_add_documents": False}})
@@ -3062,8 +3064,18 @@ class TestKnowledgeAutoIngest:
         assert data["knowledge"]["auto_add_documents"] is True
         assert "auto_ingest_doc_links" not in data["knowledge"]
 
-    def test_project_docs_defaults_on(self) -> None:
-        assert _load_from_dict({}).knowledge.auto_register_project_docs is True
+    def test_project_docs_defaults_off(self) -> None:
+        assert _load_from_dict({}).knowledge.auto_register_project_docs is False
+
+    def test_artifact_ingest_defaults_off(self) -> None:
+        assert _load_from_dict({}).knowledge.auto_ingest_artifacts is False
+
+    def test_an_empty_knowledge_section_leaves_every_auto_path_off(self) -> None:
+        # All three arrive through different readers (a legacy-aware helper and
+        # two inline .get() calls), so one flipped in isolation is a real risk.
+        kc = _load_from_dict({"knowledge": {}}).knowledge
+        assert (kc.auto_add_documents, kc.auto_register_project_docs,
+                kc.auto_ingest_artifacts) == (False, False, False)
 
     def test_project_docs_reads_value(self) -> None:
         cfg = _load_from_dict({"knowledge": {"auto_register_project_docs": False}})

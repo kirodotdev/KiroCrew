@@ -655,12 +655,12 @@ class MemoryConfig:
 class KnowledgeConfig:
     # Knowledge Library ingestion toggles. Embedding/retrieval settings live
     # under MemoryConfig (shared via create_embedder_from_config).
-    auto_add_documents: bool = True                     # agent adds documents it reads (aggregate "Auto-added" source); legacy spelling auto_ingest_doc_links accepted
-    auto_register_project_docs: bool = True             # register each worked-in project's documents as a folder source (document filter only)
+    auto_add_documents: bool = False                    # opt-in; agent adds documents it reads (aggregate "Auto-added" source); legacy spelling auto_ingest_doc_links accepted
+    auto_register_project_docs: bool = False            # opt-in; register each worked-in project's documents as a folder source (document filter only)
     auto_ingest_chunk_budget: int = 150                 # chunks per sweep for auto-registered sources; 0 = unbounded
     folder_ingest_chunk_budget: int = 300               # chunks per sweep for hand-added folder sources; per-source chunk_budget overrides; 0 = unbounded
     dedup_every_n_sweeps: int = 12                      # full dedup pass cadence; 0 disables
-    auto_ingest_artifacts: bool = True                  # on by default; ingest local artifacts into the KB (aggregate "Artifacts" source)
+    auto_ingest_artifacts: bool = False                 # opt-in; ingest local artifacts into the KB (aggregate "Artifacts" source)
     auto_ingest_artifact_kinds: list[str] = ["markdown", "text", "html", "json"]  # reader-extractable kinds (widget/svg excluded)
     embed_timeout_secs: float = 10.0                    # per-request embed timeout; 0/unset -> built-in TIMEOUT (10s)
     embed_content_budget: int = 0                       # chunk-content fold budget (chars); 0/unset -> built-in _EMBED_CONTENT_BUDGET
@@ -1093,9 +1093,9 @@ Returns the effective config for a channel:
     "history_max_days": 365
   },
   "knowledge": {
-    "auto_add_documents": true,
-    "auto_register_project_docs": true,
-    "auto_ingest_artifacts": true,
+    "auto_add_documents": false,
+    "auto_register_project_docs": false,
+    "auto_ingest_artifacts": false,
     "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"],
     "embed_timeout_secs": 10.0,
     "embed_content_budget": 0

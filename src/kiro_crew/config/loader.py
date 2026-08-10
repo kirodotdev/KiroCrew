@@ -1547,14 +1547,16 @@ class KnowledgeConfig:
     """
 
     auto_ingest_artifacts: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Auto-Ingest Artifacts",
             "Automatically ingest content-bearing local artifacts (markdown/text "
             "documents you save and iterate) into the Knowledge Library so they "
             "become searchable, keep them in sync as the artifact changes, and "
             "remove them from the Library when the artifact is deleted. They "
-            "appear as a single aggregate 'Artifacts' source. On by default.",
+            "appear as a single aggregate 'Artifacts' source. Off by default: "
+            "every ingested chunk costs an LLM extraction call, so a library "
+            "grows and spends only once you ask for it.",
         ),
     )
     auto_ingest_artifact_kinds: list[str] = field(
@@ -1607,7 +1609,7 @@ class KnowledgeConfig:
         ),
     )
     auto_add_documents: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Auto-Add Documents",
             "Let the agent add documents it comes across during normal work to the "
@@ -1615,12 +1617,13 @@ class KnowledgeConfig:
             "document with its own tools, under your approval, and hands over the "
             "text -- Kiro Crew fetches nothing itself, so the doc-ingest host "
             "allowlist below does not apply. Added documents appear in a single "
-            "aggregate 'Auto-added' source you can remove in one click. On by "
-            "default. Renamed from auto_ingest_doc_links, which is still accepted.",
+            "aggregate 'Auto-added' source you can remove in one click. Off by "
+            "default: the Library should only hold what you asked it to hold. "
+            "Renamed from auto_ingest_doc_links, which is still accepted.",
         ),
     )
     auto_register_project_docs: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Auto-Register Project Documents",
             "Register the documents of each project you work in as a Knowledge "
@@ -1628,9 +1631,11 @@ class KnowledgeConfig:
             "become searchable without adding the folder by hand. Only documents "
             "are taken (.md/.pdf/.docx/.org above a small size floor, excluding "
             "agent instructions, generated files and repository boilerplate) -- "
-            "never source code. No confirmation step: the document filter and the "
-            "per-sweep chunk budget below bound the cost, and deleting the source "
-            "keeps it deleted. On by default.",
+            "never source code. There is no confirmation step once enabled: the "
+            "document filter and the per-sweep chunk budget below bound the cost, "
+            "and deleting the source keeps it deleted. Off by default, because "
+            "registering a repository is a decision to spend extraction calls on "
+            "it -- turning this on opts in every project you open.",
         ),
     )
     auto_ingest_chunk_budget: int = field(
@@ -1717,11 +1722,14 @@ def _read_auto_add_documents(knowledge_data: dict) -> bool:
     value carries over instead of silently reverting to the default on upgrade.
     Canonical spelling is ``auto_add_documents``, which is what ``save()`` writes,
     so a save/load round-trip settles on it.
+
+    Absent both keys the feature is OFF: auto-ingest is opt-in, so a config that
+    never mentioned it must not start adding documents.
     """
     for key in ("auto_add_documents", "auto_ingest_doc_links"):
         if key in knowledge_data:
             return bool(knowledge_data.get(key))
-    return True
+    return False
 
 
 @dataclass
@@ -5059,7 +5067,7 @@ class KiroCrewConfig:
                 migrated=memory_data.get("migrated", False),
             ),
             knowledge=KnowledgeConfig(
-                auto_ingest_artifacts=bool(knowledge_data.get("auto_ingest_artifacts", True)),
+                auto_ingest_artifacts=bool(knowledge_data.get("auto_ingest_artifacts", False)),
                 auto_ingest_artifact_kinds=[
                     k
                     for k in knowledge_data.get(
@@ -5088,7 +5096,7 @@ class KiroCrewConfig:
                 ),
                 auto_add_documents=_read_auto_add_documents(knowledge_data),
                 auto_register_project_docs=bool(
-                    knowledge_data.get("auto_register_project_docs", True)),
+                    knowledge_data.get("auto_register_project_docs", False)),
                 auto_ingest_chunk_budget=_safe_nonnegative_int(
                     knowledge_data.get("auto_ingest_chunk_budget", 150), 150),
                 folder_ingest_chunk_budget=_safe_nonnegative_int(
