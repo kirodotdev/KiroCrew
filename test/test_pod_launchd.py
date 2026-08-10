@@ -206,16 +206,18 @@ def test_recent_journal_says_why_it_is_empty(cfg):
     assert "no pod log yet" in text
 
 
-def test_orphan_homes_reports_only_reapable_leftovers(cfg, monkeypatch):
-    """With no ExecStopPost, a crashed pod leaves its HOME; ls/down GC it."""
+def test_orphan_homes_skips_a_pod_with_an_installed_plist(cfg, monkeypatch):
+    """A per-pod plist means "installed", not orphaned — a name mid-`up` whose
+    gateway has not gone active yet must not be reported as reapable."""
     cfg.pod_root.mkdir(parents=True, exist_ok=True)
     (cfg.pod_root / "orphan").mkdir()
     (cfg.pod_root / "running").mkdir()
     (cfg.pod_root / "installed").mkdir()
     (cfg.pod_root / ".e2e-artifacts").mkdir()  # dot dirs are not pods
     launchd.write_plist(cfg, "installed")
-    monkeypatch.setattr(launchd, "active_names", lambda c: {"running"})
-    assert launchd.orphan_homes(cfg) == ["orphan"]
+    monkeypatch.setattr(rt, "IS_MACOS", True)
+    monkeypatch.setattr(rt, "active_names", lambda c: {"running"})
+    assert rt.orphan_homes(cfg) == ["orphan"]
 
 
 # --------------------------------------------------------------------------
@@ -434,7 +436,7 @@ def test_start_and_stop_hold_the_per_name_mutex(cfg, monkeypatch):
         yield
         held.append(f"exit:{n}")
 
-    monkeypatch.setattr(rt.launchd, "pod_mutex", _fake_mutex)
+    monkeypatch.setattr(rt, "pod_name_mutex", _fake_mutex)
     monkeypatch.setattr(rt, "IS_MACOS", True)
     monkeypatch.setattr(rt.launchd, "write_plist", lambda c, n: None)
     monkeypatch.setattr(rt.launchd, "start", lambda c, n: _cp(returncode=0))
@@ -464,8 +466,8 @@ def test_pod_mutex_is_reentrant_within_a_thread(cfg):
     """The CLI holds the mutex across a transaction while start_pod/stop_pod
     re-acquire it inside; flock is per open-file-description, so without
     reentrancy that inner acquisition would deadlock against our own lock."""
-    with launchd.pod_mutex(cfg, "smoke"):
-        with launchd.pod_mutex(cfg, "smoke"):  # must not block
+    with rt.pod_name_mutex(cfg, "smoke"):
+        with rt.pod_name_mutex(cfg, "smoke"):  # must not block
             pass
 
 
@@ -592,11 +594,6 @@ def test_ls_translates_orphan_probe_failures_to_the_documented_error(cfg, monkey
     from kiro_crew.pod import cli as pod_cli
 
     monkeypatch.setattr(rt, "IS_MACOS", True)
-    monkeypatch.setattr(rt, "active_names", lambda c: set())
-
-    def _boom(c):
-        raise launchd.LaunchdError("launchctl print failed")
-
-    monkeypatch.setattr(launchd, "orphan_homes", _boom)
+    monkeypatch.setattr(launchd, "launchctl", lambda *a, **k: _cp(returncode=5, stderr="EIO"))
     with pytest.raises(rt.PodError):
         pod_cli._ls(cfg, argparse.Namespace(json=False))

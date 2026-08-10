@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +25,11 @@ from kiro_crew.pod.config import (
     DEFAULT_UNIT_PREFIX,
     PodConfig,
 )
+
+# The invoking user's REAL home, captured at import time — before the autouse
+# fixture below pins HOME to a tmp dir. Used only to assert that pod host state
+# never lands there (see TestHostStateIsFenced).
+_REAL_HOME = Path.home()
 
 # Stand-in for a version-manager node bin dir (mise/nvm/fnm/volta/asdf install
 # under $HOME). Provisioning resolves ``npm`` to an absolute path there.
@@ -48,6 +54,35 @@ def _fake_node_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         prov, "node_augmented_path", lambda base="": f"{NODE_BIN}{os.pathsep}{base}"
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pod_host_state(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep pod HOST state out of the developer's real home.
+
+    Two pod paths resolve through ``Path.home()`` rather than ``KIROCREW_HOME``, so
+    conftest's safety net does not cover them, and both are written by ordinary
+    test paths:
+
+    ``unit.unit_path`` — a test reaching ``install_unit`` (via ``_up`` ->
+    ``install_backend``, or the ``start_pod`` self-heal) rewrites the REAL
+    ``kirocrew-pod@.service`` with this test's tmpdir as
+    ``Environment=KIROCREW_POD_ROOT=``. Every later ``pod up`` on the host then dies
+    with "no pinned checkout", so running the suite breaks pods for everyone until
+    someone re-runs ``pod install``. Observed on a real host.
+
+    ``PodConfig.pods_dir`` — resolves off the DEFAULT data home on purpose (a pod
+    process must not be able to redirect the host's pod registry into its own
+    throwaway home). The per-name lifecycle mutex writes its lock file there.
+
+    Pinning ``HOME`` fixes the cause both share instead of patching each function
+    that reads it, so a future path that resolves through the home is covered
+    without a matching change here. ``USERPROFILE`` too, because Windows
+    ``Path.home()`` reads that one. Tests that pin either themselves still win.
+    """
+    home = tmp_path_factory.mktemp("pod-host-home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
 
 @pytest.fixture(autouse=True)
@@ -229,16 +264,34 @@ class TestWorktreeResolution:
         assert rt.resolve_checkout(c, "demo", cwd=tmp_path) == tmp_path / "real"
 
 
+def _uncommented(unit_text: str) -> str:
+    """The unit's directive lines only — comments explain the absent hook by name,
+    so a substring scan over the whole file cannot tell prose from configuration."""
+    return "\n".join(ln for ln in unit_text.splitlines() if not ln.lstrip().startswith("#"))
+
+
 class TestUnitRendering:
     def test_execstart_reenters_pod_run(self, cfg: PodConfig) -> None:
         assert "pod _run %i" in unit_mod.render_unit(cfg)
 
-    def test_execstoppost_routes_through_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unit_has_no_teardown_hook(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ExecStopPost runs BEFORE systemd's final kill of the unit's cgroup, so a
+        teardown hook there deleted the HOME under the pod's own surviving
+        subprocesses — and fired on the stop half of a Restart=, restarting the pod
+        onto a wiped home. Reclamation belongs to `pod down` (runtime.stop_pod)."""
         monkeypatch.setenv("KIROCREW_POD_ROOT", "/tmp/podtest-root")
         txt = unit_mod.render_unit(PodConfig.load())
-        # Teardown re-enters the Python verb (re-validates %i) — NOT a raw rm -rf.
-        assert "pod _cleanup %i" in txt
+        directives = [
+            ln.split("=", 1)[0]
+            for ln in txt.splitlines()
+            if "=" in ln and not ln.lstrip().startswith("#")
+        ]
+        assert "ExecStopPost" not in directives
+        assert "pod _cleanup" not in _uncommented(txt)
+        # ...and teardown never becomes a raw recursive remove in the unit either.
         assert "-rf" not in txt and "$HOME" not in txt
+        # Self-heal is still wanted: it is only safe BECAUSE the hook is gone.
+        assert "Restart=on-failure" in txt
 
     def test_env_block_pins_nondefaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KIROCREW_POD_ROOT", "/tmp/hermetic-pods")
@@ -615,6 +668,668 @@ class TestCleanupHome:
         assert sentinel.exists() and pods.exists()
 
 
+class TestCleanupHomeVerifies:
+    """``rmtree`` runs with ``ignore_errors`` (a partially-removed tree is still
+    progress), so ``cleanup_home``'s return value is the only signal a caller has
+    that the HOME is actually gone. A constant 0 is what let ``pod down`` print
+    "zero residue" over a directory still on disk."""
+
+    def _held_home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[PodConfig, Path]:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / "security_events.jsonl").write_text("{}\n")
+        # A pod-scoped process still holds the tree (or reopens its audit log in
+        # append mode right behind the delete), so the removal achieves nothing
+        # and says nothing — exactly what was measured on a live host.
+        monkeypatch.setattr(rt.shutil, "rmtree", lambda *a, **k: None)
+        return c, home
+
+    def test_reports_a_home_that_survived_the_delete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        c, home = self._held_home(tmp_path, monkeypatch)
+        assert rt.cleanup_home(c, "demo") == 1
+        out = capsys.readouterr().out
+        assert str(home) in out
+        # Naming the culprit is the point: a bare failure sends the operator
+        # hunting for which writer resurrected the directory.
+        assert "security_events.jsonl" in out
+
+    def test_an_unlistable_survivor_still_fails_instead_of_raising(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The survivor listing is diagnostics; it must never turn teardown into a
+        traceback on a directory the process cannot read."""
+        c, _ = self._held_home(tmp_path, monkeypatch)
+
+        def _boom(self):  # noqa: ANN001 - patched onto Path
+            raise PermissionError("nope")
+
+        monkeypatch.setattr(Path, "iterdir", _boom)
+        assert rt.cleanup_home(c, "demo") == 1
+
+
+class TestDrainCgroup:
+    """The delete waits for the unit's process tree, because that is the set that
+    recreates the HOME behind it."""
+
+    def test_a_vanished_cgroup_counts_as_drained(self, tmp_path: Path) -> None:
+        assert rt.drain_cgroup(tmp_path / "gone" / "cgroup.procs") == []
+
+    def test_waits_until_the_last_process_exits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        procs = tmp_path / "cgroup.procs"
+        procs.write_text("7\n8\n")
+        remaining = ["8\n", ""]
+        monkeypatch.setattr(rt.time, "sleep", lambda _s: procs.write_text(remaining.pop(0)))
+        assert rt.drain_cgroup(procs) == []
+        assert remaining == [], "it must poll until empty, not sample once"
+
+    def test_reports_the_survivors_when_the_window_expires(self, tmp_path: Path) -> None:
+        procs = tmp_path / "cgroup.procs"
+        procs.write_text("7\n8\n")
+        assert rt.drain_cgroup(procs, timeout=0.0) == ["7", "8"]
+
+
+class TestLinuxTeardownOrdering:
+    """Reclamation lives on the ``down`` path, not in an ``ExecStopPost`` hook that
+    systemd runs BEFORE the final kill of the unit's cgroup. So ``stop_pod`` owns
+    the ordering: stop, drain, delete, verify."""
+
+    def test_the_cgroup_is_read_before_the_stop(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """systemd reports an empty ``ControlGroup`` for an inactive unit, so asking
+        after the stop returns nothing and the drain silently degrades to a no-op."""
+        order: list[str] = []
+
+        def _read_cgroup(c: PodConfig, n: str) -> None:
+            order.append("read-cgroup")
+            return None
+
+        def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            order.append(args[0])
+            return _cp()
+
+        monkeypatch.setattr(rt, "cgroup_procs_file", _read_cgroup)
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
+        # No teardown hook loaded, so no refresh interleaves with the ordering.
+        monkeypatch.setattr(rt, "loaded_teardown_hook", lambda c, n: False)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        assert order == ["read-cgroup", "stop"]
+
+    def test_a_stale_unit_is_refreshed_before_the_stop(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A unit installed by an older build still carries the destructive
+        ExecStopPost, and `systemctl stop` runs it BEFORE our drain — so the first
+        `down` after an upgrade would delete the HOME under the pod's own live
+        processes, losing its sessions and config. Refreshing must therefore happen
+        before the stop, not just before a start."""
+        order: list[str] = []
+
+        def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            order.append(args[0])
+            return _cp()
+
+        monkeypatch.setattr(rt, "loaded_teardown_hook", lambda c, n: True)
+        monkeypatch.setattr(
+            rt.unit_mod, "install_unit", lambda c: order.append("re-render")
+        )
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        assert order == ["re-render", "daemon-reload", "stop"]
+
+    def test_a_current_unit_is_not_re_rendered_on_every_stop(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reverse guard: re-rendering unconditionally would daemon-reload on
+        every single `pod down`."""
+        rendered: list[str] = []
+        monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: True)
+        monkeypatch.setattr(
+            rt.unit_mod, "install_unit", lambda c: rendered.append("re-render")
+        )
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        assert rendered == []
+
+    def _stale_unit_with_failing_reload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> list[str]:
+        """A stale unit on disk (it carries the removed directive) plus a
+        daemon-reload that fails. Returns the list systemctl verbs are recorded in."""
+        unit_file = tmp_path / "pod@.service"
+        unit_file.write_text("[Service]\nExecStart=/x\nExecStopPost=/y pod _cleanup %i\n")
+        monkeypatch.setattr(rt.unit_mod, "unit_path", lambda c: unit_file)
+        monkeypatch.setattr(rt.unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        issued: list[str] = []
+
+        def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            issued.append(args[0])
+            if args[0] == "daemon-reload":
+                return _cp(returncode=1, stderr="Failed to reload daemon")
+            if args[0] == "show":  # systemd has the destructive hook loaded
+                return _cp(stdout="{ path=/x ; argv[]=pod _cleanup x }\n")
+            return _cp()
+
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        return issued
+
+    def test_the_stop_trusts_systemd_not_the_unit_file(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Disk freshness is not proof of a load. A hookless file can sit in front
+        of a cached definition that still deletes the HOME — reached by ANY writer
+        whose reload failed, `pod install` included. So the stop asks systemd what
+        it will execute, and refreshes on that."""
+        order: list[str] = []
+
+        def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            order.append(args[0])
+            if args[0] == "show":
+                # systemd still has the destructive hook loaded.
+                return _cp(stdout="{ path=/usr/bin/kirocrew ; argv[]=pod _cleanup x }\n")
+            return _cp()
+
+        # The unit file on disk looks perfectly current — the old gate's signal.
+        monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: True)
+        monkeypatch.setattr(
+            rt.unit_mod, "install_unit", lambda c: order.append("re-render")
+        )
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        assert order == ["show", "re-render", "daemon-reload", "stop"]
+
+    def test_an_unanswerable_hook_query_refreshes_anyway(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """"Cannot tell" must read as "the hook is there"; the other way round
+        silently ships the defect on any host where the query fails."""
+        order: list[str] = []
+
+        def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            order.append(args[0])
+            return _cp(returncode=1, stderr="Failed to get properties") if args[0] == "show" else _cp()
+
+        monkeypatch.setattr(
+            rt.unit_mod, "install_unit", lambda c: order.append("re-render")
+        )
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        assert "re-render" in order
+
+    def test_no_refresh_when_systemd_reports_no_hook(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reverse guard: refreshing unconditionally would daemon-reload on
+        every single `pod down`."""
+        order: list[str] = []
+
+        def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            order.append(args[0])
+            return _cp(stdout="\n") if args[0] == "show" else _cp()
+
+        monkeypatch.setattr(
+            rt.unit_mod, "install_unit", lambda c: order.append("re-render")
+        )
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        assert order == ["show", "stop"]
+        assert "daemon-reload" not in order
+
+    def test_a_failed_reload_refuses_the_stop_and_removes_the_fresh_unit(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed reload splits disk from systemd: the fresh hookless file is on
+        disk, but systemd still executes the OLD definition. Leaving that file
+        behind is the real damage — `unit_is_current` reads disk, so every later
+        call would report "current" while a crash restart still wipes the HOME.
+        So remove it, and do not stop a pod whose loaded unit still has the hook."""
+        issued = self._stale_unit_with_failing_reload(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
+        cp = rt.stop_pod(cfg, "demo")
+        assert cp.returncode != 0
+        assert "pod install" in cp.stderr
+        assert "stop" not in issued, "must not stop while systemd runs the old hook"
+        assert not (tmp_path / "pod@.service").exists()
+        # The invariant that matters: staleness must not read as current.
+        assert rt.unit_mod.unit_is_current(cfg) is False
+
+    def test_a_failed_reload_refuses_the_start_and_removes_the_fresh_unit(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        issued = self._stale_unit_with_failing_reload(tmp_path, monkeypatch)
+        cp = rt.start_pod(cfg, "demo")
+        assert cp.returncode != 0
+        assert "pod install" in cp.stderr
+        assert "start" not in issued
+        assert not (tmp_path / "pod@.service").exists()
+
+    def test_the_delete_waits_for_the_process_tree(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        procs = tmp_path / "cgroup.procs"
+        procs.write_text("4242\n")
+        order: list[str] = []
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: procs)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
+
+        def _last_process_exits(_s: float) -> None:
+            order.append("drained")
+            procs.write_text("")
+
+        def _delete(c: PodConfig, n: str) -> int:
+            order.append("deleted")
+            return 0
+
+        monkeypatch.setattr(rt.time, "sleep", _last_process_exits)
+        monkeypatch.setattr(rt, "cleanup_home", _delete)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        assert order == ["drained", "deleted"], "deleting first is the original race"
+
+    def test_both_teardown_messages_name_the_same_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A failed teardown prints twice — once from `stop_pod`, once from
+        `cleanup_home` — and the two must name the HOME identically. `pod_home`
+        returns it unresolved while `cleanup_home` resolves before deleting, so on
+        a host whose home is a symlink (the standard dev-desktop layout) the same
+        directory appeared as `/home/...` and `/local/home/...` and read as two
+        locations. Reproduced here with a symlinked pod root."""
+        real = tmp_path / "real-pods"
+        real.mkdir()
+        link = tmp_path / "linked-pods"
+        link.symlink_to(real)
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(link))
+        c = PodConfig.load()
+        (c.home_dir("demo")).mkdir(parents=True)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda cc, n: None)
+        monkeypatch.setattr(rt.shutil, "rmtree", lambda *a, **k: None)
+        cp = rt.stop_pod(c, "demo")
+        assert cp.returncode != 0
+        resolved = str((real / "demo").resolve())
+        assert resolved in cp.stderr
+        assert resolved in capsys.readouterr().out, "cleanup_home must agree"
+        assert str(link / "demo") not in cp.stderr, "the second spelling is the bug"
+
+    def test_a_failed_stop_leaves_a_possibly_live_pods_state_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / "kirocrew.db").write_text("live")
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=1, stderr="job failed"))
+        cp = rt.stop_pod(c, "demo")
+        assert cp.returncode != 0
+        assert (home / "kirocrew.db").read_text() == "live"
+
+    def test_a_process_outliving_the_drain_blocks_the_delete_entirely(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting after the drain EXPIRES would be the original defect wearing a
+        verification: the live writer recreates the directory in append mode right
+        behind the delete, which lands after the check, so `down` reports zero
+        residue over a HOME that comes back. Refuse to delete instead."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / "kirocrew.db").write_text("a writer still has this")
+        deleted: list[str] = []
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda cc, n: tmp_path / "cgroup.procs")
+        monkeypatch.setattr(rt, "drain_cgroup", lambda procs, **k: ["4242", "4243"])
+        monkeypatch.setattr(rt, "cleanup_home", lambda cc, n: deleted.append(n) or 0)
+        cp = rt.stop_pod(c, "demo")
+        assert cp.returncode != 0
+        assert deleted == [], "must not delete a HOME a live process is still in"
+        assert (home / "kirocrew.db").read_text() == "a writer still has this"
+        assert str(home) in cp.stderr
+        assert "NOT zero-residue" in cp.stderr
+        # The pids that would not exit are the actionable part of the report.
+        assert "4242" in cp.stderr and "4243" in cp.stderr
+
+    def test_a_surviving_home_is_reported_not_called_zero_residue(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Drained cleanly, but the delete still did not take (permissions, or a
+        writer outside the cgroup). The verification is what catches this."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
+        monkeypatch.setattr(rt, "cgroup_procs_file", lambda cc, n: tmp_path / "cgroup.procs")
+        monkeypatch.setattr(rt, "drain_cgroup", lambda procs, **k: [])
+        monkeypatch.setattr(rt.shutil, "rmtree", lambda *a, **k: None)
+        cp = rt.stop_pod(c, "demo")
+        assert cp.returncode != 0
+        assert str(home) in cp.stderr
+        assert "NOT zero-residue" in cp.stderr
+
+
+class TestTheUnitFileNeverOutlivesAFailedLoad:
+    """The invariant behind three separate defects: a unit file present on disk has
+    been loaded by systemd. Every writer must uphold it — fixing only the lifecycle
+    path left `pod install` able to strand a hookless file in front of a cached
+    destructive definition, which is what made the on-disk freshness check lie."""
+
+    def _plane(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        unit_file = tmp_path / "pod@.service"
+        monkeypatch.setattr(rt.unit_mod, "unit_path", lambda c: unit_file)
+        monkeypatch.setattr(rt.unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
+        return unit_file
+
+    def test_install_removes_the_unit_when_the_reload_fails(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        unit_file = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            rt, "systemctl", lambda *a, **k: _cp(returncode=1, stderr="reload failed")
+        )
+        msg, cp = rt.install_backend(cfg)
+        assert cp is not None and cp.returncode != 0
+        assert not unit_file.exists(), "an unloaded unit must not be left on disk"
+        assert rt.unit_mod.unit_is_current(cfg) is False
+        assert "removed" in msg
+
+    def test_install_keeps_the_unit_when_the_reload_succeeds(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        unit_file = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
+        msg, cp = rt.install_backend(cfg)
+        assert cp is not None and cp.returncode == 0
+        assert unit_file.exists()
+        assert rt.unit_mod.unit_is_current(cfg) is True
+        assert "installed pod template unit" in msg
+
+
+class TestPodNameMutexOnLinux:
+    """Linux teardown moved onto the ``down`` path, so Linux now has the same
+    down/up race the launchd backend needed the flock for: the mutex can no longer
+    be a no-op there."""
+
+    def test_start_and_stop_hold_it(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import contextlib as _ctx
+
+        held: list[str] = []
+
+        @_ctx.contextmanager
+        def _fake(c: PodConfig, n: str):
+            held.append(f"enter:{n}")
+            yield
+            held.append(f"exit:{n}")
+
+        monkeypatch.setattr(rt, "pod_name_mutex", _fake)
+        monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: True)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
+        rt.start_pod(cfg, "demo")
+        assert held == ["enter:demo", "exit:demo"]
+
+        held.clear()
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
+        rt.stop_pod(cfg, "demo")
+        assert held == ["enter:demo", "exit:demo"], "the sweep must run INSIDE the mutex"
+
+    @pytest.mark.skipif(
+        rt.fcntl is None,
+        reason="flock needs POSIX; without it the mutex is a documented no-op",
+    )
+    def test_it_is_a_real_lock(self, cfg: PodConfig) -> None:
+        with rt.pod_name_mutex(cfg, "demo"):
+            pass
+        assert (cfg.pods_dir / f"{cfg.unit_prefix}@demo.lock").exists()
+
+    def test_boot_never_takes_the_lock(self) -> None:
+        """`up` holds the mutex across the health wait, and the process it is
+        waiting for is the pod's own `pod _run` -> boot(). If boot ever acquired
+        the same per-name lock, `up` would wait for a gateway that is blocked on
+        `up` — a deadlock no unit test would notice from either side alone.
+
+        Checked TRANSITIVELY and in both call spellings: a bare
+        `pod_name_mutex(...)`, an `rt.pod_name_mutex(...)` attribute call, or any
+        module-level helper `boot` reaches that takes the lock would all deadlock
+        identically, so pinning only the direct bare-name call would pin the letter
+        of the rule rather than the property.
+        """
+        tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
+        funcs = {
+            n.name: n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+        def called_names(fn: ast.AST) -> set[str]:
+            out: set[str] = set()
+            for n in ast.walk(fn):
+                if not isinstance(n, ast.Call):
+                    continue
+                if isinstance(n.func, ast.Name):
+                    out.add(n.func.id)
+                elif isinstance(n.func, ast.Attribute):
+                    out.add(n.func.attr)
+            return out
+
+        reached: set[str] = set()
+        stack = ["boot"]
+        while stack:
+            name = stack.pop()
+            if name in reached or name not in funcs:
+                continue
+            reached.add(name)
+            stack.extend(called_names(funcs[name]))
+
+        assert "boot" in reached, "boot must exist for this guard to mean anything"
+        assert "pod_name_mutex" not in reached
+        # The lock is only ever taken by these two, so neither may be reachable
+        # from boot either — that is the same deadlock one level removed.
+        assert "start_pod" not in reached
+        assert "stop_pod" not in reached
+
+
+class TestOrphanHomes:
+    """Neither platform reclaims from a post-stop hook, so a pod that goes away
+    without a ``down`` leaves its HOME on either OS — and the report was gated to
+    macOS, which is why the residue accumulated invisibly on Linux."""
+
+    def _plane(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        c = PodConfig.load()
+        for n in ("orphan", "running"):
+            (c.pod_root / n).mkdir(parents=True)
+        (c.pod_root / ".e2e-artifacts").mkdir()  # dot dirs are not pods
+        monkeypatch.setattr(rt, "active_names", lambda cc: {"running"})
+        return c
+
+    def test_reported_on_linux(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        assert rt.orphan_homes(c) == ["orphan"]
+
+    def test_ls_surfaces_them_with_the_reclaim_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "health", lambda port, timeout=3: 200)
+        pod_cli._ls(c, argparse.Namespace(json=False))
+        out = capsys.readouterr().out
+        assert "1 orphaned pod HOME(s)" in out
+        assert "kirocrew pod down orphan" in out
+
+    def test_the_json_shape_stays_live_pods_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Three callers parse this array; orphans are human-output only."""
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "health", lambda port, timeout=3: 200)
+        pod_cli._ls(c, argparse.Namespace(json=True))
+        assert [r["name"] for r in json.loads(capsys.readouterr().out)] == ["running"]
+
+
+class TestDownSamplesStateUnderTheLock:
+    """`was_up` / `had_home` decide whether a failed stop is fatal, so sampling
+    them before taking the lock let a concurrent `up` invalidate the answer: we
+    saw "not running, nothing to reclaim", waited on the lock, and then judged a
+    REAL failure against that stale reading — swallowing it and deleting the live
+    pod's checkout pin."""
+
+    def test_state_is_read_after_the_lock_is_held(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import contextlib as _ctx
+
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
+        c = PodConfig.load()
+        rt.pin_checkout(c, "demo", tmp_path / "co")
+        order: list[str] = []
+
+        @_ctx.contextmanager
+        def _mutex(cc: PodConfig, n: str):
+            order.append("lock")
+            # What a concurrent `up` completes while we are blocked on the lock.
+            c.home_dir(n).mkdir(parents=True, exist_ok=True)
+            yield
+
+        def _is_active(cc: PodConfig, n: str) -> bool:
+            order.append("sample")
+            return False
+
+        monkeypatch.setattr(rt, "pod_name_mutex", _mutex)
+        monkeypatch.setattr(rt, "is_active", _is_active)
+        monkeypatch.setattr(rt, "stop_pod", lambda cc, n: _cp(returncode=1, stderr="boom"))
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+
+        # The failure must be fatal, judged against state read INSIDE the lock.
+        with pytest.raises(SystemExit):
+            pod_cli._down(c, argparse.Namespace(name="demo"))
+        assert order == ["lock", "sample"], "state sampled before the lock is stale"
+        assert c.env_file("demo").exists(), "a live pod's checkout pin must survive"
+
+
+class TestDownReclaimsResidue:
+    """``pod down`` is the reclaim command the orphan report points at, so it has
+    to work on a pod that is no longer running."""
+
+    def _orphan(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[PodConfig, Path]:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / "config.json").write_text("{}")
+        rt.pin_checkout(c, "demo", tmp_path / "co")
+        monkeypatch.setattr(rt, "is_active", lambda cc, n: False)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+        return c, home
+
+    def test_down_reclaims_a_home_left_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        c, home = self._orphan(tmp_path, monkeypatch)
+        pod_cli._down(c, argparse.Namespace(name="demo"))
+        assert not home.exists()
+        assert not c.env_file("demo").exists()
+        out = capsys.readouterr().out
+        assert "reclaimed the isolated HOME" in out
+        assert "nothing to stop" not in out
+
+    def test_down_on_a_never_used_name_is_still_a_no_op(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`systemctl stop` on an instance of a template that was never installed
+        reports "unit not loaded" (rc 5). With no HOME to reclaim and the pod not
+        running there is nothing at stake, so `pod down <name>` must stay the
+        documented no-op rather than exiting 1."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
+        c = PodConfig.load()
+        monkeypatch.setattr(rt, "is_active", lambda cc, n: False)
+        monkeypatch.setattr(
+            rt,
+            "systemctl",
+            lambda *a, **k: _cp(returncode=5, stderr="Unit kirocrew-pod@demo.service not loaded."),
+        )
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+        pod_cli._down(c, argparse.Namespace(name="demo"))  # must not SystemExit
+        assert "nothing to stop" in capsys.readouterr().out
+
+    def test_down_still_fails_loudly_when_a_home_is_there_to_reclaim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The mirror of the no-op above: the same failed stop, but now there IS
+        residue, so swallowing it would be the silent success being fixed here."""
+        c, home = self._orphan(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=5, stderr="nope"))
+        with pytest.raises(SystemExit):
+            pod_cli._down(c, argparse.Namespace(name="demo"))
+        assert home.exists()
+        assert c.env_file("demo").exists()
+
+    def test_down_fails_loudly_when_the_reclaim_could_not_finish(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A silent success here is the whole bug: the operator is told zero
+        residue while the directory (and its checkout pin) are still there."""
+        c, home = self._orphan(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt.shutil, "rmtree", lambda *a, **k: None)
+        with pytest.raises(SystemExit):
+            pod_cli._down(c, argparse.Namespace(name="demo"))
+        assert home.exists()
+        assert c.env_file("demo").exists(), "the pin must survive a failed teardown"
+
+
+class TestHostStateIsFenced:
+    """A pod test must not be able to write the machine's own systemd unit.
+
+    Found on a real host: a suite run rewrote `~/.config/systemd/user/
+    kirocrew-pod@.service` with a test's tmpdir as
+    `Environment=KIROCREW_POD_ROOT=`, after which every `pod up` died with "no
+    pinned checkout" until someone re-ran `pod install`. `unit_path` reads
+    `Path.home()`, which no test patched, and `_up` -> `install_backend` ->
+    `install_unit` reaches it. Asserting the PATH rather than the write keeps this
+    guard from having to clobber the real unit to prove itself.
+    """
+
+    def test_the_home_is_pinned_away_from_the_real_one(self) -> None:
+        """The fixture must actually redirect. Asserted separately from the paths
+        below because on Windows a pytest tmp dir lives UNDER `Path.home()`
+        (`C:/Users/<u>/AppData/Local/Temp/...`), so "not under the real home" is
+        false there by construction and cannot carry the guard."""
+        assert Path.home() != _REAL_HOME
+
+    def test_the_unit_path_follows_the_pinned_home(self, cfg: PodConfig) -> None:
+        assert Path.home() in unit_mod.unit_path(cfg).parents
+
+    def test_pod_host_dirs_follow_the_pinned_home(self, cfg: PodConfig) -> None:
+        # pods_dir carries the lifecycle lock file; pod_root carries pod HOMEs.
+        for path in (cfg.pods_dir, cfg.pod_root):
+            assert Path.home() in path.parents, path
+
+
 class TestRuntimeHelpers:
     def test_is_active(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
@@ -981,7 +1696,7 @@ class TestUnitExecSelfHeal:
             unit_mod, "unit_path", lambda cfg: tmp_path / "pod@.service"
         )
         (tmp_path / "pod@.service").write_text(
-            f"[Service]\n{exec_line}\nExecStopPost=/bin/true pod _cleanup %i\n"
+            f"[Service]\n{exec_line}\nRestart=on-failure\n"
         )
         return PodConfig.load()
 
@@ -1013,6 +1728,55 @@ class TestUnitExecSelfHeal:
             unit_mod, "unit_path", lambda cfg: tmp_path / "absent@.service"
         )
         assert unit_mod.unit_exec_ok(PodConfig.load()) is False
+
+    def test_a_unit_carrying_the_removed_teardown_hook_is_not_current(
+        self, tmp_path, monkeypatch
+    ):
+        """Units are written once by `pod install`, so on UPGRADE a machine keeps
+        whatever it installed. Without this, an older unit's ExecStopPost would go
+        on racing the pod's own subprocesses (and wiping the HOME on the stop half
+        of a Restart=) until someone reinstalled by hand."""
+        from kiro_crew.pod import unit as unit_mod
+
+        exe = tmp_path / "kirocrew"
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        cfg = self._cfg_with_unit(tmp_path, monkeypatch, f"ExecStart={exe} pod _run %i")
+        unit_path = tmp_path / "pod@.service"
+        assert unit_mod.unit_is_current(cfg) is True  # what this build renders
+        unit_path.write_text(
+            unit_path.read_text() + f"ExecStopPost={exe} pod _cleanup %i\n"
+        )
+        assert unit_mod.unit_is_current(cfg) is False
+
+    def test_what_this_build_renders_is_current(self, cfg, monkeypatch, tmp_path):
+        """Guard against the reverse failure: a check that flagged the CURRENT
+        template would re-render and daemon-reload on every single `pod up`."""
+        from kiro_crew.pod import unit as unit_mod
+
+        monkeypatch.setattr(unit_mod, "unit_path", lambda c: tmp_path / "pod@.service")
+        # An executable that exists on every platform the suite runs on — a POSIX
+        # path here made unit_exec_ok report "stale" on Windows.
+        monkeypatch.setattr(unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        unit_mod.install_unit(cfg)
+        assert unit_mod.unit_is_current(cfg) is True
+
+    def test_start_pod_reinstalls_a_stale_unit_before_booting_it(
+        self, cfg, monkeypatch
+    ):
+        steps: list[str] = []
+        monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: False)
+        monkeypatch.setattr(
+            rt.unit_mod, "install_unit", lambda c: steps.append("reinstall")
+        )
+
+        def _systemctl(*args, **kwargs):
+            steps.append(args[0])
+            return _cp()
+
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        assert rt.start_pod(cfg, "demo").returncode == 0
+        assert steps == ["reinstall", "daemon-reload", "start"]
 
     def test_module_invocation_form_passes(self, tmp_path, monkeypatch):
         from kiro_crew.pod import unit as unit_mod

@@ -1438,7 +1438,8 @@ Examples:
         "--venv-only", action="store_true", help="Build only the venv (skip the slow dist)"
     )
     pod_sub.add_parser("install", help="Lay down the systemd --user template unit (once)")
-    # Hidden verbs re-entered by the systemd unit (ExecStart / ExecStopPost).
+    # Hidden verbs: `_run` is the unit's ExecStart body; `_cleanup` is the
+    # single-name manual reclaim (teardown itself lives on the `down` path).
     # Registered without `help=` so they stay out of `pod --help` while remaining
     # dispatchable (the metavar above also omits them from the usage line).
     pod_run = pod_sub.add_parser("_run")

@@ -170,20 +170,29 @@ step needs before using them, so provisioning a **fresh** worktree (no
   it skips (fast idempotent path). Without this, a fresh worktree's `npm run
   build` dies with `tsc: command not found` (issue #229).
 
-### Pod Unit ExecStart Self-Heal
+### Pod Unit Self-Heal
 
-On `pod up`, if the installed systemd unit template's `ExecStart` binary no longer exists
-(typically because the worktree it resolved into was pruned), the pod CLI:
+The unit template is written once by `pod install`, so a machine keeps whatever it
+installed. On `pod up`, the pod CLI re-renders it when the installed unit is one this
+build will not boot:
 
-1. Detects the dangling binary via `unit.unit_exec_ok(cfg)` (reads the unit file, checks
-   `os.access(exe, os.X_OK)` on the baked path)
+1. Detects a stale unit via `unit.unit_is_current(cfg)`, which fails on either of two
+   triggers:
+   - the baked `ExecStart` binary no longer exists — `unit.unit_exec_ok(cfg)` reads the
+     unit file and checks `os.access(exe, os.X_OK)` on the baked path (typically the
+     worktree it resolved into was pruned)
+   - the unit carries a directive this build has removed (`unit._REMOVED_DIRECTIVES`,
+     currently `ExecStopPost=` — see the pod module's teardown section)
 2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
 3. Runs `daemon-reload`
 4. Audits the self-heal event
 5. Proceeds to start the pod normally
 
-This prevents the permanent EXEC 203 failure loop that occurs when worktrees are pruned
-after the unit was installed.
+The first trigger prevents the permanent EXEC 203 failure loop that occurs when
+worktrees are pruned after the unit was installed. The second is the upgrade path: a
+unit installed by an older build would otherwise keep a teardown hook that races the
+pod's own subprocesses and wipes the HOME on the stop half of a `Restart=`, and it
+would keep doing so until someone reinstalled by hand.
 
 ## Background Tasks
 
