@@ -237,6 +237,17 @@ class CronJob:
     # Reset at the start of every run.
     fire_time_denied: bool = False
     last_result: str | None = None
+    # Runtime-only (never serialized): True once THIS run produced a result
+    # via set_run_result(). ``last_result`` is a cross-run context-carry
+    # field that result-less runs (timeout, callback exception, no-output
+    # command, script Skip) deliberately leave in place for the next run's
+    # prompt dedup, so the history recorder needs this marker — not the
+    # value — to decide attribution. Identity/equality checks on the string
+    # cannot do that job: CPython interns equal literals and caches
+    # single-character latin-1 strings, so a run re-producing the same text
+    # is indistinguishable from a run that produced nothing. Reset at the
+    # start of every run by _run_job_isolated.
+    result_produced: bool = False
     context_enabled: bool = False
     agent_id: str = ""
     approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
@@ -276,6 +287,19 @@ class CronJob:
     timeout: int = (
         0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
     )
+
+    def set_run_result(self, value: str) -> None:
+        """Record a result produced by the CURRENT run.
+
+        Sole write path for executor callbacks: pairs the ``last_result``
+        assignment with the runtime-only ``result_produced`` marker so the
+        history recorder can attribute the value to this run. Direct
+        ``last_result`` assignment stays reserved for store merge and
+        deserialization paths, which restore prior state rather than
+        produce a new result.
+        """
+        self.last_result = value
+        self.result_produced = True
 
     def _audit_pause_change(self, outcome: str) -> None:
         """Emit a SEL audit event for an auto-pause permission transition.
@@ -2222,6 +2246,19 @@ class CronService:
         # Provisional; refined once the jitter sleep completes. Only read on
         # the history path, which a cancelled-during-jitter run never reaches.
         exec_started_at = started_at
+        # ``last_result`` is a cross-run context-carry field (see
+        # build_cron_session_context): runs that end without producing a
+        # result — timeout, callback exception, no-output command, script
+        # Skip — deliberately leave the previous run's value in place so the
+        # next run's prompt keeps its dedup context. The history recorder in
+        # the finally block must NOT attribute that carried-over value to
+        # THIS run, so clear the freshness marker here; executor callbacks
+        # set it via CronJob.set_run_result() when the run actually produces
+        # a result. (String identity/equality can't stand in for the marker:
+        # CPython interns equal literals and caches single-char strings, so
+        # a run re-producing the previous text looks identical to one that
+        # produced nothing.)
+        job.result_produced = False
         try:
             # The jitter sleep MUST live inside this try: hourly/daily jobs
             # sleep up to 59 min here, and a user cancel() during that window
@@ -2283,6 +2320,15 @@ class CronService:
                 # Record history
                 try:
                     status = "success" if job.last_status == "ok" else "failure"
+                    # Attribute last_result to this run only if the run
+                    # actually produced it (set_run_result sets the marker).
+                    # Reading it unconditionally recorded the PREVIOUS run's
+                    # result as this run's summary/trace whenever the run
+                    # ended without producing one (observed in the wild: a
+                    # timed-out run's history row carried the prior success's
+                    # summary verbatim — fabricated history on a
+                    # status=failure record).
+                    run_result = job.last_result if job.result_produced else None
                     record = CronRunRecord(
                         job_id=job.id,
                         trigger=trigger,
@@ -2290,8 +2336,8 @@ class CronService:
                         finished_at=finished_at,
                         duration_ms=int((finished_at - exec_started_at) * 1000),
                         status=status,
-                        summary=(job.last_result or job.last_error or "")[:200],
-                        trace=job.last_result or "",
+                        summary=(run_result or job.last_error or "")[:200],
+                        trace=run_result or "",
                         error=job.last_error or "",
                     )
                     await self._history.append(record)

@@ -1066,7 +1066,7 @@ class TestInitCron:
                 result = await callback(job)
 
         assert result == "cron result"
-        assert job.last_result == "cron result"
+        job.set_run_result.assert_called_once_with("cron result")
 
     @pytest.mark.asyncio
     async def test_cron_callback_publishes_turn_identity(self):
@@ -2238,7 +2238,7 @@ class TestCronFailurePaths:
                 result = await callback(job)
 
         assert result == "agent result"
-        assert job.last_result == "agent result"
+        job.set_run_result.assert_called_once_with("agent result")
         # get_or_create called twice (once per agent)
         assert orch.sessions.get_or_create.await_count == 2
 

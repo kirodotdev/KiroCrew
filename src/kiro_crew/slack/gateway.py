@@ -2073,7 +2073,7 @@ class GatewayOrchestrator:
                             )
                             job.record_failure()
                         return None  # no output = no delivery
-                    job.last_result = redact(output)
+                    job.set_run_result(redact(output))
                     job.last_error = ""
                     if result.get("status") == "ok":
                         job.last_status = "ok"
@@ -2195,7 +2195,7 @@ class GatewayOrchestrator:
                         # bookkeeping/history — no failure counting, no delivery.
                         return None
                     if status == "ok":
-                        job.last_result = "ok"
+                        job.set_run_result("ok")
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
@@ -2224,12 +2224,13 @@ class GatewayOrchestrator:
                         return None
                     elif status == "done":
                         msg = result.get("message", "")
-                        job.last_result = redact(msg) if msg else ""
+                        script_msg = redact(msg) if msg else ""
+                        job.set_run_result(script_msg)
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
                         # Deliver Done message and remove job
-                        await _deliver_script_result(job, job.last_result, remove=True)
+                        await _deliver_script_result(job, script_msg, remove=True)
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}",
@@ -2241,15 +2242,16 @@ class GatewayOrchestrator:
                             logger.debug(
                                 "SEL logging failed in cron script done path", exc_info=True
                             )
-                        return job.last_result or "done"
+                        return script_msg or "done"
                     elif status == "report":
                         msg = result.get("message", "")
-                        job.last_result = redact(msg) if msg else ""
+                        script_msg = redact(msg) if msg else ""
+                        job.set_run_result(script_msg)
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
                         # Deliver Report message (keep job running)
-                        await _deliver_script_result(job, job.last_result)
+                        await _deliver_script_result(job, script_msg)
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}",
@@ -2261,7 +2263,7 @@ class GatewayOrchestrator:
                             logger.debug(
                                 "SEL logging failed in cron script report path", exc_info=True
                             )
-                        return job.last_result or "report"
+                        return script_msg or "report"
                     else:
                         err = result.get("error", "unknown error")
                         raise RuntimeError(err)
@@ -2543,7 +2545,7 @@ class GatewayOrchestrator:
                                     self.cron_svc.clear_active_session_key(job.id)
                 if _seq_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
-                job.last_result = result_text
+                job.set_run_result(result_text)
                 return result_text
 
             # ── Single-agent path (existing behavior) ──
@@ -2605,7 +2607,7 @@ class GatewayOrchestrator:
                 if _model_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
 
-                job.last_result = result_text
+                job.set_run_result(result_text)
 
                 # Context-meter reading for the dashboard slot, captured NOW:
                 # the finally block below resets this session, so the open
