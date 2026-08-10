@@ -80,7 +80,9 @@ class TestLauncherExportsLevel:
         monkeypatch.setattr(sandbox_mod, "_ensure_run_dir", lambda: str(tmp_path))
         wrapped, profile = sandbox_exec_argv(["echo", "hi"], level)
         try:
-            assert wrapped[0] == "env"
+            # Absolute: the wrapper is pinned where it is prepended, so a
+            # config-declared PATH in a caller's env= cannot redirect argv[0].
+            assert os.path.basename(wrapped[0]) == "env"
             assert f"KIROCREW_SANDBOX_LEVEL={level}" in wrapped
             # Positioned after every -u flag so the scrub cannot drop it —
             # same non-droppable placement as the ACTIVE marker.
