@@ -24,6 +24,18 @@ The note's `source` is always `app:<name>` resolved from the verified token; `ch
 
 Responses: `200` with `{"ok": true, "note": {...}}` where `note` is the enriched note (resolved `source`, full `channel`, effective `priority`, server timestamp `ts`); `400` (validation failure — including a corrupt on-disk manifest `defaultPriority`), `403` (no app token / app disabled or unknown / channel not declared), `413` (oversized body), `429` (rate limited), `500` (delivery or persistence failure, SEL-audited). A `200` is a durability guarantee: the handler awaits the persist job before acknowledging, so an accepted push cannot be silently lost to a disk failure. Legacy system producers remain best-effort fire-and-forget.
 
+### Deep-linking a push back to its notification
+
+`ts` is the note's store id — every mutating notification API keys on it, and both the push response and the WS notification envelope carry it. A producer relaying pushes off the gateway (e.g. an ntfy bridge setting a Click URL) can therefore link the tap straight to the notification it is about:
+
+```
+/notifications?note=<url-encoded ts>
+```
+
+`ts` is an ISO-8601 UTC string (e.g. `2026-08-10T09:47:47.726985+00:00`), so the value MUST be percent-encoded: the embedded `+` would otherwise decode as a space and never match.
+
+The dashboard notifications page resolves the `note` param through the same select path as a tapped row (so it auto-acks and opens the detail — full-width on mobile, scrolled into view in the feed on desktop), then consumes the param with a history replace so reload/back does not re-select or re-ack. An id that no longer exists (expired past the ring cap, deleted, or cleared) degrades to the plain page with nothing selected and no error. The param name is part of the page's contract with external pushers; it is defined as `NOTE_DEEP_LINK_PARAM` in `website/src/pages/NotificationsPage.tsx`.
+
 ### Request pipeline order
 
 `validate -> register-channel-once -> rate-limit token -> bus.push`, chosen so that:
