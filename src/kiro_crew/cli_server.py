@@ -68,6 +68,7 @@ from kiro_crew.port_resolution import (  # noqa: F401
     _marker_port,
     resolve_client_port,
     resolve_client_port_ex,
+    resolve_client_port_src,
 )
 from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.sel import sel

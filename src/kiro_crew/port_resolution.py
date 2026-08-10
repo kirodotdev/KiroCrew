@@ -269,12 +269,34 @@ def resolve_client_port_ex(cli_port: int | None) -> tuple[int, bool]:
     not be written yet — so pinning it would freeze the weakest outcome
     forever, while every positive source is stable for the process lifetime.
     """
+    port, source = _patchable("resolve_client_port_src")(cli_port)
+    return port, source != "default"
+
+
+def resolve_client_port_src(cli_port: int | None) -> tuple[int, str]:
+    """Like :func:`resolve_client_port`, also reporting WHERE the port came from.
+
+    The second element names the chain step that produced the port: ``"cli"``,
+    ``"env"`` (``KIROCREW_PORT``), ``"bound"`` (``KIROCREW_BOUND_PORT``),
+    ``"config"`` (a port explicitly written in ``dashboard.url``), ``"marker"``
+    (the sole gateway-owned run-marker), or ``"default"`` (the fall-through).
+
+    The distinction :func:`resolve_client_port_ex` cannot make — and the reason
+    this exists — is ``"marker"`` versus the other positive sources. A flag, an
+    env var, or a configured port is a *user decision*, stable for the process
+    lifetime and safe to cache. A marker-discovered port is only *verified at
+    that instant*: the ownership proof says this user's gateway holds the port
+    NOW, not that it always will. A gateway that exits or moves frees the port
+    for any local process to rebind, so a caller about to attach a credential
+    to a request must re-run this chain (re-verifying ownership) rather than
+    trust a cached marker resolution.
+    """
     if cli_port is not None:
-        return cli_port, True
+        return cli_port, "cli"
     env_port = os.environ.get("KIROCREW_PORT")
     if env_port:
         try:
-            return int(env_port), True
+            return int(env_port), "env"
         except ValueError:
             # Fall through to bound/config/marker/default — main() validates
             # this early, but guard here too in case the helper is reached via
@@ -283,16 +305,16 @@ def resolve_client_port_ex(cli_port: int | None) -> tuple[int, bool]:
     bound_port = os.environ.get("KIROCREW_BOUND_PORT")
     if bound_port:
         try:
-            return int(bound_port), True
+            return int(bound_port), "bound"
         except ValueError:
             pass
     cfg_port = _patchable("_config_url_port")()
     if cfg_port:
-        return cfg_port, True
+        return cfg_port, "config"
     discovered = _patchable("_marker_port")()
     if discovered:
-        return discovered, True
-    return _DEFAULT_PORT, False
+        return discovered, "marker"
+    return _DEFAULT_PORT, "default"
 
 
 # Subcommands that launch a long-running Kiro Crew *server* process which
