@@ -324,6 +324,280 @@ async def test_sync_script_emits_step_markers():
     mod._UPSTREAM_REMOTE = None
 
 
+# --- Windows: a write-locked console script must not be handed to pip ---
+def _make_scripts(tmp_path, *names):
+    """A fake venv Scripts/ dir, returning the interpreter path inside it."""
+    scripts = tmp_path / ".venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    for name in names:
+        (scripts / name).write_bytes(b"MZ")
+    return scripts / "python.exe"
+
+
+def _raise_on(monkeypatch, name, exc):
+    """Make Path.open raise *exc* for the file called *name* only."""
+    real_open = Path.open
+
+    def fake_open(self, *args, **kwargs):
+        if self.name == name:
+            raise exc
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+
+def test_write_locked_console_scripts_is_a_posix_noop(tmp_path, monkeypatch):
+    """POSIX can unlink an executing binary, so there is nothing to detect."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    py = _make_scripts(tmp_path, "kirocrew.exe")
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    _raise_on(monkeypatch, "kirocrew.exe", PermissionError(13, "in use"))
+
+    assert mod._write_locked_console_scripts(py) == []
+
+
+def test_write_locked_console_scripts_flags_a_locked_script(tmp_path, monkeypatch):
+    """The real failure: the exe the gateway is executing cannot be replaced."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    py = _make_scripts(tmp_path, "kirocrew.exe")
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    _raise_on(monkeypatch, "kirocrew.exe", PermissionError(13, "in use"))
+
+    locked = mod._write_locked_console_scripts(py)
+    assert len(locked) == 1
+    assert locked[0].endswith("kirocrew.exe")
+
+
+def test_write_locked_console_scripts_passes_a_writable_script(tmp_path, monkeypatch):
+    """A venv the gateway is NOT running from must still get its reinstall."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    py = _make_scripts(tmp_path, "kirocrew.exe")
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+    assert mod._write_locked_console_scripts(py) == []
+
+
+def test_write_locked_console_scripts_ignores_unrelated_executables(tmp_path, monkeypatch):
+    """Only the scripts pip would rewrite matter.
+
+    Some other locked exe sharing the Scripts dir must not suppress the
+    reinstall — that would turn an unrelated process into a silent skip.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    py = _make_scripts(tmp_path, "kirocrew.exe", "unrelated.exe")
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    _raise_on(monkeypatch, "unrelated.exe", PermissionError(13, "in use"))
+
+    assert mod._write_locked_console_scripts(py) == []
+
+
+def test_write_locked_console_scripts_lets_pip_judge_other_errors(tmp_path, monkeypatch):
+    """An unreadable-for-other-reasons script is not evidence of a lock.
+
+    Skipping on any OSError would suppress installs that would have worked.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    py = _make_scripts(tmp_path, "kirocrew.exe")
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    _raise_on(monkeypatch, "kirocrew.exe", OSError(5, "I/O error"))
+
+    assert mod._write_locked_console_scripts(py) == []
+
+
+def _steps_from_script(script):
+    """Pull the structured step list back out of the generated script.
+
+    Asserting on the raw script text is a trap: the steps are embedded
+    double-JSON-encoded, so a label reads as ``\\"Pull\\"`` and a naive
+    ``'"pip install"' in script`` check can never match — it passes whether or
+    not the step is there. Parse it instead so the assertions actually bite.
+    """
+    import json as _json
+    import re
+
+    m = re.search(r"steps = json\.loads\((.*?)\)\n", script, re.S)
+    assert m, "steps assignment not found — the script shape changed"
+    return [s["label"] for s in _json.loads(_json.loads(m.group(1)))]
+
+
+async def _run_sync(mod, locked):
+    """Drive _sync_start_locked with the probe stubbed; return its result dict
+    plus the generated script (None when the sync refused)."""
+    mod._UPSTREAM_REMOTE = "origin"
+    mod._SYNC_RID = None
+    with patch.object(mod, "_git", new_callable=AsyncMock, return_value="main"), \
+         patch.object(mod, "_venv_python", return_value=Path("/fake/.venv/bin/python")), \
+         patch.object(mod, "_trusted_bin", side_effect=lambda n: f"/usr/bin/{n}"), \
+         patch.object(mod, "_write_locked_console_scripts", return_value=locked), \
+         patch("kiro_crew.apps.builtins.dev_fleet.server.sandboxed_spawn_argv",
+               side_effect=lambda cmd, mode, env=None: (cmd, env or {}, None)), \
+         patch.object(mod, "_start_run", new_callable=AsyncMock, return_value="run-123") as mock_start:
+        async with mod._SYNC_LOCK:
+            result = await mod._sync_start_locked()
+    mod._UPSTREAM_REMOTE = None
+    script = mock_start.call_args[0][1][2] if mock_start.call_args else None
+    return result, script
+
+
+@pytest.mark.asyncio
+async def test_sync_refuses_entirely_when_a_console_script_is_locked():
+    """Nothing may run — not even fetch/merge.
+
+    pip cannot replace the locked binary, and merging anyway is not a safe
+    consolation prize: a revision that adds a dependency would land with that
+    dependency absent, the run would report success, and the next restart would
+    fail to import it. Leaving the checkout on a revision whose dependencies are
+    satisfied is the only outcome that cannot brick the gateway.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    result, script = await _run_sync(mod, [r"C:\repo\.venv\Scripts\kirocrew.exe"])
+
+    assert result["ok"] is False
+    # No run was started at all, so fetch/merge never happened.
+    assert script is None
+    err = result["error"]
+    assert "kirocrew.exe" in err          # names the blocker
+    assert "pip install -e" in err        # and the remedy
+    assert "Stop the gateway" in err
+
+
+@pytest.mark.asyncio
+async def test_refusal_remedy_is_cwd_independent_and_quoted():
+    """The suggested command must not depend on where it is pasted.
+
+    `-e .` resolves against the terminal's cwd, and this project is normally
+    checked out as several worktrees at once — so the same line copied from a
+    feature worktree would install THAT tree into the primary venv and repoint
+    its editable install away from the primary checkout. Both paths are also
+    quoted, because a Windows home directory routinely contains a space.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    result, _ = await _run_sync(mod, [r"C:\repo\.venv\Scripts\kirocrew.exe"])
+    err = result["error"]
+
+    # The install target is named explicitly, never left to the shell's cwd —
+    # including in the prose, so the message never shows the misleading form.
+    assert "pip install -e ." not in err
+    assert f'pip install -e "{mod.MAIN_REPO}"' in err
+    assert f'git -C "{mod.MAIN_REPO}"' in err
+
+
+@pytest.mark.asyncio
+async def test_every_step_gets_a_utf8_pin_in_its_environment():
+    """The runner's own reconfigure() does not reach its children.
+
+    Each step is a separate process that inherits the pipe but re-derives its
+    encoding from the locale, so the Python steps (pip, and the build-and-stage
+    child) would still encode a non-ASCII checkout path with the codepage and
+    die on it. The environment is the only channel that reaches a child.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    _, script = await _run_sync(mod, [])
+
+    assert "env['PYTHONIOENCODING'] = 'utf-8:replace'" in script
+    # Applied to the env actually handed to subprocess.run, not a stale copy.
+    assert "subprocess.run(st['argv'], cwd=cwd, env=env)" in script
+    assert "env=st['env']" not in script
+    # Set before the step is spawned, not after.
+    assert script.index("PYTHONIOENCODING") < script.index("subprocess.run(")
+
+
+@pytest.mark.asyncio
+async def test_sync_runs_every_step_when_nothing_is_locked():
+    """Control: an unlocked venv gets the full sync, reinstall included."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    result, script = await _run_sync(mod, [])
+
+    assert result["ok"] is True, result
+    labels = _steps_from_script(script)
+    assert "pip install" in labels
+    assert "Pull" in labels
+
+
+@pytest.mark.asyncio
+async def test_sync_runner_pins_utf8_stdout_before_its_first_print():
+    """Align the writing side with the reader.
+
+    `_start_run` decodes the stream as UTF-8, while a piped stdout on Windows
+    encodes with the process locale codepage — a mismatch that mangles or kills
+    any non-ASCII print. Pinned before the step loop so no print predates it.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    _, script = await _run_sync(mod, [])
+
+    assert "reconfigure(encoding='utf-8'" in script
+    assert script.index("reconfigure(") < script.index("print(f'::step::")
+
+
+def test_utf8_reconfigure_survives_a_legacy_codepage_pipe():
+    """Prove the mechanism, not just its presence in the source.
+
+    Forcing a legacy codepage on the child's stdout is what the Windows
+    mismatch looks like; the reconfigure call is what keeps the print
+    non-fatal, and the reader side decodes UTF-8.
+    """
+    import subprocess
+    import sys as _sys
+
+    text = "\u9648\u660e\u4f2a"
+    body = (
+        "import sys\n"
+        "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
+        f"print({text!r}, flush=True)\n"
+    )
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+    proc = subprocess.run(
+        [_sys.executable, "-c", body], capture_output=True, env=env, timeout=60
+    )
+
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    # Matches how the run reader decodes the stream.
+    assert text in proc.stdout.decode(errors="replace")
+
+
+def test_pythonioencoding_saves_a_step_child_that_prints_a_non_ascii_path():
+    """The child half of the same mismatch, proven end to end.
+
+    A step child cannot call the runner's reconfigure() for itself, so this is
+    the case the environment variable has to carry: the SAME print that dies
+    under a legacy codepage survives once the pin is in the env, which is what
+    a pip or build step does when it echoes a non-ASCII checkout path.
+    """
+    import subprocess
+    import sys as _sys
+
+    path = "C:\\Users\\\u9648\u660e\u4f2a\\KiroCrew"
+    body = f"print({path!r}, flush=True)\n"
+    codepage = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+
+    # Without the pin the child dies on the encode — the defect being fixed.
+    unpinned = subprocess.run(
+        [_sys.executable, "-c", body], capture_output=True, env=codepage, timeout=60
+    )
+    assert unpinned.returncode != 0
+    assert b"UnicodeEncodeError" in unpinned.stderr
+
+    # With it, the child survives and the reader gets the real path back.
+    pinned = subprocess.run(
+        [_sys.executable, "-c", body],
+        capture_output=True,
+        env={**codepage, "PYTHONIOENCODING": "utf-8:replace"},
+        timeout=60,
+    )
+    assert pinned.returncode == 0, pinned.stderr.decode(errors="replace")
+    assert path in pinned.stdout.decode(errors="replace")
+
+
 # --- repo owner/name parsing ---
 @pytest.mark.asyncio
 async def test_repo_owner_name_ssh():
