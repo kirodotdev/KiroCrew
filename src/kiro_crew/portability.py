@@ -308,7 +308,15 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
             auto_dir = snap / "skills" / "auto"
             if auto_dir.is_dir():
                 shutil.rmtree(str(auto_dir))
-            _do_replace(snap, mc, None)
+            # Artifacts and uploads are CLI-restore-only: a dashboard import
+            # zip must not write into the artifact library or uploads store,
+            # so pass the explicit pre-existing component surface instead of
+            # None (= everything).
+            _do_replace(
+                snap,
+                mc,
+                ["memory", "crons", "config", "notifications", "security", "workspace", "skills"],
+            )
             summary["items"].append("full replace")
         else:
             # Merge mode

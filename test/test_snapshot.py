@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
+import shutil
 import sqlite3
 import tarfile
 from pathlib import Path
@@ -33,13 +35,15 @@ def _setup_fake_kirocrew(d: Path) -> None:
         "workspace/hygiene_data",
         "skills/my-skill",
         "plan_memory",
+        "artifacts/my-widget/versions",
+        "artifacts/other-widget",
+        "uploads",
     ):
         (d / sub).mkdir(parents=True, exist_ok=True)
 
     # memory.db with all tables
     conn = sqlite3.connect(str(d / "memory.db"))
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
         CREATE TABLE semantic_memory (key TEXT PRIMARY KEY, value_json TEXT NOT NULL,
             confidence REAL DEFAULT 0.5, source TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -71,8 +75,7 @@ def _setup_fake_kirocrew(d: Path) -> None:
             VALUES ('user', 'prefers', 'dark_mode', 'ep1', '2026-01-01');
         INSERT INTO knowledge_edges (source_key, target_key, relation, weight, created_at)
             VALUES ('user', 'dark_mode', 'prefers', 1.0, '2026-01-01');
-    """
-    )
+    """)
     conn.close()
 
     (d / "crons.json").write_text(
@@ -103,6 +106,21 @@ def _setup_fake_kirocrew(d: Path) -> None:
     (d / "workspace/hygiene_data/week1.json").write_text("big data")
     (d / "plan_memory/plan1.json").write_text("plan data")
     (d / "skills/my-skill/SKILL.md").write_text("# My Skill")
+    (d / "artifacts/my-widget/meta.json").write_text('{"slug": "my-widget", "version": 2}')
+    (d / "artifacts/my-widget/current.html").write_text("<p>v2</p>")
+    (d / "artifacts/my-widget/versions/v1.html").write_text("<p>v1</p>")
+    (d / "artifacts/other-widget/meta.json").write_text('{"slug": "other-widget", "version": 1}')
+    (d / "artifacts/other-widget/current.html").write_text("<p>other</p>")
+    (d / "artifact_folders.json").write_text(
+        json.dumps(
+            [
+                {"id": "aaaaaaaaaaaa", "name": "Reports", "order": 0, "parent_id": ""},
+                {"id": "bbbbbbbbbbbb", "name": "Drafts", "order": 1, "parent_id": "aaaaaaaaaaaa"},
+            ]
+        )
+    )
+    (d / "uploads/aaa_doc.txt").write_text("uploaded doc")
+    (d / "uploads/bbb_photo.png").write_bytes(b"\x89PNG fake image bytes")
 
 
 def _make_snapshot(src: Path, out: Path, extra_args: list[str] | None = None) -> Path:
@@ -281,6 +299,39 @@ class TestRestoreReplace:
         ]
         assert backups
         assert (backups[0] / "workspace/local_only.md").is_file()
+
+    def test_replace_refuses_hardlinked_workspace_file(self, env, monkeypatch, capsys):
+        """A hardlinked file would be skipped by the backup then rmtree'd —
+        the restore must refuse up front instead of losing it."""
+        _, _, tarball, tmp_path = env
+        existing = tmp_path / "existing_hl"
+        _setup_fake_kirocrew(existing)
+        original = existing / "workspace" / "precious.md"
+        original.write_text("irreplaceable")
+        os.link(str(original), str(existing / "workspace" / "precious-link.md"))
+        monkeypatch.setenv("KIROCREW_HOME", str(existing))
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        assert ret == 1
+        assert "hardlink" in capsys.readouterr().out.lower()
+        # Nothing was mutated: the file survives and no backup dir was left behind.
+        assert original.read_text() == "irreplaceable"
+        assert (existing / "workspace" / "precious-link.md").is_file()
+        assert not [d for d in existing.iterdir() if d.name.startswith("pre-restore-")]
+
+    def test_snapshot_refuses_hardlinked_workspace_file(self, tmp_path, monkeypatch, capsys):
+        """Snapshot CREATION aborts (exit 1) on a hardlinked user file instead
+        of reporting success while silently omitting it."""
+        src = tmp_path / "src_hl_create"
+        _setup_fake_kirocrew(src)
+        original = src / "workspace" / "keeper.md"
+        original.write_text("must not be silently dropped")
+        os.link(str(original), str(src / "workspace" / "keeper-link.md"))
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        out_dir = tmp_path / "out_hl_create"
+        ret = snapshot_main([str(out_dir)])
+        assert ret == 1
+        assert "hardlink" in capsys.readouterr().out.lower()
+        assert not list(out_dir.glob("*.tar.gz")) if out_dir.is_dir() else True
 
 
 class TestRestoreMerge:
@@ -476,7 +527,17 @@ class TestComponents:
         """TEST 18"""
         restore_main(["--list-components"])
         out = capsys.readouterr().out
-        for c in ("memory", "crons", "config", "skills", "workspace", "notifications", "security"):
+        for c in (
+            "memory",
+            "crons",
+            "config",
+            "skills",
+            "workspace",
+            "notifications",
+            "security",
+            "artifacts",
+            "uploads",
+        ):
             assert c in out
 
     def test_memory_only(self, env, monkeypatch):
@@ -724,7 +785,1086 @@ class TestParsedNamespace:
         assert (fresh / "memory.db").is_file()
 
 
+class TestArtifactsUploads:
+    def test_snapshot_includes_artifacts_and_uploads(self, env):
+        """Artifact slug dirs and upload files ride the snapshot; manifest counts them."""
+        _, _, tarball, tmp_path = env
+        extract = tmp_path / "extract_art"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        assert (snap / "artifacts/my-widget/meta.json").is_file()
+        assert (snap / "artifacts/my-widget/current.html").is_file()
+        assert (snap / "artifacts/my-widget/versions/v1.html").is_file()
+        assert (snap / "artifacts/other-widget/current.html").is_file()
+        assert (snap / "uploads/aaa_doc.txt").is_file()
+        assert (snap / "uploads/bbb_photo.png").is_file()
+        m = json.loads((snap / "MANIFEST.json").read_text(encoding="utf-8"))
+        assert m["contents"]["artifact_count"] == 2
+        assert m["contents"]["upload_files"] == 2
+
+    def test_restore_fresh_copies_artifacts_and_uploads(self, env, monkeypatch):
+        """Replace mode onto a fresh dir restores the full artifact library and uploads."""
+        _, _, tarball, tmp_path = env
+        fresh = tmp_path / "fresh_art"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        assert ret == 0
+        assert (fresh / "artifacts/my-widget/versions/v1.html").is_file()
+        assert (fresh / "artifacts/other-widget/meta.json").is_file()
+        assert (fresh / "uploads/aaa_doc.txt").read_text(encoding="utf-8") == "uploaded doc"
+        assert (fresh / "uploads/bbb_photo.png").is_file()
+
+    def test_replace_skips_existing_artifact_slug(self, env, capsys, monkeypatch):
+        """An existing slug is never overwritten, even in replace mode; absent slugs import."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst_art_skip"
+        _setup_fake_kirocrew(dst)
+        (dst / "artifacts/my-widget/current.html").write_text("<p>local v3</p>")
+        shutil.rmtree(str(dst / "artifacts/other-widget"))
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        assert ret == 0
+        # Local slug untouched — no file-level merge into an existing slug.
+        html = (dst / "artifacts/my-widget/current.html").read_text(encoding="utf-8")
+        assert html == "<p>local v3</p>"
+        # Absent slug imported whole.
+        assert (dst / "artifacts/other-widget/current.html").is_file()
+        assert "Artifacts imported: 1 (skipped 1 existing)" in capsys.readouterr().out
+
+    def test_merge_skips_existing_upload_filename(self, env, monkeypatch):
+        """An existing upload filename wins over the snapshot copy; absent ones import."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst_up_skip"
+        _setup_fake_kirocrew(dst)
+        (dst / "uploads/aaa_doc.txt").write_text("local edit")
+        (dst / "uploads/bbb_photo.png").unlink()
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+        assert ret == 0
+        assert (dst / "uploads/aaa_doc.txt").read_text(encoding="utf-8") == "local edit"
+        assert (dst / "uploads/bbb_photo.png").is_file()
+
+    def test_components_artifacts_only(self, env, monkeypatch):
+        """--components artifacts restores only the artifact library."""
+        _, _, tarball, tmp_path = env
+        fresh = tmp_path / "fresh_art_only"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        restore_main([str(tarball), "--mode", "replace", "--components", "artifacts", "--force"])
+        assert (fresh / "artifacts/my-widget/meta.json").is_file()
+        assert not (fresh / "memory.db").exists()
+        assert not (fresh / "uploads").exists()
+        assert not (fresh / "skills").exists()
+
+    def test_old_snapshot_without_artifacts_restores(self, env, monkeypatch):
+        """A snapshot created before these components existed restores unchanged."""
+        _, _, tarball, tmp_path = env
+        extract = tmp_path / "extract_old"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        shutil.rmtree(str(snap / "artifacts"))
+        shutil.rmtree(str(snap / "uploads"))
+        (snap / "artifact_folders.json").unlink()
+        m = json.loads((snap / "MANIFEST.json").read_text(encoding="utf-8"))
+        del m["contents"]["artifact_count"]
+        del m["contents"]["upload_files"]
+        (snap / "MANIFEST.json").write_text(json.dumps(m))
+        old_tar = tmp_path / "old_format.tar.gz"
+        with tarfile.open(str(old_tar), "w:gz") as tar:
+            tar.add(str(snap), arcname=snap.name)
+        fresh = tmp_path / "fresh_old"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        ret = restore_main([str(old_tar), "--mode", "replace", "--force"])
+        assert ret == 0
+        assert (fresh / "memory.db").is_file()
+        assert not (fresh / "artifacts").exists()
+        assert not (fresh / "uploads").exists()
+
+    def test_snapshot_includes_artifact_folders_file(self, env):
+        """The folder-tree metadata rides the snapshot beside the artifacts dir."""
+        _, _, tarball, tmp_path = env
+        extract = tmp_path / "extract_folders"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        raw = json.loads((snap / "artifact_folders.json").read_text(encoding="utf-8"))
+        assert {f["id"] for f in raw} == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
+
+    def test_restore_merges_artifact_folders_target_wins(self, env, capsys, monkeypatch):
+        """Folder records merge by id: target copies win, snapshot-only ids append."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst_folders"
+        _setup_fake_kirocrew(dst)
+        (dst / "artifact_folders.json").write_text(
+            json.dumps(
+                [
+                    # Same id as the snapshot's "Reports" but renamed locally.
+                    {"id": "aaaaaaaaaaaa", "name": "Renamed", "order": 0, "parent_id": ""},
+                    {"id": "cccccccccccc", "name": "Local only", "order": 2, "parent_id": ""},
+                ]
+            )
+        )
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+        assert ret == 0
+        raw = json.loads((dst / "artifact_folders.json").read_text(encoding="utf-8"))
+        by_id = {f["id"]: f for f in raw}
+        # Target's record for the shared id is untouched.
+        assert by_id["aaaaaaaaaaaa"]["name"] == "Renamed"
+        # Local-only folder survives; snapshot-only folder is appended.
+        assert by_id["cccccccccccc"]["name"] == "Local only"
+        assert by_id["bbbbbbbbbbbb"]["name"] == "Drafts"
+        assert "Artifact folders imported: 1" in capsys.readouterr().out
+
+    def test_restore_folders_onto_fresh_host(self, env, monkeypatch):
+        """A fresh host gets the whole folder tree so folder_id refs resolve."""
+        _, _, tarball, tmp_path = env
+        fresh = tmp_path / "fresh_folders"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        assert ret == 0
+        raw = json.loads((fresh / "artifact_folders.json").read_text(encoding="utf-8"))
+        assert {f["id"] for f in raw} == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
+
+    def test_folder_merge_fails_closed_on_non_list_target(self, env, monkeypatch):
+        """A target folders file with valid-but-non-list JSON is never replaced."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst_folders_nonlist"
+        _setup_fake_kirocrew(dst)
+        (dst / "artifact_folders.json").write_text('{"not": "a list"}')
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+        assert ret == 0
+        raw = (dst / "artifact_folders.json").read_text(encoding="utf-8")
+        assert raw == '{"not": "a list"}'
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+    def test_restore_created_dirs_are_owner_only(self, env, monkeypatch):
+        """Restore-created artifacts/ and uploads/ deny traversal to other users."""
+        _, _, tarball, tmp_path = env
+        fresh = tmp_path / "fresh_modes"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        assert ret == 0
+        assert (fresh / "artifacts").stat().st_mode & 0o777 == 0o700
+        assert (fresh / "uploads").stat().st_mode & 0o777 == 0o700
+
+    def test_partial_slug_copy_removed_on_failure(self, tmp_path, monkeypatch):
+        """An interrupted slug copy never strands a half-copied artifact.
+
+        A stranded partial slug would be skipped as 'existing' by every later
+        retry, freezing the corruption permanently.
+        """
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_partial"
+        dst = tmp_path / "dst_partial"
+        (src / "my-widget" / "versions").mkdir(parents=True)
+        (src / "my-widget" / "meta.json").write_text("{}")
+        (src / "my-widget" / "versions" / "v1.html").write_text("<p>v1</p>")
+        dst.mkdir()
+
+        def _boom(s, d, **k):
+            # Leave a genuinely partial copy behind before failing.
+            Path(d).mkdir(exist_ok=True)
+            (Path(d) / "half.html").write_text("partial")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(snapshot_mod, "_copytree_safe", _boom)
+        with pytest.raises(OSError):
+            snapshot_mod._copy_artifacts_no_overwrite(src, dst)
+        assert not (dst / "my-widget").exists()
+
+    def test_interrupted_slug_copy_removed_on_keyboard_interrupt(self, tmp_path, monkeypatch):
+        """Ctrl-C mid-slug-copy cleans the partial slug before propagating.
+
+        Cleanup gated on ``except OSError`` would let a KeyboardInterrupt
+        strand the half-copied slug, which every later additive restore then
+        skips as 'existing' — freezing the corruption permanently.
+        """
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_intr_slug"
+        dst = tmp_path / "dst_intr_slug"
+        (src / "my-widget" / "versions").mkdir(parents=True)
+        (src / "my-widget" / "meta.json").write_text("{}")
+        dst.mkdir()
+
+        def _interrupt(s, d, **k):
+            Path(d).mkdir(exist_ok=True)
+            (Path(d) / "half.html").write_text("partial")
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(snapshot_mod, "_copytree_safe", _interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            snapshot_mod._copy_artifacts_no_overwrite(src, dst)
+        assert not (dst / "my-widget").exists()
+
+    def test_interrupted_file_copy_removed_on_keyboard_interrupt(self, tmp_path, monkeypatch):
+        """Ctrl-C during a top-level artifact file copy never strands the
+        zero-byte placeholder created by the exclusive open."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_intr_file"
+        dst = tmp_path / "dst_intr_file"
+        src.mkdir()
+        dst.mkdir()
+        (src / "stray.json").write_text("{}")
+
+        def _interrupt(s, d, **k):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(snapshot_mod.shutil, "copy2", _interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            snapshot_mod._copy_artifacts_no_overwrite(src, dst)
+        monkeypatch.undo()
+        assert not (dst / "stray.json").exists()
+
+    def test_raced_slug_is_skipped_not_deleted(self, tmp_path, monkeypatch):
+        """A slug created by a concurrent writer after the exists() probe is
+        treated as existing — never copied over and never cleaned up."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_race"
+        dst = tmp_path / "dst_race"
+        (src / "my-widget").mkdir(parents=True)
+        (src / "my-widget" / "meta.json").write_text("{}")
+        dst.mkdir()
+        (dst / "my-widget").mkdir()
+        (dst / "my-widget" / "meta.json").write_text('{"local": "wins"}')
+
+        # Simulate the exists() probe losing the race: it reports absent while
+        # the directory is really there, so the atomic mkdir reservation is
+        # what must catch the conflict.
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+        imported, skipped = snapshot_mod._copy_artifacts_no_overwrite(src, dst)
+        monkeypatch.undo()
+        assert imported == 0
+        assert skipped == 1
+        assert (dst / "my-widget" / "meta.json").read_text(encoding="utf-8") == '{"local": "wins"}'
+
+    def test_restore_skipped_when_owner_only_lockdown_fails(self, env, capsys, monkeypatch):
+        """If the destination cannot be made owner-only, nothing is copied."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        _, _, tarball, tmp_path = env
+        fresh = tmp_path / "fresh_lockdown"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        monkeypatch.setattr(
+            snapshot_mod,
+            "_make_restore_dir_owner_only",
+            lambda dd: (dd.mkdir(parents=True, exist_ok=True), False)[1],
+        )
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "artifacts not restored" in out
+        assert "uploads not restored" in out
+        assert not (fresh / "artifacts" / "my-widget").exists()
+        assert not (fresh / "uploads" / "aaa_doc.txt").exists()
+
+    def test_folder_merge_ignores_malformed_ids(self, env, monkeypatch):
+        """Non-string / empty folder ids never crash the restore merge."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst_bad_ids"
+        _setup_fake_kirocrew(dst)
+        (dst / "artifact_folders.json").write_text(
+            json.dumps(
+                [
+                    {"id": ["not", "hashable"], "name": "Broken"},
+                    {"id": "", "name": "Empty"},
+                    {"id": "cccccccccccc", "name": "Local only"},
+                ]
+            )
+        )
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+        assert ret == 0
+        raw = json.loads((dst / "artifact_folders.json").read_text(encoding="utf-8"))
+        names = {f["name"] for f in raw}
+        # Merge completed (snapshot folders imported), malformed records kept
+        # untouched, no TypeError.
+        assert {"Broken", "Empty", "Local only", "Reports", "Drafts"} <= names
+
+    def test_oversized_folder_metadata_skipped(self, tmp_path, monkeypatch, capsys):
+        """A snapshot artifact_folders.json past the byte cap is rejected
+        before parsing; the target is left untouched."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        monkeypatch.setattr(snapshot_mod, "_FOLDERS_MAX_BYTES", 64)
+        src_f = tmp_path / "snap_folders.json"
+        dst_f = tmp_path / "live_folders.json"
+        src_f.write_text(json.dumps([{"id": "a" * 200, "name": "Bloated"}]))
+        dst_f.write_text(
+            json.dumps([{"id": "keep00000000", "name": "Local", "order": 0, "parent_id": ""}])
+        )
+        snapshot_mod._merge_artifact_folders(src_f, dst_f)
+        assert "size cap" in capsys.readouterr().out
+        raw = json.loads(dst_f.read_text(encoding="utf-8"))
+        assert [f["id"] for f in raw] == ["keep00000000"]
+
+    def test_folder_metadata_record_cap(self, tmp_path, monkeypatch, capsys):
+        """A snapshot folder list past the record cap is rejected wholesale;
+        the target is left untouched."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        monkeypatch.setattr(snapshot_mod, "_FOLDERS_MAX_RECORDS", 2)
+        src_f = tmp_path / "snap_folders_many.json"
+        dst_f = tmp_path / "live_folders_many.json"
+        src_f.write_text(
+            json.dumps(
+                [{"id": f"id{i:010d}", "name": f"F{i}", "order": i, "parent_id": ""} for i in range(3)]
+            )
+        )
+        dst_f.write_text(
+            json.dumps([{"id": "keep00000000", "name": "Local", "order": 0, "parent_id": ""}])
+        )
+        snapshot_mod._merge_artifact_folders(src_f, dst_f)
+        assert "record cap" in capsys.readouterr().out
+        raw = json.loads(dst_f.read_text(encoding="utf-8"))
+        assert [f["id"] for f in raw] == ["keep00000000"]
+
+    def test_store_tmp_files_not_staged(self, tmp_path, monkeypatch):
+        """The artifact store's atomic-write *.tmp staging files never ride."""
+        src = tmp_path / "src_tmpfiles"
+        _setup_fake_kirocrew(src)
+        (src / "artifacts" / "my-widget" / "meta.json.tmp").write_text("{torn")
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        out = tmp_path / "out_tmpfiles"
+        tarball = _make_snapshot(src, out)
+        extract = tmp_path / "extract_tmpfiles"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        assert not (snap / "artifacts" / "my-widget" / "meta.json.tmp").exists()
+        assert (snap / "artifacts" / "my-widget" / "meta.json").is_file()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
+    def test_linked_component_roots_not_staged(self, tmp_path, monkeypatch):
+        """Symlinked artifacts/ or uploads/ roots stage nothing."""
+        src = tmp_path / "src_linked_roots"
+        _setup_fake_kirocrew(src)
+        shutil.rmtree(str(src / "artifacts"))
+        shutil.rmtree(str(src / "uploads"))
+        outside = tmp_path / "outside_roots"
+        (outside / "secrets").mkdir(parents=True)
+        (outside / "secrets" / "id_key").write_text("credential material")
+        (src / "artifacts").symlink_to(outside)
+        (src / "uploads").symlink_to(outside)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        out = tmp_path / "out_linked_roots"
+        tarball = _make_snapshot(src, out)
+        extract = tmp_path / "extract_linked_roots"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        assert not (snap / "artifacts" / "secrets").exists()
+        assert not (snap / "uploads" / "secrets").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
+    def test_linked_restore_root_not_mutated(self, env, tmp_path, monkeypatch):
+        """A linked destination root is refused BEFORE any permission change."""
+        _, _, tarball, _ = env
+        dst = tmp_path / "dst_linked_restore"
+        _setup_fake_kirocrew(dst)
+        shutil.rmtree(str(dst / "uploads"))
+        outside = tmp_path / "outside_perm_target"
+        outside.mkdir()
+        outside.chmod(0o755)
+        (dst / "uploads").symlink_to(outside)
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+        assert ret == 0
+        # The link's target kept its permissions AND received no files.
+        assert outside.stat().st_mode & 0o777 == 0o755
+        assert not any(outside.iterdir())
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
+    def test_linked_destination_component_in_uploads_skipped(self, tmp_path, monkeypatch, env):
+        """Restore never writes through an existing linked uploads subpath."""
+        _, _, tarball, _ = env
+        dst = tmp_path / "dst_linked_subpath"
+        _setup_fake_kirocrew(dst)
+        outside = tmp_path / "outside_subpath"
+        outside.mkdir()
+        # A dangling link named exactly like an incoming upload: exists() says
+        # False, so the naive copy would write THROUGH it to the link target.
+        (dst / "uploads" / "aaa_doc.txt").unlink()
+        (dst / "uploads" / "aaa_doc.txt").symlink_to(outside / "gone.txt")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+        assert ret == 0
+        assert not (outside / "gone.txt").exists()
+
+    def test_slug_vanishing_mid_copy_skipped_not_fatal(self, tmp_path, monkeypatch):
+        """A slug deleted while being staged is dropped, not a snapshot abort."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_vanish"
+        dst = tmp_path / "dst_vanish"
+        (src / "doomed" / "versions").mkdir(parents=True)
+        (src / "doomed" / "meta.json").write_text('{"version": 1}')
+        (src / "keeper").mkdir()
+        (src / "keeper" / "meta.json").write_text('{"version": 1}')
+        dst.mkdir()
+
+        real_copy = snapshot_mod._copytree_safe
+
+        def _vanish_copy(s, d, **k):
+            if Path(s).name == "doomed":
+                shutil.rmtree(str(Path(s)))
+                raise FileNotFoundError("source vanished")
+            real_copy(s, d, **k)
+
+        monkeypatch.setattr(snapshot_mod, "_copytree_safe", _vanish_copy)
+        snapshot_mod._stage_artifact_slugs(src, dst)
+        monkeypatch.undo()
+        assert not (dst / "doomed").exists()
+        assert (dst / "keeper" / "meta.json").is_file()
+
+    def test_metaless_slug_never_staged(self, tmp_path):
+        """A slug without readable meta.json (mid-create/delete) never rides."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_metaless"
+        dst = tmp_path / "dst_metaless"
+        (src / "half-created").mkdir(parents=True)
+        (src / "half-created" / "current.html").write_text("<p>no meta yet</p>")
+        dst.mkdir()
+        snapshot_mod._stage_artifact_slugs(src, dst)
+        assert not (dst / "half-created").exists()
+
+    def test_folder_merge_proceeds_despite_unrelated_port_listener(self, env, capsys, monkeypatch):
+        """An unrelated listener on the default port must NOT block the folder
+        merge: ownership of THIS data home is decided by the mc-scoped
+        ``gateway.lock`` flock alone (a gateway owning the home holds it and
+        is covered by the flock test below)."""
+        _, _, tarball, tmp_path = env
+        fresh = tmp_path / "fresh_gateway_folders"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        monkeypatch.setenv("KIROCREW_ASSUME_GATEWAY_RUNNING", "1")
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "folder tree not merged" not in out
+        assert (fresh / "artifacts" / "my-widget" / "meta.json").is_file()
+        assert (fresh / "artifact_folders.json").is_file()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX flock")
+    def test_folder_merge_skipped_when_gateway_lock_held(self, env, capsys, monkeypatch):
+        """A gateway on a custom port is still detected via gateway.lock."""
+        import fcntl
+
+        _, _, tarball, tmp_path = env
+        fresh = tmp_path / "fresh_lock_folders"
+        fresh.mkdir()
+        # Simulate a live gateway on a non-default port: no port probe hit,
+        # but an exclusive flock held on gateway.lock.
+        lock_path = fresh / "gateway.lock"
+        lock_path.write_text("1")
+        holder = os.open(str(lock_path), os.O_RDWR)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+            monkeypatch.setenv("KIROCREW_ASSUME_GATEWAY_RUNNING", "0")
+            ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+            assert ret == 0
+            assert "folder tree not merged" in capsys.readouterr().out
+            assert not (fresh / "artifact_folders.json").exists()
+        finally:
+            os.close(holder)
+
+    def test_file_squatting_on_component_name_skips_component(self, env, capsys, monkeypatch):
+        """A regular FILE named uploads/ must not abort the whole restore."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst_squat"
+        _setup_fake_kirocrew(dst)
+        shutil.rmtree(str(dst / "uploads"))
+        (dst / "uploads").write_text("I am a file, not a directory")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+        assert ret == 0
+        assert "uploads not restored" in capsys.readouterr().out
+        # The squatting file survives untouched; other components restored.
+        assert (dst / "uploads").is_file()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlinks")
+    def test_snapshot_refuses_hardlinked_upload(self, tmp_path, monkeypatch, capsys):
+        """Snapshot CREATION aborts (exit 1) on a hardlinked upload instead of
+        reporting success while silently omitting it — mirroring the
+        workspace/skills components."""
+        src = tmp_path / "src_hl_upload"
+        _setup_fake_kirocrew(src)
+        original = src / "uploads" / "aaa_doc.txt"
+        os.link(str(original), str(src / "uploads" / "doc-link.txt"))
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        out_dir = tmp_path / "out_hl_upload"
+        ret = snapshot_main([str(out_dir)])
+        assert ret == 1
+        assert "hardlink" in capsys.readouterr().out.lower()
+        assert not list(out_dir.glob("*.tar.gz")) if out_dir.is_dir() else True
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlinks")
+    def test_snapshot_refuses_hardlinked_artifact_file(self, tmp_path, monkeypatch, capsys):
+        """Snapshot CREATION aborts (exit 1) on a hardlinked file inside an
+        artifact slug instead of shipping a snapshot that silently lacks it."""
+        src = tmp_path / "src_hl_artifact"
+        _setup_fake_kirocrew(src)
+        original = src / "artifacts" / "my-widget" / "current.html"
+        os.link(str(original), str(src / "artifacts" / "my-widget" / "linked.html"))
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        out_dir = tmp_path / "out_hl_artifact"
+        ret = snapshot_main([str(out_dir)])
+        assert ret == 1
+        assert "hardlink" in capsys.readouterr().out.lower()
+        assert not list(out_dir.glob("*.tar.gz")) if out_dir.is_dir() else True
+
+    def test_unstable_upload_skipped_from_snapshot(self, tmp_path, monkeypatch):
+        """A file whose (size, mtime) moves during every copy attempt is
+        dropped from this snapshot generation rather than shipped truncated."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_unstable"
+        dst = tmp_path / "dst_unstable"
+        src.mkdir()
+        (src / "steady.txt").write_text("complete upload")
+        moving = src / "inflight.bin"
+        moving.write_text("chunk-0")
+
+        real_pinned = snapshot_mod._pinned_copy_file
+        counter = {"n": 0}
+
+        def _copy_and_grow(s, d, **k):
+            real_pinned(s, d, **k)
+            if Path(s).name == "inflight.bin":
+                # Simulate the upload handler appending after our copy.
+                counter["n"] += 1
+                with open(s, "a", encoding="utf-8") as f:
+                    f.write(f"chunk-{counter['n']}")
+
+        monkeypatch.setattr(snapshot_mod, "_pinned_copy_file", _copy_and_grow)
+        snapshot_mod._stage_uploads_stable(src, dst)
+        monkeypatch.undo()
+        assert (dst / "steady.txt").read_text(encoding="utf-8") == "complete upload"
+        assert not (dst / "inflight.bin").exists()
+
+    def test_concurrent_restore_never_overwrites_restored_upload(self, tmp_path, monkeypatch):
+        """The guarded copy creates files exclusively — a file that appears
+        between the walk and the write is owned by someone else and skipped."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_excl"
+        dst = tmp_path / "dst_excl"
+        src.mkdir()
+        dst.mkdir()
+        (src / "doc.txt").write_text("from snapshot")
+        (dst / "doc.txt").write_text("from concurrent restore")
+        # exists() lies (simulating the race window); O_EXCL must catch it.
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+        snapshot_mod._copy_tree_no_overwrite_guarded(src, dst)
+        monkeypatch.undo()
+        assert (dst / "doc.txt").read_text(encoding="utf-8") == "from concurrent restore"
+
+    def test_guarded_copy_opens_destination_binary(self, tmp_path, monkeypatch):
+        """The exclusive-create descriptor carries O_BINARY where it exists.
+
+        Writing through a Windows CRT text-mode fd expands 0x0A to 0x0D 0x0A,
+        permanently corrupting every restored binary upload — the same hazard
+        ``_read_meta_bounded`` already guards on its read path.
+        """
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_obinary"
+        dst = tmp_path / "dst_obinary"
+        src.mkdir()
+        dst.mkdir()
+        payload = b"\x89PNG\r\n\x1a\n\x0adata"
+        (src / "img.png").write_bytes(payload)
+        fake_flag = 0x40000000  # stands in for os.O_BINARY on POSIX
+        monkeypatch.setattr(os, "O_BINARY", fake_flag, raising=False)
+        seen: dict[str, int] = {}
+        real_open = os.open
+
+        def _capture(path, flags, *a, **k):
+            seen[str(path)] = flags
+            return real_open(path, flags & ~fake_flag, *a, **k)
+
+        monkeypatch.setattr(snapshot_mod.os, "open", _capture)
+        snapshot_mod._copy_tree_no_overwrite_guarded(src, dst)
+        monkeypatch.undo()
+        # dir_fd-pinned creation opens by bare name relative to the parent
+        # descriptor, so match on the basename rather than the full path.
+        file_opens = [f for p, f in seen.items() if Path(p).name == "img.png"]
+        assert file_opens and all(f & fake_flag for f in file_opens)
+        assert (dst / "img.png").read_bytes() == payload
+
+    def test_upload_path_type_conflict_skipped(self, env, capsys, monkeypatch, tmp_path):
+        """A local FILE occupying a snapshot DIRECTORY path skips additively."""
+        _, _, tarball, _ = env
+        # Build a snapshot whose uploads/ contains a subdirectory.
+        extract = tmp_path / "extract_typeconf"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        (snap / "uploads" / "subdir").mkdir()
+        (snap / "uploads" / "subdir" / "nested.txt").write_text("nested upload")
+        conf_tar = tmp_path / "typeconf.tar.gz"
+        with tarfile.open(str(conf_tar), "w:gz") as tar:
+            tar.add(str(snap), arcname=snap.name)
+        dst = tmp_path / "dst_typeconf"
+        _setup_fake_kirocrew(dst)
+        # Local FILE squats on the directory name the snapshot wants.
+        (dst / "uploads" / "subdir").write_text("I am a file")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+        ret = restore_main([str(conf_tar), "--mode", "merge", "--force"])
+        assert ret == 0
+        assert "path type conflict" in capsys.readouterr().out
+        # Local file untouched; sibling uploads still restored.
+        assert (dst / "uploads" / "subdir").is_file()
+        assert (dst / "uploads" / "bbb_photo.png").is_file()
+
+    def test_folder_merge_survives_deeply_nested_json(self, env, monkeypatch, tmp_path, capsys):
+        """A pathologically nested folders file skips the merge, not the restore."""
+        _, _, tarball, _ = env
+        extract = tmp_path / "extract_nested"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        (snap / "artifact_folders.json").write_text("[" * 40000 + "]" * 40000)
+        nested_tar = tmp_path / "nested.tar.gz"
+        with tarfile.open(str(nested_tar), "w:gz") as tar:
+            tar.add(str(snap), arcname=snap.name)
+        fresh = tmp_path / "fresh_nested"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        ret = restore_main([str(nested_tar), "--mode", "replace", "--force"])
+        assert ret == 0
+        # Artifacts restored despite the poisoned folders file.
+        assert (fresh / "artifacts" / "my-widget" / "meta.json").is_file()
+
+    def test_slug_recopied_when_meta_changes_mid_copy(self, tmp_path, monkeypatch):
+        """A slug whose meta.json moves during the copy is re-copied whole."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_metarace"
+        dst = tmp_path / "dst_metarace"
+        (src / "my-widget").mkdir(parents=True)
+        (src / "my-widget" / "meta.json").write_text('{"version": 1}')
+        (src / "my-widget" / "current.html").write_text("<p>v1</p>")
+
+        real_copy = snapshot_mod._copytree_safe
+        bumped = {"done": False}
+
+        def _racy_copy(s, d, **k):
+            real_copy(s, d, **k)
+            if not bumped["done"]:
+                # Simulate a live update landing mid-copy: meta and content
+                # advance AFTER this copy completed.
+                bumped["done"] = True
+                (src / "my-widget" / "meta.json").write_text('{"version": 2}')
+                (src / "my-widget" / "current.html").write_text("<p>v2</p>")
+
+        monkeypatch.setattr(snapshot_mod, "_copytree_safe", _racy_copy)
+        snapshot_mod._stage_artifact_slugs(src, dst)
+        # The retry captured the post-update state coherently.
+        assert (dst / "my-widget" / "meta.json").read_text(encoding="utf-8") == '{"version": 2}'
+        assert (dst / "my-widget" / "current.html").read_text(encoding="utf-8") == "<p>v2</p>"
+
+    def test_slug_recopied_when_content_changes_but_meta_does_not(self, tmp_path, monkeypatch):
+        """A mid-copy update that touches content/version files WITHOUT
+        rewriting meta.json must still fail the stability probe — a meta-only
+        check would ship the torn copy."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_torn"
+        dst = tmp_path / "dst_torn"
+        (src / "my-widget").mkdir(parents=True)
+        (src / "my-widget" / "meta.json").write_text('{"version": 1}')
+        (src / "my-widget" / "current.html").write_text("<p>v1</p>")
+
+        real_copy = snapshot_mod._copytree_safe
+        bumped = {"done": False}
+
+        def _racy_copy(s, d, **k):
+            real_copy(s, d, **k)
+            if not bumped["done"]:
+                # Content advances mid-copy; meta.json is left untouched
+                # (updater writes meta last — or not at all for history files).
+                bumped["done"] = True
+                content = src / "my-widget" / "current.html"
+                content.write_text("<p>v2</p>")
+                os.utime(content, ns=(1, 1))  # force a distinct mtime_ns
+
+        monkeypatch.setattr(snapshot_mod, "_copytree_safe", _racy_copy)
+        snapshot_mod._stage_artifact_slugs(src, dst)
+        # The retry re-copied and captured the post-update content.
+        assert (dst / "my-widget" / "current.html").read_text(encoding="utf-8") == "<p>v2</p>"
+
+    def test_folder_merge_sanitizes_malformed_fields(self, env, monkeypatch, tmp_path):
+        """Imported folder records are coerced to the store's exact shape.
+
+        A non-numeric ``order`` from a foreign snapshot would otherwise
+        persist and crash the folder listing's int() coercion server-side.
+        """
+        _, _, tarball, _ = env
+        # Build a snapshot whose folders file carries malformed fields.
+        extract = tmp_path / "extract_sanitize"
+        extract.mkdir()
+        with tarfile.open(str(tarball)) as tar:
+            tar.extractall(extract, filter=lambda t, _d="": t)
+        snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
+        (snap / "artifact_folders.json").write_text(
+            json.dumps(
+                [
+                    {"id": "dddddddddddd", "name": 42, "order": "NaN", "parent_id": None},
+                ]
+            )
+        )
+        bad_tar = tmp_path / "sanitize.tar.gz"
+        with tarfile.open(str(bad_tar), "w:gz") as tar:
+            tar.add(str(snap), arcname=snap.name)
+        fresh = tmp_path / "fresh_sanitize"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        ret = restore_main([str(bad_tar), "--mode", "replace", "--force"])
+        assert ret == 0
+        raw = json.loads((fresh / "artifact_folders.json").read_text(encoding="utf-8"))
+        rec = next(f for f in raw if f["id"] == "dddddddddddd")
+        assert isinstance(rec["order"], int)
+        assert isinstance(rec["name"], str)
+        assert rec["parent_id"] == ""
+        # The store's own listing path must survive the imported record.
+        from kiro_crew.artifacts import ArtifactFolderStore
+
+        store = ArtifactFolderStore(path=fresh / "artifact_folders.json")
+        assert any(f["id"] == "dddddddddddd" for f in store.list())
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink")
+    def test_symlinked_meta_json_marks_slug_unstable(self, tmp_path, capsys):
+        """A meta.json that is a symlink is never raw-read; the slug skips.
+
+        A link to an endless source (device node, FIFO) would turn the bare
+        read into an unbounded hang/OOM; the bounded reader refuses the link
+        at open, so the stability check fails and the slug never rides.
+        """
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_linkmeta"
+        dst = tmp_path / "dst_linkmeta"
+        (src / "linked").mkdir(parents=True)
+        real = tmp_path / "outside.json"
+        real.write_text('{"version": 1}')
+        (src / "linked" / "meta.json").symlink_to(real)
+        (src / "ok-slug").mkdir()
+        (src / "ok-slug" / "meta.json").write_text('{"version": 1}')
+        dst.mkdir()
+        snapshot_mod._stage_artifact_slugs(src, dst)
+        assert not (dst / "linked").exists()
+        assert (dst / "ok-slug" / "meta.json").is_file()
+        assert "skipped this generation" in capsys.readouterr().out
+
+    def test_oversized_meta_json_marks_slug_unstable(self, tmp_path, monkeypatch):
+        """A meta.json past the size cap fails the stability check (skip)."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        monkeypatch.setattr(snapshot_mod, "_META_MAX_BYTES", 16)
+        src = tmp_path / "src_bigmeta"
+        dst = tmp_path / "dst_bigmeta"
+        (src / "bloated").mkdir(parents=True)
+        (src / "bloated" / "meta.json").write_text("x" * 64)
+        (src / "small").mkdir()
+        (src / "small" / "meta.json").write_text('{"v": 1}')
+        dst.mkdir()
+        snapshot_mod._stage_artifact_slugs(src, dst)
+        assert not (dst / "bloated").exists()
+        assert (dst / "small" / "meta.json").is_file()
+
+    def test_slug_copy_permission_error_fails_loudly(self, tmp_path, monkeypatch):
+        """A non-disappearance copy failure aborts the snapshot stage.
+
+        Suppressing EACCES/ENOSPC would report a successful snapshot that is
+        silently missing artifacts; only a vanished source may be skipped.
+        """
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_eacces"
+        dst = tmp_path / "dst_eacces"
+        (src / "denied").mkdir(parents=True)
+        (src / "denied" / "meta.json").write_text('{"version": 1}')
+        dst.mkdir()
+
+        def _denied_copy(s, d, **k):
+            raise PermissionError("copy denied")
+
+        monkeypatch.setattr(snapshot_mod, "_copytree_safe", _denied_copy)
+        with pytest.raises(PermissionError):
+            snapshot_mod._stage_artifact_slugs(src, dst)
+
+    def test_upload_copy_permission_error_fails_loudly(self, tmp_path, monkeypatch):
+        """Upload staging re-raises non-disappearance copy failures."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_up_eacces"
+        dst = tmp_path / "dst_up_eacces"
+        src.mkdir()
+        (src / "doc.txt").write_text("payload")
+        dst.mkdir()
+
+        def _denied_copy(s, d, **k):
+            raise PermissionError("copy denied")
+
+        monkeypatch.setattr(snapshot_mod, "_pinned_copy_file", _denied_copy)
+        with pytest.raises(PermissionError):
+            snapshot_mod._stage_uploads_stable(src, dst)
+
+    def test_vanished_upload_skipped_not_fatal(self, tmp_path, monkeypatch):
+        """A source file vanishing mid-copy is dropped, not a snapshot abort."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_up_vanish"
+        dst = tmp_path / "dst_up_vanish"
+        src.mkdir()
+        (src / "gone.txt").write_text("rejected upload")
+        (src / "kept.txt").write_text("complete upload")
+        dst.mkdir()
+        real_pinned = snapshot_mod._pinned_copy_file
+
+        def _vanish_copy(s, d, **k):
+            if Path(s).name == "gone.txt":
+                raise FileNotFoundError("vanished")
+            real_pinned(s, d, **k)
+
+        monkeypatch.setattr(snapshot_mod, "_pinned_copy_file", _vanish_copy)
+        snapshot_mod._stage_uploads_stable(src, dst)
+        monkeypatch.undo()
+        assert not (dst / "gone.txt").exists()
+        assert (dst / "kept.txt").read_text(encoding="utf-8") == "complete upload"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX flock")
+    def test_folder_merge_holds_gateway_lock_across_merge(self, env, monkeypatch, tmp_path):
+        """The gateway.lock flock is HELD during the merge, then released.
+
+        A probe-then-release check leaves a window: a gateway starting after
+        the probe loads the pre-merge folder list and its next save erases
+        the merged records. While the merge runs, an independent exclusive
+        acquire must fail; after the restore it must succeed again.
+        """
+        import fcntl
+
+        from kiro_crew import snapshot as snapshot_mod
+
+        _, _, tarball, _ = env
+        fresh = tmp_path / "fresh_lock_held"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+        real_merge = snapshot_mod._merge_artifact_folders
+        seen = {"locked_during_merge": None}
+
+        def _probing_merge(src_path, dst_path):
+            probe = os.open(str(fresh / "gateway.lock"), os.O_RDWR)
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                seen["locked_during_merge"] = False
+                fcntl.flock(probe, fcntl.LOCK_UN)
+            except OSError:
+                seen["locked_during_merge"] = True
+            finally:
+                os.close(probe)
+            real_merge(src_path, dst_path)
+
+        monkeypatch.setattr(snapshot_mod, "_merge_artifact_folders", _probing_merge)
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        monkeypatch.undo()
+        assert ret == 0
+        assert seen["locked_during_merge"] is True
+        assert (fresh / "artifact_folders.json").is_file()
+        # Released after the merge: a fresh exclusive acquire succeeds.
+        fd = os.open(str(fresh / "gateway.lock"), os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 # ── Comment 8: New edge-case tests ───────────────────────────────────────────
+
+
+class TestDescriptorPinnedStaging:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlinks")
+    def test_pinned_copy_refuses_hardlink_at_descriptor(self, tmp_path):
+        """The staged-read gate validates the inode on the OPEN DESCRIPTOR, so
+        a hardlink that slipped past a by-name screen is still refused at
+        copy time — credential bytes never enter the stage."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        secret = tmp_path / "credential"
+        secret.write_text("AKIA-secret")
+        link = tmp_path / "innocent.html"
+        os.link(str(secret), str(link))
+        dstf = tmp_path / "staged.html"
+        with pytest.raises(RuntimeError, match="hardlink"):
+            snapshot_mod._pinned_copy_file(str(link), str(dstf), on_hardlink="abort")
+        assert not dstf.exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
+    def test_pinned_copy_skips_symlink_without_dereference(self, tmp_path, capsys):
+        """A symlink swapped in after the listing screen surfaces as ELOOP on
+        the O_NOFOLLOW open and is skipped — never dereferenced."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        secret = tmp_path / "credential"
+        secret.write_text("AKIA-secret")
+        link = tmp_path / "swapped.html"
+        link.symlink_to(secret)
+        dstf = tmp_path / "staged.html"
+        snapshot_mod._pinned_copy_file(str(link), str(dstf), on_hardlink="abort")
+        assert not dstf.exists()
+        assert "Skipping symlink" in capsys.readouterr().out
+
+    def test_slug_staging_copies_through_pinned_gate(self, tmp_path, monkeypatch):
+        """Abort-mode tree staging routes every file copy through the
+        descriptor-pinned gate — no bare by-name copy remains."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_gate"
+        dst = tmp_path / "dst_gate"
+        (src / "sub").mkdir(parents=True)
+        (src / "a.txt").write_text("a")
+        (src / "sub" / "b.txt").write_text("b")
+        seen: list[str] = []
+        real_pinned = snapshot_mod._pinned_copy_file
+
+        def _record(s, d, **k):
+            seen.append(Path(s).name)
+            real_pinned(s, d, **k)
+
+        monkeypatch.setattr(snapshot_mod, "_pinned_copy_file", _record)
+        snapshot_mod._copytree_safe(src, dst, on_hardlink="abort")
+        assert sorted(seen) == ["a.txt", "b.txt"]
+        assert (dst / "sub" / "b.txt").read_text(encoding="utf-8") == "b"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlinks")
+    def test_snapshot_refuses_hardlinked_folder_metadata(self, tmp_path, monkeypatch, capsys):
+        """Snapshot CREATION aborts (exit 1) on a hardlinked
+        artifact_folders.json instead of shipping a snapshot whose fresh
+        restore silently loses the folder organization."""
+        src = tmp_path / "src_hl_folders"
+        _setup_fake_kirocrew(src)
+        os.link(str(src / "artifact_folders.json"), str(src / "folders-link.json"))
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        out_dir = tmp_path / "out_hl_folders"
+        ret = snapshot_main([str(out_dir)])
+        assert ret == 1
+        assert "hardlink" in capsys.readouterr().out.lower()
+
+    def test_snapshot_staging_oserror_reported_not_traceback(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A filesystem failure during staging (ENOSPC, EACCES) exits 1 with
+        the module's error message instead of escaping as a traceback."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_oserr"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+
+        def _no_space(*a, **k):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(snapshot_mod, "_stage_uploads_stable", _no_space)
+        ret = snapshot_main([str(tmp_path / "out_oserr")])
+        assert ret == 1
+        assert "No space left" in capsys.readouterr().out
+
+    def test_restore_oserror_reported_not_traceback(self, env, monkeypatch, capsys):
+        """A filesystem failure mid-restore exits 1 with the module's error
+        message instead of a traceback after partial restoration."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        _, _, tarball, tmp_path = env
+        fresh = tmp_path / "fresh_oserr"
+        fresh.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(fresh))
+
+        def _disk_full(*a, **k):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(snapshot_mod, "_do_replace", _disk_full)
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+        assert ret == 1
+        assert "No space left" in capsys.readouterr().out
+
+    @pytest.mark.skipif(
+        os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+        reason="POSIX permissions, non-root",
+    )
+    def test_unreadable_meta_fails_snapshot_not_skips(self, tmp_path):
+        """An EACCES meta.json FAILS the stage instead of silently omitting
+        the whole slug from a backup that then reports success (an absent
+        meta.json still skips — covered by test_metaless_slug_never_staged).
+        """
+        from kiro_crew import snapshot as snapshot_mod
+
+        src = tmp_path / "src_meta_eacces"
+        dst = tmp_path / "dst_meta_eacces"
+        (src / "locked").mkdir(parents=True)
+        meta = src / "locked" / "meta.json"
+        meta.write_text('{"version": 1}')
+        dst.mkdir()
+        meta.chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                snapshot_mod._stage_artifact_slugs(src, dst)
+        finally:
+            meta.chmod(0o600)
+        assert not (dst / "locked").exists()
+
+    def test_guarded_copy_pins_destination_traversal(self, tmp_path, monkeypatch):
+        """Every destination component is opened relative to its parent's
+        descriptor (dir_fd + bare name): no by-name re-traversal remains
+        between the link validation and the write, so an ancestor swapped
+        for a symlink after validation cannot redirect the restore."""
+        from kiro_crew import snapshot as snapshot_mod
+
+        if not snapshot_mod._GUARDED_DIR_FD_OK:
+            pytest.skip("dir_fd not supported on this platform")
+        src = tmp_path / "src_pin"
+        dst = tmp_path / "dst_pin"
+        (src / "nested" / "deep").mkdir(parents=True)
+        (src / "nested" / "deep" / "f.txt").write_text("payload")
+        dst.mkdir()
+        calls: list[tuple[str, bool]] = []
+        real_open = os.open
+
+        def _capture(path, flags, *a, **k):
+            calls.append((str(path), k.get("dir_fd") is not None))
+            return real_open(path, flags, *a, **k)
+
+        monkeypatch.setattr(snapshot_mod.os, "open", _capture)
+        snapshot_mod._copy_tree_no_overwrite_guarded(src, dst)
+        monkeypatch.undo()
+        assert (dst / "nested" / "deep" / "f.txt").read_text(encoding="utf-8") == "payload"
+        # The destination root is opened by full path; every component below
+        # it by bare name relative to a directory descriptor.
+        non_root = [c for c in calls if c[0] != str(dst)]
+        assert non_root and all(pinned for _path, pinned in non_root)
+        assert all(os.sep not in path for path, _pinned in non_root)
 
 
 class TestSchemaIncompatibleMerge:

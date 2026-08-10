@@ -499,6 +499,30 @@ class TestImportReplace:
         finally:
             os.unlink(str(zip_path))
 
+    def test_import_replace_never_writes_artifacts_or_uploads(self, patched_config_dir, tmp_path):
+        """Artifacts/uploads are CLI-restore-only: a crafted import zip
+        carrying artifacts/ or uploads/ trees must not populate the target's
+        artifact library or uploads store."""
+        zip_path = self._make_export(patched_config_dir)
+        try:
+            # Inject artifact/upload payloads into the export zip.
+            import zipfile as _zf
+            with _zf.ZipFile(str(zip_path), "a") as zf:
+                root = zf.namelist()[0].split("/")[0]
+                zf.writestr(f"{root}/artifacts/evil-slug/artifact.json", "{}")
+                zf.writestr(f"{root}/uploads/evil.bin", "payload")
+
+            target = tmp_path / "target_mc"
+            target.mkdir()
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    apply_import_zip(zip_path, mode="replace")
+
+            assert not (target / "artifacts").exists()
+            assert not (target / "uploads").exists()
+        finally:
+            os.unlink(str(zip_path))
+
 
 # ── Exclusion Logic Tests ──
 
