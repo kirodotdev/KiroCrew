@@ -116,8 +116,10 @@ finding stays BLOCKING — even when the tidier fix-forward happens to live in a
 untouched file. Reserve the demotion for a defect the diff merely exposes,
 neighbours, or inherits, never for one it caused.
 
-At most 2 BLOCKING per review. If you have more, re-examine and demote the
-weakest — you are probably mislabeling.
+At most 5 BLOCKING per review. If you have more, re-examine and demote the
+weakest — you are probably mislabeling. At most 6 advisory FINDINGs per review;
+past that, keep the ones whose consequence chain is most concrete and drop the
+rest silently rather than padding the list.
 
 ## Step 4 — merge and recheck
 

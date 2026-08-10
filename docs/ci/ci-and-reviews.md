@@ -208,7 +208,7 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 
 | Reviewer | Check name | Harness | Reads | Question | Blocks? |
 |---|---|---|---|---|---|
-| Opus 4.8 | `Opus 4.8 Review` | Agentic, `--max-turns 120`, one pass with two internal phases | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
+| Opus 4.8 | `Opus 4.8 Review` | Agentic, `--max-turns 120` per stage, **two real invocations** (discovery -> validation) | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
 | GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two** invocations (discovery, then authoritative falsification), `reasoning_effort: medium` | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
 | Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
 | UX Review | `UX Review` | Agentic Fable 5, with the same fallback | Code plus committed screenshot PNGs, read directly | Does the shipped experience read correctly? | Advisory; red only on a genuine `BLOCK` |
@@ -241,12 +241,14 @@ says "No findings." is the expected output for a typical PR.
 
 ### Asymmetric multi-pass is intentional
 
-The agentic Opus 4.8 reviewer runs ONE pass with two internal phases: discover
-(generous candidate collection), then falsify (kill each candidate against code it
-opened, with extra falsification effort only where the diff touches
-security or data-integrity paths). The lean single-shot GPT 5.6 reviewer runs
-**two real invocations**: a discovery pass that generates candidates, then an
-**authoritative falsification** pass whose primary job is to *kill* them. A
+BOTH line reviewers now run **two real invocations**: a discovery pass that
+generates candidates, then an **authoritative falsification** pass whose primary
+job is to *kill* them. The Opus lane used to run one pass with two internal phases; that
+was measured on this repo to suppress findings the same model reports reliably
+without the precision clauses, because a prompt asked to discover AND to police
+its own precision stops discovering. Its discovery half therefore carries no
+precision gates, and its validation half applies a confidence floor and the closed
+blocking list to candidates that already exist. A
 candidate survives only if pass 2 re-derived the input, the call path and the
 observable outcome itself from code it opened in that pass. Pass 2 is the only
 gated verdict. Falsification raises precision *within a single run*, which is why
@@ -464,7 +466,11 @@ resists this:
 - **Both line reviewers share an identical FIX BAR:** every finding must carry a fix
   expressible as an edit to lines **this PR changed**. If the fix would need a new
   function, module, abstraction, config knob, dependency, or an edit to untouched
-  code, it is out of scope for the bot and the finding is dropped. **The absence of a
+  code, it is out of scope for the bot. GPT 5.6 drops such a finding; Opus 4.8
+  **demotes it to advisory instead of dropping it** -- the author cannot land the
+  remedy in this PR, so it must not gate the merge, but the signal is real and a
+  human decides. A regression the diff itself introduces still blocks either way,
+  since reverting the hunk is an in-diff fix. **The absence of a
   mechanism is never a finding.** This makes "add mechanism X" structurally
   un-reportable: the demand fails the bar before it can become a finding. A scope cap
   complements it: Opus 4.8 stays within the evident scope of the diff (it is code-only),
