@@ -16,6 +16,7 @@ import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import { sseSlots } from '../store/dashboardSlice'
+import { toggleActivity } from '../store/chatSlice'
 
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
 vi.mock('../components/ChatInput', () => ({ default: () => null }))
@@ -41,7 +42,10 @@ vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () =
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '800px', input: '816px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
 vi.mock('../pages/chat/SidePanel', () => ({
-  default: () => <div data-testid="side-panel" />,
+  // `expanded` is surfaced so a test can assert the panel stops claiming its
+  // maximum once the user reopens the session list.
+  default: ({ expanded }: { expanded?: boolean }) =>
+    <div data-testid="side-panel" data-expanded={String(!!expanded)} />,
   SIDE_PANEL_MIN_W: 320,
   SIDE_PANEL_RESERVED_W: 560,
   CHAT_PANE_MIN_W: 320,
@@ -185,6 +189,24 @@ describe('ChatPage — sessions toggle inside preview focus mode', () => {
     setFocus(false)
     // Out of focus mode the empty list is the force-open rule's business again.
     expect(localStorage.getItem('mc-sidebar-pinned')).toBe('true')
+  })
+
+  it('stops maximizing the panel once the user reopens the session list', async () => {
+    // The panel's maximum is measured against the header's reserve, which does
+    // not know the session list's width — so holding it while the list is back
+    // pushes the chat pane below its minimum and clips the transcript.
+    const store = renderChat()
+    act(() => { store.dispatch(toggleActivity()) })
+    expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-expanded', 'false')
+
+    setFocus(true)
+    expect(screen.getByTestId('side-panel')).toHaveAttribute('data-expanded', 'true')
+
+    // The session list is the only term: the nav rail is narrow enough that the
+    // header's own reserve already covers it, and it is not part of this
+    // computation, so reopening the rail cannot cost the preview its maximum.
+    fireEvent.click(screen.getByRole('button', { name: 'Show sessions sidebar' }))
+    expect(screen.getByTestId('side-panel')).toHaveAttribute('data-expanded', 'false')
   })
 
   it('renders no sessions toggle when there is nothing in the list', () => {

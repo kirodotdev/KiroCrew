@@ -5856,6 +5856,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // shared row), so no reserve applies.
   const CHAT_PANE_MIN = CHAT_PANE_MIN_W
   const panelReserve = isMobile ? undefined : (sidebarOpen ? sidebarWidth : 0) + CHAT_PANE_MIN
+  // The panel takes its maximum only while the session list is actually hidden.
+  // That maximum is measured against the header's reserve, which knows nothing
+  // about the session list's width — so keeping it while the user reopens the
+  // list inside focus mode pushes the chat pane below CHAT_PANE_MIN and clips
+  // its content. Reverting to the normal width maths there costs the preview a
+  // few hundred px in a state the user asked for by reopening the list.
+  const panelMaximized = previewFocused && !sidebarOpen
 
   // FILL vs BESIDE for the activity panel, decided from the width left for the
   // CHAT once the shell's hideable chrome is subtracted — the nav rail track and
@@ -6884,7 +6891,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
-              expanded={previewFocused}
+              expanded={panelMaximized}
               fillWidth={panelFillWidth}
             />
           </motion.div>
@@ -6920,7 +6927,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
                 inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
-                expanded={previewFocused}
+                expanded={panelMaximized}
                 fillWidth={panelFillWidth}
               />
             </motion.div>
