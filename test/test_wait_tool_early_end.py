@@ -9,6 +9,7 @@ put it.
 
 from __future__ import annotations
 
+import threading
 import time as _time
 from unittest.mock import patch
 
@@ -29,15 +30,29 @@ class _Clock:
     Modelled as an object rather than an iterator of timestamps so that an
     unrelated ``time.monotonic()`` call from the audit path cannot consume a
     value the loop needed and silently change the ping cadence under test.
+
+    Thread-scoped: only the thread recorded at construction advances and reads
+    the fake clock. Any other thread (background timers, pytest internals) falls
+    through to the real ``time.monotonic`` / ``time.sleep``, so their activity
+    cannot pollute the deterministic timeline.
     """
 
     def __init__(self) -> None:
         self.t = 0.0
+        self._owner = threading.current_thread().ident
+        # Capture the real functions before patching replaces them on _time.
+        self._real_monotonic = _time.monotonic
+        self._real_sleep = _time.sleep
 
     def monotonic(self) -> float:
+        if threading.current_thread().ident != self._owner:
+            return self._real_monotonic()
         return self.t
 
     def sleep(self, secs: float) -> None:
+        if threading.current_thread().ident != self._owner:
+            self._real_sleep(secs)
+            return
         self.t += max(0.0, float(secs))
 
 
@@ -59,12 +74,15 @@ def _run_wait(reply_fn, *, seconds: int = MIN_WAIT, reason: str = "test", identi
         posts.append((path, dict(body or {}), clock.t))
         return reply_fn(len(posts), dict(body or {}))
 
-    with patch("kiro_crew.mcp_core._post", side_effect=_fake_post), patch(
-        "kiro_crew.mcp_core._resolve_session_key_strict",
-        return_value="dashboard:test" if identified else "",
-    ), patch.object(
-        _time, "monotonic", clock.monotonic
-    ), patch.object(_time, "sleep", clock.sleep):
+    with (
+        patch("kiro_crew.mcp_core._post", side_effect=_fake_post),
+        patch(
+            "kiro_crew.mcp_core._resolve_session_key_strict",
+            return_value="dashboard:test" if identified else "",
+        ),
+        patch.object(_time, "monotonic", clock.monotonic),
+        patch.object(_time, "sleep", clock.sleep),
+    ):
         result = _call_tool("wait", {"seconds": seconds, "reason": reason})
 
     return result, posts, clock
@@ -170,6 +188,32 @@ class TestWaitLoopEarlyEnd:
         assert clock.t == float(MIN_WAIT)
         # Every ping attempted, including the final wait_done.
         assert len(posts) == PINGS_TO_TERM + 1
+
+    def test_background_thread_sleeps_do_not_advance_fake_clock(self):
+        """Regression: a background thread calling time.sleep() must not pollute
+        the deterministic clock. Before the thread-scoping fix, any process-wide
+        sleep leaked into the fake timeline and broke exact-equality asserts."""
+        leaked = threading.Event()
+        stop = threading.Event()
+
+        def _background_sleeper():
+            """Simulates pytest-xdist or any other background thread."""
+            leaked.set()
+            while not stop.is_set():
+                _time.sleep(0.001)
+
+        bg = threading.Thread(target=_background_sleeper, daemon=True)
+        bg.start()
+        leaked.wait(timeout=2)  # ensure background is actively sleeping
+
+        try:
+            result, _, clock = _run_wait(lambda n, body: {"ok": True})
+        finally:
+            stop.set()
+            bg.join(timeout=2)
+
+        assert result == f"Waited {MIN_WAIT}s. Resuming: test"
+        assert clock.t == float(MIN_WAIT)
 
 
 class TestUnauthoritativeIdentityGate:
@@ -290,9 +334,7 @@ class TestWaitPingShape:
         assert [p[0] for p in countdown] == [KEEPALIVE] * PINGS_TO_TERM
         # WAIT_PING_SECS is the upper bound on how long "End wait" appears to do
         # nothing, so the cadence is part of the contract.
-        assert [p[2] for p in countdown] == [
-            i * WAIT_PING_SECS for i in range(PINGS_TO_TERM)
-        ]
+        assert [p[2] for p in countdown] == [i * WAIT_PING_SECS for i in range(PINGS_TO_TERM)]
         assert [p[1]["seconds"] for p in countdown] == [MIN_WAIT] * PINGS_TO_TERM
         assert [p[1]["remaining"] for p in countdown] == [
             MIN_WAIT - int(i * WAIT_PING_SECS) for i in range(PINGS_TO_TERM)
