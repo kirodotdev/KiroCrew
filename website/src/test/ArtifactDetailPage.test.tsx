@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
@@ -64,13 +64,10 @@ async function versionRowLabels() {
 describe('ArtifactDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // jsdom needs URL.createObjectURL for blob iframes
-    if (!URL.createObjectURL) {
-      // @ts-expect-error stub
-      URL.createObjectURL = vi.fn().mockReturnValue('blob:test')
-      // @ts-expect-error stub
-      URL.revokeObjectURL = vi.fn()
-    }
+    // Spy rather than assign: only a spy lands in the registry that
+    // vi.restoreAllMocks() can undo. The env provides both natively.
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     // Default events response so the events query never throws "undefined".
     // Individual tests can override this with .mockResolvedValueOnce when
     // they need a specific event log.
@@ -90,6 +87,10 @@ describe('ArtifactDetailPage', () => {
     // ends — an unhandled rejection that fails the run (`Errors: N errors`)
     // while every test still reports as passing.
     vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('renders artifact metadata and iframe', async () => {

@@ -59,8 +59,8 @@ beforeEach(() => {
       }
     }
   } as typeof Blob
-  URL.createObjectURL = vi.fn().mockReturnValue('blob:test-widget')
-  URL.revokeObjectURL = vi.fn()
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-widget')
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
 
   // Jest-dom inherits the real CSSOM, so spy on getComputedStyle to inject a
   // deterministic set of custom properties. The parent app's useTheme applies
@@ -283,8 +283,8 @@ describe('WidgetFrame openInNewTab', () => {
       if (typeof parts[0] === 'string') wrapper = parts[0] as string
       return new realBlob(parts, opts)
     })
-    URL.createObjectURL = vi.fn().mockReturnValue('blob:test')
-    URL.revokeObjectURL = vi.fn()
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     vi.spyOn(window, 'open').mockReturnValue(null)
 
     const btn = container.querySelector('button[aria-label="Open in new tab"]') as HTMLButtonElement
@@ -302,8 +302,8 @@ describe('WidgetFrame openInNewTab', () => {
       mimeType = opts?.type ?? ''
       return new realBlob(args[0] as BlobPart[], opts)
     })
-    URL.createObjectURL = vi.fn().mockReturnValue('blob:test')
-    URL.revokeObjectURL = vi.fn()
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     vi.spyOn(window, 'open').mockReturnValue(null)
 
     const btn = container.querySelector('button[aria-label="Open in new tab"]') as HTMLButtonElement
