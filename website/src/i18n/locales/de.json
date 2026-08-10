@@ -4391,6 +4391,7 @@
     },
     "artifactBody": {
       "artifact": "Artefakt: {{slug}}",
+      "image_could_not_be_loaded": "Bild konnte nicht geladen werden",
       "rendering": "Wird gerendert…"
     },
     "artifactChatPanel": {
@@ -4769,7 +4770,10 @@
       "updated": "aktualisiert"
     },
     "contentRenderer": {
-      "loading_editor": "Editor wird geladen…"
+      "changes_update_svg_preview_as_you_type": "Änderungen aktualisieren die Vorschau während der Eingabe.",
+      "editing_svg": "SVG bearbeiten",
+      "loading_editor": "Editor wird geladen…",
+      "svg_source_code": "SVG-Quellcode"
     },
     "contextBar": {
       "context_pct": "Kontext: {{pct}} %"
@@ -7077,6 +7081,7 @@
       "folder_color": "Ordnerfarbe",
       "from_your_chats": "Aus deinen Chats",
       "gallery": "Galerie",
+      "image_could_not_be_loaded": "Bild konnte nicht geladen werden",
       "import_from_a_file": "Aus einer Datei importieren …",
       "kind": "Art",
       "live": "Live",
@@ -7109,12 +7114,12 @@
       "remove_star_from_artifact": "Markierung des Artefakts entfernen",
       "rename": "Umbenennen",
       "rename_folder": "Ordner umbenennen",
-      "slug": "Slug",
-      "source": "Quelle",
-      "star_artifact": "Artefakt markieren",
       "show_all_count": "Alle anzeigen ({{count}})",
       "show_less": "Weniger anzeigen",
+      "slug": "Slug",
+      "source": "Quelle",
       "star_a_document_in_from_your_chats_to_save_it_he": "Noch keine gespeicherten Artefakte — markiere ein Dokument unter \"Aus deinen Chats\", um es hier zu speichern.",
+      "star_artifact": "Artefakt markieren",
       "star_creates_a_starred_artifact_from_this_docume": "Markieren (erstellt ein markiertes Artefakt aus diesem Dokument)",
       "star_document": "Dokument markieren",
       "starred": "Markiert",

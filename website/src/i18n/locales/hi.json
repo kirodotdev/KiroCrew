@@ -4391,6 +4391,7 @@
     },
     "artifactBody": {
       "artifact": "आर्टिफ़ैक्ट: {{slug}}",
+      "image_could_not_be_loaded": "छवि लोड नहीं हो सकी",
       "rendering": "रेंडर हो रहा है…"
     },
     "artifactChatPanel": {
@@ -4769,7 +4770,10 @@
       "updated": "अपडेट हुआ"
     },
     "contentRenderer": {
-      "loading_editor": "एडिटर लोड हो रहा है…"
+      "changes_update_svg_preview_as_you_type": "आपके टाइप करते ही बदलाव पूर्वावलोकन में दिखाई देंगे।",
+      "editing_svg": "SVG संपादित किया जा रहा है",
+      "loading_editor": "एडिटर लोड हो रहा है…",
+      "svg_source_code": "SVG स्रोत कोड"
     },
     "contextBar": {
       "context_pct": "कॉन्टेक्स्ट: {{pct}}%"
@@ -7077,6 +7081,7 @@
       "folder_color": "फ़ोल्डर रंग",
       "from_your_chats": "तुम्हारी चैट से",
       "gallery": "गैलरी",
+      "image_could_not_be_loaded": "छवि लोड नहीं हो सकी",
       "import_from_a_file": "फ़ाइल से आयात करें…",
       "kind": "प्रकार",
       "live": "लाइव",
@@ -7109,12 +7114,12 @@
       "remove_star_from_artifact": "आर्टिफ़ैक्ट से स्टार हटाएँ",
       "rename": "नाम बदलें",
       "rename_folder": "फ़ोल्डर का नाम बदलें",
-      "slug": "स्लग",
-      "source": "स्रोत",
-      "star_artifact": "आर्टिफ़ैक्ट को स्टार करें",
       "show_all_count": "सब दिखाएँ ({{count}})",
       "show_less": "कम दिखाएँ",
+      "slug": "स्लग",
+      "source": "स्रोत",
       "star_a_document_in_from_your_chats_to_save_it_he": "अभी कोई सहेजा गया आर्टिफ़ैक्ट नहीं है — \"तुम्हारी चैट से\" में किसी दस्तावेज़ को स्टार करो ताकि वह यहाँ सहेजा जाए।",
+      "star_artifact": "आर्टिफ़ैक्ट को स्टार करें",
       "star_creates_a_starred_artifact_from_this_docume": "स्टार करें (इस दस्तावेज़ से एक स्टार किया गया आर्टिफ़ैक्ट बनाता है)",
       "star_document": "दस्तावेज़ स्टार करें",
       "starred": "स्टार किए गए",

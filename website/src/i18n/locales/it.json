@@ -4461,6 +4461,7 @@
     },
     "artifactBody": {
       "artifact": "Artefatto: {{slug}}",
+      "image_could_not_be_loaded": "Impossibile caricare l'immagine",
       "rendering": "Visualizzazione in corso…"
     },
     "artifactChatPanel": {
@@ -4844,7 +4845,10 @@
       "updated": "aggiornata"
     },
     "contentRenderer": {
-      "loading_editor": "Caricamento dell'editor…"
+      "changes_update_svg_preview_as_you_type": "Le modifiche aggiornano l’anteprima durante la digitazione.",
+      "editing_svg": "Modifica SVG",
+      "loading_editor": "Caricamento dell'editor…",
+      "svg_source_code": "Codice sorgente SVG"
     },
     "contextBar": {
       "context_pct": "Contesto: {{pct}}%"
@@ -7174,6 +7178,7 @@
       "folder_color": "Colore della cartella",
       "from_your_chats": "Dalle tue chat",
       "gallery": "Galleria",
+      "image_could_not_be_loaded": "Impossibile caricare l'immagine",
       "import_from_a_file": "Importa da un file…",
       "kind": "Tipo",
       "live": "Online",
@@ -7206,12 +7211,12 @@
       "remove_star_from_artifact": "Rimuovi l'artefatto dai preferiti",
       "rename": "Rinomina",
       "rename_folder": "Rinomina la cartella",
-      "slug": "Slug",
-      "source": "Origine",
-      "star_artifact": "Aggiungi l'artefatto ai preferiti",
       "show_all_count": "Mostra tutti ({{count}})",
       "show_less": "Mostra meno",
+      "slug": "Slug",
+      "source": "Origine",
       "star_a_document_in_from_your_chats_to_save_it_he": "Nessun artefatto salvato — aggiungi ai preferiti un documento in \"Dalle tue chat\" per salvarlo qui.",
+      "star_artifact": "Aggiungi l'artefatto ai preferiti",
       "star_creates_a_starred_artifact_from_this_docume": "Aggiungi ai preferiti (crea un artefatto preferito da questo documento)",
       "star_document": "Aggiungi il documento ai preferiti",
       "starred": "Preferiti",

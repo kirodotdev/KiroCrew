@@ -900,7 +900,7 @@ export interface RemoteArtifact {
 export interface Artifact {
   slug: string
   name: string
-  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp'
+  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image'
   /** Provenance/origin bucket. Carries either a legacy bucket
    * (chat|cron|subagent|manual|import) or the actual session origin
    * (dashboard|slack|cli|task-runner|unknown), so treated as an open string. */
@@ -950,6 +950,23 @@ export interface Artifact {
   auto_registered?: boolean
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
+  /** Metadata for kind="image" artifacts. The bytes themselves are never inlined
+   * here — they are streamed from `/api/artifacts/<slug>/asset` with the
+   * server setting Content-Type. Every field is optional because older payloads
+   * and minimal saves may omit it, so every consumer must degrade gracefully:
+   * `alt` gives the accessible description, `width`/`height` let the UI reserve
+   * the correct aspect ratio before the image loads, and the rest are
+   * informational (shown in details, used to name a download). */
+  image?: {
+    mime: string
+    ext: string
+    size_bytes?: number
+    width?: number
+    height?: number
+    sha256?: string
+    original_filename?: string
+    alt?: string
+  }
 }
 
 /** A non-code document produced during a chat session — the virtual entries

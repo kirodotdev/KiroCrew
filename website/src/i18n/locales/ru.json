@@ -4531,6 +4531,7 @@
     },
     "artifactBody": {
       "artifact": "Артефакт: {{slug}}",
+      "image_could_not_be_loaded": "Не удалось загрузить изображение",
       "rendering": "Отрисовка…"
     },
     "artifactChatPanel": {
@@ -4919,7 +4920,10 @@
       "updated": "обновлено"
     },
     "contentRenderer": {
-      "loading_editor": "Загрузка редактора…"
+      "changes_update_svg_preview_as_you_type": "Изменения обновляют предпросмотр по мере ввода.",
+      "editing_svg": "Редактирование SVG",
+      "loading_editor": "Загрузка редактора…",
+      "svg_source_code": "Исходный код SVG"
     },
     "contextBar": {
       "context_pct": "Контекст: {{pct}}%"
@@ -7271,6 +7275,7 @@
       "folder_color": "Цвет папки",
       "from_your_chats": "Из ваших чатов",
       "gallery": "Галерея",
+      "image_could_not_be_loaded": "Не удалось загрузить изображение",
       "import_from_a_file": "Импортировать из файла…",
       "kind": "Тип",
       "live": "Активно",
@@ -7303,12 +7308,12 @@
       "remove_star_from_artifact": "Снять отметку с артефакта",
       "rename": "Переименовать",
       "rename_folder": "Переименовать папку",
-      "slug": "Slug",
-      "source": "Источник",
-      "star_artifact": "Отметить артефакт",
       "show_all_count": "Показать все ({{count}})",
       "show_less": "Показать меньше",
+      "slug": "Slug",
+      "source": "Источник",
       "star_a_document_in_from_your_chats_to_save_it_he": "Сохранённых артефактов пока нет — добавьте документ из раздела \"Из ваших чатов\" в избранное, чтобы сохранить его здесь.",
+      "star_artifact": "Отметить артефакт",
       "star_creates_a_starred_artifact_from_this_docume": "В избранное (создаёт избранный артефакт из этого документа)",
       "star_document": "Добавить документ в избранное",
       "starred": "Избранные",

@@ -153,6 +153,7 @@ from kiro_crew.hooks import (
     safe_read_file,
     validate_file_path,
 )
+from kiro_crew.image_artifacts import register_images_off_loop
 from kiro_crew.llm_helpers import (
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,
@@ -2229,7 +2230,7 @@ def _schedule_widget_registration(
     keys off the SAME ``slot.is_restricted`` signal, so the two agree by
     construction.
     """
-    if not text or "<mcwidget" not in text:
+    if not text:
         return
     if getattr(slot, "is_restricted", False):
         return
@@ -2243,9 +2244,19 @@ def _schedule_widget_registration(
     # unlike ``_collect_session_docs``). WidgetFrame's fallback create also sends
     # the bare key, so this keeps auto-registered and star-created artifacts in
     # the same bucket — the one the tab can actually see.
-    task = asyncio.create_task(register_widgets_off_loop(text, message_ts, slot.key))
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
+    #
+    # Two independent registration passes ride the same restricted-session gate
+    # and off-loop dispatch: <mcwidget> bodies (inline HTML) and local markdown
+    # images (bytes copied off disk). The cheap substring pre-checks keep a
+    # plain prose segment from scheduling either task.
+    if "<mcwidget" in text:
+        task = asyncio.create_task(register_widgets_off_loop(text, message_ts, slot.key))
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+    if "![" in text:
+        image_task = asyncio.create_task(register_images_off_loop(text, message_ts, slot.key))
+        state._background_tasks.add(image_task)
+        image_task.add_done_callback(state._background_tasks.discard)
 
 
 def _expand_prompt_mention(

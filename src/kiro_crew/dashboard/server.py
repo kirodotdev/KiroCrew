@@ -58,6 +58,7 @@ from kiro_crew.dashboard.crash_dump_store import (
     sweep_stale_dumps,
 )
 from kiro_crew.dashboard.handlers.artifacts import (
+    api_artifact_asset,
     api_artifact_comments,
     api_artifact_delete,
     api_artifact_delete_comment,
@@ -1133,6 +1134,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)
     app.router.add_get("/api/artifacts/{slug}", api_artifact_detail)
+    app.router.add_get("/api/artifacts/{slug}/asset", api_artifact_asset)
     app.router.add_patch("/api/artifacts/{slug}", api_artifact_update)
     app.router.add_delete("/api/artifacts/{slug}", api_artifact_delete)
     app.router.add_post("/api/artifacts/{slug}/settle", api_artifact_settle_blank)

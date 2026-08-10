@@ -67,6 +67,27 @@ describe('ArtifactsPage', () => {
     expect(screen.getByText('cr-queue')).toBeInTheDocument()
     expect(screen.getByText(/v3/)).toBeInTheDocument()
   })
+  it('renders an image artifact card with an <img> from the asset URL and an image badge', async () => {
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [mkArtifact('sunset-photo', {
+        kind: 'image',
+        image: { mime: 'image/png', ext: 'png', alt: 'A sunset' },
+      })],
+    })
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(
+      mkArtifact('sunset-photo', { kind: 'image', image: { mime: 'image/png', ext: 'png', alt: 'A sunset' } }),
+    )
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('sunset photo')).toBeInTheDocument())
+    // The card's thumbnail streams from the artifact's asset endpoint.
+    const img = screen.getByAltText('A sunset') as HTMLImageElement
+    expect(img.getAttribute('src')).toBe('/api/artifacts/sunset-photo/asset')
+    // The kind badge reads "image".
+    expect(screen.getByText('image')).toBeInTheDocument()
+    // Image cards are non-editable previews: no widget iframe is mounted.
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+
 
   it('renders Starred/All filter toggle', async () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({

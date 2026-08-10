@@ -4391,6 +4391,7 @@
     },
     "artifactBody": {
       "artifact": "আর্টিফ্যাক্ট: {{slug}}",
+      "image_could_not_be_loaded": "ছবিটি লোড করা যায়নি",
       "rendering": "রেন্ডার হচ্ছে…"
     },
     "artifactChatPanel": {
@@ -4769,7 +4770,10 @@
       "updated": "হালনাগাদ"
     },
     "contentRenderer": {
-      "loading_editor": "এডিটর লোড হচ্ছে…"
+      "changes_update_svg_preview_as_you_type": "টাইপ করার সঙ্গে সঙ্গে পরিবর্তনগুলো প্রিভিউতে দেখা যাবে।",
+      "editing_svg": "SVG সম্পাদনা করা হচ্ছে",
+      "loading_editor": "এডিটর লোড হচ্ছে…",
+      "svg_source_code": "SVG সোর্স কোড"
     },
     "contextBar": {
       "context_pct": "কনটেক্সট: {{pct}}%"
@@ -7077,6 +7081,7 @@
       "folder_color": "ফোল্ডারের রঙ",
       "from_your_chats": "আপনার চ্যাট থেকে",
       "gallery": "গ্যালারি",
+      "image_could_not_be_loaded": "ছবিটি লোড করা যায়নি",
       "import_from_a_file": "ফাইল থেকে আমদানি করুন…",
       "kind": "ধরন",
       "live": "লাইভ",
@@ -7109,12 +7114,12 @@
       "remove_star_from_artifact": "আর্টিফ্যাক্ট থেকে স্টার সরাও",
       "rename": "নাম বদলান",
       "rename_folder": "ফোল্ডারের নাম বদলান",
-      "slug": "স্লাগ",
-      "source": "সোর্স",
-      "star_artifact": "আর্টিফ্যাক্টে স্টার দাও",
       "show_all_count": "সব দেখান ({{count}})",
       "show_less": "কম দেখান",
+      "slug": "স্লাগ",
+      "source": "সোর্স",
       "star_a_document_in_from_your_chats_to_save_it_he": "এখনও কোনো সংরক্ষিত আর্টিফ্যাক্ট নেই — \"আপনার চ্যাট থেকে\" অংশের একটি ডকুমেন্টে স্টার দিয়ে এখানে সংরক্ষণ করো।",
+      "star_artifact": "আর্টিফ্যাক্টে স্টার দাও",
       "star_creates_a_starred_artifact_from_this_docume": "স্টার দিন (এই ডকুমেন্ট থেকে একটি স্টার দেওয়া আর্টিফ্যাক্ট তৈরি হয়)",
       "star_document": "ডকুমেন্টে স্টার দিন",
       "starred": "স্টার দেওয়া",

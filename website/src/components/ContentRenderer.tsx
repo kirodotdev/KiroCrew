@@ -177,7 +177,59 @@ export const ContentRenderer = memo(function ContentRenderer({
   const inner = (
     <>
       {isRichType && fileType === 'image' && filePath && <ImageViewer filePath={filePath} />}
-      {isRichType && fileType === 'svg' && <SvgViewer content={content} />}
+      {isRichType && fileType === 'svg' && (
+        editing ? (
+          <div data-testid="svg-edit-split" className="flex h-full min-h-0 flex-col gap-2">
+            <div className="flex shrink-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-[12px]">
+              <span className="font-medium text-accent">
+                {i18nT('components.contentRenderer.editing_svg')}
+              </span>
+              <span className="text-muted">
+                {i18nT('components.contentRenderer.changes_update_svg_preview_as_you_type')}
+              </span>
+            </div>
+            <div
+              className="grid min-h-0 flex-1 gap-3"
+              style={{
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))',
+                gridAutoRows: 'minmax(220px, 1fr)',
+              }}
+            >
+              <section
+                aria-label={i18nT('components.markdownPanel.preview')}
+                className="flex min-h-0 flex-col gap-1.5"
+              >
+                <div className="text-[11px] font-medium uppercase tracking-wider text-muted">
+                  {i18nT('components.markdownPanel.preview')}
+                </div>
+                <div className="min-h-0 flex-1">
+                  <SvgViewer content={content} />
+                </div>
+              </section>
+              <section
+                aria-label={i18nT('components.contentRenderer.svg_source_code')}
+                className="flex min-h-0 flex-col gap-1.5"
+              >
+                <div className="text-[11px] font-medium uppercase tracking-wider text-muted">
+                  {i18nT('components.contentRenderer.svg_source_code')}
+                </div>
+                <div className="min-h-0 flex-1">
+                  <CodeEditor
+                    content={content}
+                    lang="xml"
+                    lineNums={lineNums}
+                    wordWrap={wordWrap}
+                    autocomplete={autocomplete}
+                    onChange={onChange}
+                    flush={flush}
+                    onEditorMount={onEditorMount}
+                  />
+                </div>
+              </section>
+            </div>
+          </div>
+        ) : <SvgViewer content={content} />
+      )}
       {isRichType && fileType === 'csv' && <CsvViewer content={content} filePath={filePath ?? ''} />}
       {isRichType && fileType === 'json' && <JsonViewer content={content} />}
       {isRichType && fileType === 'jsonl' && <JsonlViewer content={content} />}

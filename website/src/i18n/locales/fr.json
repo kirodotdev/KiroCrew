@@ -4461,6 +4461,7 @@
     },
     "artifactBody": {
       "artifact": "Artefact : {{slug}}",
+      "image_could_not_be_loaded": "Impossible de charger l'image",
       "rendering": "Rendu en cours…"
     },
     "artifactChatPanel": {
@@ -4844,7 +4845,10 @@
       "updated": "mise à jour"
     },
     "contentRenderer": {
-      "loading_editor": "Chargement de l'éditeur…"
+      "changes_update_svg_preview_as_you_type": "Les modifications mettent à jour l’aperçu pendant la saisie.",
+      "editing_svg": "Modification du SVG",
+      "loading_editor": "Chargement de l'éditeur…",
+      "svg_source_code": "Code source SVG"
     },
     "contextBar": {
       "context_pct": "Contexte : {{pct}} %"
@@ -7174,6 +7178,7 @@
       "folder_color": "Couleur du dossier",
       "from_your_chats": "Depuis vos chats",
       "gallery": "Galerie",
+      "image_could_not_be_loaded": "Impossible de charger l'image",
       "import_from_a_file": "Importer depuis un fichier…",
       "kind": "Type",
       "live": "En direct",
@@ -7206,12 +7211,12 @@
       "remove_star_from_artifact": "Retirer l’artefact des favoris",
       "rename": "Renommer",
       "rename_folder": "Renommer le dossier",
-      "slug": "Slug",
-      "source": "Source",
-      "star_artifact": "Ajouter l’artefact aux favoris",
       "show_all_count": "Tout afficher ({{count}})",
       "show_less": "Afficher moins",
+      "slug": "Slug",
+      "source": "Source",
       "star_a_document_in_from_your_chats_to_save_it_he": "Aucun artefact enregistré pour l'instant — ajoutez un document de \"Depuis vos chats\" aux favoris pour l'enregistrer ici.",
+      "star_artifact": "Ajouter l’artefact aux favoris",
       "star_creates_a_starred_artifact_from_this_docume": "Ajouter aux favoris (crée un artefact favori à partir de ce document)",
       "star_document": "Ajouter le document aux favoris",
       "starred": "Favoris",

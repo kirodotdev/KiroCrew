@@ -32,6 +32,7 @@ logic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -306,6 +307,41 @@ class ArtifactComment:
 
 
 @dataclass
+class ImageMetadata:
+    """Sidecar description of a ``kind="image"`` artifact's raster bytes.
+
+    The bytes themselves live next to ``meta.json`` in
+    ``artifacts/<slug>/asset.<ext>`` — NOT in ``current.html``, which stays
+    empty for image kind. This record is the JSON-serializable metadata the
+    dashboard needs to render and lay out the image (natural dimensions for
+    aspect-ratio boxing, mime for the ``<img>`` type, size/hash for cache and
+    integrity) without having to fetch the bytes first.
+
+    Every field has a default so a partial or legacy ``image`` block in
+    meta.json is tolerant-loaded rather than raising — the same contract the
+    other nested metadata blocks (``publication`` / ``fork_metadata`` /
+    ``webapp_metadata``) follow.
+    """
+
+    #: Raster mime — one of the create-time allowlist (png/jpeg/webp/gif).
+    mime: str = ""
+    #: File extension used for the sidecar (``asset.<ext>``), derived from mime.
+    ext: str = ""
+    #: Byte length of the stored asset.
+    size_bytes: int = 0
+    #: Natural pixel dimensions, or ``None`` when the header sniff could not
+    #: determine them (a truncated/odd file is stored anyway, just unmeasured).
+    width: int | None = None
+    height: int | None = None
+    #: SHA-256 of the bytes — content-addressed cache key + integrity check.
+    sha256: str = ""
+    #: The uploaded/source filename, when known. Provenance only.
+    original_filename: str = ""
+    #: Alt text for accessibility, carried from the markdown ``![alt](...)``.
+    alt: str = ""
+
+
+@dataclass
 class Artifact:
     """In-memory representation of an artifact and its metadata.
 
@@ -439,6 +475,12 @@ class Artifact:
     #: (deploy target, architecture, lifecycle/TTL, cost estimate, teardown handle).
     #: ``None`` for every other kind. Tolerant-loaded from meta.json.
     webapp_metadata: "WebAppMetadata | None" = None
+    #: Structured metadata for ``kind="image"`` artifacts. ``None`` for every
+    #: other kind. The raster bytes live in the ``asset.<ext>`` sidecar (see
+    #: :class:`ImageMetadata`); this block is what the dashboard renders from.
+    #: Tolerant-loaded from meta.json (older/other-kind artifacts default to
+    #: ``None``).
+    image: "ImageMetadata | None" = None
 
     def to_dict(self, *, include_content: bool = False, persist: bool = False) -> dict[str, Any]:
         """Render as a JSON-friendly dict, optionally including the content blob.
@@ -821,6 +863,120 @@ def _validate_content(content: str) -> str:
     return content
 
 
+#: Raster image mime → sidecar file extension. This IS the create-time
+#: allowlist for image artifacts: a mime not present here is rejected. SVG is
+#: deliberately absent — it is markup (stored as ``kind="svg"`` text), not a
+#: raster asset, and serving attacker-authored SVG as an image is an XSS vector.
+_IMAGE_MIME_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "image/bmp": "bmp",
+}
+
+
+def _sniff_image_dimensions(data: bytes, mime: str) -> tuple[int | None, int | None]:
+    """Best-effort natural (width, height) from a raster file header.
+
+    Pure stdlib, no decode, no third-party dependency (no Pillow): it reads only
+    the few header bytes each format puts its dimensions in. Any parse failure —
+    truncated file, unexpected layout, an exotic encoding — returns
+    ``(None, None)`` rather than raising, because an unmeasured image is still a
+    perfectly storable one; dimensions are a rendering nicety, not a gate.
+    """
+    try:
+        if mime == "image/png":
+            # 8-byte signature, then the IHDR chunk (len+type) at 8..16, with
+            # width/height as big-endian uint32 immediately after the type.
+            if len(data) >= 24 and data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR":
+                return (
+                    int.from_bytes(data[16:20], "big"),
+                    int.from_bytes(data[20:24], "big"),
+                )
+        elif mime == "image/gif":
+            # Logical-screen descriptor: width/height as little-endian uint16.
+            if len(data) >= 10 and data[:6] in (b"GIF87a", b"GIF89a"):
+                return (
+                    int.from_bytes(data[6:8], "little"),
+                    int.from_bytes(data[8:10], "little"),
+                )
+        elif mime == "image/jpeg":
+            return _sniff_jpeg_dimensions(data)
+        elif mime == "image/webp":
+            return _sniff_webp_dimensions(data)
+        elif mime == "image/bmp":
+            # BITMAPINFOHEADER: signed little-endian int32 width at 18 and
+            # height at 22. A negative height means a top-down bitmap, so take
+            # the magnitude rather than reporting a negative dimension.
+            if len(data) >= 26 and data[:2] == b"BM":
+                width = int.from_bytes(data[18:22], "little", signed=True)
+                height = int.from_bytes(data[22:26], "little", signed=True)
+                if width and height:
+                    return abs(width), abs(height)
+    except Exception:  # pragma: no cover — sniffing must never raise
+        return None, None
+    return None, None
+
+
+def _sniff_jpeg_dimensions(data: bytes) -> tuple[int | None, int | None]:
+    """Walk JPEG marker segments to the frame header (SOFn) for dimensions."""
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return None, None
+    i, n = 2, len(data)
+    while i + 9 < n:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        # Padding fill bytes and standalone markers (SOI/EOI/RSTn/TEM) carry no
+        # length field — step over them without reading a segment length.
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7 or marker == 0x01:
+            i += 2
+            continue
+        seg_len = int.from_bytes(data[i + 2 : i + 4], "big")
+        # SOF0..SOF15 hold the frame dimensions; exclude the non-frame C-markers
+        # DHT (0xC4), JPG (0xC8) and DAC (0xCC).
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            height = int.from_bytes(data[i + 5 : i + 7], "big")
+            width = int.from_bytes(data[i + 7 : i + 9], "big")
+            return width, height
+        if seg_len < 2:
+            return None, None  # malformed length — stop rather than loop
+        i += 2 + seg_len
+    return None, None
+
+
+def _sniff_webp_dimensions(data: bytes) -> tuple[int | None, int | None]:
+    """Dimensions for the three WebP chunk layouts (VP8 / VP8L / VP8X)."""
+    if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return None, None
+    chunk = data[12:16]
+    if chunk == b"VP8 ":
+        # Lossy: 3-byte start code 0x9d012a, then two little-endian 14-bit dims.
+        if data[23:26] == b"\x9d\x01\x2a":
+            width = int.from_bytes(data[26:28], "little") & 0x3FFF
+            height = int.from_bytes(data[28:30], "little") & 0x3FFF
+            return width, height
+    elif chunk == b"VP8L":
+        # Lossless: 0x2f signature, then 14-bit (width-1) and (height-1) packed
+        # across the next four bytes.
+        if data[20] == 0x2F:
+            b0, b1, b2, b3 = data[21], data[22], data[23], data[24]
+            width = ((b1 & 0x3F) << 8 | b0) + 1
+            height = ((b3 & 0x0F) << 10 | b2 << 2 | (b1 & 0xC0) >> 6) + 1
+            return width, height
+    elif chunk == b"VP8X":
+        # Extended: 24-bit little-endian (canvas dim - 1) at bytes 24 and 27.
+        width = int.from_bytes(data[24:27], "little") + 1
+        height = int.from_bytes(data[27:30], "little") + 1
+        return width, height
+    return None, None
+
+
 # ── Store ────────────────────────────────────────────────────────────────────
 
 
@@ -989,6 +1145,167 @@ class ArtifactStore:
             logger.info("artifact created: slug=%s name=%s kind=%s", slug, name, kind)
         self._fire_change("upsert", slug)
         return art
+
+    def create_image(
+        self,
+        *,
+        name: str,
+        image_bytes: bytes,
+        mime: str,
+        slug: str | None = None,
+        source: str = "chat",
+        session_key: str = "",
+        auto_registered: bool = False,
+        alt: str = "",
+        original_filename: str = "",
+        description: str = "",
+        tags: list[str] | None = None,
+        folder_id: str = "",
+    ) -> Artifact:
+        """Persist a raster image as a first-class ``kind="image"`` artifact.
+
+        The bytes are stored in an ``asset.<ext>`` sidecar next to ``meta.json``;
+        ``current.html`` stays empty (image artifacts carry no text body). This
+        keeps the text store untouched — the same three-file directory shape,
+        the same slug/version/event machinery — with the bytes riding alongside
+        as an extra file that :meth:`delete`'s whole-directory ``_rmtree`` cleans
+        up for free.
+
+        ``mime`` must be one of the raster allowlist (:data:`_IMAGE_MIME_EXT`:
+        png / jpeg / webp / gif). SVG is intentionally rejected — it is markup,
+        belongs to ``kind="svg"``, and serving attacker-authored SVG as an image
+        is an XSS vector. ``image_bytes`` must be non-empty and within
+        :data:`MAX_CONTENT_BYTES`. The SHA-256 and (best-effort) pixel
+        dimensions are recorded in :class:`ImageMetadata`.
+
+        ``auto_registered=True`` marks the record machine-created (from a
+        chat-emitted ``![](...)``), making it sweepable by
+        :meth:`prune_auto_widgets` while unpinned — the same lifecycle as
+        auto-registered widgets. Only :mod:`kiro_crew.image_artifacts` sets it.
+        """
+        if not isinstance(image_bytes, (bytes, bytearray)):
+            raise ArtifactValidationError(
+                f"image_bytes must be bytes, got {type(image_bytes).__name__}"
+            )
+        data = bytes(image_bytes)
+        norm_mime = (mime or "").strip().lower()
+        if norm_mime not in _IMAGE_MIME_EXT:
+            raise ArtifactValidationError(
+                f"unsupported image mime {mime!r}: must be one of {sorted(_IMAGE_MIME_EXT)}"
+            )
+        if not data:
+            raise ArtifactValidationError("image bytes are empty")
+        if len(data) > MAX_CONTENT_BYTES:
+            raise ArtifactValidationError(
+                f"image exceeds {MAX_CONTENT_BYTES} bytes ({len(data)})"
+            )
+        name = _validate_name(name)
+        source = _validate_source(source)
+        description = _validate_description(description)
+        tags_list = _validate_tags(tags)
+        ext = _IMAGE_MIME_EXT[norm_mime]
+        width, height = _sniff_image_dimensions(data, norm_mime)
+        image_meta = ImageMetadata(
+            mime=norm_mime,
+            ext=ext,
+            size_bytes=len(data),
+            width=width,
+            height=height,
+            sha256=hashlib.sha256(data).hexdigest(),
+            original_filename=str(original_filename or "")[:MAX_NAME_LEN],
+            alt=str(alt or "")[:MAX_DESCRIPTION_LEN],
+        )
+
+        with self._lock:
+            if slug is None:
+                slug = self._unique_slug(slugify(name))
+            else:
+                slug = _validate_slug(slug)
+                if self._artifact_dir(slug).exists():
+                    raise ArtifactAlreadyExistsError(f"artifact already exists: {slug}")
+
+            now = _now_iso()
+            art = Artifact(
+                slug=slug,
+                name=name,
+                kind="image",
+                source=source,
+                description=description,
+                tags=tags_list,
+                version=1,
+                created_at=now,
+                updated_at=now,
+                content="",  # image body lives in the asset sidecar, not here
+                folder_id=folder_id or "",
+                session_key=session_key[:256] if session_key else "",
+                auto_registered=bool(auto_registered),
+                version_kinds={"1": "image"},
+                image=image_meta,
+            )
+            self._append_event(
+                art,
+                type="created",
+                by=source if source != "chat" else "agent",
+                version=1,
+            )
+            art.events_backfilled = True
+            try:
+                self._write_image_artifact(art, data)
+            except Exception:
+                # A half-written directory still reserves the slug, and the slug
+                # is deterministic — so every retry would raise
+                # ArtifactAlreadyExistsError and the image would be lost for
+                # good. Roll the reservation back, then let the caller see the
+                # real failure.
+                try:
+                    self._rmtree(self._artifact_dir(slug))
+                except Exception:  # pragma: no cover — cleanup is best-effort
+                    logger.warning("could not clean up partial image artifact %s", slug)
+                raise
+            logger.info(
+                "image artifact created: slug=%s name=%s mime=%s bytes=%d",
+                slug,
+                name,
+                norm_mime,
+                len(data),
+            )
+        self._fire_change("upsert", slug)
+        return art
+
+    def read_image_bytes(self, slug: str) -> tuple[bytes, str]:
+        """Return ``(bytes, mime)`` for an image artifact's stored asset.
+
+        Raises :class:`ArtifactNotFoundError` when the slug does not resolve,
+        is not an image artifact, or its asset sidecar is missing. The read is
+        routed through the gated :meth:`_read_bytes` so the sensitive-path
+        denylist fires here as on every other store read.
+        """
+        slug = _validate_slug(slug)
+        with self._lock:
+            meta = self._load_meta(slug)
+            if meta.kind != "image" or meta.image is None:
+                raise ArtifactNotFoundError(f"artifact {slug!r} has no image asset")
+            # Re-validate on READ, and derive the extension from the allowlist
+            # rather than trusting the stored ``ext``. ``create_image`` already
+            # checks the mime, but meta.json is a file: anything that can write
+            # it (a prompt-injected agent, a hand edit, a restored backup) could
+            # otherwise name ``text/html`` here and have the asset endpoint
+            # serve same-origin HTML from an authenticated URL.
+            norm_mime = (meta.image.mime or "").strip().lower()
+            ext = _IMAGE_MIME_EXT.get(norm_mime, "")
+            if not ext:
+                raise ArtifactNotFoundError(
+                    f"image asset for {slug!r} has an unsupported mime {meta.image.mime!r}"
+                )
+            asset = self._artifact_dir(slug) / f"asset.{ext}"
+            if not asset.exists():
+                raise ArtifactNotFoundError(f"image asset missing for {slug!r}")
+            mime = norm_mime
+        # Read OUTSIDE the lock: an asset can be tens of MiB, and holding the
+        # store-wide lock across it would block every concurrent artifact
+        # operation for the duration of the read. The path was resolved under
+        # the lock and an image artifact's bytes are never rewritten in place.
+        return self._read_image_asset_bytes(asset), mime
 
     def get(self, slug: str, *, version: int | None = None) -> Artifact:
         """Return an artifact (with content) by slug, optionally a specific version.
@@ -2718,6 +3035,25 @@ class ArtifactStore:
         self._snapshot_version(art.slug, art.version, adir / "current.html")
         self._write_meta(art)
 
+    def _write_image_artifact(self, art: Artifact, data: bytes) -> None:
+        """Write an image artifact: empty text body + the raster asset sidecar.
+
+        Mirrors :meth:`_write_artifact` so image records share the exact same
+        directory shape (``current.html`` + ``versions/`` + ``meta.json``) and
+        every text-store helper — ``get``, version snapshotting, ``_rmtree``
+        delete — works on them unchanged. ``current.html`` is written empty per
+        the image-kind contract; the bytes go to ``asset.<ext>`` through the
+        gated byte writer.
+        """
+        adir = self._artifact_dir(art.slug)
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / "versions").mkdir(parents=True, exist_ok=True)
+        self._write_text(adir / "current.html", art.content or "")
+        self._snapshot_version(art.slug, art.version, adir / "current.html")
+        assert art.image is not None  # set by create_image before this is called
+        self._write_bytes(adir / f"asset.{art.image.ext}", data)
+        self._write_meta(art)
+
     def _snapshot_version(self, slug: str, version: int, src: Path) -> None:
         target = self._artifact_dir(slug) / "versions" / f"v{version}.html"
         # Defense in depth: route the read through the gated helper so the
@@ -2855,6 +3191,7 @@ class ArtifactStore:
         # unpublished rather than raising).
         publication = self._parse_publication(raw.get("publication"))
         fork_metadata = self._parse_fork_metadata(raw.get("fork_metadata"))
+        image = self._parse_image_metadata(raw.get("image"))
         # Per-version render kinds (tolerant: keys + values must be str).
         raw_vk = raw.get("version_kinds") or {}
         version_kinds: dict[str, str] = {}
@@ -2889,6 +3226,41 @@ class ArtifactStore:
             fork_metadata=fork_metadata,
             version_kinds=version_kinds,
             webapp_metadata=webapp_metadata_from_dict(raw.get("webapp_metadata")),
+            image=image,
+        )
+
+    @staticmethod
+    def _parse_image_metadata(raw_img: Any) -> "ImageMetadata | None":
+        """Build an :class:`ImageMetadata` from a meta.json sub-object.
+
+        Returns ``None`` when the block is absent or not a dict (every non-image
+        artifact). Tolerant per field: a wrong-typed value falls back to the
+        dataclass default rather than raising, so a partially-written or
+        forward/backward-skewed block still loads. ``width``/``height`` stay
+        ``None`` unless present as ints — the sniff genuinely could not measure
+        the image, and ``0`` would be a lie the frontend would box to.
+        """
+        if not isinstance(raw_img, dict):
+            return None
+
+        def _int_or_none(v: Any) -> int | None:
+            return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+        def _int(v: Any) -> int:
+            return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+        def _str(v: Any) -> str:
+            return v if isinstance(v, str) else ""
+
+        return ImageMetadata(
+            mime=_str(raw_img.get("mime")),
+            ext=_str(raw_img.get("ext")),
+            size_bytes=_int(raw_img.get("size_bytes")),
+            width=_int_or_none(raw_img.get("width")),
+            height=_int_or_none(raw_img.get("height")),
+            sha256=_str(raw_img.get("sha256")),
+            original_filename=_str(raw_img.get("original_filename")),
+            alt=_str(raw_img.get("alt")),
         )
 
     @staticmethod
@@ -2982,6 +3354,63 @@ class ArtifactStore:
         # Atomic write: tmp file + rename.
         tmp = resolved.with_suffix(resolved.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8")
+        tmp.replace(resolved)
+
+    def _read_bytes(self, path: Path) -> bytes:
+        """Binary sibling of :meth:`_read_text` (image asset reads).
+
+        Same sensitive-path gate — every store read, text or binary, must pass
+        ``is_sensitive_path`` per the security-controls rule.
+        """
+        resolved = Path(os.path.realpath(path))
+        if is_sensitive_path(str(resolved)):
+            raise ArtifactError(f"refusing to read sensitive path: {resolved}")
+        return resolved.read_bytes()
+
+    def _read_image_asset_bytes(self, path: Path) -> bytes:
+        """Read an image sidecar with the open descriptor as the unit of trust.
+
+        :meth:`_read_bytes` resolves the path, checks it, then opens it by name —
+        which leaves a window where the sidecar is replaced with a link to
+        something sensitive between the check and the open. The asset endpoint is
+        reachable with nothing but a slug, so that window is worth closing here:
+        the open is ``O_NOFOLLOW`` and the inode it actually opened is validated
+        (regular file, not hardlinked), so a swapped sidecar is refused rather
+        than followed.
+
+        ``within_root`` is deliberately NOT passed to the helper: its containment
+        check reads the descriptor's real path via ``/proc/self/fd`` or
+        ``F_GETPATH`` and fails closed when neither is available — which is every
+        Windows host, so requiring it would make image assets permanently
+        unreadable there. Containment is enforced here instead, with a
+        ``realpath`` comparison that behaves the same on every platform. That
+        check is load-bearing rather than belt-and-braces: the helper resolves
+        the path before opening it, so ``O_NOFOLLOW`` alone never sees a swapped
+        symlink — it sees the target.
+        """
+        root = Path(os.path.realpath(self._root))
+        resolved = Path(os.path.realpath(path))
+        if resolved != root and root not in resolved.parents:
+            raise ArtifactNotFoundError(f"image asset escapes the store root: {path.name}")
+        data = hooks.safe_read_file_bytes_nolink(str(resolved), max_bytes=MAX_CONTENT_BYTES)
+        if data is None:
+            # Refused: not a regular file, hardlinked, or unreadable.
+            # Indistinguishable from "gone" to the caller by design.
+            raise ArtifactNotFoundError(f"image asset is not readable: {path.name}")
+        return data
+
+    def _write_bytes(self, path: Path, data: bytes) -> None:
+        """Binary sibling of :meth:`_write_text` (image asset writes).
+
+        Same sensitive-path gate and same atomic tmp-file + rename so a reader
+        never observes a half-written asset.
+        """
+        resolved = Path(os.path.realpath(path))
+        if is_sensitive_path(str(resolved)):
+            raise ArtifactError(f"refusing to write sensitive path: {resolved}")
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        tmp = resolved.with_suffix(resolved.suffix + ".tmp")
+        tmp.write_bytes(data)
         tmp.replace(resolved)
 
     def _prune_versions(self, slug: str) -> None:

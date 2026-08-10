@@ -4321,6 +4321,7 @@
     },
     "artifactBody": {
       "artifact": "アーティファクト：{{slug}}",
+      "image_could_not_be_loaded": "画像を読み込めませんでした",
       "rendering": "レンダリング中…"
     },
     "artifactChatPanel": {
@@ -4694,7 +4695,10 @@
       "updated": "更新"
     },
     "contentRenderer": {
-      "loading_editor": "エディターを読み込み中…"
+      "changes_update_svg_preview_as_you_type": "入力内容に合わせてプレビューが更新されます。",
+      "editing_svg": "SVG を編集中",
+      "loading_editor": "エディターを読み込み中…",
+      "svg_source_code": "SVG ソースコード"
     },
     "contextBar": {
       "context_pct": "コンテキスト：{{pct}}%"
@@ -6980,6 +6984,7 @@
       "folder_color": "フォルダーの色",
       "from_your_chats": "チャットから",
       "gallery": "ギャラリー",
+      "image_could_not_be_loaded": "画像を読み込めませんでした",
       "import_from_a_file": "ファイルからインポート…",
       "kind": "種類",
       "live": "ライブ",
@@ -7012,12 +7017,12 @@
       "remove_star_from_artifact": "アーティファクトから星を削除",
       "rename": "名前を変更",
       "rename_folder": "フォルダー名を変更",
-      "slug": "スラッグ",
-      "source": "ソース",
-      "star_artifact": "アーティファクトに星を付ける",
       "show_all_count": "すべてを表示（{{count}}）",
       "show_less": "表示を減らす",
+      "slug": "スラッグ",
+      "source": "ソース",
       "star_a_document_in_from_your_chats_to_save_it_he": "保存済みのアーティファクトはまだありません。「チャットから」のドキュメントに星を付けると、ここに保存されます。",
+      "star_artifact": "アーティファクトに星を付ける",
       "star_creates_a_starred_artifact_from_this_docume": "星を付ける（このドキュメントから星付きアーティファクトを作成）",
       "star_document": "ドキュメントに星を付ける",
       "starred": "星付き",

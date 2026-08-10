@@ -331,7 +331,8 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
     """Serialize an Artifact for response.
 
     All LLM-originated string fields (``name``, ``description``, ``tags``,
-    and — when ``include_content=True`` — ``content``) pass through
+    the image block's ``alt`` / ``original_filename``, and — when
+    ``include_content=True`` — ``content``) pass through
     ``redact_exfiltration_urls()`` + ``redact_credentials()`` per
     the ``security-controls`` rule. Artifact metadata is set
     by the agent via ``artifact_save`` / ``artifact_update``, so any
@@ -369,6 +370,19 @@ def _serialize(art: Any, *, include_content: bool = False, state: Any = None) ->
         pub["last_error"] = _redact_text(pub["last_error"])
     if isinstance(out.get("webapp_metadata"), dict):
         out["webapp_metadata"] = _redact_webapp_metadata(out["webapp_metadata"])
+    # Image block: ``alt`` and ``original_filename`` are derived from markdown the
+    # agent wrote, so they are LLM-originated exactly like ``name`` and must pass
+    # the same gate. This matters more than it looks: the dashboard prefers
+    # ``image.alt`` over ``name`` for the accessible description, so leaving it
+    # raw would route unredacted text onto the surface that ``name``'s redaction
+    # exists to protect. The numeric/structural leaves (mime, ext, size, sha256,
+    # dimensions) are store-computed and left alone.
+    img = out.get("image")
+    if isinstance(img, dict):
+        for key in ("alt", "original_filename"):
+            val = img.get(key)
+            if isinstance(val, str) and val:
+                img[key] = _redact_text(val)
     return out
 
 
@@ -1525,6 +1539,46 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
                     extra={"slug": slug, "via": "detail_read"},
                 )
     return _json_response(_serialize(art, include_content=True, state=state))
+
+
+async def api_artifact_asset(request: web.Request) -> web.Response:
+    """Serve an image artifact's raw raster bytes.
+
+    ``GET /api/artifacts/{slug}/asset`` — returns the stored ``asset.<ext>``
+    bytes with the correct ``Content-Type`` so an ``<img src=...>`` can point
+    straight at it. Content-addressed by slug+version (the bytes for a given
+    image artifact never change — a re-generated image is a new artifact), so
+    it is served ``immutable`` with a long max-age.
+
+    A read, like ``api_artifact_detail`` — no restricted-session mutation gate
+    applies (nothing is written), and no ``referenced`` breadcrumb is recorded
+    (an asset fetch is a sub-resource load of a detail view already counted).
+    404 when the slug does not resolve or is not an image artifact.
+    """
+    slug = request.match_info.get("slug", "")
+    try:
+        store = get_default_store()
+        # Off the loop: the sidecar can be up to MAX_CONTENT_BYTES, and a
+        # synchronous read of that size would stall every other gateway task
+        # (the user's chat turn and the liveness heartbeat included).
+        data, mime = await asyncio.to_thread(store.read_image_bytes, slug)
+    except ArtifactNotFoundError as exc:
+        return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:
+        return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact asset read failed for %s: %s", slug, exc)
+        return _err("could not read image asset", status=500)
+    return web.Response(
+        body=data,
+        content_type=mime,
+        # ``private``: these bytes are behind token auth, so a shared caching
+        # proxy must never keep a copy it could hand to an unauthenticated
+        # requester. Still immutable for the browser's own cache — the bytes for
+        # a given image artifact never change (a re-generated image is a new
+        # artifact).
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
 
 
 async def api_artifact_update(request: web.Request) -> web.Response:

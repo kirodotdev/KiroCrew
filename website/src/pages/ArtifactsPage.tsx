@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, FileText, FilePlus } from 'lucide-react'
+import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, ImageOff, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, FileText, FilePlus } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
@@ -47,7 +47,7 @@ function readThemeVars(): Record<string, string> {
   return out
 }
 
-const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp'] as const
+const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp', 'image'] as const
 
 const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   widget: 'aim',
@@ -57,6 +57,7 @@ const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   json: 'ok',
   text: 'ok',
   webapp: 'aim',
+  image: 'warn',
 }
 
 /** Explain a refused "Add Artifact" pick in the library's error banner.
@@ -254,6 +255,40 @@ function ContentThumb({ content, kind }: { content: string; kind: Artifact['kind
     <pre className="m-0 px-3 py-2 text-[11px] leading-snug text-muted font-mono whitespace-pre-wrap break-words max-h-[260px] overflow-hidden bg-bg-elevated">
       {body.slice(0, 1200)}
     </pre>
+  )
+}
+
+/** Thumbnail for image artifacts: the picture streamed straight from the
+ * artifact's asset endpoint (the server sets Content-Type), object-fit
+ * contained and height-capped so cards stay uniform. Lazy so off-screen
+ * gallery cards don't fetch bytes until scrolled into view. Alt text prefers
+ * the stored `image.alt`, falling back to the artifact name. */
+function ImageThumb({ a }: { a: Artifact }) {
+  // The asset endpoint can legitimately 404/500 (pruned sidecar, unreadable
+  // file, refused mime). A bare <img> would leave the browser's broken-image
+  // glyph sitting in an otherwise healthy card with nothing to read.
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-1 max-h-[300px] h-[120px] overflow-hidden bg-bg-elevated p-2 text-center">
+        <ImageOff size={16} className="text-muted shrink-0" aria-hidden="true" />
+        <span className="text-[11px] text-muted">
+          {i18nT('pages.artifactsPage.image_could_not_be_loaded')}
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-center justify-center max-h-[300px] overflow-hidden bg-bg-elevated p-2">
+      <img
+        src={`/api/artifacts/${a.slug}/asset`}
+        alt={a.image?.alt || a.name}
+        loading="lazy"
+        className="max-w-full max-h-[280px] object-contain"
+        draggable={false}
+        onError={() => setFailed(true)}
+      />
+    </div>
   )
 }
 
@@ -560,7 +595,7 @@ function FolderMiniThumb({ a }: { a: Artifact }) {
   const content = full?.content || ''
   return (
     <div className="h-[84px] rounded-md border border-border overflow-hidden bg-bg-elevated pointer-events-none" title={a.name}>
-      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
     </div>
   )
 }
@@ -738,7 +773,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
     >
       {/* Preview is non-interactive so clicks fall through to the card's onClick. */}
       <div className="pointer-events-none">
-        {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+        {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
       </div>
       <div className="p-3">
         <div className="flex items-start justify-between gap-2">
