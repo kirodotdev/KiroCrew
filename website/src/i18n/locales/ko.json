@@ -5833,7 +5833,10 @@
       "speech_to_text_is_not_enabled_yet_so_the_microph": "음성 텍스트 변환이 아직 켜져 있지 않아 마이크가 음성을 텍스트로 바꿀 수 없습니다.",
       "then_click_the_mic_to_dictate_into_the_message_b": "을 누른 다음 마이크를 클릭해 메시지 상자에 음성으로 입력하세요.",
       "turn_on_voice_input": "음성 입력 켜기",
-      "voice_provider_not_installed": "음성 제공자가 설치되지 않았습니다"
+      "voice_provider_not_installed": "음성 제공자가 설치되지 않았습니다",
+      "voice_not_available_remote": "Voice input may not work here",
+      "voice_remote_instance_body": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. This may not work reliably depending on browser security policies and the parent’s configuration.",
+      "voice_remote_instance_hint": "If the mic doesn’t respond, use the local dashboard’s voice input instead."
     },
     "voiceStatusBar": {
       "default_microphone": "기본 마이크",
@@ -10264,7 +10267,8 @@
         "ptt_mode_toggle": "눌러서 켜고 다시 눌러서 끄기",
         "ptt_try_desc": "단축키를 눌러 이 키보드가 제대로 전달하는지 확인하세요.",
         "ptt_heading_desc_other": "마이크 버튼을 클릭하는 대신 키를 눌러 말하기를 시작할 수 있습니다. Alt + Shift + Space 는 바로 사용할 수 있으므로 여기 설정은 그대로 두어도 됩니다.",
-        "ptt_key_desc_other": "단독으로는 문자를 입력하지 않는 키를 선택하세요. 그러면 작성 중인 내용을 방해하지 않습니다. 오른쪽 Alt 는 대부분의 키보드 배열에서 문자 조합에 쓰이므로 제외했습니다."
+        "ptt_key_desc_other": "단독으로는 문자를 입력하지 않는 키를 선택하세요. 그러면 작성 중인 내용을 방해하지 않습니다. 오른쪽 Alt 는 대부분의 키보드 배열에서 문자 조합에 쓰이므로 제외했습니다.",
+        "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn’t respond here, use the local (parent) dashboard instead."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "위. Slack과 달리 Bot Framework에는\n 발신 전용 모드가 없습니다.",

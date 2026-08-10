@@ -5918,7 +5918,10 @@
       "speech_to_text_is_not_enabled_yet_so_the_microph": "স্পিচ-টু-টেক্সট এখনও চালু করা হয়নি, তাই মাইক্রোফোন আপনার কণ্ঠস্বরকে টেক্সটে রূপান্তর করতে পারছে না।",
       "then_click_the_mic_to_dictate_into_the_message_b": ", তারপর মেসেজ বক্সে কথা বলে লিখতে মাইকে ক্লিক করুন।",
       "turn_on_voice_input": "ভয়েস ইনপুট চালু করুন",
-      "voice_provider_not_installed": "ভয়েস প্রোভাইডার ইনস্টল করা নেই"
+      "voice_provider_not_installed": "ভয়েস প্রোভাইডার ইনস্টল করা নেই",
+      "voice_not_available_remote": "Voice input may not work here",
+      "voice_remote_instance_body": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. This may not work reliably depending on browser security policies and the parent’s configuration.",
+      "voice_remote_instance_hint": "If the mic doesn’t respond, use the local dashboard’s voice input instead."
     },
     "voiceStatusBar": {
       "default_microphone": "ডিফল্ট মাইক্রোফোন",
@@ -10378,7 +10381,8 @@
         "ptt_mode_toggle": "চেপে চালু/বন্ধ",
         "ptt_try_desc": "আপনার শর্টকাট কী চেপে দেখুন এই কীবোর্ড সেটি ঠিকভাবে পাঠায় কি না।",
         "ptt_heading_desc_other": "মাইক্রোফোন বোতামে ক্লিক করার বদলে কথা বলা শুরু করতে একটি কী চাপুন। Alt + Shift + Space শুরু থেকেই কাজ করে — এখানে সবকিছু যেমন আছে তেমনই রাখতে পারেন।",
-        "ptt_key_desc_other": "এমন একটি কী বেছে নিন যা নিজে থেকে কিছু টাইপ করে না, যাতে আপনি যা লিখছেন তাতে বাধা না দেয়। ডান দিকের Alt বাদ রাখা হয়েছে, কারণ অধিকাংশ লেআউটে এটি যুক্তবর্ণ তৈরিতে ব্যবহৃত হয়।"
+        "ptt_key_desc_other": "এমন একটি কী বেছে নিন যা নিজে থেকে কিছু টাইপ করে না, যাতে আপনি যা লিখছেন তাতে বাধা না দেয়। ডান দিকের Alt বাদ রাখা হয়েছে, কারণ অধিকাংশ লেআউটে এটি যুক্তবর্ণ তৈরিতে ব্যবহৃত হয়।",
+        "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn’t respond here, use the local (parent) dashboard instead."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "উপরে। Slack-এর বিপরীতে, Bot Framework-এ কোনো\n              শুধু-আউটবাউন্ড মোড নেই।",

@@ -6003,7 +6003,10 @@
       "speech_to_text_is_not_enabled_yet_so_the_microph": "La transcripción de voz a texto aún no está activada, así que el micrófono no puede convertir tu voz en texto.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", y luego haz clic en el micrófono para dictar en el cuadro de mensaje.",
       "turn_on_voice_input": "Activar la entrada de voz",
-      "voice_provider_not_installed": "Proveedor de voz no instalado"
+      "voice_provider_not_installed": "Proveedor de voz no instalado",
+      "voice_not_available_remote": "Voice input may not work here",
+      "voice_remote_instance_body": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. This may not work reliably depending on browser security policies and the parent’s configuration.",
+      "voice_remote_instance_hint": "If the mic doesn’t respond, use the local dashboard’s voice input instead."
     },
     "voiceStatusBar": {
       "default_microphone": "Micrófono predeterminado",
@@ -10492,7 +10495,8 @@
         "ptt_mode_toggle": "Pulsar para activar/desactivar",
         "ptt_try_desc": "Pulsa tu tecla de acceso rápido para comprobar que este teclado la envía correctamente.",
         "ptt_heading_desc_other": "Pulsa una tecla para empezar a hablar en lugar de hacer clic en el botón del micrófono. Alt + Shift + Espacio funciona desde el principio: puedes dejar todo aquí tal como está.",
-        "ptt_key_desc_other": "Elige una tecla que no escriba nada por sí sola, para que no interfiera con lo que estás escribiendo. El Alt derecho se ha excluido porque la mayoría de las distribuciones lo usan para componer caracteres."
+        "ptt_key_desc_other": "Elige una tecla que no escriba nada por sí sola, para que no interfiera con lo que estás escribiendo. El Alt derecho se ha excluido porque la mayoría de las distribuciones lo usan para componer caracteres.",
+        "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn’t respond here, use the local (parent) dashboard instead."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "más arriba. A diferencia de Slack, el Bot Framework no tiene un modo solo de salida.",

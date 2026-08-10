@@ -1685,6 +1685,11 @@
       "restart_update": "Restart & Update",
       "restarting": "Restarting..."
     },
+    "voiceDisabledModal": {
+      "voice_not_available_remote": "Voice input may not work here",
+      "voice_remote_instance_body": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. This may not work reliably depending on browser security policies and the parent's configuration.",
+      "voice_remote_instance_hint": "If the mic doesn't respond, use the local dashboard's voice input instead."
+    },
     "voiceStatusBar": {
       "default_microphone": "Default microphone"
     },
@@ -3591,7 +3596,8 @@
         "step_installing_whisper": "Installing whisper (~1.6 GB)…",
         "step_installing_xcode": "Installing Xcode CLI Tools…",
         "step_pulling": "Pulling Docker image…",
-        "step_starting": "Starting…"
+        "step_starting": "Starting…",
+        "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn't respond here, use the local (parent) dashboard instead."
       },
       "teamsPanel": {
         "microsoft_app_id": "Microsoft App ID",

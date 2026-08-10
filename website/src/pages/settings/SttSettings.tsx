@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Hourglass, Package } from 'lucide-react'
+import { Hourglass, Info, Package } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsStepper } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api } from '../../api/client'
 import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied } from '../../hooks/mic'
+import { isEmbeddedPane } from '../../lib/embedded'
 import { PttTestStrip } from '../../components/PttTestStrip'
 import {
   BARE_CODE_LABEL_KEY,
@@ -385,6 +386,14 @@ export default function SttSettings() {
         onDismiss={() => { dismissedErrorRef.current = err; setErr(''); sttQ.refetch() }}
         className="mb-4 animate-rise"
       />
+      {isEmbeddedPane() && (
+        <div className="flex items-start gap-2.5 rounded-md border border-accent/30 bg-accent/5 px-3 py-2.5 mb-3">
+          <Info size={14} className="text-accent flex-none mt-0.5" />
+          <span className="text-[12px] text-muted leading-relaxed">
+            {i18nT('pages.settings.sttSettings.voice_input_remote_instance_note')}
+          </span>
+        </div>
+      )}
       <SettingsCard>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} description={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
 

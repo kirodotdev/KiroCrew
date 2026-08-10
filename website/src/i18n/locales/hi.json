@@ -5918,7 +5918,10 @@
       "speech_to_text_is_not_enabled_yet_so_the_microph": "स्पीच-टू-टेक्स्ट अभी सक्षम नहीं है, इसलिए माइक्रोफ़ोन आपकी आवाज़ को टेक्स्ट में नहीं बदल सकता।",
       "then_click_the_mic_to_dictate_into_the_message_b": ", फिर संदेश बॉक्स में बोलकर लिखने के लिए माइक पर क्लिक करें।",
       "turn_on_voice_input": "वॉइस इनपुट चालू करें",
-      "voice_provider_not_installed": "वॉइस प्रदाता इंस्टॉल नहीं है"
+      "voice_provider_not_installed": "वॉइस प्रदाता इंस्टॉल नहीं है",
+      "voice_not_available_remote": "Voice input may not work here",
+      "voice_remote_instance_body": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. This may not work reliably depending on browser security policies and the parent’s configuration.",
+      "voice_remote_instance_hint": "If the mic doesn’t respond, use the local dashboard’s voice input instead."
     },
     "voiceStatusBar": {
       "default_microphone": "डिफ़ॉल्ट माइक्रोफ़ोन",
@@ -10378,7 +10381,8 @@
         "ptt_mode_toggle": "दबाकर चालू/बंद करें",
         "ptt_try_desc": "अपनी शॉर्टकट कुंजी दबाकर देखें कि यह कीबोर्ड उसे ठीक से भेजता है।",
         "ptt_heading_desc_other": "माइक्रोफ़ोन बटन दबाने के बजाय बोलना शुरू करने के लिए कोई कुंजी दबाओ। Alt + Shift + Space शुरू से ही काम करता है — यहाँ सब कुछ वैसा ही छोड़ सकते हो।",
-        "ptt_key_desc_other": "ऐसी कुंजी चुनो जो अपने आप कुछ टाइप न करे, ताकि वह तुम्हारे लिखे में दख़ल न दे। दायाँ Alt शामिल नहीं है क्योंकि अधिकतर लेआउट उससे संयुक्त अक्षर बनाते हैं।"
+        "ptt_key_desc_other": "ऐसी कुंजी चुनो जो अपने आप कुछ टाइप न करे, ताकि वह तुम्हारे लिखे में दख़ल न दे। दायाँ Alt शामिल नहीं है क्योंकि अधिकतर लेआउट उससे संयुक्त अक्षर बनाते हैं।",
+        "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn’t respond here, use the local (parent) dashboard instead."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ऊपर। Slack के विपरीत, Bot Framework में कोई\n              केवल-आउटबाउंड मोड नहीं है।",

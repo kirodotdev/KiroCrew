@@ -6003,7 +6003,10 @@
       "speech_to_text_is_not_enabled_yet_so_the_microph": "La reconnaissance vocale n'est pas encore activée, le microphone ne peut donc pas transformer votre voix en texte.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", puis cliquez sur le micro pour dicter dans la zone de message.",
       "turn_on_voice_input": "Activer la saisie vocale",
-      "voice_provider_not_installed": "Fournisseur vocal non installé"
+      "voice_provider_not_installed": "Fournisseur vocal non installé",
+      "voice_not_available_remote": "Voice input may not work here",
+      "voice_remote_instance_body": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. This may not work reliably depending on browser security policies and the parent’s configuration.",
+      "voice_remote_instance_hint": "If the mic doesn’t respond, use the local dashboard’s voice input instead."
     },
     "voiceStatusBar": {
       "default_microphone": "Micro par défaut",
@@ -10492,7 +10495,8 @@
         "ptt_mode_toggle": "Appuyer pour activer/désactiver",
         "ptt_try_desc": "Appuyez sur votre touche de raccourci pour vérifier que ce clavier l’envoie correctement.",
         "ptt_heading_desc_other": "Appuyez sur une touche pour parler au lieu de cliquer sur le bouton du microphone. Alt + Maj + Espace fonctionne d'emblée — vous pouvez tout laisser tel quel ici.",
-        "ptt_key_desc_other": "Choisissez une touche qui n'écrit rien par elle-même, afin qu'elle n'interfère pas avec votre saisie. Alt droite est exclue car la plupart des dispositions l'utilisent pour composer des caractères."
+        "ptt_key_desc_other": "Choisissez une touche qui n'écrit rien par elle-même, afin qu'elle n'interfère pas avec votre saisie. Alt droite est exclue car la plupart des dispositions l'utilisent pour composer des caractères.",
+        "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn’t respond here, use the local (parent) dashboard instead."
       },
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ci-dessus. Contrairement à Slack, le Bot Framework n'a pas de\n              mode sortant uniquement.",

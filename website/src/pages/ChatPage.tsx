@@ -88,6 +88,7 @@ import ChatInput from '../components/ChatInput'
 import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
+import { isEmbeddedPane } from '../lib/embedded'
 import { displayModel, pinIsWithheld } from '../lib/model'
 import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
@@ -1595,6 +1596,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the setting that turns it on instead of starting a recording that would
   // never be transcribed.
   const [voiceSetupOpen, setVoiceSetupOpen] = useState(false)
+  const [voiceDisabledReason, setVoiceDisabledReason] = useState<'disabled' | 'unavailable' | 'remote'>('disabled')
   const frozenInputRef = useRef<string | null>(null)
   // Caret snapshot taken alongside frozenInputRef, so a streaming partial (and
   // the final that replaces it) keeps inserting at the same spot. The batch
@@ -1782,11 +1784,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    * itself.
    */
   const startVoice = useCallback((opts?: { silent?: boolean }): Promise<void> | void => {
+    // Remote instances (inside an iframe) cannot reliably capture audio from
+    // the parent machine's mic due to cross-origin delegation constraints.
+    if (isEmbeddedPane()) {
+      if (!opts?.silent) { setVoiceDisabledReason('remote'); setVoiceSetupOpen(true) }
+      return
+    }
     // Starting a recording while server-side STT is disabled would capture
     // audio that never gets transcribed. Point the user at the enable setting
     // instead — unless this came from the keyboard (see `silent`).
     if (!sttConfigLoaded || !sttEnabled || !sttAvailable) {
-      if (!opts?.silent) setVoiceSetupOpen(true)
+      if (!opts?.silent) { setVoiceDisabledReason(sttEnabled && !sttAvailable ? 'unavailable' : 'disabled'); setVoiceSetupOpen(true) }
       return
     }
     // Exclusive sessions: the mic is a single shared device, so refuse to
@@ -6406,7 +6414,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             </div>
             <VoiceDisabledModal
               open={voiceSetupOpen}
-              reason={sttEnabled && !sttAvailable ? 'unavailable' : 'disabled'}
+              reason={voiceDisabledReason}
               provider={sttProvider}
               onClose={() => setVoiceSetupOpen(false)}
               onOpenSettings={() => {
