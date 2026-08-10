@@ -1689,6 +1689,57 @@ class KnowledgeConfig:
             "reads on.",
         ),
     )
+    sweep_chunk_budget: int = field(
+        default=500,
+        metadata=_meta(
+            "Global Sweep Chunk Budget",
+            "Maximum chunks ingested across ALL sources in a single watcher "
+            "sweep. Each chunk costs one LLM extraction call, so this is the "
+            "primary global cost control. Once reached, remaining sources are "
+            "deferred to the next sweep. "
+            "0 removes the bound.",
+        ),
+    )
+    max_sources: int = field(
+        default=50,
+        metadata=_meta(
+            "Max Sources",
+            "Maximum number of Knowledge sources that may be registered. "
+            "Prevents unbounded auto-discovery from registering hundreds of "
+            "sources when many projects are open. Registration attempts past "
+            "the cap are skipped (auto) or rejected (manual). 0 removes the "
+            "bound.",
+        ),
+    )
+    embed_rate_limit: int = field(
+        default=120,
+        metadata=_meta(
+            "Embedding Rate Limit (items/min)",
+            "Maximum embedding generations per minute across all sources. "
+            "Back-pressures the ingestion pipeline when a large backlog builds "
+            "up, preventing memory/CPU saturation from parallel embed batches. "
+            "0 removes the bound.",
+        ),
+    )
+    extraction_model: str = field(
+        default="",
+        metadata=_meta(
+            "Extraction Model",
+            "LLM model used for document extraction and summarization. Empty "
+            "uses the default model (agent.model). Set to a specific model id "
+            "(e.g. 'claude-haiku-4.5') to use a cheaper model for extraction "
+            "without changing your chat default.",
+        ),
+    )
+    extraction_pool_size: int = field(
+        default=3,
+        metadata=_meta(
+            "Extraction Pool Size",
+            "Number of concurrent LLM workers for document extraction. More "
+            "workers = faster ingestion but higher peak cost. Each worker holds "
+            "a long-lived session. Requires restart to take effect.",
+        ),
+    )
     auto_discover_folder: bool = field(
         default=False,
         metadata=_meta(
@@ -5192,6 +5243,16 @@ class KiroCrewConfig:
                 auto_discover_dirname=str(
                     knowledge_data.get("auto_discover_dirname", "knowledge-docs")
                 ).strip()[:128],
+                sweep_chunk_budget=_safe_nonnegative_int(
+                    knowledge_data.get("sweep_chunk_budget", 500), 500),
+                max_sources=_safe_nonnegative_int(
+                    knowledge_data.get("max_sources", 50), 50),
+                embed_rate_limit=_safe_nonnegative_int(
+                    knowledge_data.get("embed_rate_limit", 120), 120),
+                extraction_model=str(
+                    knowledge_data.get("extraction_model", "")).strip(),
+                extraction_pool_size=max(1, min(10, _safe_nonnegative_int(
+                    knowledge_data.get("extraction_pool_size", 3), 3))),
             ),
             telegram=TelegramConfig(
                 enabled=bool(telegram_data.get("enabled", False)),

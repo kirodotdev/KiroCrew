@@ -2936,19 +2936,31 @@ def _install_knowledge_agent() -> None:
     """Generate and install the kirocrew-knowledge agent config.
 
     This agent is used by the Knowledge Library's LLMPool for document
-    extraction.  It uses claude-haiku-4.5 (cheapest model).  The previous
-    Amazon-internal MCP server / internal-websites wiring is omitted
-    on public installs; the agent ships without MCP servers and relies on the
-    model's own capabilities for extraction.  Symbol preserved for callers.
+    extraction. By default it uses the user's configured agent.model (so
+    extraction runs on the same model as chat). If the user sets
+    knowledge.extraction_model explicitly, that model is used instead —
+    allowing a cheaper model for extraction without changing the chat default.
     """
+    from kiro_crew.config.loader import KiroCrewConfig
+
     path = kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
+
+    # Resolve model: knowledge.extraction_model > agent.model > "auto"
+    try:
+        cfg = KiroCrewConfig.load()
+        model = cfg.knowledge.extraction_model.strip()
+        if not model:
+            # Use the user's default model (same as chat).
+            model = cfg.agent.model or "auto"
+    except Exception:
+        model = "auto"
 
     config: dict[str, object] = {
         "name": "kirocrew-knowledge",
         "description": (
             "Dedicated agent for knowledge extraction, categorization, " "and summarization."
         ),
-        "model": "claude-haiku-4.5",
+        "model": model,
         "includeMcpJson": False,
         "prompt": _KNOWLEDGE_SYSTEM_PROMPT,
         "mcpServers": {},
@@ -2956,7 +2968,7 @@ def _install_knowledge_agent() -> None:
     }
 
     _atomic_json_write(path, config)
-    logger.info("Installed knowledge agent config: %s", path)
+    logger.info("Installed knowledge agent config: %s (model=%s)", path, model)
 
 
 _RESEARCH_SYSTEM_PROMPT = """# KiroCrew Research Worker

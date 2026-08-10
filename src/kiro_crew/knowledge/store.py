@@ -899,14 +899,21 @@ class KnowledgeStore:
         self.db.execute("DELETE FROM dismissed_auto_sources WHERE uri = ?", (uri,))
         self.db.commit()
 
+    def source_count(self) -> int:
+        """Total number of registered sources (all types)."""
+        row = self.db.execute("SELECT COUNT(*) AS cnt FROM sources").fetchone()
+        return int(row["cnt"]) if row else 0
+
     def create_auto_source_unless_dismissed(
         self, name: str, source_type: str, uri: str, properties: dict,
+        *, max_sources: int = 0,
     ) -> tuple[str | None, bool]:
         """Atomically: reuse, refuse-if-dismissed, or insert an auto source.
 
         Returns ``(source_id, created)``, or ``(None, False)`` when ``uri`` is
-        tombstoned. The tombstone check, the existing-row check and the INSERT
-        all happen inside ONE ``BEGIN IMMEDIATE`` transaction so a concurrent
+        tombstoned or the ``max_sources`` cap is reached. The tombstone check,
+        the existing-row check, the cap check and the INSERT all happen inside
+        ONE ``BEGIN IMMEDIATE`` transaction so a concurrent
         ``delete_source_cascade(..., dismiss_uri=uri)`` cannot interleave: either
         the delete's tombstone is visible here and nothing is created, or this
         insert lands first and the delete then removes it and tombstones the URI.
@@ -928,6 +935,14 @@ class KnowledgeStore:
                 sid = existing["id"]
                 self.db.execute("COMMIT")
                 return sid, False
+            # Enforce max_sources cap (0 = unbounded).
+            if max_sources > 0:
+                count = self.db.execute(
+                    "SELECT COUNT(*) AS cnt FROM sources"
+                ).fetchone()
+                if count and int(count["cnt"]) >= max_sources:
+                    self.db.execute("COMMIT")
+                    return None, False
             sid = str(uuid4())
             now = datetime.now().isoformat()
             self.db.execute(

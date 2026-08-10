@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import time as _time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,6 +44,75 @@ DUPLICATE_JOB_STATUS = 'skipped_duplicate'
 
 DEFAULT_MAX_INGEST_FILE_MB = 100.0
 _MB = 1024 * 1024
+
+# ---------------------------------------------------------------------------
+# Embed rate limiter — token bucket (items/min) applied globally.
+# ---------------------------------------------------------------------------
+
+
+class EmbedRateLimiter:
+    """Token-bucket rate limiter for embedding generation (items/min).
+
+    Thread-safe via asyncio.Lock (all callers are on the event loop).
+    ``rate_limit=0`` disables the limiter (unbounded).
+    """
+
+    def __init__(self, rate_limit: int = 0):
+        self._rate_limit = rate_limit
+        self._tokens: float = float(rate_limit) if rate_limit else 0.0
+        self._last_refill: float = _time.monotonic()
+        self._lock = asyncio.Lock()
+
+    @property
+    def rate_limit(self) -> int:
+        return self._rate_limit
+
+    @rate_limit.setter
+    def rate_limit(self, value: int) -> None:
+        self._rate_limit = max(0, value)
+        # Reset bucket on config change.
+        self._tokens = float(self._rate_limit)
+        self._last_refill = _time.monotonic()
+
+    async def acquire(self) -> None:
+        """Wait until a token is available. No-op when rate_limit is 0."""
+        if self._rate_limit <= 0:
+            return
+        async with self._lock:
+            now = _time.monotonic()
+            elapsed = now - self._last_refill
+            # Refill at rate_limit tokens per 60 seconds.
+            refill = elapsed * (self._rate_limit / 60.0)
+            self._tokens = min(float(self._rate_limit), self._tokens + refill)
+            self._last_refill = now
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+        # No token available — wait for one to accrue.
+        wait_secs = (1.0 - self._tokens) / (self._rate_limit / 60.0)
+        await asyncio.sleep(max(0.01, wait_secs))
+        async with self._lock:
+            self._tokens = 0.0
+            self._last_refill = _time.monotonic()
+
+
+# Singleton rate limiter — initialized from config on first use.
+_embed_rate_limiter: EmbedRateLimiter | None = None
+
+
+def get_embed_rate_limiter() -> EmbedRateLimiter:
+    """Get or create the global embed rate limiter (reads config live)."""
+    global _embed_rate_limiter
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        rate = max(0, int(KiroCrewConfig.load().knowledge.embed_rate_limit))
+    except Exception:
+        rate = 0
+    if _embed_rate_limiter is None:
+        _embed_rate_limiter = EmbedRateLimiter(rate)
+    elif _embed_rate_limiter.rate_limit != rate:
+        _embed_rate_limiter.rate_limit = rate
+    return _embed_rate_limiter
 
 
 async def run_to_completion(fn: Callable[[], None]) -> None:
@@ -777,9 +847,13 @@ class IngestionPipeline:
 
         Includes chunk ``content`` so vector search matches body text, not just
         the title/summary (which previously left body-only queries unmatchable).
+        Respects the global embed rate limiter (knowledge.embed_rate_limit).
         """
         if not self.embedder:
             return
+        # Rate-limit embedding generation to prevent CPU/memory saturation.
+        limiter = get_embed_rate_limiter()
+        await limiter.acquire()
         # Capture the signature BEFORE the embed, and stamp the row with THAT
         # value — the same discipline _write_item_embedding already follows by
         # taking `sig` as a parameter.
