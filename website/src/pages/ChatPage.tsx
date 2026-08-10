@@ -4340,23 +4340,58 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     window.addEventListener('kirocrew-browser-frame', onFrame)
     return () => window.removeEventListener('kirocrew-browser-frame', onFrame)
   }, [dispatch])
-  // Reachability: declare the active slot to the Electron main process so the
-  // agent command channel polls for it (see listPanelIds) even before the Browser
+  // Reachability: declare open chat slots to the Electron main process so the
+  // agent command channel polls for them (see listPanelIds) even before the Browser
   // tab is ever opened — this is what makes the built-in browser the default for a
   // fresh chat. It is NOT a grant: authorization to drive the built-in browser is
   // Browser Mode (the Settings toggle), and the main-process gate is just the view
-  // precondition. There is no longer a separate per-session consent registration —
-  // the command channel can only deliver an op for a session key it polls for, and
-  // it must poll before any URL is known, so gating reachability on a per-session
+  // precondition. There is no separate per-session consent registration — the
+  // command channel can only deliver an op for a session key it polls for, and it
+  // must poll before any URL is known, so gating reachability on a per-session
   // grant would make the whole native path unreachable for a fresh chat.
+  //
+  // EVERY open chat is declared, not just the active one.
+  //
+  // The command channel can only deliver an op for a session key it polls for,
+  // and it must poll BEFORE any URL is known. Declaring only `activeSlot` made
+  // that a moving target, and both consequences were observed live in a diagnostic
+  // run:
+  //   * a chat created and messaged within seconds RACED the registration — the
+  //     navigate reached the gateway first, which answered `no-native-panel` (503)
+  //     because no poller held that key yet, so the proxy fell back to the
+  //     Playwright mirror for the whole turn (observed: slot created at T+0, the
+  //     navigate at T+15s, the key first reported 9 minutes later);
+  //   * a BACKGROUND chat was never reachable at all, even when it was the session
+  //     the agent was acting for.
+  //
+  // Declaring a key is NOT authorization — it grants nothing, and every op still
+  // runs the same gate — so there is no reason to report one key instead of all of
+  // them. Tracking is diffed rather than torn down per change: re-registering the
+  // same keys on every slot-list edit would churn IPC for no reason, and dropping
+  // them mid-turn is exactly the race above.
+  const trackedSlotsRef = useRef<Set<string>>(new Set())
+  const trackableSlotKeys = useMemo(
+    () => slots.map(s => s.key).filter((k): k is string => !!k),
+    [slots],
+  )
   useEffect(() => {
     const api = (window as unknown as {
       browserAPI?: { trackSession?: (id: string, tracked: boolean) => Promise<unknown> }
     }).browserAPI
-    if (!api?.trackSession || !activeSlot) return
-    void api.trackSession(activeSlot, true)
-    return () => { void api.trackSession?.(activeSlot, false) }
-  }, [activeSlot])
+    if (!api?.trackSession) return      // plain browser (no bridge)
+    const want = new Set(trackableSlotKeys)
+    const tracked = trackedSlotsRef.current
+    for (const key of want) {
+      if (tracked.has(key)) continue
+      tracked.add(key)
+      void api.trackSession(key, true)
+    }
+    for (const key of [...tracked]) {
+      if (want.has(key)) continue
+      tracked.delete(key)
+      void api.trackSession(key, false)
+    }
+  }, [trackableSlotKeys])
   // Native counterpart of the mirror auto-open above. When the agent opens a page
   // in the BUILT-IN browser, the WebContentsView is created in the Electron main
   // process but the dashboard owns layout — until the Browser panel mounts and
