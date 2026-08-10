@@ -1938,19 +1938,21 @@ async def test_load_transient_io_error_preserves_existing_state(tmp_path, monkey
     # Pre-populate in-memory state with the valid pin (simulating a prior good load)
     state._chat_pins = [valid_pin.copy()]
 
-    # Now make the file unreadable (simulate transient I/O permission error)
-    (tmp_path / "chat_pins.json").chmod(0o000)
+    # Simulate a transient read I/O error (e.g. permission/sharing violation).
+    # Patch read_text rather than chmod(0o000): Windows ignores POSIX permission
+    # bits for read access, so a chmod'd file still opens there and no OSError is
+    # raised — the test must inject the error portably to exercise the re-raise.
+    def _failing_read(*args, **kwargs):
+        raise PermissionError("transient disk permission error")
 
-    try:
-        with pytest.raises(OSError):
-            state.load_chat_pins()
+    monkeypatch.setattr(type(tmp_path / "chat_pins.json"), "read_text", _failing_read)
 
-        # Critical: in-memory state was NOT clobbered
-        assert len(state._chat_pins) == 1
-        assert state._chat_pins[0]["id"] == "existing-pin-1"
-    finally:
-        # Restore permissions for tmp_path cleanup
-        (tmp_path / "chat_pins.json").chmod(0o644)
+    with pytest.raises(OSError):
+        state.load_chat_pins()
+
+    # Critical: in-memory state was NOT clobbered
+    assert len(state._chat_pins) == 1
+    assert state._chat_pins[0]["id"] == "existing-pin-1"
 
 
 @pytest.mark.asyncio
