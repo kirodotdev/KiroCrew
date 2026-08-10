@@ -184,6 +184,15 @@ const HERO_BG: React.CSSProperties = {
 const REPORT_ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
 
 /**
+ * How long a primed Restart button stays armed.
+ *
+ * Long enough to read the changed label and click again, short enough that an
+ * armed control does not sit there as a trap for an unrelated click a minute
+ * later.
+ */
+const ARM_TIMEOUT_MS = 5000
+
+/**
  * Last-resort prerelease test for an info payload with NO channel fields.
  *
  * `electron/main.js` has an init-failure fallback whose getInfo() returns only
@@ -208,6 +217,69 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <span className="text-muted">{label}</span>
       <span className="text-text font-medium">{children}</span>
     </div>
+  )
+}
+
+/**
+ * Restart control with a two-step confirm.
+ *
+ * A restart drops every active session, so it must not fire on a single stray
+ * click — but it is also recoverable (the gateway comes straight back), which is
+ * why this is an armed button rather than the typed-token treatment reserved for
+ * bulk-destructive actions.
+ *
+ * The arm auto-expires: an armed control left on screen becomes a trap for the
+ * next click minutes later, when the user has forgotten what they armed. The
+ * timer is cleared on unmount so a restart that navigates away cannot fire
+ * `setState` on a dead component.
+ *
+ * Rendered at two call sites with the same behaviour and different emphasis, so
+ * the confirm step cannot drift between them.
+ */
+function RestartGatewayButton({
+  primary,
+  pending,
+  restarting,
+  onConfirm,
+  testId,
+}: {
+  primary?: boolean
+  pending: boolean
+  restarting: boolean
+  onConfirm: () => void
+  testId: string
+}) {
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const timer = window.setTimeout(() => setArmed(false), ARM_TIMEOUT_MS)
+    return () => window.clearTimeout(timer)
+  }, [armed])
+
+  const busy = pending || restarting
+  return (
+    <Btn
+      primary={primary && !armed}
+      className={armed ? '!bg-[var(--warn)] !text-white hover:!opacity-80' : undefined}
+      disabled={busy}
+      data-testid={testId}
+      // No static aria-label: the visible text IS the accessible name, and it is
+      // what changes to announce the armed step. Pinning the label to "Restart
+      // gateway" made a screen reader say the same thing on both clicks, hiding
+      // the confirm from exactly the users who cannot see the colour change.
+      onClick={() => {
+        if (busy) return
+        if (!armed) { setArmed(true); return }
+        setArmed(false)
+        onConfirm()
+      }}
+    >
+      <RefreshCw size={13} className={`lucide-inline ${busy ? 'animate-spin' : ''}`} /> {restarting
+        ? i18nT('pages.settings.aboutPanel.restarting')
+        : armed
+          ? i18nT('pages.settings.aboutPanel.restart_confirm')
+          : i18nT('pages.settings.aboutPanel.restart_gateway')}
+    </Btn>
   )
 }
 
@@ -307,6 +379,11 @@ export function AboutPanel() {
   // when present keeps the desktop answer authoritative (it knows which FEED
   // the build tracks, not just how its version reads).
   const gatewayChannel = useAppSelector(s => s.dashboard.status?.release_channel)
+  // The channel this INSTALL follows, as opposed to the lane the running bytes
+  // were built on (`release_channel` above). Empty on a layout with no channel
+  // at all — a git checkout, a desktop bundle, a container — which is exactly
+  // when the switcher must not be offered, because the backend refuses it.
+  const statusUpdateChannel = useAppSelector(s => s.dashboard.status?.update_channel) || ''
   const isPrerelease = info?.stampedChannel === undefined
     ? (!!info?.packaged && versionLooksPrerelease(info?.version))
       || (!isDesktop && !!gatewayChannel && gatewayChannel !== 'stable')
@@ -463,6 +540,8 @@ export function AboutPanel() {
   // same fact for the pre-check case.
   const [gwSelfUpdatable, setGwSelfUpdatable] = useState<boolean | null>(null)
   const [gwChannel, setGwChannel] = useState('')
+  // Server-supplied reason for a refused switch; '' means 'no detail, use the generic line'.
+  const [gwChannelError, setGwChannelError] = useState('')
   const [gwCommand, setGwCommand] = useState('')
   const [gwCommandCopied, setGwCommandCopied] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
@@ -508,6 +587,50 @@ export function AboutPanel() {
       else setRestarting(true)
     },
   })
+  // Restart WITHOUT updating: the missing half of the non-self-updatable flow.
+  // After the user runs the copied installer command in a terminal, the running
+  // gateway is still executing the old code and had no in-app way to reload.
+  //
+  // Same error shape as gwApply: os.execv kills the connection, so a bare
+  // network failure after the POST is the expected path, and only an ApiError
+  // (a real server rejection) is a failure worth showing.
+  const gwRestart = useMutation({
+    mutationFn: () => api.restartGateway(),
+    onSuccess: () => setRestarting(true),
+    onError: (e: unknown) => {
+      if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+      else setRestarting(true)
+    },
+  })
+  // Gateway channel switch (stable | insider | nightly). Unlike the desktop
+  // switcher this is a THREE-way control: cli.sh publishes and installs all
+  // three lanes, so every one of them is a real destination for a wheel install.
+  // Refuses on a git checkout or an externally managed layout (409), which is
+  // why the control is only rendered when the backend reported a channel.
+  const gwChannelMutation = useMutation({
+    mutationFn: (next: string) => api.setUpdateChannel(next),
+    onMutate: () => setGwChannelError(''),
+    onError: (e: unknown) => {
+      // The backend's 409s carry the only actionable detail there is ("a git
+      // checkout follows its git remote", or the externally-managed guidance
+      // naming the real update surface). A bare "Couldn't switch channel" leaves
+      // the user with no next step, so surface the server's reason when it gave
+      // one and fall back to the generic line when it did not.
+      setGwChannelError(e instanceof ApiError ? (e.message || '') : '')
+    },
+    onSuccess: (d: any) => {
+      // The response is the re-run check against the new channel, so adopt it
+      // wholesale rather than leaving the previous lane's verdict on screen.
+      if (typeof d?.channel === 'string') setGwChannel(d.channel)
+      setGwFound(!!d?.available)
+      setGwChecked(!!d?.checked)
+      setGwError(typeof d?.error === 'string' ? d.error : '')
+      setGwCommand(typeof d?.update_command === 'string' ? d.update_command : '')
+      setGwCommandCopied(false)
+      setGwTarget(typeof d?.remote_version === 'string' ? d.remote_version : '')
+      if (typeof d?.self_updatable === 'boolean') setGwSelfUpdatable(d.self_updatable)
+    },
+  })
   // Update is available if either the redux status flag or the latest check
   // response says so.
   const showUpdate = updateAvailable || gwFound
@@ -527,7 +650,18 @@ export function AboutPanel() {
   // suppressed unconditionally, because it POSTs to an endpoint that answers 409
   // for this layout. A missing command degrades to an explanation, never to a
   // button that cannot work.
-  const showManualUpdate = showUpdate && !gwSelfUpdate
+  // A manual check's / switch's answer wins; otherwise the background check's,
+  // shipped in status. Empty means this layout has no channel to switch.
+  const effectiveGwChannel = gwChannel || statusUpdateChannel
+  const showGwChannelSwitcher = !isDesktop && !!effectiveGwChannel
+  // Moving lanes needs the installer command whether or not the target lane's
+  // version is numerically NEWER. Switching from nightly back to stable is a
+  // downgrade, and the command is still the only thing that performs it — so
+  // gating the command on `available` alone left the switcher's own note ("run the
+  // command below") pointing at nothing in exactly that case.
+  const channelMovePending =
+    !isDesktop && !!effectiveGwChannel && !!gatewayChannel && effectiveGwChannel !== gatewayChannel
+  const showManualUpdate = (showUpdate || channelMovePending) && !gwSelfUpdate
 
   // Escape closes the confirm dialog (unless an apply/restart is in flight).
   useEffect(() => {
@@ -662,6 +796,104 @@ export function AboutPanel() {
             <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>{channel}</Row>
           )
         )}
+        {showGwChannelSwitcher && (
+          // Gateway (CLI / wheel / cloud source) channel switcher. THREE lanes,
+          // not the desktop's two: cli.sh installs nightly as a first-class
+          // channel, so a wheel install can genuinely follow it. The desktop is
+          // limited to stable ⇄ insider because its nightly is a separate
+          // side-by-side app that a feed switch cannot reach.
+          //
+          // Switching persists the preference and re-checks; it never installs.
+          // The new lane's build then arrives through the normal Update surface
+          // below, so a channel change is never an unconsented version jump.
+          <div className="flex flex-col" data-testid="gateway-channel-switcher">
+            <div className="flex items-center justify-between py-1.5 text-sm gap-3">
+              <div className="flex flex-col items-start min-w-0">
+                <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
+                <button
+                  type="button"
+                  aria-expanded={showChannelHelp}
+                  data-testid="gateway-channel-help-toggle"
+                  className="text-[11.5px] text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid cursor-pointer bg-transparent border-none p-0 text-left"
+                  onClick={() => setShowChannelHelp(v => !v)}
+                >
+                  {showChannelHelp
+                    ? i18nT('pages.settings.aboutPanel.channel_help_hide')
+                    : i18nT('pages.settings.aboutPanel.channel_help_show_all')}
+                </button>
+              </div>
+              <div className="shrink-0 flex items-center gap-2">
+                {gwChannelMutation.isPending && <RefreshCw size={13} className="lucide-inline animate-spin text-muted" />}
+                <SegmentedControl
+                  segments={[
+                    { key: 'stable', label: i18nT('pages.settings.aboutPanel.stable') },
+                    { key: 'insider', label: i18nT('pages.settings.aboutPanel.insider') },
+                    { key: 'nightly', label: i18nT('pages.settings.aboutPanel.nightly') },
+                  ]}
+                  value={effectiveGwChannel}
+                  onChange={next => {
+                    if (next !== effectiveGwChannel && !gwChannelMutation.isPending) gwChannelMutation.mutate(next)
+                  }}
+                  layoutId="gateway-update-channel"
+                  collapse={false}
+                />
+              </div>
+            </div>
+            {showChannelHelp && (
+              <div className="mb-1 p-2.5 bg-bg rounded-lg border border-border flex flex-col gap-1.5 text-[12px]" data-testid="gateway-channel-help">
+                <div className="flex gap-2">
+                  <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.stable')}</span>
+                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_stable')}</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.insider')}</span>
+                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_insider')}</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.nightly')}</span>
+                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_nightly')}</span>
+                </div>
+                <span className="text-muted opacity-80 pt-1.5 border-t border-border">
+                  {i18nT('pages.settings.aboutPanel.channel_explainer_gateway_switch_note')}
+                </span>
+              </div>
+            )}
+            {gwChannelMutation.isError && (
+              <span className="text-[12px] text-danger flex items-start gap-1.5" data-testid="gateway-channel-error">
+                <AlertCircle size={13} className="lucide-inline shrink-0" />
+                <span>
+                  {i18nT('pages.settings.aboutPanel.channel_switch_failed')}
+                  {gwChannelError ? `: ${gwChannelError}` : ''}
+                </span>
+              </span>
+            )}
+            {/* Switching re-points the FEED; it installs nothing. The segmented
+                control highlights the new lane the moment the switch succeeds, so
+                without this line the UI reads as "you are on Nightly now" when no
+                bytes have moved. It must not hide behind the disclosure: the
+                misreading happens precisely to the user who did not open it.
+
+                Stands down while the explainer is open, because the explainer's
+                closing line is this very sentence and the two rendered back to
+                back read as a stutter at exactly the moment the user is reading
+                carefully.
+
+                Shown only while the followed channel differs from the lane the
+                RUNNING bytes came from — i.e. exactly the window where the two
+                disagree. Once the new lane's build is installed they converge and
+                the line retires itself. */}
+            {!gwChannelMutation.isError
+              && !showChannelHelp
+              && !!gatewayChannel
+              && effectiveGwChannel !== gatewayChannel && (
+              <span className="text-[12px] text-muted flex items-start gap-1.5"
+                data-testid="gateway-channel-pending-note">
+                <ArrowUp size={13} className="lucide-inline shrink-0 text-accent" />
+                <span>{i18nT('pages.settings.aboutPanel.channel_explainer_gateway_switch_note')}</span>
+              </span>
+            )}
+          </div>
+        )}
         {isPrerelease && (
           // NOT behind the disclosure: a user already running prerelease bytes
           // is exactly who must see the ask, and hiding it behind a click means
@@ -729,11 +961,13 @@ export function AboutPanel() {
           )
         ) : (
           <div className="flex flex-col gap-2.5">
-            {showUpdate ? (
+            {(showUpdate || channelMovePending) ? (
               <>
-                <p className="text-sm text-muted flex items-center gap-1.5">
-                  <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{gwTarget ? ` (v${gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
-                </p>
+                {showUpdate && (
+                  <p className="text-sm text-muted flex items-center gap-1.5">
+                    <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{gwTarget ? ` (v${gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
+                  </p>
+                )}
                 {showManualUpdate ? (
                   // This install cannot replace its own code (a `cli.sh` wheel
                   // install, not a git checkout), so there is no Update button to
@@ -744,8 +978,8 @@ export function AboutPanel() {
                   // different lane.
                   <div className="flex flex-col gap-2" data-testid="manual-update-instructions">
                     <p className="text-[13px] text-muted">
-                      {gwChannel
-                        ? i18nT('pages.settings.aboutPanel.this_install_updates_by_re_running_the_installer_channel', { channel: gwChannel })
+                      {effectiveGwChannel
+                        ? i18nT('pages.settings.aboutPanel.this_install_updates_by_re_running_the_installer_channel', { channel: effectiveGwChannel })
                         : i18nT('pages.settings.aboutPanel.this_install_updates_by_re_running_the_installer')}
                     </p>
                     {effectiveCommand && (
@@ -754,7 +988,7 @@ export function AboutPanel() {
                           data-testid="manual-update-command">
                           {effectiveCommand}
                         </div>
-                        <div>
+                        <div className="flex items-center gap-2 flex-wrap">
                           {/* copyToClipboard, not navigator.clipboard directly: the
                               Clipboard API is unavailable on a plain-HTTP remote
                               gateway — exactly the deployment this command targets —
@@ -766,7 +1000,27 @@ export function AboutPanel() {
                               ? i18nT('pages.settings.aboutPanel.copied')
                               : i18nT('pages.settings.aboutPanel.copy_command')}
                           </Btn>
+                          {/* The step the flow used to end without. The installer
+                              replaced the code on disk; this process is still
+                              running the old version until it re-execs. Primary
+                              once the command has been copied, because that is
+                              when restarting is the actual next action. */}
+                          <RestartGatewayButton
+                            primary={gwCommandCopied}
+                            pending={gwRestart.isPending}
+                            restarting={restarting}
+                            onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
+                            testId="gateway-restart"
+                          />
                         </div>
+                        <p className="text-[12px] text-muted">
+                          {i18nT('pages.settings.aboutPanel.restart_after_installer_note')}
+                        </p>
+                        {applyError && (
+                          <span className="text-[12px] text-danger flex items-start gap-1.5">
+                            <AlertCircle size={13} className="lucide-inline shrink-0" /> {applyError}
+                          </span>
+                        )}
                       </>
                     )}
                   </div>
@@ -827,6 +1081,50 @@ export function AboutPanel() {
                 : i18nT('pages.settings.aboutPanel.notify_when_an_update_is_available')}
                 onChange={async next => { setAutoUpdate(next); try { await api.setAutoUpdate(next) } catch { setAutoUpdate(!next) } }} />
             </div>
+
+            {/* Standing maintenance action, NOT gated on an update being
+                available. Restarting is how this install picks up code that
+                already changed on disk — a re-run installer, a `pip install -e .`
+                during development, a config change that needs a fresh process —
+                and none of those imply a pending release. Keeping it out of the
+                update branch is the difference between a control that is there
+                when needed and one that only appears when an update happens to
+                be offered.
+
+                Hidden while the manual-update card is on screen: that card
+                already renders a Restart button wired to the same mutation, and
+                two identical buttons a few rows apart read as two different
+                actions. */}
+            {!showManualUpdate && (
+              <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-border"
+                data-testid="gateway-restart-row">
+                {/* One label, not a title + note pair: the button already names the
+                    action, so a "Restart gateway" heading beside a "Restart gateway"
+                    button says the same thing twice. This mirrors the auto-update
+                    row above — a single explanatory label plus its control — and
+                    spends the space on the consequence instead. */}
+                <span className="text-sm text-muted">{i18nT('pages.settings.aboutPanel.restart_row_note')}</span>
+                <div className="shrink-0">
+                  <RestartGatewayButton
+                    pending={gwRestart.isPending}
+                    restarting={restarting}
+                    onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
+                    testId="gateway-restart-standing"
+                  />
+                </div>
+              </div>
+            )}
+            {/* The in-flow button renders its own error inside the update card;
+                this one has no card, so the shared error surfaces here. Gated on
+                the SAME condition as the row itself -- keying it on `showUpdate`
+                instead left a self-updatable install with a pending update showing
+                the row while swallowing its error, so a rejected restart gave the
+                user no feedback whatsoever. */}
+            {applyError && !showManualUpdate && (
+              <span className="text-[12px] text-danger flex items-start gap-1.5" data-testid="gateway-restart-error">
+                <AlertCircle size={13} className="lucide-inline shrink-0" /> {applyError}
+              </span>
+            )}
           </div>
         )}
 

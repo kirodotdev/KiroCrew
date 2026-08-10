@@ -177,6 +177,7 @@ async def api_status(request: web.Request) -> web.Response:
         update_self_updatable=bool(_update_info.get("self_updatable")),
         update_checked=bool(_update_info.get("checked")),
         update_command=str(_update_info.get("update_command") or ""),
+        update_channel=str(_update_info.get("channel") or ""),
     )
     static_info = _get_static_system_info()
     if state._owner_hash is not None:

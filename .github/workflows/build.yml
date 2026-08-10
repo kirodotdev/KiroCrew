@@ -87,7 +87,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-22.04]
+        # Both Linux arches, so every SHIPPED desktop platform is gated on a PR.
+        # Linux cannot be cross-compiled (build-desktop.sh RUNS the interpreter it
+        # provisions), so arm64 needs its own runner or it is only ever exercised
+        # by a nightly -- i.e. discovered broken after it ships. Must stay in step
+        # with build-desktop.yml's release matrix.
+        os: [macos-15, ubuntu-22.04, ubuntu-22.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -119,6 +124,8 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-linux-x64
+          # Arch in the name: both Linux legs match `runner.os == 'Linux'`, and a
+          # shared artifact name makes the two uploads collide.
+          name: desktop-linux-${{ runner.arch }}
           path: website/electron/dist/*.AppImage
           if-no-files-found: warn

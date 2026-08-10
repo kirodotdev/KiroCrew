@@ -88,14 +88,16 @@ class TestNightlyPermissions:
             "id-token": "write",
             "attestations": "write",
         }
-        # The Linux desktop lane publishes S3 objects (OIDC) and attests
-        # its own SLSA provenance for the exact bytes it uploads -- never
-        # contents:write.
-        assert _permission_block(lines, "  publish-linux:") == {
-            "contents": "read",
-            "id-token": "write",
-            "attestations": "write",
-        }
+        # The Linux desktop lanes publish S3 objects (OIDC) and attest
+        # their own SLSA provenance for the exact bytes they upload -- never
+        # contents:write. One lane per arch, so BOTH are asserted: a new arch
+        # that quietly widened its grant would otherwise slip through.
+        for arch_job in ("  publish-linux-x64:", "  publish-linux-arm64:"):
+            assert _permission_block(lines, arch_job) == {
+                "contents": "read",
+                "id-token": "write",
+                "attestations": "write",
+            }
         # The Docker lane pushes to ghcr.io with the workflow's own
         # GITHUB_TOKEN: packages:write is required for the push and MUST
         # stay scoped to this caller job (never workflow-level -- a
@@ -143,12 +145,13 @@ class TestReleasePermissions:
             "id-token": "write",
             "attestations": "write",
         }
-        # Linux desktop lane: OIDC + in-lane provenance (see nightly note).
-        assert _permission_block(lines, "  publish-linux:") == {
-            "contents": "read",
-            "id-token": "write",
-            "attestations": "write",
-        }
+        # Linux desktop lanes: OIDC + in-lane provenance (see nightly note).
+        for arch_job in ("  publish-linux-x64:", "  publish-linux-arm64:"):
+            assert _permission_block(lines, arch_job) == {
+                "contents": "read",
+                "id-token": "write",
+                "attestations": "write",
+            }
         # Docker lane: ghcr.io push via GITHUB_TOKEN (packages:write scoped
         # to this job only) + in-lane provenance (see nightly note).
         assert _permission_block(lines, "  publish-docker:") == {

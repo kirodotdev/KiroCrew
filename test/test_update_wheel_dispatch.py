@@ -92,18 +92,26 @@ class TestDetectInstallLayout:
 
 
 class TestReleaseChannel:
-    """Tests for platform/update_layout.release_channel."""
+    """Tests for platform/update_layout.release_channel.
+
+    The seam is ``data_home``, not ``config_dir``: ``release_channel`` is reached
+    from the async update check, and ``config_dir`` is resolve-AND-maintain (it
+    refreshes the recovery breadcrumb and re-runs a leftover-archive sweep that can
+    ``shutil.rmtree``), so calling it there put a destructive sweep on the event
+    loop -- issue #1057. ``test_no_config_dir_in_async.py`` guards the production
+    side; patch whichever name that module actually uses.
+    """
 
     def test_reads_channel_file(self, monkeypatch, tmp_path) -> None:
         (tmp_path / "channel").write_text("insider\n")
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
 
         from kiro_crew.platform.update_layout import release_channel
 
         assert release_channel() == "insider"
 
     def test_defaults_to_stable(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
 
         from kiro_crew.platform.update_layout import release_channel
 
@@ -111,7 +119,7 @@ class TestReleaseChannel:
 
     def test_invalid_channel_falls_to_stable(self, monkeypatch, tmp_path) -> None:
         (tmp_path / "channel").write_text("bogus-channel\n")
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
 
         from kiro_crew.platform.update_layout import release_channel
 
@@ -123,7 +131,7 @@ class TestWheelUpdateCommand:
 
     def test_includes_channel(self, monkeypatch, tmp_path) -> None:
         (tmp_path / "channel").write_text("nightly\n")
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
         monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
 
         from kiro_crew.platform.update_layout import wheel_update_command
@@ -135,7 +143,7 @@ class TestWheelUpdateCommand:
 
     def test_cdn_override(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("KIROCREW_CDN_BASE", "https://custom.cdn.example")
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
 
         from kiro_crew.platform.update_layout import wheel_update_command
 
@@ -160,7 +168,7 @@ class TestUpdateWheelCli:
         """When local == remote, prints 'already on latest' and returns."""
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
         monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "wheel")
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
         monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
 
         # Pretend local is 0.2.0 and feed also reports 0.2.0
@@ -198,7 +206,7 @@ class TestUpdateWheelCli:
         """When feed has a newer version, runs the shell installer."""
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
         monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "wheel")
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
         monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
 
         monkeypatch.setattr("kiro_crew.cli_server.__version__", "0.1.3")
@@ -250,7 +258,7 @@ class TestUpdateWheelCli:
         """Network failure prints the manual update command."""
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
         monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "wheel")
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
         monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
         (tmp_path / "channel").write_text("stable\n")
 
@@ -279,7 +287,7 @@ class TestUpdateWheelCli:
         """Feed with wrong schema prints guidance and exits."""
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
         monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "wheel")
-        monkeypatch.setattr("kiro_crew.platform.update_layout.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
         monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
 
         import kiro_crew.cli_server as cs

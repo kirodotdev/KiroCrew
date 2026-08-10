@@ -187,12 +187,31 @@ test("manualDownloadUrl: per-platform artifact on the byte host", () => {
     `${DOWNLOAD_BASE}/desktop/nightly/latest/KiroCrew.dmg`,
   );
   assert.strictEqual(
-    manualDownloadUrl("stable", "linux"),
+    manualDownloadUrl("stable", "linux", "x64"),
     `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew-x86_64.AppImage`,
   );
   assert.strictEqual(
     manualDownloadUrl("insider", "darwin"),
     `${DOWNLOAD_BASE}/desktop/insider/latest/KiroCrew.dmg`,
+  );
+});
+
+test("manualDownloadUrl: Linux picks the AppImage for the running arch", () => {
+  // The published basenames are publish-linux.yml's contract. Handing an ARM
+  // user the x86_64 AppImage produces "cannot execute binary file" -- the exact
+  // dead end this link exists to escape.
+  assert.strictEqual(
+    manualDownloadUrl("stable", "linux", "arm64"),
+    `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew-aarch64.AppImage`,
+  );
+  assert.strictEqual(
+    manualDownloadUrl("stable", "linux", "x64"),
+    `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew-x86_64.AppImage`,
+  );
+  // The mac DMG is universal, so darwin must ignore the arch entirely.
+  assert.strictEqual(
+    manualDownloadUrl("stable", "darwin", "arm64"),
+    manualDownloadUrl("stable", "darwin", "x64"),
   );
 });
 
@@ -203,6 +222,10 @@ test("manualDownloadUrl: null wherever there is no publish lane", () => {
   assert.strictEqual(manualDownloadUrl("", "darwin"), null);
   assert.strictEqual(manualDownloadUrl("nightly", "win32"), null);
   assert.strictEqual(manualDownloadUrl(undefined, undefined), null);
+  // A Linux arch with no published AppImage returns null rather than guessing
+  // x86_64: a wrong-arch binary is a worse answer than no link.
+  assert.strictEqual(manualDownloadUrl("stable", "linux", "armv7l"), null);
+  assert.strictEqual(manualDownloadUrl("stable", "linux", "ia32"), null);
 });
 
 test("manualDownloadUrl: points at the same CDN the updater pulls from", () => {

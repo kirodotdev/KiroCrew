@@ -198,10 +198,15 @@ def test_feed_urls_are_absolute_byte_host_urls() -> None:
 
 
 def test_feed_destination_is_pointer_prefix_yaml() -> None:
-    """The yml is uploaded under feed/ (pointer host behavior), not desktop/."""
+    """The yml is uploaded under feed/ (pointer host behavior), not desktop/.
+
+    The mac lane names its channel file literally; Linux resolves it per arch
+    into ``FEED_FILE`` (see the arch-mapping test below), so the assertion is on
+    the destination SHAPE rather than one filename.
+    """
     for path, job, channel_file in (
         (MAC_WORKFLOW, "publish", "latest-mac.yml"),
-        (LINUX_WORKFLOW, "publish-linux", "latest-linux.yml"),
+        (LINUX_WORKFLOW, "publish-linux", "${FEED_FILE}"),
     ):
         run = _feed_step(path, job)["run"]
         assert f"feed/${{CHANNEL}}/{channel_file}" in run, (
@@ -209,6 +214,87 @@ def test_feed_destination_is_pointer_prefix_yaml() -> None:
             "path website/electron/auto-update.js's provider resolves from the feed base"
         )
         assert "--content-type text/yaml" in run
+
+
+def test_linux_arch_resolution_matches_electron_updater_channel_file_rule() -> None:
+    """Each Linux arch resolves the channel file electron-updater actually asks for.
+
+    ``getChannelFilePrefix()`` appends no arch suffix for x64 and ``-<arch>``
+    otherwise, so x64 must resolve ``latest-linux.yml`` and arm64
+    ``latest-linux-arm64.yml``. A mismatch is invisible at publish time and
+    strands that arch's installs on an updater that 404s forever.
+
+    The basenames are pinned alongside because the versioned S3 key is
+    immutable: publishing one arch under the other's basename cannot be undone.
+    """
+    run = _step(_steps(LINUX_WORKFLOW, "publish-linux"), "Resolve arch-dependent names")["run"]
+    for arch, basename, feed_file, elf_machine in (
+        ("x64", "KiroCrew-x86_64", "latest-linux.yml", "x86-64"),
+        ("arm64", "KiroCrew-aarch64", "latest-linux-arm64.yml", "aarch64"),
+    ):
+        assert f"{arch})" in run, f"arch {arch} has no branch in the resolution step"
+        assert f"LINUX_BASENAME={basename}" in run
+        assert f"FEED_FILE={feed_file}" in run
+        assert f"EXPECT_ELF_MACHINE={elf_machine}" in run
+    # Fail closed: an unrecognised arch must abort rather than inherit x86_64's
+    # key, because that key is immutable once written.
+    assert "exit 1" in run, "unknown arch must abort the publish"
+
+
+def test_linux_lane_verifies_artifact_architecture_before_publishing() -> None:
+    """The arch check runs BEFORE the immutable versioned key is written.
+
+    The artifact name is caller-supplied, so nothing upstream proves the bytes
+    are the arch this invocation publishes them as. A wrong-arch publish passes
+    every checksum the updater applies and only fails on the user's machine.
+    """
+    steps = _steps(LINUX_WORKFLOW, "publish-linux")
+    verify = _step_index(steps, "Verify AppImage architecture")
+    publish = _step_index(steps, "Publish AppImage to distribution bucket")
+    assert verify < publish, (
+        "publish-linux.yml must verify the AppImage architecture before writing the "
+        f"immutable versioned key (verify={verify} publish={publish})"
+    )
+
+
+def test_pr_and_release_desktop_matrices_cover_the_same_platforms() -> None:
+    """The PR gate must build every platform the release lane ships.
+
+    ``build.yml`` is what runs on a PR; ``build-desktop.yml`` is what nightly and
+    release call. If the PR matrix is narrower, the missing platform is only ever
+    exercised AFTER it ships — which is how an unbuildable arch reaches users.
+    Linux in particular cannot be cross-compiled (``build-desktop.sh`` runs the
+    interpreter it provisions), so each arch needs its own runner in both places.
+    """
+    pr = yaml.safe_load((WORKFLOWS / "build.yml").read_text(encoding="utf-8"))
+    release = yaml.safe_load((WORKFLOWS / "build-desktop.yml").read_text(encoding="utf-8"))
+
+    pr_os = set(pr["jobs"]["build-desktop"]["strategy"]["matrix"]["os"])
+    release_os = {
+        entry["os"] for entry in release["jobs"]["build-desktop"]["strategy"]["matrix"]["include"]
+    }
+    assert release_os <= pr_os, (
+        "build.yml's desktop matrix must cover every platform build-desktop.yml "
+        f"ships; missing from the PR gate: {sorted(release_os - pr_os)}"
+    )
+    # Both Linux arches are shipped platforms, so name them explicitly: a future
+    # edit that drops one from BOTH files would still satisfy the subset check.
+    for required in ("ubuntu-22.04", "ubuntu-22.04-arm"):
+        assert required in release_os, f"{required} must stay in the release desktop matrix"
+        assert required in pr_os, f"{required} must stay in the PR desktop matrix"
+
+
+def test_pr_linux_desktop_artifacts_are_arch_qualified() -> None:
+    """Two Linux legs both match ``runner.os == 'Linux'``.
+
+    A shared artifact name makes the x64 and arm64 uploads collide, so one arch's
+    AppImage silently replaces the other's.
+    """
+    text = (WORKFLOWS / "build.yml").read_text(encoding="utf-8")
+    assert "desktop-linux-${{ runner.arch }}" in text, (
+        "the Linux desktop artifact name must carry the arch, or the two Linux "
+        "matrix legs overwrite each other's upload"
+    )
 
 
 def test_mac_lane_keeps_the_legacy_json_feed_as_a_transition_bridge() -> None:

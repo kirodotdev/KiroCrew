@@ -2465,6 +2465,7 @@ class DashboardState:
         update_self_updatable: bool = False,
         update_checked: bool = False,
         update_command: str = "",
+        update_channel: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -2494,6 +2495,15 @@ class DashboardState:
             # user on something actionable. Deriving it only from a manual check
             # left the badge pointing at an Update button that 409s.
             "update_command": update_command,
+            # The release channel this INSTALL follows (the ``channel`` file
+            # cli.sh wrote), empty when the layout has no channel at all (a git
+            # checkout tracks a remote; a desktop bundle or container is updated
+            # by something else). Distinct from ``release_channel`` below, which
+            # is derived from the running version string and answers "which lane
+            # were these BYTES built on". The two diverge for the whole window
+            # between switching channels and the new lane's build landing, so the
+            # switcher must key on this one or it would snap back on every poll.
+            "update_channel": update_channel,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,

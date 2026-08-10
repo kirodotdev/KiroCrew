@@ -49,7 +49,7 @@ concurrency group, and their version derivation.
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` (AppImage) via `packaging/build-desktop.sh`. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. |
 | `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
-| `publish-linux.yml` | reusable publish | AppImage to `desktop/<channel>/<version>/`, `feed/<channel>/latest-linux.yml`, then the `latest/` alias. |
+| `publish-linux.yml` | reusable publish | AppImage to `desktop/<channel>/<version>/`, `feed/<channel>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER ARCH (`arch: x64` / `arch: arm64`), each with its own keys and feed. |
 | `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. |
 | `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. |
 | `publish-installer.yml` | independent publish | Publishes `cli.sh` to the distribution bucket root. Triggered by a push to `main` touching `cli.sh` (path-filtered), plus manual dispatch. **Not** part of a channel release. |
@@ -89,11 +89,14 @@ cli/<channel>/<version>/cli-manifest.json                     immutable
 desktop/<channel>/<version>/KiroCrew.zip                      immutable
 desktop/<channel>/<version>/KiroCrew.dmg                      immutable
 desktop/<channel>/<version>/KiroCrew-x86_64.AppImage          immutable
+desktop/<channel>/<version>/KiroCrew-aarch64.AppImage         immutable
 desktop/<channel>/latest/KiroCrew.dmg                         pointer, max-age=300
 desktop/<channel>/latest/KiroCrew-x86_64.AppImage             pointer, max-age=300
+desktop/<channel>/latest/KiroCrew-aarch64.AppImage            pointer, max-age=300
 feed/<channel>/latest-mac.yml                                 pointer, max-age=300
 feed/<channel>/latest-mac.json                                pointer, max-age=300 (legacy bridge)
-feed/<channel>/latest-linux.yml                               pointer, max-age=300
+feed/<channel>/latest-linux.yml                               pointer, max-age=300  (x64)
+feed/<channel>/latest-linux-arm64.yml                         pointer, max-age=300  (arm64)
 feed/<channel>/latest-cli.json                                pointer, no-cache
 feed/<channel>/simple/  +  feed/<channel>/simple/kirocrew/    pointer, no-cache
 cli.sh                                                        pointer, no-cache (only root object)
@@ -479,7 +482,10 @@ in-lane the way `publish-linux.yml` does it. win32 auto-update stays disabled in
 the client. The supported Windows install path is source: see
 [../guides/windows-install.md](../guides/windows-install.md).
 
-`build-desktop.yml`'s matrix also leaves Linux arm64 open. A new platform lane
+Linux arm64 is no longer open: `build-desktop.yml` builds it on `ubuntu-22.04-arm`
+and `release.yml`/`nightly.yml` each call `publish-linux.yml` twice, once per arch.
+The arches are separate JOBS rather than a matrix so a failure on one cannot
+cancel or skip the other. A new platform lane
 needs: a matrix entry with a stable `{os}-{arch}` id; two artifact roles (a
 first-install installer and an update archive the platform updater consumes,
 both from the standard desktop packaging path); artifacts carrying the stamped
@@ -545,8 +551,10 @@ PTR=https://updates.crew.kiro.dev
 
 curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew.dmg" | head -1
 curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew-x86_64.AppImage" | head -1
+curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew-aarch64.AppImage" | head -1
 curl -fsS  "$PTR/feed/$CH/latest-mac.yml"
 curl -fsS  "$PTR/feed/$CH/latest-linux.yml"
+curl -fsS  "$PTR/feed/$CH/latest-linux-arm64.yml"
 curl -fsS  "$PTR/feed/$CH/latest-cli.json" > /tmp/feed.json
 curl -fsS  "$PTR/feed/$CH/simple/kirocrew/" | head -5
 

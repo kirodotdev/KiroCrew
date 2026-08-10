@@ -263,13 +263,29 @@ jobs:
     secrets: inherit
 
   # ── Linux desktop publish ─────────────────────────────────────────────
-  # Publishes the release AppImage to the distribution CDN (versioned key +
+  # Publishes the release AppImages to the distribution CDN (versioned key +
   # latest alias). Its own lane beside publish-cli, deliberately NOT inside
   # sign-and-notarize.yml: the Linux artifact takes no part in the macOS
   # trust chain, and needing only build-desktop means neither a wheel nor a
   # macOS signing failure can block it (per-platform releases).
-  publish-linux:
-    name: Publish Linux Desktop (${{ needs.version.outputs.channel }} channel)
+  #
+  # ONE JOB PER ARCH, not a matrix over `arch`: each arch owns a distinct S3
+  # key, feed file and alias, and separate jobs keep the per-arch publish
+  # status visible in the run graph.
+  #
+  # Scope of that separation, stated precisely because the obvious reading is
+  # wrong: it decouples the PUBLISH steps, not the BUILDS. Both publishers
+  # still `needs: build-desktop`, which is the reusable-workflow caller job
+  # aggregating BOTH matrix legs, so a failed arm64 build skips the x64
+  # publish too. That is deliberate for now -- the versioned S3 keys are
+  # immutable, so publishing half a release and then discovering the other
+  # arch never built is the worse failure -- but it does mean a broken arm64
+  # build can hold up an x64 release, which was not true before this lane
+  # existed. True per-arch publish independence needs the publishers to run
+  # past a partial build failure and let their own artifact download decide;
+  # tracked in #2645 rather than reshaped here.
+  publish-linux-x64:
+    name: Publish Linux Desktop (${{ needs.version.outputs.channel }} channel · x64)
     needs: [version, stable-gate, build-desktop]
     permissions:
       contents: read
@@ -279,8 +295,25 @@ jobs:
     with:
       channel: ${{ needs.version.outputs.channel }}
       version: ${{ needs.version.outputs.version }}
+      arch: x64
       publish: true
       appimage_artifact: build-linux-x64
+    secrets: inherit
+
+  publish-linux-arm64:
+    name: Publish Linux Desktop (${{ needs.version.outputs.channel }} channel · arm64)
+    needs: [version, stable-gate, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.version }}
+      arch: arm64
+      publish: true
+      appimage_artifact: build-linux-arm64
     secrets: inherit
 
   # ── Docker image publish ──────────────────────────────────────────────

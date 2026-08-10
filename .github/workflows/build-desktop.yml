@@ -10,7 +10,14 @@ name: Build Desktop (reusable)
 # Platform matrix (expand as support lands):
 #   - macOS universal (arm64 + x86_64): shipped (one desktop DMG)
 #   - Linux x64:    shipped (AppImage)
-#   - Linux arm64:  TODO (Graviton, Raspberry Pi)
+#   - Linux arm64:  shipped (AppImage — Graviton, Raspberry Pi, ARM laptops)
+#
+# Linux is built NATIVELY per arch, never cross-compiled: build-desktop.sh
+# provisions a python-build-standalone interpreter and then RUNS it (pip
+# install + the self-containment gate `python -m kiro_crew --version`), so a
+# host that cannot execute the target arch cannot build it. macOS gets away
+# with one host because Rosetta 2 executes the x86_64 slice; Linux has no
+# equivalent, hence one runner per arch.
 #
 # Windows lives in build-windows.yml, NOT here. Its Squirrel installer embeds
 # its own already-signed executables, so Authenticode signing has to happen
@@ -79,6 +86,13 @@ jobs:
             # validated against.
           - os: ubuntu-22.04
             artifact-name: build-linux-x64
+            # 22.04 (not 24.04) on BOTH Linux legs: the AppImage links against
+            # the builder's glibc, so the runner's glibc IS the floor for every
+            # user. 22.04 ships 2.35, which covers the long-support distros ARM
+            # users actually run (AL2023, Debian 12, RHEL 9); 24.04's 2.39 would
+            # silently exclude them.
+          - os: ubuntu-22.04-arm
+            artifact-name: build-linux-arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

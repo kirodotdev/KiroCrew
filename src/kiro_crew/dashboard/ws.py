@@ -253,6 +253,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                         update_self_updatable=bool(_update_info.get("self_updatable")),
                         update_checked=bool(_update_info.get("checked")),
                         update_command=str(_update_info.get("update_command") or ""),
+                        update_channel=str(_update_info.get("channel") or ""),
                     ),
                     "version": _local_version,
                     "platform": sys.platform,

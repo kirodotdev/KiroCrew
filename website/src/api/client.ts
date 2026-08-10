@@ -1918,6 +1918,18 @@ export const api = {
   releases: () => fetch('/api/releases').then(j),
   applyUpdate: () => post('/api/update').then(j),
   setAutoUpdate: (enabled: boolean) => post('/api/update/auto', { enabled }).then(j),
+  /**
+   * Move this install onto another release channel. Changes which feed the next
+   * check compares against; it never installs anything, so the response is the
+   * re-run check against the NEW channel.
+   */
+  setUpdateChannel: (channel: string) => post('/api/update/channel', { channel }).then(j),
+  /**
+   * Restart the gateway without updating. The connection drops as the process
+   * image is replaced, so callers must treat a network failure after a 200 as
+   * the expected path rather than an error.
+   */
+  restartGateway: () => post('/api/restart').then(j),
   cancelUpdate: () => post('/api/update/cancel').then(j),
   simulateUpdate: (opts?: { delay?: number; fail_at?: string }) => post('/api/update/simulate', opts || {}).then(j),
   pickFiles: () => post('/api/upload').then(j) as Promise<{ paths: string[] }>,

@@ -36,9 +36,12 @@ STEP_NAME = "Verify stable publication preconditions"
 
 #: Every job that makes bytes public, or publishes the GitHub Release that
 #: points at them. Each one MUST depend on the gate; this list is the ratchet.
+#: Linux publishes one job per arch, and BOTH must be gated -- an ungated arch
+#: would put stable bytes on the CDN without the preconditions check.
 PUBLISH_JOBS = (
     "publish-cli",
-    "publish-linux",
+    "publish-linux-x64",
+    "publish-linux-arm64",
     "publish-docker",
     "sign-and-notarize",
     "github-release",

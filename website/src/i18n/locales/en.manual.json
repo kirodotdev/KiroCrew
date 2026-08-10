@@ -3172,7 +3172,17 @@
         "update_check_managed_by_image": "This container updates by pulling a newer image.",
         "not_checked_yet": "Not checked yet",
         "notify_when_an_update_is_available": "Notify when an update is available",
-        "auto_update_notify_only_on_this_install": "This install cannot apply updates itself, so it only notifies."
+        "auto_update_notify_only_on_this_install": "This install cannot apply updates itself, so it only notifies.",
+        "nightly": "Nightly",
+        "channel_help_show_all": "▸ What's the difference between Stable, Insider and Nightly?",
+        "channel_explainer_nightly": "Untested daily builds from main. Expect breakage — useful for trying a fix the day it lands.",
+        "channel_explainer_gateway_switch_note": "Switching only changes which channel is checked for updates. Run the command below to actually move this install onto it.",
+        "channel_switch_failed": "Couldn't switch channel",
+        "restart_gateway": "Restart gateway",
+        "restart_failed": "Restart failed",
+        "restart_after_installer_note": "Already ran it? Restart to load the new version — active sessions briefly disconnect.",
+        "restart_confirm": "Click again to restart",
+        "restart_row_note": "Restart the gateway process without updating. Active sessions briefly disconnect."
       },
       "computerUsePanel": {
         "computer_use_not_available": "Computer use is not available on {{platform}}.",

@@ -2735,7 +2735,13 @@ async def start_dashboard(
     app.router.add_get("/api/releases", handlers.api_releases)
     app.router.add_post("/api/update", handlers.api_update_apply)
     app.router.add_post("/api/update/auto", handlers.api_update_auto)
+    app.router.add_post("/api/update/channel", handlers.api_update_channel)
     app.router.add_post("/api/update/cancel", handlers.api_update_cancel)
+    # Restart with no update. Sibling of /api/update rather than a mode of it:
+    # /api/update refuses every layout that is not a git checkout, while a
+    # restart is valid everywhere and is how a wheel install picks up code a
+    # terminal-run installer already replaced on disk.
+    app.router.add_post("/api/restart", handlers.api_gateway_restart)
     # Only expose the simulation endpoint in dev/debug environments
     _is_dev_env = os.environ.get("KIROCREW_HOME", "").endswith("-dev")
     if _is_dev_env or env_flag_enabled("KIROCREW_DEV_MODE"):

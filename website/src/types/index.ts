@@ -18,6 +18,15 @@ export interface StatusData {
   update_checked?: boolean
   /** Upgrade command for an install that cannot replace itself ("" when it can). */
   update_command?: string
+  /**
+   * The release channel this INSTALL follows (the `channel` file `cli.sh` wrote).
+   * "" when the layout has no channel at all — a git checkout tracks a remote, a
+   * desktop bundle and a container are updated by something else — which is what
+   * gates the gateway channel switcher. Distinct from `release_channel` below,
+   * which says which lane the RUNNING BYTES were built on; the two legitimately
+   * diverge between a channel switch and the new lane's build landing.
+   */
+  update_channel?: string
   update_progress?: { step: string; detail: string } | null
   version?: string
   /**
