@@ -3106,6 +3106,7 @@ class DashboardState:
         removed = len(self._notification_log) < before
         if removed:
             await self._rewrite_notifications_async()
+            self.broadcast_ws("notification_delete", {"ts": ts})
         return removed
 
     async def ack_notification(self, ts: str) -> bool:
@@ -3133,6 +3134,7 @@ class DashboardState:
         self._notification_log.clear()
         self._unread_count = 0
         await self._rewrite_notifications_async()
+        self.broadcast_ws("notification_clear", {})
 
     def get_slot(self, name: str) -> _ChatSlot | None:
         """Look up a slot by name without creating it. Returns None if absent."""

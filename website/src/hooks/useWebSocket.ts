@@ -4,7 +4,7 @@ import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
-import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
+import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearNotificationItems, fetchNotifications } from '../store/notificationsSlice'
 import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
 import {
@@ -545,6 +545,12 @@ export function useWebSocket() {
             break
           case 'notification_unack':
             dispatch(unackNotificationByTs(data.ts))
+            break
+          case 'notification_clear':
+            dispatch(clearNotificationItems())
+            break
+          case 'notification_delete':
+            dispatch(removeNotificationByTs(data.ts))
             break
           case 'approval': {
             queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
