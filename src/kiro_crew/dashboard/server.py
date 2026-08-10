@@ -1465,6 +1465,101 @@ async def _revive_intended_instances(
             logger.warning("Startup auto-reconnect of %s failed", inst.id, exc_info=True)
 
 
+def _armed_unattended_loops() -> "list[Any]":
+    """Nudge loops still marked active, for the expiry notice only.
+
+    Deliberately a plain ``active`` read rather than a careful liveness test: this
+    decides whether to TELL someone, and a false positive costs one redundant
+    notice. Nothing is granted on the strength of it, so there is no reason to pay
+    for a stop-sentinel stat or to re-derive the loop's bounds — and this runs on
+    the event loop, reached from tool-approval paths.
+    """
+    try:
+        svc = _autonudge_get()
+        if svc is None:
+            return []
+        return [lp for lp in svc.list_all() if getattr(lp, "active", False)]
+    except Exception:
+        logger.debug("could not enumerate nudge loops for the expiry notice", exc_info=True)
+        return []
+
+
+_UNATTENDED_EXPIRY_TITLE = "🔒 Auto-approve expired while an unattended run was in progress"
+
+
+def _unattended_expiry_text(loop_count: int) -> str:
+    """Body shared by the dashboard note and the owner DM, so the two cannot drift.
+
+    Names the remedy as well as the cause: ``agent.yolo_duration`` accepts
+    ``until_shutdown``, which has no timed expiry. The cheapest half of this
+    problem is that operators do not know that option exists, and the moment it
+    would have helped is the moment worth saying so.
+
+    The stall is stated conditionally because global auto-approve is not the only
+    path to one: a slot carrying its own trust grant is approved by ``slot._trust``
+    independently of the grant, so its cycles keep running after this expiry.
+    Claiming the run has stopped would send an operator to rescue a healthy one.
+    """
+    return (
+        f"{loop_count} monitor loop(s) are still running, but auto-approval has "
+        f"ended, so any cycle that relied on it now waits on a per-tool approval "
+        f"that nobody is there to give. (A session granted its own trust is "
+        f"unaffected.) Re-enable auto-approve to resume. For runs meant to go "
+        f"unattended overnight, Settings → agent.yolo_duration has an "
+        f"'until_shutdown' option that has no timed expiry."
+    )
+
+
+def _notify_unattended_expiry(state: "DashboardState", source: str) -> None:
+    """Report an expiry that landed on an unattended run, on BOTH surfaces.
+
+    An ordinary expiry degrades gracefully — the next tool call asks a human, and
+    a human is there to answer. This one degrades into nothing: the loop keeps
+    waking, dispatches a tool, waits out the approval window with nobody present,
+    and accomplishes no work until someone notices.
+
+    Delivered to the dashboard feed AND pushed to the owner's DM, because the
+    operator this exists for is by definition not looking at a dashboard. Neither
+    delivery is gated behind ``agent.notify_override_expiry``: that switch silences
+    a recurring *expiry* notice, while this says a run in flight stopped being able
+    to work — a different and stronger fact, and one an operator who muted the
+    former did not ask to be uninformed about.
+    """
+    armed = _armed_unattended_loops()
+    if not armed:
+        return
+    logger.warning(
+        "Safety override expired with %d unattended loop(s) still running; "
+        "every further cycle will wait on per-tool approval",
+        len(armed),
+    )
+    body = _unattended_expiry_text(len(armed))
+    try:
+        state.notify(
+            "safety_override",
+            _UNATTENDED_EXPIRY_TITLE,
+            body,
+            meta={"loops": len(armed), "source": source},
+        )
+    except Exception:
+        # ERROR, not debug: this notice is the only operator-visible trace that an
+        # unattended run stopped working rather than finished. Losing it silently
+        # reproduces the failure it exists to explain.
+        logger.error("unattended-expiry notification failed", exc_info=True)
+
+    # The push half. Scheduled directly rather than through
+    # _dispatch_override_expiry_notification, which applies the recurring-expiry
+    # mute this notice deliberately does not inherit.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug("no running event loop — unattended-expiry DM skipped")
+        return
+    task = loop.create_task(_dm_owner(state, f"{_UNATTENDED_EXPIRY_TITLE}\n\n{body}"))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _dispatch_override_expiry_notification(state: DashboardState, notify_coro_factory: Any) -> bool:
     """Schedule the Slack override-expiry DM unless disabled via config.
 
@@ -3482,6 +3577,9 @@ async def start_dashboard(
             logger.debug("Could not clear trusted sessions", exc_info=True)
         # Slack notification (prevent GC with background_tasks set)
         _dispatch_override_expiry_notification(state, _notify_slack_override_expired)
+        # An expiry that lands on an unattended run is the one case that cannot
+        # self-report: nobody is present to answer the prompts it produces.
+        _notify_unattended_expiry(state, source)
 
     safety_override().on_expired = _on_override_expired
 

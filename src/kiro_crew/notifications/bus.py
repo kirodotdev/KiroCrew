@@ -45,6 +45,12 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # note is the ONLY surface that says it exists -- but it blocks no agent
     # turn, so it is default, not critical.
     "system.skills": _DEFAULT_PRIORITY,
+    # Auto-approve lifecycle: notably an expiry that lands while an unattended
+    # loop is running, where the note is the only trace that the run stopped being
+    # able to act. Default rather than critical by the same rule as skills above:
+    # the prompt that actually blocks a turn has its own critical channel
+    # (system.approval), and this is the report about it, not the prompt.
+    "system.safety_override": _DEFAULT_PRIORITY,
 }
 
 # Fallback channel for legacy kinds that have no dedicated system channel
