@@ -5662,9 +5662,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           onWidthChange={setSidebarWidth}
           onDragChange={setSidebarDragging}
           collapsible={!isMobile}
-          splitEnabled={splitFeatureEnabled}
-          splitActive={splitMode}
-          onOpenSplit={() => enterSplit(activeSlot)}
           onSelectSlot={() => setSplitMode(false)}
           onOpenSource={revealSourceLink}
           // Only offer the pane as a drop target when a composer exists to show

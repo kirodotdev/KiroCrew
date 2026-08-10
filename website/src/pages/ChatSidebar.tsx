@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
@@ -642,12 +642,6 @@ interface ChatSidebarProps {
    *  top-left (open state), so the header reserves left space for it.
    *  Omitted in embed/sessions mode where the sidebar is the whole view. */
   collapsible?: boolean
-  /** Split View (session grid) opt-in feature. When `splitEnabled`, a pinned
-   *  "Split View" entry renders at the top; clicking it calls `onOpenSplit`.
-   *  `splitActive` highlights it while the grid surface is showing. */
-  splitEnabled?: boolean
-  splitActive?: boolean
-  onOpenSplit?: () => void
   /** Element to portal the "drag a session into the chat" drop zone into —
    *  ChatPage's chat-pane wrapper. The zone renders inside this component's
    *  DndContext (so dnd-kit sees it) but measures against the pane's rect, which
@@ -688,7 +682,7 @@ const SIDEBAR_LS_KEY = 'mc-sidebar-width'
 
 function ChatSidebar({
   slots, activeSlot, unreadSlots, history, historyHasMore,
-  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSource, collapsible, splitEnabled, splitActive, onOpenSplit,
+  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSource, collapsible,
   chatDropTarget, onDropSessionRef,
 }: ChatSidebarProps) {
   const dispatch = useAppDispatch()
@@ -2946,23 +2940,10 @@ function ChatSidebar({
         </div>
       </div>
 
-      {/* Split View (session grid) — opt-in durable surface. Pinned entry that
-       *  opens/restores the grid; highlighted while the grid is showing. Clicking
-       *  a session below leaves the grid (onSelectSlot), so this is the way back. */}
-      {splitEnabled && (
-        <button
-          type="button"
-          onClick={onOpenSplit}
-          className={`mx-2 mb-1 flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] cursor-pointer bg-transparent border transition-colors ${splitActive ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-text hover:bg-bg-hover'}`}
-          title={i18nT('pages.chatSidebar.split_view_multi_pane_session_grid_d')}
-          aria-label={i18nT('pages.chatSidebar.open_split_view')}
-          aria-pressed={splitActive}
-        >
-          <Columns2 size={14} className="shrink-0" />
-          <span className="flex-1 text-left truncate">{i18nT('pages.chatSidebar.split_view')}</span>
-          {splitActive && <Circle size={7} className="shrink-0 fill-current" />}
-        </button>
-      )}
+      {/* Split View (session grid) has no entry here on purpose: this sidebar is a
+       *  navigation surface, and the grid's own affordances live next to the
+       *  transcript they act on — the chat header's Columns2 button (⌘D) opens it,
+       *  and the header's "in split" badge is the way back into a live split. */}
 
       {/* Clean Up dialog */}
       {cleanupOpen && (() => {
