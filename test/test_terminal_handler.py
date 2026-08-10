@@ -2440,43 +2440,94 @@ class TestTerminalWsIntegration:
                     "path is not live"
                 )
 
-                # Run sleep in foreground; drain until we see the command
-                # echoed back (so we know the shell is processing it, not
-                # buffering it pre-prompt).
-                await ws.send_bytes(b"sleep 30\n")
+                # Run a long-lived sleep in the foreground; drain until we see
+                # the command echoed back (so we know the shell is processing
+                # it, not buffering it pre-prompt). The duration is chosen to be
+                # far larger than the SIGINT-verification budget below: a
+                # genuinely dropped SIGINT must leave `sleep` running for the
+                # whole budget, so it can never end on its own and let the shell
+                # run the queued marker echo (which would be a false pass). Here
+                # this drain WANTS the line-discipline echo — it only proves the
+                # shell received the input, so matching the echoed command text
+                # is correct.
+                await ws.send_bytes(b"sleep 120\n")
                 echoed = await _drain_until(
                     ws,
-                    lambda b: b"sleep 30" in b,
+                    lambda b: b"sleep 120" in b,
                     budget_secs=5,
                 )
-                assert b"sleep 30" in echoed, (
-                    "shell did not echo `sleep 30` within 5s — "
+                assert b"sleep 120" in echoed, (
+                    "shell did not echo `sleep 120` within 5s — "
                     "input may not have reached an interactive shell"
                 )
 
-                # Send Ctrl+C (ETX byte) and drain until the prompt redraws,
-                # which is the visible signal that the foreground job has
-                # been killed and the shell is back at idle.
-                await ws.send_bytes(b"\x03")
-                await _drain_until(
-                    ws,
-                    lambda b: b"$ " in b or b"# " in b,
-                    budget_secs=5,
-                )
-
-                # Shell should still be alive after SIGINT killed sleep.
-                # Probe with an echo and drain until we see the marker.
-                await ws.send_bytes(b"echo SIGINT_OK\n")
-                tail = await _drain_until(
-                    ws,
-                    lambda b: b"SIGINT_OK" in b,
-                    budget_secs=10,
-                )
-                found = b"SIGINT_OK" in tail
-
+                # Deliver SIGINT and confirm the child actually received it.
+                # This step is inherently racy against shell scheduling on a
+                # loaded CI host, in two ways the old single-shot version did
+                # not survive:
+                #   * The ``sleep 120`` echo drained above is emitted by the PTY
+                #     line discipline the instant the bytes arrive — BEFORE the
+                #     shell has necessarily read the line and forked ``sleep``
+                #     into the foreground process group. A ``\x03`` that lands in
+                #     that window is delivered to the shell sitting at its prompt
+                #     (which simply discards the pending line) rather than to
+                #     ``sleep``, so the FIRST Ctrl+C can miss the child.
+                #   * Under this class's xdist integration group the forked shell
+                #     / reader thread can go unscheduled past a fixed budget, so
+                #     a single marker drain can time out even when delivery would
+                #     eventually succeed.
+                # Handle both by re-poking with Ctrl+C and re-probing the marker
+                # over a generous overall budget, rather than the old "\x03 once,
+                # wait for a prompt redraw, probe once" — a login shell on a
+                # minimal host may render no prompt at all (see the readiness-gate
+                # note above), which made the prompt drain a pure time sink and
+                # left the single probe to absorb the whole race.
+                #
+                # EXECUTION-only marker: the probe command is written so the PTY
+                # line-discipline echo of our own keystrokes never contains the
+                # search token. The typed bytes are ``echo SIG''INT_OK`` (an
+                # empty '' splits the literal), so the echoed input reads
+                # ``SIG''INT_OK`` — no ``SIGINT_OK`` substring — while only the
+                # shell's *execution* of the echo emits the concatenated
+                # ``SIGINT_OK`` on stdout. A match therefore proves the shell ran
+                # a command, i.e. SIGINT killed the foreground ``sleep`` and
+                # returned the shell to its prompt. Matching the bare echoed input
+                # (the previous version) let the test pass even when SIGINT was
+                # never delivered — a false pass that would hide a real
+                # terminal-signal regression.
                 sess = registry["sigint-sess"]
-                # Success: shell responded (SIGINT killed sleep, shell continued)
-                # OR process exited (signal was delivered, just killed everything)
+                loop = asyncio.get_event_loop()
+                overall_deadline = loop.time() + 25
+                found = False
+                while True:
+                    remaining = overall_deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    # Ctrl+C (ETX): kills the foreground `sleep` if it is
+                    # running, or harmlessly aborts an empty prompt line if a
+                    # previous iteration already recovered the shell.
+                    await ws.send_bytes(b"\x03")
+                    await ws.send_bytes(b"echo SIG''INT_OK\n")
+                    # Clamp each drain to the remaining budget so the overall
+                    # wait cannot overshoot ``overall_deadline`` by a full drain.
+                    tail = await _drain_until(
+                        ws,
+                        lambda b: b"SIGINT_OK" in b,
+                        budget_secs=min(5.0, remaining),
+                    )
+                    if b"SIGINT_OK" in tail:
+                        found = True
+                        break
+                    # Signal may instead have torn down the whole session — that
+                    # is also a valid "SIGINT was delivered" outcome.
+                    if sess.proc.returncode is not None:
+                        break
+
+                # Success: the shell executed a command after Ctrl+C (SIGINT
+                # killed sleep, shell continued) OR the process exited (signal
+                # was delivered, just tore the whole session down). A dropped
+                # SIGINT leaves `sleep 120` running for the whole 25s budget, so
+                # neither branch can become true — the test correctly fails.
                 assert found or sess.proc.returncode is not None
                 await ws.close()
 
