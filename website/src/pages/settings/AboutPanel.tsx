@@ -260,7 +260,7 @@ function RestartGatewayButton({
   return (
     <Btn
       primary={primary && !armed}
-      className={armed ? '!bg-[var(--warn)] !text-white hover:!opacity-80' : undefined}
+      className={armed ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
       disabled={busy}
       data-testid={testId}
       // No static aria-label: the visible text IS the accessible name, and it is
@@ -873,6 +873,11 @@ export function AboutPanel() {
                 bytes have moved. It must not hide behind the disclosure: the
                 misreading happens precisely to the user who did not open it.
 
+                Requires a command to point at: the sentence says "run the
+                command below", so with no command resolved (failed check, offline
+                host) it would dangle exactly like the `available`-gated version
+                did.
+
                 Stands down while the explainer is open, because the explainer's
                 closing line is this very sentence and the two rendered back to
                 back read as a stutter at exactly the moment the user is reading
@@ -884,6 +889,7 @@ export function AboutPanel() {
                 the line retires itself. */}
             {!gwChannelMutation.isError
               && !showChannelHelp
+              && !!effectiveCommand
               && !!gatewayChannel
               && effectiveGwChannel !== gatewayChannel && (
               <span className="text-[12px] text-muted flex items-start gap-1.5"

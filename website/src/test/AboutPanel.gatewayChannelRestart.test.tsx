@@ -181,13 +181,29 @@ describe('AboutPanel gateway channel switcher', () => {
     stubFetch()
     // Followed channel (insider) differs from the lane the running bytes came
     // from (stable) -- exactly the window where the two disagree.
-    seedStatus({ update_channel: 'insider', release_channel: 'stable' })
+    seedStatus({
+      update_channel: 'insider',
+      release_channel: 'stable',
+      update_command: 'curl -fsSL https://example.test/cli.sh | sh -s -- --channel insider',
+    })
     mountWeb()
 
     await screen.findByTestId('gateway-channel-switcher')
     // Visible with the disclosure still collapsed.
     expect(screen.queryByTestId('gateway-channel-help')).toBeNull()
     expect(screen.getByTestId('gateway-channel-pending-note')).toBeTruthy()
+  })
+
+  it('withholds the switch note when there is no command for it to point at', async () => {
+    // The sentence says "run the command below". With no command resolved (failed
+    // check, offline host) it would dangle, the same way it did when it was gated
+    // on `available` alone.
+    stubFetch()
+    seedStatus({ update_channel: 'insider', release_channel: 'stable', update_command: '' })
+    mountWeb()
+
+    await screen.findByTestId('gateway-channel-switcher')
+    expect(screen.queryByTestId('gateway-channel-pending-note')).toBeNull()
   })
 
   it('retires the switch note once the followed lane matches the running build', async () => {
