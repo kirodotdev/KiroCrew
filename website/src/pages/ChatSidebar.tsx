@@ -1482,14 +1482,20 @@ function ChatSidebar({
     [foldersWithActiveSubtree],
   )
 
+  // State and in the memo deps on purpose, not a ref: a frozen run caches its
+  // stale list against new deps, so clearing a ref would invalidate nothing.
+  const [dragFrozen, setDragFrozen] = useState(false)
+  const frozenSlotsRef = useRef<Slot[]>([])
+
   const filteredSlots = useMemo(() => {
+    if (dragFrozen) return frozenSlotsRef.current
     const activeFilterDefs = SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
     // Active content search: order by the backend's relevance ranking instead
     // of the sidebar sort (mirrors the Older Sessions lane and the command
     // palette). Pinning stays a reachability promise for browsing, not a
     // ranking hint inside explicit search results.
     const searchRanked = slotFilter.trim().length >= SEARCH_MIN_CHARS ? slotSearchRanks : null
-    return enrichedSlots
+    const next = enrichedSlots
       .filter(slot => {
         if (activeFilterDefs.length > 0 && !activeFilterDefs.some(filterDef => slot[filterDef.key])) return false
         if (!slotFilter) return true
@@ -1499,8 +1505,10 @@ function ChatSidebar({
       .sort((a, b) => searchRanked
         ? (searchRanked.get(a.key) ?? Infinity) - (searchRanked.get(b.key) ?? Infinity)
         : comparePinnedThenSort(a, b, sortKey, pinned))
+    frozenSlotsRef.current = next
+    return next
   },
-    [enrichedSlots, slotFilter, slotSearchRanks, pinned, sortKey, activeFilters]
+    [enrichedSlots, slotFilter, slotSearchRanks, pinned, sortKey, activeFilters, dragFrozen]
   )
 
   // Folder IDs whose sessions are excluded from the flat lane because the
@@ -1784,12 +1792,14 @@ function ChatSidebar({
   // (draggable rows + droppable folder/root targets); the active item's
   // data.type routes the drop.
   const handleSidebarDragStart = useCallback((e: DragStartEvent) => {
+    setDragFrozen(true)
     const d = e.active.data.current as { type?: string; key?: string } | undefined
     if (d?.type === 'session' && d.key) setActiveDrag({ type: 'session', id: d.key })
     else if (d?.type === 'folder') setActiveDrag({ type: 'folder', id: e.active.id as string })
   }, [])
   const handleSidebarDragEnd = useCallback((event: DragEndEvent) => {
     setActiveDrag(null)
+    setDragFrozen(false)
     if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current.timer); dragExpandTimer.current = null }
     const { active, over } = event
     if (!over) return
@@ -1834,7 +1844,7 @@ function ChatSidebar({
       else if (o?.type === 'folder') assignToFolder(a.key, over.id as string)
     }
   }, [reorderFolders, assignToFolder, moveFolderTo, slots, activeSlot, onDropSessionRef])
-  const handleSidebarDragCancel = useCallback(() => { setActiveDrag(null); if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current.timer); dragExpandTimer.current = null } }, [])
+  const handleSidebarDragCancel = useCallback(() => { setActiveDrag(null); setDragFrozen(false); if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current.timer); dragExpandTimer.current = null } }, [])
   // Auto-expand collapsed folders when a dragged item hovers over them for 500ms.
   const dragExpandTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)
   const handleSidebarDragOver = useCallback((event: DragOverEvent) => {
