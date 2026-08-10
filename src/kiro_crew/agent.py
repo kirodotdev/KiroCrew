@@ -1646,22 +1646,47 @@ def _refresh_dynamic_fields(config: dict) -> None:
             agent_state.set_cc_model(name, str(config["cc_model"]))
         del config["cc_model"]
 
+    # Imported lazily: config.loader imports this module, so a top-level import
+    # would close the cycle. Warm by the time this runs (importing agent pulls
+    # config.loader in), so the lookup costs nothing on the caller's thread.
+    from kiro_crew.config.loader import DEFAULT_MODEL, normalize_agent_model
+
     # Default-model tracking: when the model is managed (not an explicit user
     # pick), re-sync it from the shipped defaults.json so a default bump
     # propagates to existing installs. Agents with no sidecar entry are
     # grandfathered and left untouched (never force-changed).
+    #
+    # The assignment is unconditional for a managed spec, falling back to the
+    # inherit sentinel when the template pins nothing: "track the shipped
+    # default" and "pin whatever happens to be in the spec already" are not the
+    # same state, and only the sentinel makes a managed spec converge on the
+    # same value a clean install writes. It is also what lets the global below
+    # return to "auto" — leaving the field alone here would strand a concrete
+    # model that this propagation itself wrote, and a spec pin outranks the
+    # global in resolve_effective_model, so "auto" would be unreachable from the
+    # configuration surface. Writing the sentinel rather than deleting the key
+    # is equivalent to the resolver (normalize_agent_model collapses "auto" and
+    # an absent key to the same "inherit") and keeps the spec shaped like the
+    # shipped template.
     if agent_state.get_model_managed(name):
         shipped_model = (_load_json(_shipped_defaults()) or {}).get("model")
-        if shipped_model:
-            config["model"] = shipped_model
+        config["model"] = shipped_model or DEFAULT_MODEL
 
     # config.json agent.model is the user-facing authority (kirocrew config set
     # agent.model). An explicit pick (not the "auto" sentinel) is propagated into
     # the agent file so kiro-cli's --agent startup load matches it; otherwise the
     # stale agent-file model shadows config.json and session/set_model loses the
     # startup race. "auto" defers to managed/shipped resolution above.
-    mc_model = (mc_cfg.get("agent") or {}).get("model")
-    if mc_model and mc_model != "auto":
+    #
+    # Read through normalize_agent_model, the resolver's own chokepoint for
+    # hand-edited values: it collapses "auto", surrounding whitespace and any
+    # non-string to "" (inherit). That keeps this branch's notion of "the global
+    # defers" identical to the resolver's, and it is what stops a junk value
+    # (` auto `, an int) from reaching a spec kiro-cli validates with
+    # deny_unknown_fields — a spec it rejects wholesale, silently falling back to
+    # the default agent.
+    mc_model = normalize_agent_model((mc_cfg.get("agent") or {}).get("model"))
+    if mc_model:
         config["model"] = mc_model
 
     # Ensure kiro-cli uses agent-level mcpServers exclusively (not global

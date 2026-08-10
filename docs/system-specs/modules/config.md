@@ -598,6 +598,15 @@ name:
   seeds managed-state on a fresh/clean install (never clobbering a frozen pick).
 - `_refresh_dynamic_fields()` sources managed-state from the sidecar and strips
   any stray `model_managed`/`cc_model` from the spec (steady-state self-heal).
+  A **managed** spec's `model` is set on every refresh to the shipped default,
+  or to the `"auto"` sentinel when the shipped template pins none — never left
+  as-is. That is what makes the global `agent.model` reversible: the global is
+  propagated into the spec when it is a concrete pick, and because a spec pin
+  outranks the global in `resolve_effective_model`, returning the global to
+  `"auto"` must take the pin back off or `"auto"` is unreachable from the
+  configuration surface. Ownership decides who may clear: `model_managed=false`
+  (an explicit user pick) and an **absent** sidecar entry (legacy status, owner
+  unknown) both keep their pin untouched.
 - `migrate_agent_specs()` runs at startup (top of `rebuild_agent_config`): lifts
   the keys out of every `~/.kiro/agents/*.json` into the sidecar and removes
   them (idempotent), fixing installs polluted by older builds.
