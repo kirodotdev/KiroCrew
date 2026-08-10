@@ -47,25 +47,15 @@ function notify(msg: string, opts?: { type?: 'success' | 'error' | 'info' }) {
 const POLL_MS = 12000
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
-/* ─── Sync phase stepper model (marker protocol) ─── */
-// Rough progress mapping for the 5 backend sync steps (fetch/merge/pip/npm ci/
-// build), weighted by typical duration. Shown as a single coarse percentage
-// with no per-step labels, which would imply more precision than we have.
-const SYNC_STEP_CUM = [0, 5, 8, 25, 55, 100] as const
-const SYNC_TOTAL_STEPS = 5
+/* ─── Sync step marker protocol ─── */
+// The backend tags each of its 5 sync steps ("::step::3::npm ci") so the UI can
+// name the step in flight and keep the markers out of the log panel. Progress is
+// deliberately NOT quantified: the steps differ in duration by more than an
+// order of magnitude and vary with network and cache state, so a percentage
+// derived from the step index reads as precision the backend does not have — it
+// stalls in one band, then jumps. An indeterminate spinner plus the step name
+// and elapsed time is the honest signal.
 const STEP_MARKER_RE = /^::step::(\d+)::(.+)$/
-
-function syncPhaseFromLines(lines: string[], prev: number): number {
-  let p = prev
-  for (const l of lines) {
-    const m = STEP_MARKER_RE.exec(l)
-    if (m) {
-      const idx = parseInt(m[1], 10)
-      p = Math.max(p, idx)
-    }
-  }
-  return p
-}
 
 function filterStepMarkers(lines: string[]): string[] {
   return lines.filter((l) => !STEP_MARKER_RE.test(l))
@@ -216,15 +206,6 @@ function ProvLogPre({ lines, streaming }: { lines: string[]; streaming: boolean 
   return (
     <pre ref={ref} style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } as CSSProperties}>{lines.join('\n') || '(no output yet)'}</pre>
   )
-}
-
-function syncPercent(phase: number, phaseAtMs: number | undefined): number {
-  const p = Math.min(Math.max(phase, 0), SYNC_TOTAL_STEPS)
-  const base = SYNC_STEP_CUM[p]
-  if (p >= SYNC_TOTAL_STEPS) return 100
-  const next = SYNC_STEP_CUM[p + 1]
-  const creep = phaseAtMs ? Math.min(next - base - 2, Math.floor((Date.now() - phaseAtMs) / 4000)) : 0
-  return Math.min(96, base + Math.max(0, creep))
 }
 
 function fmtElapsed(ms: number): string {
@@ -448,7 +429,7 @@ interface Worktree {
   path?: string
 }
 interface FleetData { worktrees: Worktree[]; error?: string; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
-interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
+interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
 // persists (failed=true) until the user dismisses it rather than vanishing.
@@ -682,11 +663,11 @@ export default function DevFleetPage() {
     if (!fleet?.sync_run_id || syncAttachedRef.current) return
     syncAttachedRef.current = true
     const rid = fleet.sync_run_id
-    api.get<{ status?: string; output?: string[]; started?: number; step?: number; step_label?: string }>('/run?id=' + rid)
+    api.get<{ status?: string; output?: string[]; started?: number; step_label?: string }>('/run?id=' + rid)
       .then((run) => {
         if (run?.status === 'running') {
           const t0 = run.started ? run.started * 1000 : Date.now()
-          setSyncRun({ rid, status: 'running', phase: typeof run.step === 'number' ? run.step : syncPhaseFromLines(run.output || [], 0), lines: run.output || [], startedAt: t0, stepLabel: run.step_label })
+          setSyncRun({ rid, status: 'running', lines: run.output || [], startedAt: t0, stepLabel: run.step_label })
           pollSyncRun(rid, t0)
         }
       })
@@ -704,12 +685,10 @@ export default function DevFleetPage() {
   }, [syncRun?.status, provTicking]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function pollSyncRun(rid: string, startedAt: number) {
-    let phase = 0
-    let phaseAt = Date.now()
     for (let i = 0; i < 900; i++) {
       await sleep(2000)
       if (!pollAliveRef.current || cancelledRunsRef.current.has(rid)) return
-      let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step?: number; step_label?: string } | null = null
+      let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string } | null = null
       let gone = false
       try { run = await api.get('/run?id=' + rid) } catch (e) {
         // 404 = the gateway restarted and dropped the run registry — the run
@@ -719,7 +698,7 @@ export default function DevFleetPage() {
       }
       if (gone || !run) {
         if (gone) {
-          setSyncRun({ rid, status: 'error', phase: 0, lines: [], startedAt, last: i18nT('pages.devFleetPage.gateway_restarted_mid_sync_run_lost_check_git_st') })
+          setSyncRun({ rid, status: 'error', lines: [], startedAt, last: i18nT('pages.devFleetPage.gateway_restarted_mid_sync_run_lost_check_git_st') })
           setFlag('__syncmain', false)
           notify(i18nT('pages.devFleetPage.sync_run_lost_gateway_restarted_mid_sync_re_run'), { type: 'error' })
           return
@@ -728,22 +707,17 @@ export default function DevFleetPage() {
       }
       const out = run.output || []
       const t0 = run.started ? run.started * 1000 : startedAt
-      const prevPhase = phase
-      // Prefer the server-tracked step (survives the 60-line output window a
-      // chatty build floods) and fall back to marker lines still in view.
-      phase = typeof run.step === 'number' ? Math.max(phase, run.step) : syncPhaseFromLines(out, phase)
-      if (phase !== prevPhase) phaseAt = Date.now()
       const last = [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l)) || ''
       if (run.status === 'done' || run.status === 'timeout') {
         const okRun = run.exit_code === 0
-        setSyncRun({ rid, status: okRun ? 'done' : 'error', phase: okRun ? SYNC_TOTAL_STEPS : phase, lines: out, startedAt: t0, exit: run.exit_code, last })
+        setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last })
         setFlag('__syncmain', false)
         if (okRun) notify(i18nT('pages.devFleetPage.synced_restart_gateway_to_apply_the_new_build'), { type: 'success' })
         else notify(i18nT('pages.devFleetPage.pull_build_failed_exit_code_detail', { code: run.exit_code, detail: last }), { type: 'error' })
         invalidateFleet()
         return
       }
-      setSyncRun({ rid, status: 'running', phase, phaseAt, lines: out, startedAt: t0, last, stepLabel: run.step_label })
+      setSyncRun({ rid, status: 'running', lines: out, startedAt: t0, last, stepLabel: run.step_label })
     }
     setSyncRun((s) => (s && s.rid === rid ? { ...s, status: 'error', last: 'timed out after 30 min' } : s))
     setFlag('__syncmain', false)
@@ -889,7 +863,7 @@ export default function DevFleetPage() {
     try {
       const r = await api.post<{ ok?: boolean; run_id?: string; error?: string }>('/sync', {})
       if (!r?.ok || !r.run_id) { notify(r?.error || i18nT('pages.devFleetPage.pull_build_failed_to_start'), { type: 'error' }); setFlag('__syncmain', false); return }
-      setSyncRun({ rid: r.run_id, status: 'running', phase: 0, lines: [], startedAt: Date.now() })
+      setSyncRun({ rid: r.run_id, status: 'running', lines: [], startedAt: Date.now() })
       pollSyncRun(r.run_id, Date.now())
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setFlag('__syncmain', false) }
   }
@@ -1239,7 +1213,7 @@ export default function DevFleetPage() {
       out.push(<Btn key="open" onClick={() => act(w.name, 'open')}>{iconLabel(<ExternalLink size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.open'))}</Btn>)
     }
     const podBusy = busy[w.name + ':up'] || busy[w.name + ':down'] || busy[w.name + ':restart']
-    if (podBusy) out.push(<span key="podbusy" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' } as CSSProperties}><LoaderCircle size={12} className="lucide-inline" /> {i18nT('pages.devFleetPage.pod')}{"\u2026"}</span>)
+    if (podBusy) out.push(<span key="podbusy" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' } as CSSProperties}><LoaderCircle size={12} className="lucide-inline animate-spin" /> {i18nT('pages.devFleetPage.pod')}{"\u2026"}</span>)
     out.push(<MenuBtn key="menu" items={[
       podsAvailable && w.has_dist && !w.running ? { label: i18nT('pages.devFleetPage.spin_up_pod'), icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
       podsAvailable && w.running ? { label: i18nT('pages.devFleetPage.restart_pod'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
@@ -1262,16 +1236,14 @@ export default function DevFleetPage() {
     if (!syncRun) return null
     const mono: CSSProperties = { fontFamily: 'ui-monospace, monospace', fontVariantNumeric: 'tabular-nums', fontSize: 11, color: 'var(--muted)' }
     if (syncRun.status === 'running') {
-      const pct = syncPercent(syncRun.phase, syncRun.phaseAt)
       return (
         <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } as CSSProperties}>
-          <LoaderCircle size={12} className="lucide-inline" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
+          {/* Indeterminate by design: role=progressbar with no aria-valuenow is
+              the ARIA form for "in progress, amount unknown". */}
+          <LoaderCircle role="progressbar" aria-label={i18nT('pages.devFleetPage.sync_progress')} className="lucide-inline animate-spin" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
           <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i18nT('pages.devFleetPage.syncing')}</span>
           {syncRun.stepLabel ? <span style={{ ...mono, flexShrink: 0 } as CSSProperties} title={i18nT('pages.devFleetPage.current_step')}>{syncRun.stepLabel}</span> : null}
-          <span role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={i18nT('pages.devFleetPage.sync_progress')} style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden', minWidth: 60 } as CSSProperties}>
-            <span style={{ display: 'block', height: '100%', width: pct + '%', background: 'var(--accent)', borderRadius: 2, transition: 'width 0.6s ease' } as CSSProperties} />
-          </span>
-          <span style={{ ...mono, flexShrink: 0 } as CSSProperties}>{'~' + pct + '%'}</span>
+          <span style={{ flex: 1, minWidth: 0 }} />
           <span style={mono}>{fmtElapsed(Date.now() - syncRun.startedAt)}</span>
           <Clickable aria-label={i18nT('pages.devFleetPage.toggle_log')} onClick={() => setSyncLogOpen((o) => !o)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{syncLogOpen ? i18nT('pages.devFleetPage.log') : i18nT('pages.devFleetPage.log_2')}</Clickable>
           <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_sync_status')} onClick={() => dismissSync(syncRun?.rid)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
@@ -1331,7 +1303,7 @@ export default function DevFleetPage() {
     const last = lastLine(pr.lines)
     return (
       <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } as CSSProperties}>
-        <LoaderCircle size={12} className="lucide-inline" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
+        <LoaderCircle size={12} className="lucide-inline animate-spin" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
         <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i18nT('pages.devFleetPage.provisioning')}</span>
         {phase ? <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)', background: 'var(--accent-subtle, rgba(99,102,241,0.14))', borderRadius: 5, padding: '1px 6px', flexShrink: 0 } as CSSProperties}>{phase}</span> : null}
         <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={last}>{last || i18nT('pages.devFleetPage.starting')}</span>
@@ -1516,7 +1488,7 @@ export default function DevFleetPage() {
       {pruneProgressModal}
       {restarting && (
         <div role="alert" aria-busy="true" style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--text)' }}>
-          <LoaderCircle size={32} className="lucide-inline" style={{ animation: 'spin 1s linear infinite' }} />
+          <LoaderCircle size={32} className="lucide-inline animate-spin" />
           <p style={{ marginTop: 16, fontSize: 16, fontWeight: 600 }}>{i18nT('pages.devFleetPage.restarting_reconnecting')}</p>
           <p style={{ fontSize: 12, color: 'var(--muted)' }}>{i18nT('pages.devFleetPage.waiting_for_the_new_gateway_process_the_page_rel')}</p>
         </div>
@@ -1617,7 +1589,11 @@ export default function DevFleetPage() {
                   // style; keep the toolbar behaving the same way.
                   style={{ flexShrink: 0 }}
                 />
-                <Btn danger onClick={pruneShipped} disabled={!!busy['__prune']}>{iconLabel(<Trash2 size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.prune_merged'))}</Btn>
+                {/* The merged-scan runs git per worktree, so a large fleet keeps
+                    the button pressed for seconds with no other surface to
+                    report on: the trash glyph becomes a spinner in place so the
+                    click is visibly still working rather than merely disabled. */}
+                <Btn danger onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.prune_merged'))}</Btn>
                 <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
               </div>
               {body}

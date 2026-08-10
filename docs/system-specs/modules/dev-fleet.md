@@ -114,6 +114,13 @@ name never has two workers racing to remove the same worktree. The frontend rend
 failure reason); the preview dialog maps the kept-list verdict codes to human-readable
 reasons so users can see why a worktree is a candidate or is kept.
 
+**Scan feedback:** the preview that opens that dialog (`prune-candidates`) runs `git` —
+and for merged-verdict candidates a `gh` lookup — per worktree, so on a large fleet the
+click is followed by seconds of silence before the dialog can appear. The Prune merged
+button therefore swaps its trash glyph for a spinner and sets `aria-busy` for the
+duration: disabling alone is indistinguishable from a wedged page, and a user who reads
+it as hung clicks again or reloads mid-scan.
+
 ## Pod Integration
 
 Relies on `kiro_crew.pod` subpackage (optional import — degrades gracefully if unavailable):
@@ -358,9 +365,17 @@ npm ci → npm build + stage. The run script emits a
 step; the run worker records BOTH the authoritative step index and its **label**
 onto the run entry (`step` / `step_label`), so `/run` can name the CURRENT step
 even after the marker scrolls out of the 60-line output tail window. The
-frontend shows that label beside the "Syncing" progress bar. This reuses the
+frontend shows that label beside the "Syncing" spinner. This reuses the
 existing `_RUNS` / `::step::` / `/run` run-tracking mechanism — the same channel
 the provision log panel uses (#320) — rather than adding a second one.
+
+Sync progress is reported as **indeterminate** — a spinner, the current step
+label and elapsed time — and never as a percentage. The step index is a poor
+basis for one: the five steps differ in duration by more than an order of
+magnitude and shift with network and cache state, so a step-derived bar sits in
+one band for most of the run and then jumps, which reads as a stall. The
+spinner's `role="progressbar"` carries no `aria-valuenow`, which is the ARIA
+form for "in progress, amount unknown".
 
 The whole FRONTEND half of the sync — `npm ci` and `npm build + stage` — is
 **skipped on an edition checkout** (`frontend.edition_configured()`). The build

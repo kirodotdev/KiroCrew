@@ -338,9 +338,10 @@ describe('DevFleetPage', () => {
     expect(hasBuiltinComponent('/dev-fleet')).toBe(true)
   })
 
-  it('syncPhaseFromLines only advances on ::step:: markers, not pip done lines', async () => {
-    // Import the module to access syncPhaseFromLines indirectly via the component
-    // We test the stepper behavior through the rendered output
+  it('reports a running sync as indeterminate — a spinner, never a percentage', async () => {
+    // Step markers tell the UI which step is in flight; they must NOT be turned
+    // back into a completion percentage, because the five steps differ in
+    // duration by more than an order of magnitude.
     const FLEET_SYNC = {
       ...FLEET,
       sync_run_id: 'run-marker-test',
@@ -352,7 +353,8 @@ describe('DevFleetPage', () => {
       if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
       if (u.includes('/run?id=run-marker-test')) {
         pollCount++
-        // Output contains pip's "done" but NO ::step:: markers beyond index 0
+        // Output carries pip's "done" lines and a step marker — neither may be
+        // rendered as quantified progress.
         return Promise.resolve(new Response(JSON.stringify({
           status: 'running',
           output: [
@@ -362,6 +364,8 @@ describe('DevFleetPage', () => {
             'Successfully installed package done',
             'done',
           ],
+          step: 3,
+          step_label: 'npm ci',
           started: Date.now() / 1000 - 30,
         }), { status: 200 }))
       }
@@ -369,13 +373,39 @@ describe('DevFleetPage', () => {
     })
     renderPage()
     await waitFor(() => expect(pollCount).toBeGreaterThan(0), { timeout: 3000 })
-    // Percent must reflect ONLY the ::step:: marker (index 0) — pip's stray
-    // "done" lines must not drive the coarse progress toward completion.
     const bar = await screen.findByRole('progressbar')
-    const pct = Number(bar.getAttribute('aria-valuenow'))
-    expect(pct).toBeGreaterThanOrEqual(0)
-    expect(pct).toBeLessThan(25) // still inside the Pull/pip band, nowhere near done
-    expect(screen.getByText(/~\d+%/)).toBeInTheDocument()
+    // Indeterminate: the ARIA value attributes must be absent, not zeroed.
+    expect(bar.getAttribute('aria-valuenow')).toBeNull()
+    expect(bar.getAttribute('aria-valuemax')).toBeNull()
+    expect(bar.className).toContain('animate-spin')
+    expect(screen.queryByText(/~?\d+%/)).toBeNull()
+    // The honest step signal — the server's label — is still shown.
+    expect(await screen.findByText('npm ci')).toBeInTheDocument()
+  })
+
+  it('spins the Prune merged button while the merged-scan is in flight', async () => {
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((r) => { release = r })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/prune-candidates')) {
+        // A big fleet keeps this scan open for seconds; hold it open here.
+        return gate.then(() => new Response(JSON.stringify({ ok: true, candidates: [{ name: 'merged-branch', code: 'merged' }], kept: [], scanned: 1 }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const btn = screen.getByText('Prune merged').closest('button') as HTMLButtonElement
+    expect(btn.querySelector('.animate-spin')).toBeNull()
+    fireEvent.click(btn)
+    await waitFor(() => expect(btn.getAttribute('aria-busy')).toBe('true'))
+    expect(btn.querySelector('.animate-spin')).not.toBeNull()
+    release!()
+    await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument(), { timeout: 3000 })
+    expect(btn.querySelector('.animate-spin')).toBeNull()
   })
 
   it('prune dialog renders with candidates and kept rows', async () => {
