@@ -34,10 +34,11 @@ registerBuiltinSurface({
   // Slot-bearing: default chat slots have surface === '' (or no mode set).
   slotMode: '',
   badgeLabel: 'unread conversations',
-  // Cross-page "agents are working" dot. Kept OUT of the unread badge on
-  // purpose: sub-agents in flight are not unread conversations, and folding
-  // them into that count would corrupt both the number and the tab-title
-  // attention sum.
+  // Expanded-rail activity stays separate from unread attention: sub-agents
+  // in flight are not unread conversations, and folding them into that count
+  // would corrupt both the number and the tab-title attention sum. The
+  // collapsed rail omits this context-poor signal; session rows identify the
+  // specific work when the user opens Sessions.
   activitySelector: selectSubagentActivityCount,
   activityLabel: 'subagents in flight',
 })

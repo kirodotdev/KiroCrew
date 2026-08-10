@@ -302,19 +302,17 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
     : <span className="absolute right-2 top-1/2 -translate-y-1/2 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" aria-label={ariaLabel}>{count}</span>
 }
 
-/** Live-activity dot for a nav item — distinct from the unread BadgeIndicator:
- *  a small pulsing accent ring rather than a count, so "3 unread" and "agents
- *  working" never overwrite each other on the same row. Positioned left of the
- *  badge when expanded, and offset from the collapsed dot. */
+/** Sub-agent activity belongs in the expanded rail, where the bot icon and
+ *  count communicate what is active. The collapsed rail omits it: a second
+ *  anonymous dot competes with the unread badge without identifying a session,
+ *  while the Sessions list provides the actionable per-session status. */
 function ActivityIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
-  if (count <= 0) return null
+  if (count <= 0 || collapsed) return null
   const ariaLabel = `${count} ${label}`
-  return collapsed
-    ? <span className="absolute bottom-1 right-1 w-2 h-2 bg-accent rounded-full animate-pulse z-10" role="status" aria-label={ariaLabel} />
-    : <span className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-accent" role="status" aria-label={ariaLabel}>
-        <Bot size={11} className="animate-pulse" aria-hidden />
-        {count}
-      </span>
+  return <span className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-accent" role="status" aria-label={ariaLabel}>
+    <Bot size={11} className="animate-pulse" aria-hidden />
+    {count}
+  </span>
 }
 
 /**

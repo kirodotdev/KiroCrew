@@ -3,7 +3,7 @@ import { render, screen, act, fireEvent, waitFor, within } from '@testing-librar
 import { renderWithProviders, createTestStore } from './helpers'
 import App, { calculateTopbarSearchLayout } from '../App'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
-import { openActivityPanel } from '../store/chatSlice'
+import { openActivityPanel, sseSubagentQueued } from '../store/chatSlice'
 import SegmentedControl from '../components/SegmentedControl'
 import { safeSetItem } from '../utils/safeStorage'
 
@@ -587,6 +587,27 @@ describe('App routing', () => {
     expect(await screen.findByText('Sessions')).toBeInTheDocument()
     // Leave -> label begins fade-out (still present until the timer).
     fireEvent.mouseLeave(rows[0])
+  })
+
+  it('omits sub-agent activity from the collapsed Sessions rail item', async () => {
+    localStorage.setItem('mc-nav', '1')
+    const store = createTestStore()
+    store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 }))
+
+    renderWithProviders(<App />, { route: '/chat', store })
+
+    expect(await screen.findByLabelText('Sessions')).toBeInTheDocument()
+    expect(screen.queryByLabelText('2 subagents in flight')).not.toBeInTheDocument()
+  })
+
+  it('keeps the sub-agent bot and count in the expanded Sessions rail item', async () => {
+    localStorage.removeItem('mc-nav')
+    const store = createTestStore()
+    store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 }))
+
+    renderWithProviders(<App />, { route: '/chat', store })
+
+    expect(await screen.findByLabelText('2 subagents in flight')).toBeInTheDocument()
   })
 
   it('surfaces the collapsed hover label on keyboard focus and is Enter-activatable', async () => {
