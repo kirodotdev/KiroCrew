@@ -882,9 +882,28 @@ class GatewayOrchestrator:
         # cfg.telegram.bot_token; all other settings come from the typed
         # cfg.telegram dataclass (no ad-hoc config.json re-parse).
         self._telegram_bot_token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
+        # telegram.accounts is deprecated and inert, and while it is set the channel
+        # stays OFF rather than falling back to the top-level token. A config that
+        # named accounts served ONLY those accounts — the top-level bot_token and
+        # allowed_user_ids were shadowed — so serving them now would reopen a bot
+        # the operator had stopped, under an allow-list they may have narrowed when
+        # they migrated. Staying off preserves what the accounts block already did
+        # and leaves re-enabling an explicit edit.
         self._telegram_enabled = bool(
-            cfg.telegram.enabled and (self._telegram_bot_token or cfg.telegram.accounts)
+            cfg.telegram.enabled and self._telegram_bot_token and not cfg.telegram.accounts
         )
+        if cfg.telegram.accounts:
+            logger.warning(
+                "telegram.accounts is no longer served (%d account(s): %s) — multi-bot "
+                "operation is withdrawn until a bot is a governable unit, and the "
+                "Telegram channel stays OFF while telegram.accounts is set (these "
+                "entries already shadowed the top-level token, so falling back to it "
+                "would start a bot you had stopped). Remove the accounts block and put "
+                "the one token you want served in telegram.bot_token; the entries are "
+                "preserved in config until you do.",
+                len(cfg.telegram.accounts),
+                ", ".join(sorted(cfg.telegram.accounts)),
+            )
         self._telegram_allowed_user_ids: list[int] = list(cfg.telegram.allowed_user_ids)
         # Forum-topic gate (fail closed): serve supergroup forum Topics only when
         # allow_forum is set AND the supergroup's chat_id is allow-listed.

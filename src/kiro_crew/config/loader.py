@@ -2401,9 +2401,11 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Telegram Account",
-            "Bind this agent to a named Telegram account from "
-            "telegram.accounts. Messages received by that bot are routed to "
-            "this agent. Empty means no binding (uses default agent routing).",
+            "Deprecated and inert: a binding to a named telegram.accounts entry "
+            "no longer routes anything, because named accounts no longer start a "
+            "bot. Preserved on load and save so an existing config is not "
+            "rewritten out from under the operator.",
+            deprecated=True,
         ),
     )
 
@@ -3937,11 +3939,14 @@ _GITLAB_HOST_NAME_RE = _re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
 
 
 def _parse_telegram_accounts(raw: object) -> dict[str, "TelegramAccountConfig"]:
-    """Parse the ``telegram.accounts`` map from raw config JSON.
+    """Parse the deprecated ``telegram.accounts`` map from raw config JSON.
 
-    Each value is a dict with optional keys matching :class:`TelegramAccountConfig`.
-    Invalid entries (non-dict values, missing bot_token) are skipped so a
-    hand-edited config never crashes gateway startup.
+    Parsing is retained so a config written by an earlier release round-trips
+    through :meth:`KiroCrewConfig.save` with its tokens and allow-lists intact;
+    no bot is started from the result. Each value is a dict with optional keys
+    matching :class:`TelegramAccountConfig`. Invalid entries (non-dict values,
+    missing bot_token) are skipped so a hand-edited config never crashes
+    gateway startup.
     """
     if not isinstance(raw, dict):
         return {}
@@ -3949,9 +3954,9 @@ def _parse_telegram_accounts(raw: object) -> dict[str, "TelegramAccountConfig"]:
     for account_id, acct_data in raw.items():
         if not isinstance(account_id, str) or not isinstance(acct_data, dict):
             continue
-        # Account IDs become part of the session-key channel namespace
-        # (e.g. "telegram.finance"). Reject any that contain characters the
-        # session-key format reserves (colon, whitespace, dots) or are empty.
+        # Account IDs are held to the same shape they were accepted under, so a
+        # config that round-trips here is byte-comparable to what an earlier
+        # release wrote: alphanumeric plus dash and underscore, never empty.
         if not account_id or not account_id.replace("-", "").replace("_", "").isalnum():
             continue
         token = str(acct_data.get("bot_token", "")).strip()
@@ -4077,11 +4082,13 @@ def _coerce_int(raw: object, default: int) -> int:
 
 @dataclass
 class TelegramAccountConfig:
-    """A single named Telegram bot account within a multi-account gateway.
+    """A single named Telegram bot account, retained only to preserve config.
 
-    Each account has its own bot token and allow-list, enabling one gateway
-    process to serve multiple Telegram bots simultaneously. The account binds
-    to an agent via the agents map (``telegram_account`` field).
+    Deprecated and inert: nothing starts a bot from this entry. It stays
+    parseable and serializable so that loading and saving a config written by an
+    earlier release round-trips the operator's tokens and allow-lists instead of
+    erasing them. To serve one of these bots, move its token to
+    ``telegram.bot_token``.
     """
 
     bot_token: str = field(
@@ -4188,36 +4195,18 @@ class TelegramConfig:
         default_factory=dict,
         metadata=_meta(
             "Accounts",
-            "Named Telegram bot accounts for multi-bot operation. Each key is an "
-            "account ID (e.g. 'main', 'finance') mapping to its own bot_token and "
-            "allow-list. When present, takes precedence over the top-level "
-            "bot_token/allowed_user_ids. When absent, the top-level fields are "
-            "treated as a single 'default' account (backward compatible).",
+            "Deprecated and inert: named Telegram bot accounts no longer start a "
+            "bot. Multi-bot operation is withdrawn until a bot is a governable "
+            "unit (its own enable switch, its own posture ceiling, and honest "
+            "audit attribution) rather than a second inbound door that only the "
+            "global telegram.enabled can close. The map is still parsed and "
+            "written back so an existing config keeps its tokens and allow-lists, "
+            "but nothing reads it: move the token you want served to "
+            "telegram.bot_token.",
             tags=["telegram"],
+            deprecated=True,
         ),
     )
-
-    def resolved_accounts(self) -> dict[str, "TelegramAccountConfig"]:
-        """Return the effective account map.
-
-        If ``accounts`` is populated, return it directly. Otherwise synthesize a
-        single ``"default"`` account from the legacy top-level fields. This
-        provides full backward compatibility: existing single-token configs work
-        unchanged.
-        """
-        if self.accounts:
-            return self.accounts
-        if not self.bot_token:
-            return {}
-        return {
-            "default": TelegramAccountConfig(
-                bot_token=self.bot_token,
-                allowed_user_ids=list(self.allowed_user_ids),
-                allow_forum=self.allow_forum,
-                allowed_forum_chat_ids=list(self.allowed_forum_chat_ids),
-                soft_threshold_pct=self.soft_threshold_pct,
-            )
-        }
 
 
 @dataclass

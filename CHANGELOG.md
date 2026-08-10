@@ -94,9 +94,14 @@ weeks in the open.
   dashboard and points at the full set of chat channels; walk through the Slack
   credentials only when you ask for them with `kirocrew setup --slack`. Docs and
   in-app copy describe Kiro Crew as multi-channel rather than Slack-first.
-- **Telegram** takes **multiple bot accounts per gateway** and accepts inbound
-  attachments — images for vision, documents, and audio that is transcribed on
-  arrival.
+- **Telegram** accepts inbound attachments — images for vision, documents, and
+  audio that is transcribed on arrival. Serving **multiple bot accounts per
+  gateway** was withdrawn before this release: a second bot is a second inbound
+  door, and it is only worth having once a bot can be turned off, given its own
+  security posture, and named honestly in the audit log on its own. A
+  `telegram.accounts` entry written by an earlier release candidate is preserved
+  in config but no longer starts a bot — move the token you want served to
+  `telegram.bot_token`.
 - A sub-agent's completion now reports back into **non-Slack** parent sessions,
   Discord continues the connected session when a reply arrives, and Slack
   renders an `OPTIONS` prompt as a real control everywhere it appears.
