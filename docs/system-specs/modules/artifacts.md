@@ -585,14 +585,73 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   content-affecting mutation (create, content-changing update, delete). A
   metadata-only rename fires a separate `rename` signal that refreshes the
   stored group label without re-ingesting (no chunk churn).
-- **First-enable backfill tied to source-row creation.** Because the feature is
-  on by default, the store may already hold artifacts created before the
-  listener existed. The one-time pass that ingests them is tied to the
-  *creation of the aggregate source row*: when `ensure_artifact_source` actually
-  inserts the row (its existence is the idempotency marker — no separate flag),
-  a background backfill runs once. On every later boot the row already exists,
-  so nothing re-runs. (Nothing writes the store while the gateway is down, and
-  there is no out-of-process writer, so no recurring reconcile is needed.)
+- **Reconcile on every start, not a creation-gated backfill.** The feature is
+  opt-in, and while it is off the change-listener is not registered, so writes in
+  that window never reach the Library. Tying the catch-up pass to *creation of
+  the aggregate source row* cannot repair that: the row outlives the feature
+  being switched off, so on any install that ever had it on a later opt-in gets
+  `created=False` and the pass never runs — the gap is permanent and silent.
+  `ArtifactKnowledgeSync.start()` therefore runs `reconcile_artifacts`
+  **unconditionally**, comparing the artifact store against
+  `artifact_item_state`: ingest what is missing or changed, drop state for
+  artifacts that no longer exist. `created` is now reported for logging only.
+  - **Converged is free.** `ingest_artifact` already skips unchanged content, so
+    the steady state spends no extraction calls and logs at debug.
+  - **Removals are judged against every artifact, not the eligible kinds.**
+    Narrowing `auto_ingest_artifact_kinds` makes an artifact ineligible, not
+    absent; reaping on that basis would delete content the user never deleted.
+    A reap also requires two signals, not one: `get()` raising
+    `ArtifactNotFoundError` *and* the artifact's directory being gone. That error
+    is also what a missing `meta.json` raises, which a partially-restored
+    directory hits while its content is still present, and deletion removes the
+    whole directory — so demanding both costs a recoverable stale group instead
+    of unrecoverable deleted items.
+  - **An emptied artifact is dropped unbudgeted.** Its body is blank, so there is
+    nothing to extract and the drop costs no LLM calls. Keeping it behind the
+    budget would let obsolete text stay searchable for as many restarts as a
+    backlog of newer changes takes to drain. Only tracked artifacts are read, and
+    the pass stands down on `source_missing` for the same reason
+    `ingest_artifact` does.
+  - **Off-window metadata drift is repaired unbudgeted.** A tracked artifact
+    whose kind differs from the kind recorded at ingest (`artifact_item_state.kind`)
+    had its group produced by the previous kind's reader, so that group is
+    reaped exactly as the live `upsert` path does, and the ingest loop rebuilds
+    it if the new kind is eligible. The decision reads the *recorded* kind, not
+    the current allowlist: "the artifact changed" and "the user narrowed
+    `auto_ingest_artifact_kinds`" are indistinguishable from the current kind
+    alone, and reaping on the latter would delete content the user never
+    touched. A row predating the column carries `NULL`, so its ingested kind is
+    unknown; that is resolved by which repair is safe. An eligible artifact is
+    re-ingested once (in budget, no deletion), which repairs any undetectable
+    drift and backfills the column so it never repeats; an ineligible one is
+    left alone, because deletion is the only repair available there and drift
+    was never proven. Where the
+    removal happens depends on whether anything will rebuild the group: a drift
+    into an *ineligible* kind is reaped in the unbudgeted pre-pass (removal is
+    the whole repair), while a drift between two *eligible* kinds is replaced
+    inside the budgeted loop, so a backlog past the budget keeps its stale group
+    and defers rather than being deleted now and restored several starts later.
+    An eligible replacement clears only the recorded content hash, never the
+    group: that defeats the unchanged-content short-circuit (a byte-identical
+    body under a new kind would otherwise keep the previous reader's chunks)
+    while leaving `ingest_file` to do its normal atomic replace, so a failed
+    extraction keeps the old items and the artifact stays searchable.
+    Every tracked artifact's stored group label is also refreshed to its current
+    redacted name, so a rename during the off-window stops showing the old
+    label. Neither pass touches content hashes — a converged store still spends
+    nothing.
+- **A dead source pointer neither deletes nor rewrites an index.**
+  `ingest_artifact` returns early whenever `get()` reported `source_missing`
+  (live file moved / unreadable, so the content is a snapshot fallback). That
+  snapshot is not evidence about the live file in either direction: blank does
+  not mean the artifact was emptied, and non-blank does not mean it is current,
+  so acting on it would either destroy a valid index or replace newer indexed
+  text with older. Same rule as the reconcile reap — only provable state acts.
+  - **Ingests are bounded per run** by `RECONCILE_INGEST_BUDGET` (a module
+    constant, not a config key). `ArtifactStore.list` is newest-first, so a
+    backlog from a long off-window drains across successive starts with the most
+    recent artifacts first, instead of arriving as one unbounded burst of billed
+    extraction calls. Unchanged artifacts do not consume budget.
 - **Security.** Ingested text *and* the LLM-originated artifact name (used as
   the source/item title) are passed through `redact_credentials()` and
   `redact_exfiltration_urls()` before landing in the Knowledge store (per

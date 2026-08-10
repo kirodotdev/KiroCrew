@@ -137,10 +137,12 @@ async def _start_artifact_ingest_async(app: web.Application) -> None:
     create / content-update / delete (from the agent's MCP tools, the CLI, the
     dashboard, bookmarks, and provider pull/clone -- all of which funnel
     through the store in the gateway process) ingests or removes that
-    artifact's item group in the aggregate "Artifacts" Knowledge source. On the
-    first run that creates the source row, a one-time backfill ingests
-    pre-existing artifacts. Gated on ``knowledge.auto_ingest_artifacts`` (off by
-    default). See ``kiro_crew.knowledge.artifact_ingest`` for the full design.
+    artifact's item group in the aggregate "Artifacts" Knowledge source. Every
+    start also runs a reconcile pass that ingests what the store has and the
+    Library lacks and drops state for artifacts that are gone, so drift from the
+    window in which this was switched off is repaired rather than left permanent.
+    Gated on ``knowledge.auto_ingest_artifacts`` (off by default). See
+    ``kiro_crew.knowledge.artifact_ingest`` for the full design.
     """
     cfg = KiroCrewConfig.load()
     if not cfg.knowledge.auto_ingest_artifacts:

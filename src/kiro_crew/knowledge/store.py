@@ -353,6 +353,7 @@ class KnowledgeStore:
                 name TEXT,
                 status TEXT DEFAULT 'active',
                 merged_into_source_id TEXT,
+                kind TEXT,
                 PRIMARY KEY (source_id, slug)
             );
 
@@ -499,6 +500,7 @@ class KnowledgeStore:
                     updated_at TEXT NOT NULL,
                     name TEXT,
                     merged_into_source_id TEXT,
+                    kind TEXT,
                     PRIMARY KEY (source_id, slug)
                 )
             """)
@@ -513,6 +515,14 @@ class KnowledgeStore:
             if "merged_into_source_id" not in ais_cols:
                 self.db.execute(
                     "ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
+            # The artifact kind AS INGESTED. Reconcile needs it to tell an
+            # artifact whose kind changed while sync was off (stale chunks, must
+            # be reaped) from one the user merely excluded by narrowing
+            # `auto_ingest_artifact_kinds` (still live, must NOT be reaped).
+            # Legacy rows carry NULL, which reconcile treats as "cannot tell"
+            # and leaves alone; the next ingest of that artifact backfills it.
+            if "kind" not in ais_cols:
+                self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN kind TEXT")
         # Migrate: agent_item_state table -- per-document item-group tracking for
         # the aggregate "Auto-added" KB source the agent writes to.
         if "agent_item_state" not in tables:
