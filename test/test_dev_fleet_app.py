@@ -1897,6 +1897,73 @@ async def test_discover_worktrees_git_failure_is_bounded(tmp_path):
     assert len(str(exc.value)) <= mod._GIT_ERR_MAX + 200
 
 
+@pytest.mark.asyncio
+async def test_discover_worktrees_unresolved_git_blames_host_not_repo(tmp_path):
+    """No trusted git => the error names the tool + override, not the repo.
+
+    Issue #2530: this failure used to surface as "git worktree discovery
+    failed in <repo>: no trusted executable for 'git' in <PATH>" — blaming a
+    healthy checkout, echoing the whole trusted PATH into the UI, and never
+    naming KIROCREW_DEVFLEET_BIN_GIT, the override that is the actual remedy.
+    """
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    stderr = f"{mod._UNRESOLVED_TOOL_PREFIX}'git' in {mod._TRUSTED_PATH}"
+    with patch.object(mod, "MAIN_REPO", str(repo)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(-1, "", stderr)
+         )):
+        with pytest.raises(RuntimeError) as exc:
+            await mod._discover_worktrees()
+    msg = str(exc.value)
+    assert "'git'" in msg  # names the tool that could not be resolved
+    assert "KIROCREW_DEVFLEET_BIN_GIT" in msg  # names the remedy
+    assert mod._TRUSTED_PATH not in msg  # PATH stays in the log, not the UI
+    assert "worktree discovery failed" not in msg  # not blamed on the repo
+    assert str(repo) not in msg  # the checkout is not implicated at all
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_real_git_error_not_misclassified(tmp_path):
+    """A git failure merely MENTIONING the sentinel text mid-string is not
+    reclassified: only a stderr `_run_cmd` itself synthesized (prefix at
+    position 0) takes the unresolved-tool branch; everything else still
+    surfaces git's own redacted, bounded message."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    with patch.object(mod, "MAIN_REPO", str(repo)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(128, "", f"fatal: {mod._UNRESOLVED_TOOL_PREFIX}'hook'")
+         )):
+        with pytest.raises(RuntimeError, match="worktree discovery failed"):
+            await mod._discover_worktrees()
+
+
+@pytest.mark.asyncio
+async def test_sync_unresolved_git_names_override_not_path(monkeypatch):
+    """/api/sync with no trusted git returns the same remedy-first message."""
+    with patch.object(mod, "_git", new_callable=AsyncMock,
+                      return_value=mod.BASE_BRANCH), \
+         patch.object(mod, "_venv_python",
+                      return_value=Path("/fake/.venv/bin/python")), \
+         patch.object(mod, "_trusted_bin", side_effect=lambda n: None), \
+         patch.object(mod, "_write_locked_console_scripts", return_value=[]):
+        mod._SYNC_RID = None
+        res = await mod._sync()
+    assert res["ok"] is False
+    assert "'git'" in res["error"]
+    assert "KIROCREW_DEVFLEET_BIN_GIT" in res["error"]
+    assert mod._TRUSTED_PATH not in res["error"]
+
+
+def test_bin_override_var_derivation():
+    """The advertised override var matches what _trusted_bin actually reads,
+    including dash-to-underscore mapping for non-git tools."""
+    assert mod._bin_override_var("git") == "KIROCREW_DEVFLEET_BIN_GIT"
+    assert mod._bin_override_var("some-tool") == "KIROCREW_DEVFLEET_BIN_SOME_TOOL"
+    assert "KIROCREW_DEVFLEET_BIN_GIT" in mod._unresolved_tool_message("git")
+
+
 # =============================================================================
 # HMAC middleware tests
 # =============================================================================
