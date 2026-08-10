@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json as _j2
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +12,49 @@ import pytest
 
 from kiro_crew.deploy import engine, handlers
 from kiro_crew.deploy import profiles as profiles_mod
+
+# On native Windows the deploy handlers hard-gate on ``os.name == "nt"`` (the
+# deploy scripts need a POSIX bash shell), so every handler test would receive
+# the 400 "requires a POSIX shell" early-return instead of exercising the flow.
+# The full backend suite happens to run these on POSIX, but a frontend-only PR
+# triggers a reduced backend scope on a Windows runner where they fail. This
+# skipif is reserved for the one test whose behaviour is genuinely POSIX-only
+# (file-permission semantics); the handler tests are made platform-independent
+# by the _force_posix_shell fixture below instead. See issue #2041.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only file-permission semantics; reduced Windows backend scope (#2041)",
+)
+
+
+@pytest.fixture(autouse=True)
+def _force_posix_shell(monkeypatch):
+    """Neutralise the handlers' ``os.name == "nt"`` platform gate.
+
+    The deploy handlers early-return 400/unsupported on Windows because the
+    deploy scripts require a POSIX shell. That gate hides the handler logic the
+    tests actually cover (scan gate, ttl validation, confirm gate, restricted
+    session deny), so on a Windows CI runner these tests get the platform
+    early-return instead of the assertion they expect.
+
+    Patch a handlers-module-local ``os`` proxy instead of the global
+    ``os.name``: pathlib and other stdlib consumers select behaviour from
+    ``os.name`` at call time, so a process-wide patch would break ``Path``
+    construction inside the handlers on a real Windows runner. The proxy
+    changes only what ``handlers.py`` itself sees. On a POSIX host this
+    changes nothing. The dedicated Windows-gate test overrides the same
+    module-local attribute in its own body (#2041).
+    """
+
+    class _PosixNameOs:
+        """Delegate everything to the real ``os`` except ``name``."""
+
+        name = "posix"
+
+        def __getattr__(self, attr):  # pragma: no cover - trivial delegation
+            return getattr(os, attr)
+
+    monkeypatch.setattr(handlers, "os", _PosixNameOs())
 
 
 @pytest.fixture(autouse=True)
@@ -624,7 +669,15 @@ def test_deploy_rejects_on_windows(monkeypatch):
 
     from kiro_crew.deploy import handlers
 
-    monkeypatch.setattr("os.name", "nt")
+    class _NtNameOs:
+        """Delegate everything to the real ``os`` except ``name``."""
+
+        name = "nt"
+
+        def __getattr__(self, attr):  # pragma: no cover - trivial delegation
+            return getattr(os, attr)
+
+    monkeypatch.setattr(handlers, "os", _NtNameOs())
 
     async def scenario():
         status, body = await handlers._do_deploy({"site_id": "test", "artifact_slug": "x"})
@@ -1293,6 +1346,7 @@ def test_internal_secret_teardown_denied_403():
 # F2: Unreadable files produce unreadable-file findings (fail closed)
 # ══════════════════════════════════════════════════════════════════════════════
 
+@_POSIX_ONLY
 def test_scan_tree_unreadable_file_produces_finding(tmp_path):
     """chmod-000 file in scan tree -> deploy blocked with unreadable-file finding."""
     import os

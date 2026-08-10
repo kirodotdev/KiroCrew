@@ -23,6 +23,17 @@ from aiohttp.test_utils import TestClient, TestServer  # noqa: F401
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew import platform_compat
 
+# These Dev Fleet make-live / cancel / sync / build tests assert POSIX-only
+# behaviour that has no Windows equivalent: os.geteuid, the ``.venv/bin`` layout
+# (vs ``.venv\\Scripts\\kirocrew.exe``), systemctl/launchctl service probing, and
+# ``/``-rooted trusted-binary paths. The production code is correct on Windows;
+# only these fixtures/assertions are POSIX-shaped, so they are skipped under the
+# reduced-scope backend CI that runs on Windows. See issue #2041.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only Dev Fleet make-live/cancel/sync semantics (issue #2041)",
+)
+
 
 # --- worktree porcelain parsing ---
 def test_parse_worktree_porcelain_basic():
@@ -1109,6 +1120,7 @@ async def test_pod_guard_denies_pin_file_without_checkout(monkeypatch, tmp_path)
     assert "ambiguous pod identity" in err
 
 
+@_POSIX_ONLY
 def test_read_pin_strict_propagates_read_errors(tmp_path):
     """_read_pin_strict must raise (not return empty) when the pin file
     exists but cannot be read."""
@@ -2457,6 +2469,7 @@ def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_dry_run_plan(monkeypatch, tmp_path):
     """dry_run returns the pointer-based plan without writing anything."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
@@ -2520,6 +2533,7 @@ async def test_make_live_missing_venv(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_venv_not_executable(monkeypatch, tmp_path):
     """.venv/bin/kirocrew present but NOT executable -> a distinct, actionable
     error (missing_venv is for the not-a-file case). A non-executable binary
@@ -2550,6 +2564,7 @@ async def test_make_live_missing_dist(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     """A real cutover on a drivable service writes the pointer AND restages the
     service definition, issues a detached restart, and invalidates the
@@ -2597,6 +2612,7 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_staged_only_leaves_service_definition_untouched(
     monkeypatch, tmp_path,
 ):
@@ -2627,6 +2643,7 @@ async def test_make_live_staged_only_leaves_service_definition_untouched(
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_latches_after_cutover(monkeypatch, tmp_path):
     """A successful cutover latches _MAKE_LIVE_COMMITTED. A second request —
     cutover for a DIFFERENT valid target, or even a dry_run — is then refused
@@ -2656,6 +2673,7 @@ async def test_make_live_latches_after_cutover(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_write_failure_does_not_latch(monkeypatch, tmp_path):
     """A cutover that fails during pointer write (before restart scheduling)
     must NOT latch — the restart never happened, so a subsequent cutover
@@ -2805,6 +2823,7 @@ async def test_make_live_pod_indeterminate_fails_closed(monkeypatch, tmp_path):
 
 # --- make-live: staged-only when service not drivable ---
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_stages_only_when_service_not_drivable(monkeypatch, tmp_path):
     """A live gateway installed as a SYSTEM unit (or no service at all) succeeds
     as staged_only: the pointer is written, no restart attempted, and a manual
@@ -2995,6 +3014,7 @@ def test_sd_value_rejects_control_char_paths():
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_escapes_special_char_worktree(monkeypatch, tmp_path):
     """A worktree path with a space yields a valid plan and a real cutover
     writes the resolved path into the pointer file correctly."""
@@ -3282,6 +3302,7 @@ async def test_make_live_refuses_when_prior_pointer_is_unreadable(
 
 # --- make-live: pointer write + failure rollback ---
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_rolls_back_pointer_on_restart_failure(monkeypatch, tmp_path):
     """A restart failure with a prior pointer restores the PRIOR content and
     reports rolled_back. When there was no prior pointer, the file is deleted."""
@@ -3305,6 +3326,7 @@ async def test_make_live_rolls_back_pointer_on_restart_failure(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_rolls_back_pointer_preserves_prior(monkeypatch, tmp_path):
     """When a prior pointer existed, restart failure restores its content."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
@@ -3330,6 +3352,7 @@ async def test_make_live_rolls_back_pointer_preserves_prior(monkeypatch, tmp_pat
 
 # --- make-live: concurrency single-flight lock ---
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
     """While one cutover holds the make-live lock, a concurrent second call is
     refused immediately with ``busy`` (fail-fast, not queued) and the winner
@@ -3380,6 +3403,7 @@ async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_lock_released_after_failure_and_reusable(monkeypatch, tmp_path):
     """The lock is released on the failure-rollback path too, so a subsequent
     cutover proceeds (never wedged on ``busy``)."""
@@ -3412,6 +3436,7 @@ async def test_make_live_lock_released_after_failure_and_reusable(monkeypatch, t
 
 # --- make-live: pointer-based live worktree resolution ---
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_live_worktree_path_prefers_pointer_over_service(monkeypatch, tmp_path):
     """_live_worktree_path returns the pointer target in preference to the
     service definition ONCE THE GATEWAY IS RUNNING IT. A cutover writes the
@@ -3453,6 +3478,7 @@ async def test_live_worktree_path_prefers_pointer_over_service(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_live_worktree_path_reports_running_image_while_staged(monkeypatch, tmp_path):
     """A staged pointer is NOT live: until the gateway restarts it is still
     executing the previous checkout, and reporting the pointer as live would
@@ -3482,6 +3508,7 @@ async def test_live_worktree_path_reports_running_image_while_staged(monkeypatch
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_live_worktree_path_honours_pointer_when_checkout_unknown(monkeypatch, tmp_path):
     """A packaged install is not a checkout, so the running image cannot be
     compared. That is "cannot verify", not a mismatch: the pointer stays
@@ -3507,6 +3534,7 @@ async def test_live_worktree_path_honours_pointer_when_checkout_unknown(monkeypa
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_repointing_at_the_running_checkout_cancels_a_staged_cutover(monkeypatch, tmp_path):
     """While a cutover is staged, naming the checkout that is RUNNING is a cancel.
 
@@ -3565,6 +3593,7 @@ def _stage_a_cutover(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cutover_unwind_runs_off_the_event_loop(monkeypatch, tmp_path):
     """The rollback must not block the loop.
 
@@ -3600,6 +3629,7 @@ async def test_cutover_unwind_runs_off_the_event_loop(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_drivable_host_with_a_stage_pending_refuses(monkeypatch, tmp_path):
     """On a host Dev Fleet CAN drive, this request must do NOTHING destructive.
 
@@ -3637,6 +3667,7 @@ async def test_drivable_host_with_a_stage_pending_refuses(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_keeps_a_pointer_selected_checkout_live(monkeypatch, tmp_path):
     """The scenario that makes deletion wrong.
 
@@ -3663,6 +3694,7 @@ async def test_cancel_keeps_a_pointer_selected_checkout_live(monkeypatch, tmp_pa
     OSError(30, "Read-only file system"),
 ])
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_write_failure_is_a_refusal_not_a_crash(monkeypatch, tmp_path, boom):
     """A full or read-only data home must refuse, not raise into a 500.
 
@@ -3685,6 +3717,7 @@ async def test_cancel_write_failure_is_a_refusal_not_a_crash(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_rolls_the_pointer_back_when_hardening_fails(monkeypatch, tmp_path):
     """write_target can fail AFTER replacing the pointer.
 
@@ -3713,6 +3746,7 @@ async def test_cancel_rolls_the_pointer_back_when_hardening_fails(monkeypatch, t
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_reports_a_failed_rollback(monkeypatch, tmp_path):
     """When the rollback itself fails the operator is told, not left guessing."""
     running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
@@ -3730,6 +3764,7 @@ async def test_cancel_reports_a_failed_rollback(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_invalid_target_is_a_refusal_not_a_crash(monkeypatch, tmp_path):
     """The validation half of the same guard."""
     running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
@@ -3746,6 +3781,7 @@ async def test_cancel_invalid_target_is_a_refusal_not_a_crash(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_dry_run_cancel_reports_the_plan_without_deleting(monkeypatch, tmp_path):
     """`dry_run` must never mutate.
 
@@ -3767,6 +3803,7 @@ async def test_dry_run_cancel_reports_the_plan_without_deleting(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_fails_fast_while_a_cutover_holds_the_lock(monkeypatch, tmp_path):
     """The cancel mutates the same pointer a cutover writes, so it takes the
     same single-flight lock and reports `busy` instead of racing it."""
@@ -3781,6 +3818,7 @@ async def test_cancel_fails_fast_while_a_cutover_holds_the_lock(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_refuses_once_a_cutover_has_committed(monkeypatch, tmp_path):
     """A committed cutover is already restarting; deleting the pointer then would
     land the pending restart somewhere the operator did not choose."""
@@ -3840,6 +3878,7 @@ def test_running_checkout_resolves_this_checkout():
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_staged_only_allows_subsequent_cutover(monkeypatch, tmp_path):
     """A staged_only cutover does NOT latch, so re-pointing to a DIFFERENT
     worktree proceeds without a restart_pending refusal."""
@@ -4133,6 +4172,7 @@ def _is_stage_step(argv: list) -> bool:
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_sync_stages_dist_on_a_stock_checkout(monkeypatch):
     """The staging step is part of the sync on a stock checkout.
 
@@ -4187,6 +4227,7 @@ async def test_sync_never_stages_dist_on_an_edition_checkout(monkeypatch):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
     """Only the network fetch step carries operator credential helpers;
     worktree-controlled merge/pip/npm steps must not (token minting via
@@ -4246,6 +4287,7 @@ async def test_fetch_pr_head_oid_refuses_non_merged(monkeypatch):
     assert await mod._fetch_pr_head_oid("feature-x") == "b" * 40
 
 
+@_POSIX_ONLY
 def test_trusted_bin_rejects_agent_writable_path(monkeypatch, tmp_path):
     """Bare command names resolve only inside the trusted bin dirs; a planted
     shim in an agent-writable PATH entry is never selected."""
@@ -4292,6 +4334,7 @@ def test_trusted_bin_pins_the_resolved_target_not_the_symlink(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_run_cmd_pins_trusted_path(monkeypatch):
     """_run_cmd rewrites bare names to trusted absolute paths and pins PATH."""
     captured: dict = {}
@@ -4490,6 +4533,7 @@ def test_strict_sandbox_hides_gh_config():
     assert ".config/gh" not in sandbox_mod._STANDARD_DIRS
 
 
+@_POSIX_ONLY
 def test_build_preexec_raises_nofile_ceiling(monkeypatch):
     """Build-class spawns get a 65536 NOFILE ceiling (default 1024 EMFILEs vite)."""
     import kiro_crew.sandbox as sandbox_mod
@@ -4507,6 +4551,7 @@ def test_build_preexec_raises_nofile_ceiling(monkeypatch):
     assert captured["max_open_files"] >= 65536
 
 
+@_POSIX_ONLY
 def test_build_preexec_tolerates_malformed_config(monkeypatch):
     """A junk operator value ("lots") must not raise — the spawn falls back
     to the ceiling instead of leaving Dev Fleet unable to start."""
@@ -5768,6 +5813,7 @@ async def test_api_health_start_id_none_safe():
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_returns_start_id(monkeypatch, tmp_path):
     """A real cutover captures + returns the pre-restart start identity so the
     dashboard reuses the same restart handshake (issue #639)."""
@@ -6097,6 +6143,7 @@ def test_declared_platforms_all_resolve_to_a_real_sys_platform():
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_path):
     """Pull+Build must build and stage inside ONE locked step.
 

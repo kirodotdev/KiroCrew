@@ -14,6 +14,15 @@ import pytest
 
 from kiro_crew import platform_compat
 
+# These tests exercise POSIX-only process-management semantics: process-group
+# APIs (os.killpg / os.getpgrp / os.getpgid), POSIX identity/age probes
+# (os.getuid / os.sysconf, /proc, ps), the raw signal.SIGKILL constant, and the
+# POSIX kill path of the orphan sweep (which no-ops on Windows). None of these
+# have a Windows equivalent, so they are skipped on Windows. See issue #2041.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX process-management semantics only; see issue #2041"
+)
+
 
 @pytest.fixture()
 def pid_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -237,6 +246,7 @@ class TestCleanupOrphanedMcpServers:
 
 
 class TestCleanupOrphanedSessions:
+    @_POSIX_ONLY
     def test_preserves_non_kiro_pids(self, session_pid_file: Path) -> None:
         """Bug fix: non-kiro PIDs (MCP servers) must survive — not killed."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions
@@ -269,6 +279,7 @@ class TestCleanupOrphanedSessions:
         content = session_pid_file.read_text(encoding="utf-8")
         assert content == ""
 
+    @_POSIX_ONLY
     def test_kiro_pids_killed(self, session_pid_file: Path) -> None:
         """Kiro PIDs should be SIGKILL'd."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions
@@ -642,6 +653,7 @@ class TestFindOrphanMcpCandidates:
         assert result == []
 
 
+@_POSIX_ONLY
 class TestKillOrphanMcps:
     """Tests for kill_orphan_mcps (kill confirmed orphans)."""
 
@@ -808,6 +820,7 @@ class TestParseEtime:
         assert _parse_etime("") == 0.0
 
 
+@_POSIX_ONLY
 class TestOurOrphanPids:
     """Direct tests for _our_orphan_pids (Linux /proc and macOS ps branches)."""
 
@@ -902,6 +915,7 @@ class TestOurOrphanPids:
         assert result == []
 
 
+@_POSIX_ONLY
 class TestLinuxPidAge:
     """Direct tests for _linux_pid_age /proc/<pid>/stat starttime parsing."""
 
@@ -1298,6 +1312,7 @@ class TestMarkedLauncherSweepIntegration:
 
         assert result == []
 
+    @_POSIX_ONLY
     def test_kill_reverify_honors_marked_launcher(self) -> None:
         from kiro_crew.session_pid import kill_orphan_mcps
 
@@ -1316,6 +1331,7 @@ class TestMarkedLauncherSweepIntegration:
         assert killed == 1
         mock_killpg.assert_called_once_with(720, signal.SIGKILL)
 
+    @_POSIX_ONLY
     def test_kill_reverify_skips_unmarked_launcher(self) -> None:
         from kiro_crew.session_pid import kill_orphan_mcps
 
@@ -1530,6 +1546,7 @@ class TestPidStartTokenIdentityGuard:
         # Entry retained so the next sweep can retry.
         assert entry in session_pid_file.read_text(encoding="utf-8")
 
+    @_POSIX_ONLY
     def test_matching_token_still_killed(self, session_pid_file: Path) -> None:
         """A genuine orphan (token matches) is still reaped — no regression."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions
@@ -1561,6 +1578,7 @@ class TestPidStartTokenIdentityGuard:
 
         assert (99998, platform_compat.SIGKILL) in kills
 
+    @_POSIX_ONLY
     def test_legacy_entry_without_token_still_swept(self, session_pid_file: Path) -> None:
         """Back-compat: a 2-field entry keeps its old cmdline+grace behavior."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions
@@ -1591,6 +1609,7 @@ class TestPidStartTokenIdentityGuard:
 
         assert (99998, platform_compat.SIGKILL) in kills
 
+    @_POSIX_ONLY
     def test_session_roots_sweep_parses_token_entry(self, session_pid_file: Path) -> None:
         """cleanup_orphaned_session_roots must not mis-prune 3-field entries.
 
@@ -1648,6 +1667,7 @@ class TestPidStartTokenIdentityGuard:
 
 
 class TestSpawnGraceCrossPlatform:
+    @_POSIX_ONLY
     def test_grace_applies_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Regression: the grace window was Linux-only, so macOS never got it."""
         import kiro_crew.session_pid as sp
@@ -1663,6 +1683,7 @@ class TestSpawnGraceCrossPlatform:
         monkeypatch.setattr(sp, "_pid_age_seconds", lambda p: sp.SWEEP_SPAWN_GRACE_SECONDS + 1)
         assert sp._pid_in_spawn_grace(4242) is False
 
+    @_POSIX_ONLY
     def test_unknown_age_treated_as_young(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Unreadable age → safe direction (skip the kill)."""
         import kiro_crew.session_pid as sp
