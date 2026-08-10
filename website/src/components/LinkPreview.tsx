@@ -199,8 +199,13 @@ export function LinkChip({ meta, href, children }: {
  * Built from `<span>`s with `block` rather than `<div>`s so the card stays
  * valid markup wherever the renderer places it, including inside a `<p>` —
  * `<button>` is phrasing content, so it is legal there too.
+ *
+ * `icon` replaces the fetched favicon for cards built synchronously from the
+ * URL alone (the Jira card): those have no icon URL to give `Favicon`, but they
+ * do have a provider mark component. The slot mirrors Favicon's box exactly, so
+ * both forms of the card line up. Decorative either way — `aria-hidden`.
  */
-export function LinkCard({ meta, href }: { meta: LinkMeta; href: string }) {
+export function LinkCard({ meta, href, icon }: { meta: LinkMeta; href: string; icon?: React.ReactNode }) {
   return (
     <span className="relative flex items-start gap-3 my-2 rounded-lg border border-border bg-card p-3 transition-colors hover:border-border-strong focus-within:border-border-strong">
       <a
@@ -210,12 +215,18 @@ export function LinkCard({ meta, href }: { meta: LinkMeta; href: string }) {
         data-unfurl-url={href}
         className="flex min-w-0 flex-1 items-start gap-3 no-underline focus-ring"
       >
-        <Favicon
-          icon={meta.icon}
-          iconDark={meta.iconDark}
-          className="w-8 h-8 rounded-md"
-          iconClassName="w-4 h-4"
-        />
+        {icon ? (
+          <span aria-hidden="true" className="w-8 h-8 shrink-0 grid place-items-center overflow-hidden rounded-md">
+            {icon}
+          </span>
+        ) : (
+          <Favicon
+            icon={meta.icon}
+            iconDark={meta.iconDark}
+            className="w-8 h-8 rounded-md"
+            iconClassName="w-4 h-4"
+          />
+        )}
         <span className="min-w-0 flex-1">
           <span className="block truncate text-text font-semibold">
             {meta.title || meta.domain}

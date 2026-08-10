@@ -34,9 +34,9 @@ import { usePathKind, type PathKind } from '../hooks/usePathKind'
 import { fileIcon } from '../utils/fileIcons'
 import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
-import { useLinkMeta } from '../lib/linkMeta'
+import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
-import { parseSourceLinkUrl } from '../utils/pullRequestLinks'
+import { parseSourceLinkUrl, type PullRequestLink } from '../utils/pullRequestLinks'
 import { JiraHostsCtx } from '../lib/jiraHosts'
 import JiraLogo from './icons/JiraLogo'
 import DiffBlock from './DiffBlock'
@@ -641,20 +641,75 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
  * (see `MdAnchor`), a link standing alone is a card. `LinkCard` replaces the
  * `<p>` rather than nesting inside it, so the card is a block-level sibling of
  * the surrounding paragraphs.
+ *
+ * Jira issue URLs take a synchronous branch of the same rule, mirroring
+ * `MdAnchor`'s chip: Jira instances sit behind auth, so the unfurl fetch can
+ * never be relied on to produce a preview for them. The card is built from the
+ * URL alone (provider mark, issue key, instance host) with NO request, and
+ * recognition is the same allowlist-gated parse as the chip (`JiraHostsCtx`).
+ * It obeys the same `enabled`/`live` gate as the fetched card, so ungated
+ * surfaces (file previews, artifact pages, sourcePos mode) and streaming tails
+ * keep today's inline chip.
  */
 function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphElement> & ExtraProps) {
   const override = useContext(LinkOverrideCtx)
+  const { enabled: cardsOn, live } = useContext(LinkUnfurlCtx)
+  const jiraHosts = useContext(JiraHostsCtx)
   const sole = soleLinkInParagraph(node)
-  const target = useUnfurlHref(sole?.href)
+  const jira = useMemo(() => {
+    if (!sole?.href || !cardsOn || live) return null
+    const link = parseSourceLinkUrl(sole.href, [], jiraHosts)
+    return link?.provider === 'jira' ? link : null
+  }, [sole?.href, cardsOn, live, jiraHosts])
+  // A recognized Jira link never reaches the unfurl machinery: its card is
+  // synchronous, so handing the href on would only add a fetch whose result
+  // is discarded.
+  const target = useUnfurlHref(jira ? null : sole?.href)
   // Same priority rule as MdAnchor: a link the override owns stays an in-app
   // affordance inside an ordinary paragraph, never a card. The provider is a
   // pure render prop (Issue Radar's returns a RefLink element), and the probe
   // only runs when a card is otherwise on the table.
-  const claimed = !!(target && override && override({ href: target, children: sole?.text }))
+  const cardHref = jira ? sole?.href ?? null : target
+  const claimed = !!(cardHref && override && override({ href: cardHref, children: sole?.text }))
   const unfurl = claimed ? null : target
   const meta = useLinkMeta(unfurl ?? undefined, unfurl !== null)
+  if (jira && !claimed) {
+    // `jira.url` (the parser's canonical form), NEVER `sole.href`: this branch
+    // sits before the `safeHttpUrl()` rejection the unfurl path gets, so the
+    // raw href could still carry Basic-auth userinfo. The canonical URL is
+    // rebuilt from hostname+port alone — credentials cannot survive into it —
+    // and it is the same target the inline chip's anchor already uses.
+    return (
+      <LinkCard
+        meta={jiraCardMeta(jira)}
+        href={jira.url}
+        icon={<JiraLogo size={18} className="shrink-0" />}
+      />
+    )
+  }
   if (unfurl && meta) return <LinkCard meta={meta} href={unfurl} />
   return <p {...sp(node)} className="my-1.5 leading-relaxed">{children}</p>
+}
+
+/**
+ * Synthetic `LinkMeta` for the Jira card, from the parsed URL alone: the issue
+ * key is the title and the instance host is the domain — the same information
+ * the inline chip carries, in card layout. No description on purpose: main has
+ * no Jira issue fetch, and inventing one here would put this card behind auth.
+ */
+function jiraCardMeta(link: PullRequestLink): LinkMeta {
+  let domain = ''
+  try { domain = new URL(link.url).host } catch { /* unreachable: link.url came out of the parser */ }
+  return {
+    url: link.url,
+    title: `${link.repo}-${link.number}`,
+    description: '',
+    siteName: '',
+    domain,
+    icon: '',
+    iconDark: '',
+    fetchedAt: 0,
+  }
 }
 
 const MD_COMPONENTS: Components = {
