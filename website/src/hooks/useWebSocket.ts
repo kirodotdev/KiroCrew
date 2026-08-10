@@ -143,6 +143,13 @@ export function useWebSocket() {
   const chunkRafRef = useRef<number | null>(null)
   const chunkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Slot-recency coalescing: last ts seen per slot, flushed once per frame.
+  // Last-seen wins — the reducer is last-write-wins, so this is the burst's end state.
+  const slotActivityBufRef = useRef<Map<string, string>>(new Map())
+  const slotActivityFlushScheduledRef = useRef(false)
+  const slotActivityRafRef = useRef<number | null>(null)
+  const slotActivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const stopVoice = useCallback(() => {
     voiceMutedRef.current = true
     if (activeAudioRef.current) {
@@ -346,6 +353,27 @@ export function useWebSocket() {
     else chunkTimerRef.current = setTimeout(() => flushChunks(), 16)
   }, [flushChunks])
 
+  /** Flush buffered slot-recency bumps: one touchSlotActivity per slot, not per
+   *  event. Cancels any pending frame first, mirroring flushChunks. */
+  const flushSlotActivity = useCallback(() => {
+    if (slotActivityRafRef.current != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(slotActivityRafRef.current)
+    if (slotActivityTimerRef.current != null) clearTimeout(slotActivityTimerRef.current)
+    slotActivityFlushScheduledRef.current = false
+    slotActivityRafRef.current = null
+    slotActivityTimerRef.current = null
+    const buf = slotActivityBufRef.current
+    if (buf.size === 0) return
+    for (const [key, ts] of buf) dispatch(touchSlotActivity({ key, ts }))
+    buf.clear()
+  }, [dispatch])
+
+  const scheduleSlotActivityFlush = useCallback(() => {
+    if (slotActivityFlushScheduledRef.current) return
+    slotActivityFlushScheduledRef.current = true
+    if (typeof requestAnimationFrame === 'function') slotActivityRafRef.current = requestAnimationFrame(() => flushSlotActivity())
+    else slotActivityTimerRef.current = setTimeout(() => flushSlotActivity(), 16)
+  }, [flushSlotActivity])
+
   const connect = useCallback(() => {
     // Guard against double-connect in StrictMode (dev) — if we already
     // have a WS that's open OR still connecting, reuse it.
@@ -389,6 +417,13 @@ export function useWebSocket() {
         chunkTimerRef.current = null
         chunkFlushScheduledRef.current = false
         chunkBufRef.current.clear()  // drop pre-disconnect partial chunks; refreshSlot recovers state
+        // Same for pending recency bumps: the fetchSlots below carries authoritative last_ts.
+        if (slotActivityRafRef.current != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(slotActivityRafRef.current)
+        if (slotActivityTimerRef.current != null) clearTimeout(slotActivityTimerRef.current)
+        slotActivityRafRef.current = null
+        slotActivityTimerRef.current = null
+        slotActivityFlushScheduledRef.current = false
+        slotActivityBufRef.current.clear()
         dispatch(sseConnected())
         dispatch(fetchSlots()).finally(() => { reconnectingRef.current = false })
         seedGoalLoops()
@@ -658,7 +693,8 @@ export function useWebSocket() {
             // message of any role), instead of waiting for the next full slots push. Fallback
             // ts is computed here so the touchSlotActivity reducer stays pure (Redux contract).
             if (data.slot && (data.role === 'user' || data.role === 'assistant' || data.role === 'tool_call' || data.role === 'tool_result')) {
-              dispatch(touchSlotActivity({ key: data.slot, ts: data.ts || new Date().toISOString() }))
+              slotActivityBufRef.current.set(data.slot, data.ts || new Date().toISOString())
+              scheduleSlotActivityFlush()
             }
             if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) dispatch(markSlotUnread(data.slot))
             // Theme audio: an agent reply arriving is the `message-received`
@@ -1167,7 +1203,7 @@ export function useWebSocket() {
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, scheduleChunkFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordResolvedAskId])
+  }, [dispatch, flushChunks, scheduleChunkFlush, scheduleSlotActivityFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordResolvedAskId])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes
@@ -1215,12 +1251,15 @@ export function useWebSocket() {
       clearTimeout(reconnectTimerRef.current)
       if (chunkRafRef.current != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(chunkRafRef.current)
       if (chunkTimerRef.current != null) clearTimeout(chunkTimerRef.current)
+      // Flush rather than drop: the store outlives the hook, so a pending bump would
+      // otherwise leave a stale sidebar tint. The flush also cancels the scheduled frame.
+      flushSlotActivity()
       wsRef.current?.close()
       wsRef.current = null
       window.removeEventListener('voice-stop', onVoiceStop)
       window.removeEventListener('voice-config-changed', onVoiceConfigChanged)
     }
-  }, [connect, stopVoice])
+  }, [connect, stopVoice, flushSlotActivity])
 
   /** Subscribe to log events — call with callback on mount, null on unmount. */
   const subscribeLogs = useCallback((cb: LogCallback) => {
