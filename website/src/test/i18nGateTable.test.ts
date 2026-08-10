@@ -38,13 +38,24 @@ const HEALTHY: Record<string, { status: number, text: string }> = {
   plural: run(0, "OK: no literal-'s' pluralization found."),
   dnt: run(0, 'OK: 19 DNT term(s) intact across 9 catalog(s) — 62207 value(s) scanned.'),
   manifest: run(0, 'OK: 16 built-in manifests, 147 strings match locales/en.json exactly.'),
+  units: run(0, '[added-lines] 0 number+unit literal(s) on lines you wrote\n[vs-base] 0 touched file(s) gained number+unit literals\nOK: 52 un-migrated number+unit literal(s) across 1026 file(s), baseline 74.'),
   source: run(0, '[source-strings] 0 new key(s) vs origin/main, 0 finding(s).\n[changed-values] 0 catalog QA finding(s) among values changed vs origin/main.'),
   strings: run(0, '[added-lines] 0 untranslated string(s) on lines this branch wrote.\n[vs-base] 0 touched file(s) gained untranslated strings vs the base.\nOK: 1324 untranslated strings across 241 files, at or below the baseline of 1837.\nOK: 1118 untranslated string(s) inside ALL-CAPS constants across 249 files, at or below the ceiling of 1118.'),
 }
 
 const runsOf = (over: Record<string, { status: number, text: string }> = {}) => {
   const m = new Map<string, { status: number, text: string }>()
-  for (const s of SCRIPTS) m.set(s.key, over[s.key] ?? HEALTHY[s.key])
+  for (const s of SCRIPTS) {
+    // A script registered in the table but missing from HEALTHY resolves every row
+    // it owns as MISSING in EVERY scenario below, which surfaces as a pile of
+    // unrelated `expected true to be false`. Name the real problem instead.
+    const r = over[s.key] ?? HEALTHY[s.key]
+    if (!r) {
+      throw new Error(`no HEALTHY fixture for the '${s.key}' script `
+        + `(${s.argv.join(' ')}): add one, or every row it owns reads MISSING here.`)
+    }
+    m.set(s.key, r)
+  }
   return m
 }
 const decide = (over = {}, base = 'origin/main') => {
@@ -141,13 +152,20 @@ describe('no base commit — the diff-scoped checks did not run, and are not bro
   const noBase = () => decide({
     strings: run(0, '[diff-scope] skipped — I18N_BASE_REF is unset, so there is nothing to diff.\nOK: 1324 untranslated strings across 241 files, at or below the baseline of 1837.\nOK: 1118 untranslated string(s) inside ALL-CAPS constants across 249 files, at or below the ceiling of 1118.'),
     source: run(0, 'OK: skipped — cannot read the English catalogs at origin/main (shallow clone?).'),
+    // With no base the unit gate prints its whole-repo line ONLY. Staying silent on
+    // the diff-scoped markers is what lets the table say NOT RUN instead of
+    // inventing a clean result for a check that never ran.
+    units: run(0, 'OK: 52 un-migrated number+unit literal(s) across 1026 file(s), baseline 74.\nnote: I18N_BASE_REF unset; the diff-scoped checks did not run.'),
   }, '')
 
   it('marks them NOT RUN rather than MISSING, and passes', () => {
     const { rows, failed } = noBase()
-    for (const id of ['added-lines', 'vs-base', 'source-strings', 'changed-values']) {
+    for (const id of ['added-lines', 'vs-base', 'source-strings', 'changed-values',
+      'unit-added-lines', 'unit-vs-base']) {
       expect(row(rows, id).state, id).toBe('NOT RUN')
     }
+    // The whole-repo ceiling needs no base and still reports.
+    expect(row(rows, 'unit-ceiling').state).toBe('PASS')
     expect(failed).toBe(false)
   })
 
@@ -223,7 +241,7 @@ describe('a whole-repo total over its ceiling reports and does NOT fail', () => 
 })
 
 describe('the table covers the chain it replaced', () => {
-  it('runs exactly the eight scripts, with the flags the && chain used', () => {
+  it('runs exactly the nine scripts, with the flags the && chain used', () => {
     // Dropping a script from this table is a silent loss of coverage, and this is the
     // only test that would notice. `--baseline=3` is part of the contract: the codemod
     // ratchet lived in the package.json chain and moved here.
@@ -236,6 +254,7 @@ describe('the table covers the chain it replaced', () => {
       'check-i18n-strings.mjs',
       'check-dnt-catalogs.mjs',
       'check-app-manifest-sync.mjs',
+      'check-unit-literals.mjs',
     ])
   })
 
@@ -255,7 +274,7 @@ describe('the table covers the chain it replaced', () => {
     // whole-repo number is a stored total another branch can move without touching your
     // files, so it reports. `dynamic-keys` was the last bidirectional ratchet in the repo.
     expect(CHECKS.filter(c => c.enforce === 'info').map(c => c.id))
-      .toEqual(['dynamic-keys', 'extractable', 'untranslated', 'allcaps'])
+      .toEqual(['unit-ceiling', 'dynamic-keys', 'extractable', 'untranslated', 'allcaps'])
     for (const c of CHECKS.filter(x => x.scope === 'repo' && x.enforce !== 'hard-zero')) {
       expect(c.enforce, `${c.id} is whole-repo and not a hard zero, so it must be info`)
         .toBe('info')
