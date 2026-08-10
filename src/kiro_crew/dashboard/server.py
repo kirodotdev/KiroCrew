@@ -34,6 +34,7 @@ from kiro_crew.config import data_home
 from kiro_crew.config.loader import KiroCrewConfig, refresh_materialized_agents
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import (
+    cautious_boot,
     channel_slots,
     chat,
     handlers,
@@ -2931,6 +2932,7 @@ async def start_dashboard(
     # wedge-prone blocking work that would freeze this event loop if run inline.
     # subprocess_executor (not the default to_thread pool) isolates it so a hung
     # `ps` cannot starve asyncio's default executor (the RFC's bulkhead intent).
+    await cautious_boot.pause_before("app backends")
     started_apps = await asyncio.get_running_loop().run_in_executor(
         subprocess_executor(), start_enabled_app_backends
     )
@@ -3433,7 +3435,10 @@ async def start_dashboard(
                 except Exception:
                     logger.debug("stall-exit notification failed", exc_info=True)
 
-    # Fire background MCP probe at startup (non-blocking)
+    # Fire background MCP probe at startup (non-blocking). The probe spawns a
+    # handshake subprocess per configured MCP server, so under cautious boot it
+    # gets its own launch window instead of landing on top of the app backends.
+    await cautious_boot.pause_before("MCP server probe")
     asyncio.create_task(handlers._bg_mcp_probe())
 
     # Start terminal orphan reaper (kills PTYs with no WS past the reaper window)
@@ -3521,6 +3526,9 @@ async def start_dashboard(
         # messages, so starting up without it is safe.
         logger.warning("channel transcript migration failed", exc_info=True)
 
+    # Session restores spawn a kiro-cli process per restored tab — the last
+    # large group of the startup battery, so it too gets a cautious-boot window.
+    await cautious_boot.pause_before("session restore")
     with state.suspend_slots_push():
         await chat.restore_open_slots_async(state)
         restored = await chat.restore_recent_sessions_async(

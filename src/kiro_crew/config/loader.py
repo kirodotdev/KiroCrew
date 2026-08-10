@@ -2062,6 +2062,18 @@ class DashboardConfig:
             "probe wins first and the stack dump is lost.",
         ),
     )
+    cautious_boot: bool = field(
+        default=True,
+        metadata=_meta(
+            "Cautious Boot After Crash",
+            "When the gateway starts and finds a recent loop-stall crash dump "
+            "(under 30 minutes old) from the previous instance, stagger the "
+            "startup burst — MCP servers, cron scheduler, app backends, "
+            "session restores — with short pauses instead of launching "
+            "everything at once, so a host still under memory pressure is "
+            "not pushed straight back into the same collapse.",
+        ),
+    )
     widget_density: str = field(
         default="more",
         metadata=_meta(
@@ -5332,6 +5344,7 @@ class KiroCrewConfig:
                     LOOP_STALL_EXIT_AFTER_MIN,
                     LOOP_STALL_EXIT_AFTER_MAX,
                 ),
+                cautious_boot=_safe_bool(dashboard_data.get("cautious_boot"), True),
                 auto_open_browser=dashboard_data.get("auto_open_browser", True),
                 prevent_sleep=_safe_bool(dashboard_data.get("prevent_sleep"), False),
                 quick_send=dashboard_data.get("quick_send", False),
