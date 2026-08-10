@@ -5,13 +5,17 @@ from __future__ import annotations
 import base64
 import json
 import os
+import random
+import string
 import sys
 from pathlib import Path
 
 import pytest
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
+from kiro_crew import security
 from kiro_crew.security import (
+    _SECRET_KEY_LEN,
     apply_resource_limits,
     audit_bash_command,
     audit_bash_exfiltration,
@@ -894,6 +898,149 @@ class TestBareSecretKeyRedaction:
         result, warnings = redact_credentials(blob)
         assert result == blob
         assert not warnings
+
+
+class TestBareSecretRunLevelFastPath:
+    """The run-level fast path must be an optimization ONLY, never a hole.
+
+    ``_contains_bare_secret`` slides a 40-char window byte by byte, so a long
+    base64-alphabet run costs one full classification per offset. Two per-window
+    gates reject on a property closed under substring -- a missing character
+    class (gate 2) and all-hex (gate 3) -- so the whole run can be asked once and
+    every window retired. These tests pin both halves of that claim: the fast
+    path really fires (a behaviour-only test cannot see it), and it cannot
+    swallow a genuine secret hidden inside a long run.
+    """
+
+    @staticmethod
+    def _count_window_classifications(run: str, monkeypatch: pytest.MonkeyPatch) -> int:
+        """Return how many 40-char windows of *run* got fully classified."""
+        calls = []
+        original = security._looks_like_secret_key
+
+        def counting(token: str) -> bool:
+            calls.append(token)
+            return original(token)
+
+        monkeypatch.setattr(security, "_looks_like_secret_key", counting)
+        security._contains_bare_secret(run)
+        return len(calls)
+
+    def test_run_missing_a_char_class_skips_every_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 520 lowercase chars: no window can hold an uppercase char or a digit,
+        # so gate 2 rejects all 481 of them. Without the fast path this is 481
+        # full classifications; with it, zero.
+        run = "abcdefghijklmnopqrstuvwxyz" * 20
+        assert len(run) == 520
+        assert security._contains_bare_secret(run) is False
+        assert self._count_window_classifications(run, monkeypatch) == 0
+
+    def test_all_hex_run_skips_every_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A long mixed-case hex digest passes gate 2 in every window but dies at
+        # gate 3 in every window. All-hex is closed under substring, so one
+        # whole-run test retires the slide -- 137 classifications become zero.
+        run = "0123456789abcdefABCDEF" * 8
+        assert len(run) == 176
+        assert security._HEX_ONLY_RE.match(run)
+        assert security._contains_bare_secret(run) is False
+        assert self._count_window_classifications(run, monkeypatch) == 0
+
+    def test_exactly_one_window_run_is_still_classified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # BOUNDARY: the fast path is gated on `len(run) > _SECRET_KEY_LEN`, so a
+        # 40-char run must still reach the classifier.
+        #
+        # The fixture must FAIL one of the two fast-path gates, or this test
+        # cannot detect the boundary being wrong. With 40 lowercase chars: under
+        # `>` the fast path is skipped and the sole window is classified (1);
+        # under a mutated `>=` the fast path fires, the class check rejects, and
+        # nothing is classified (0). A fixture that clears both gates -- an AWS
+        # example key, say -- passes either way and pins nothing.
+        run = "abcdefghijklmnopqrstuvwxyz" + "abcdefghijklmn"
+        assert len(run) == _SECRET_KEY_LEN
+        assert not security._has_all_three_char_classes(run)
+        assert self._count_window_classifications(run, monkeypatch) == 1
+
+    def test_secret_glued_into_a_long_mixed_run_is_still_found(self) -> None:
+        # The fast path must not retire a run that DOES contain a secret. A real
+        # key glued to base64 padding on both sides makes a 60-char run whose
+        # only qualifying window is at a non-zero offset.
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        run = "abc123XYZ/" + secret + "0123456789"
+        assert len(run) > _SECRET_KEY_LEN
+        assert security._contains_bare_secret(run) is True
+        result, warnings = redact_credentials(f"token={run}")
+        assert secret not in result
+        assert warnings
+
+    def test_run_with_all_three_classes_is_fully_slid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # NEGATIVE CONTROL: the fast path may skip a run only when it can PROVE
+        # no window qualifies. This run holds all three classes and is not
+        # all-hex, so every one of its 21 windows must still be classified --
+        # 60 - 40 + 1 == 21. (Beware fixtures like "aB3" * 30: a, B and 3 are
+        # all hex digits, so that run is all-hex and is legitimately skipped.)
+        run = "Zz9" * 20
+        assert len(run) == 60
+        assert not security._HEX_ONLY_RE.match(run)
+        assert security._contains_bare_secret(run) is False
+        assert self._count_window_classifications(run, monkeypatch) == 21
+
+
+class TestCharClassHelperMatchesTheThreeScanDefinition:
+    """``_has_all_three_char_classes`` replaced three ``any()`` scans.
+
+    The single-pass early-exit loop must agree with the definition it replaced on
+    every input, including the elif-chain cases where one character could be
+    considered for more than one class.
+    """
+
+    @staticmethod
+    def _reference(text: str) -> bool:
+        return (
+            any(ch.islower() for ch in text)
+            and any(ch.isupper() for ch in text)
+            and any(ch.isdigit() for ch in text)
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "a",
+            "A",
+            "1",
+            "aA1",
+            "1Aa",
+            "A1a",
+            "aaaaaaaa",
+            "AAAAAAAA",
+            "12345678",
+            "aaaa1111",
+            "AAAA1111",
+            "aaaaAAAA",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "0123456789abcdef0123456789abcdef01234567",
+            "+/+/+/+/",
+            "MASSE",
+            "straße",
+        ],
+    )
+    def test_agrees_with_reference_on_representative_shapes(self, text: str) -> None:
+        assert security._has_all_three_char_classes(text) is self._reference(text)
+
+    def test_agrees_with_reference_across_a_random_corpus(self) -> None:
+        rng = random.Random(20260810)
+        alphabet = string.ascii_letters + string.digits + "+/=-_ "
+        for _ in range(4000):
+            text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 44)))
+            assert security._has_all_three_char_classes(text) is self._reference(
+                text
+            ), f"disagreement on {text!r}"
 
 
 class TestSandboxDeniedCommands:

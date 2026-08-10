@@ -6104,6 +6104,35 @@ def _shannon_entropy(token: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in counts.values())
 
 
+def _has_all_three_char_classes(text: str) -> bool:
+    """Return True if *text* holds at least one lowercase, uppercase AND digit.
+
+    One pass with early exit, rather than three ``any()`` scans. Semantically
+    identical, but this is the hottest predicate in the redaction path:
+    :func:`_contains_bare_secret` slides a 40-char window BYTE BY BYTE across
+    every base64-alphabet run, so a single 512-char run asks this question 473
+    times. Three ``any()`` scans build three generators per call and cost the
+    SUM of their three first-match offsets; one loop breaks on completion and
+    costs the MAX. Both forms short-circuit, so the saving is generator frames
+    plus that sum-vs-max difference.
+
+    Absence of a class is closed under substring, which is what lets
+    :func:`_contains_bare_secret` ask this about a whole run and retire every
+    window at once.
+    """
+    has_lower = has_upper = has_digit = False
+    for ch in text:
+        if not has_lower and ch.islower():
+            has_lower = True
+        elif not has_upper and ch.isupper():
+            has_upper = True
+        elif not has_digit and ch.isdigit():
+            has_digit = True
+        if has_lower and has_upper and has_digit:
+            return True
+    return False
+
+
 def _decodes_to_printable_text(token: str) -> bool:
     """Return True if *token* base64-decodes to mostly-printable ASCII.
 
@@ -6181,10 +6210,7 @@ def _looks_like_secret_key(token: str) -> bool:
     """
     if len(token) != _SECRET_KEY_LEN:
         return False
-    has_lower = any(ch.islower() for ch in token)
-    has_upper = any(ch.isupper() for ch in token)
-    has_digit = any(ch.isdigit() for ch in token)
-    if not (has_lower and has_upper and has_digit):
+    if not _has_all_three_char_classes(token):
         return False
     if _HEX_ONLY_RE.match(token):
         return False
@@ -6225,6 +6251,23 @@ def _contains_bare_secret(run: str) -> bool:
     """
     if len(run) < _SECRET_KEY_LEN:
         return False
+    # RUN-LEVEL FAST PATH. Two of the per-window gates reject on a property that
+    # is closed under substring, so asking about the whole run once can retire
+    # every window without classifying any of them:
+    #   gate 2 -- a character class absent from the run is absent from all of its
+    #             substrings, so no window can hold all three;
+    #   gate 3 -- every substring of an all-hex run is itself all-hex.
+    # Both answers are False either way, so this only reorders WHICH check
+    # returns False, never the verdict. Guarded on a run longer than one window,
+    # because at exactly 40 chars the sole window pays the same two gates anyway
+    # and the pre-check would be pure duplicate work. This is what keeps the
+    # slide affordable on long non-secret runs (hex digests, lowercase blobs),
+    # which are the common shape in tool output.
+    if len(run) > _SECRET_KEY_LEN:
+        if not _has_all_three_char_classes(run):
+            return False
+        if _HEX_ONLY_RE.match(run):
+            return False
     if _decodes_to_printable_text(run):
         return False
     for start in range(len(run) - _SECRET_KEY_LEN + 1):
