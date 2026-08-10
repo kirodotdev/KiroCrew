@@ -242,6 +242,26 @@ class TestRenewal:
         outcomes = [c.kwargs["outcome"] for c in calls]
         assert "denied" in outcomes
 
+    def test_renew_extends_deadline_with_exactly_one_renewed_event(
+        self, override: SafetyOverride
+    ) -> None:
+        """Happy path: the deadline moves forward and ONE renewed event is logged."""
+        mock_sel_instance = MagicMock()
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
+            override.activate("slack", ttl=60)
+            deadline_before = override._expires_at
+            result = override.renew("slack")
+        assert result.renewed is True
+        assert result.ttl > 0
+        assert override._expires_at > deadline_before
+        renew_events = [
+            c
+            for c in mock_sel_instance.log_api_access.call_args_list
+            if c.kwargs["operation"] == "safety_override:renew"
+        ]
+        assert len(renew_events) == 1
+        assert renew_events[0].kwargs["outcome"] == "renewed"
+
 
 # ─── Status ─────────────────────────────────────────────────────────────────
 
@@ -340,6 +360,184 @@ class TestSelFaultTolerance:
             # Should not raise
             override.deactivate("slack")
         assert not override.is_active()
+
+    def test_sel_crash_refuses_renew_and_leaves_deadline_unmoved(
+        self, override: SafetyOverride
+    ) -> None:
+        """SEL audit failure during renew() must refuse the extension — fail closed.
+
+        The sink (``log_api_access``) raises, not ``_log_sel``: patching
+        ``_log_sel`` would pass regardless of the ``critical`` flag, and the
+        flag is exactly what this test pins.
+        """
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack", ttl=60)
+        deadline_before = override._expires_at
+        last_renewed_before = override._last_renewed_at
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock(
+                log_api_access=MagicMock(side_effect=RuntimeError("boom"))
+            )
+            result = override.renew("slack")
+        assert result.renewed is False
+        assert result.ttl == 0
+        assert result.reason == "audit_failed"
+        # The grant itself is untouched: still active, deadline unmoved.
+        assert override._expires_at == deadline_before
+        assert override._last_renewed_at == last_renewed_before
+        assert override.is_active()
+
+    def test_renew_does_not_resurrect_grant_deactivated_during_audit(
+        self, override: SafetyOverride
+    ) -> None:
+        """A deactivate() landing while the renew audit is being written wins.
+
+        The renew SEL event is written outside ``_lock``, so a concurrent
+        deactivate() can zero the grant in that window; the post-audit
+        re-verify must refuse the commit rather than resurrect the grant.
+        """
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack", ttl=60)
+
+        sink = MagicMock()
+
+        def _deactivate_on_renew(**kwargs: object) -> None:
+            if (
+                kwargs.get("operation") == "safety_override:renew"
+                and kwargs.get("outcome") == "renewed"
+            ):
+                override.deactivate("dashboard")
+
+        sink.log_api_access.side_effect = _deactivate_on_renew
+        with patch("kiro_crew.safety_override.sel", return_value=sink):
+            result = override.renew("slack")
+
+        assert result.renewed is False
+        assert result.reason == "not_active"
+        # The deactivation stands: no resurrection, no deadline.
+        assert override._active is False
+        assert override._expires_at == 0.0
+        assert not override.is_active()
+
+    def test_renew_does_not_overwrite_activation_landed_during_audit(
+        self, override: SafetyOverride
+    ) -> None:
+        """A fresh activate() landing during the renew audit window wins.
+
+        The new activation audited its own grant and installed its own
+        deadline; a stale renewal committing afterwards would overwrite it
+        with a deadline computed for the OLD grant. The activation-count
+        snapshot must refuse the commit.
+        """
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack", ttl=60)
+
+        sink = MagicMock()
+
+        def _activate_on_renew(**kwargs: object) -> None:
+            if (
+                kwargs.get("operation") == "safety_override:renew"
+                and kwargs.get("outcome") == "renewed"
+            ):
+                override.activate("dashboard", ttl=30)
+
+        sink.log_api_access.side_effect = _activate_on_renew
+        with patch("kiro_crew.safety_override.sel", return_value=sink):
+            result = override.renew("slack")
+
+        assert result.renewed is False
+        # The fresh activation's grant is intact: its deadline (~30s out) was
+        # not replaced by the stale renewal's much longer TTL, and the renewal
+        # left no bookkeeping behind.
+        assert override.is_active()
+        assert override._source == "dashboard"
+        assert override._expires_at - time.monotonic() <= 30 + 1
+        assert override._last_renewed_at == 0.0
+
+    def test_renew_refuses_when_permanent_activation_lands_during_audit(
+        self, override: SafetyOverride
+    ) -> None:
+        """A permanent grant installed during the audit window is left alone.
+
+        The renewal must neither report success (it committed nothing) nor
+        touch the permanent grant, and the already-persisted renewed event
+        must be followed by a corrective denied event so the SEL stays
+        truthful.
+        """
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack", ttl=60)
+
+        sink = MagicMock()
+
+        def _go_permanent_on_renew(**kwargs: object) -> None:
+            if (
+                kwargs.get("operation") == "safety_override:renew"
+                and kwargs.get("outcome") == "renewed"
+            ):
+                override.activate_declared()
+
+        sink.log_api_access.side_effect = _go_permanent_on_renew
+        with patch("kiro_crew.safety_override.sel", return_value=sink):
+            result = override.renew("slack")
+
+        assert result.renewed is False
+        # The permanent grant is untouched and still permanent.
+        assert override.is_permanent is True
+        assert override._last_renewed_at == 0.0
+        # A corrective denied event follows the persisted renewed event.
+        renew_events = [
+            c
+            for c in sink.log_api_access.call_args_list
+            if c.kwargs["operation"] == "safety_override:renew"
+        ]
+        assert [c.kwargs["outcome"] for c in renew_events] == ["renewed", "denied"]
+        assert "superseded_by_activation" in renew_events[-1].kwargs["resources"]
+
+    def test_renew_begun_active_refuses_grace_commit_after_midaudit_off(
+        self, override: SafetyOverride
+    ) -> None:
+        """A renewal that began ACTIVE may not commit through the grace arm.
+
+        Mid-audit the grant lapses and the operator switches it off: the
+        expiry bookkeeping clears ``_active`` but keeps the past deadline, and
+        deactivate() on an already-lapsed grant is an early-return no-op, so
+        the grace arm alone cannot distinguish "expired" from "operator said
+        off". The renewal began on the active arm, so the commit must require
+        the grant to STILL be active — not slide into grace and restore
+        auto-approval over the operator's off.
+        """
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack", ttl=60)
+
+        sink = MagicMock()
+
+        def _lapse_and_off_on_renew(**kwargs: object) -> None:
+            if (
+                kwargs.get("operation") == "safety_override:renew"
+                and kwargs.get("outcome") == "renewed"
+            ):
+                # The deadline passes mid-audit and is_active() bookkeeping
+                # runs (e.g. from the operator's off flow reading status).
+                override._expires_at = time.monotonic() - 1  # lapsed, in grace
+                override._active = False
+                # The operator's explicit off: early-return no-op on a lapsed
+                # grant, deadline stays intact.
+                override.deactivate("dashboard")
+
+        sink.log_api_access.side_effect = _lapse_and_off_on_renew
+        with patch("kiro_crew.safety_override.sel", return_value=sink):
+            result = override.renew("slack")
+
+        assert result.renewed is False
+        assert result.reason == "not_active"
+        assert override._active is False
+        assert not override.is_active()
+        assert override._last_renewed_at == 0.0
 
     def test_sel_import_error_rolls_back_activate(self, override: SafetyOverride) -> None:
         """SEL import error during activate() must roll back — fail closed."""

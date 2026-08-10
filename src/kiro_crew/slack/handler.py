@@ -1483,7 +1483,9 @@ async def _handle_slash_command(
                     channel, f"YOLO mode is already on ({describe_grant_lifetime()}).", reply_ts
                 )
         elif len(parts) >= 2 and parts[1].lower() == "renew":
-            result = safety_override().renew("slack")
+            # renew() audits fail-closed with a synchronous SEL write; keep
+            # that filesystem I/O off the event loop.
+            result = await asyncio.to_thread(safety_override().renew, "slack")
             if result.renewed:
                 sel().log_api_access(
                     caller=user_id,

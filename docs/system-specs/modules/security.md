@@ -1186,6 +1186,18 @@ SEL audit events are emitted on every lifecycle transition:
 - `safety_override:expired` — TTL reached, auto-deactivated
 - `safety_override:deactivate` — manually disabled
 
+Transitions that create or extend auto-approval authority (`activate`,
+`activate_scoped`, `renew`) are audited fail-closed: the SEL event is written
+with `critical=True` before the state commits, and a failed write refuses the
+grant or extension (`renew` returns `reason: audit_failed` with the deadline
+unmoved). Because the SEL write runs outside the state lock, `renew` re-verifies
+under the re-acquired lock before committing: a grant deactivated during the
+audit window is not resurrected, a fresh activation that landed in that
+window keeps its own deadline instead of being overwritten by the stale
+renewal, and a renewal that began on a live grant refuses to commit through
+the grace window (so a grant that lapsed or was switched off mid-audit stays
+off).
+
 Fleet governance endpoints:
 - `/api/status` now reports `yolo_active` (bool) and `yolo_expires_at` (ISO 8601) fields
 - `/api/admin/compliance/yolo-status` provides full override status (source, remaining time, activation count, renewal history)
