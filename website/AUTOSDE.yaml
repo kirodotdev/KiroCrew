@@ -110,6 +110,67 @@ custom-rules:
 
       See website/docs/page-layout.md.
 
+  - id: session-row-fixed-height
+    blocking: true
+    file-patterns:
+      - "src/pages/ChatSidebar.tsx"
+      - "src/pages/chat/SessionFlyout.tsx"
+      - "src/components/SessionGridView.tsx"
+    rule: |
+      A chat session list item has a FIXED set of stacked lines. Do NOT add a new
+      one for new per-session metadata.
+
+      Why: the session list is the dashboard's primary navigation surface, and its
+      only real budget is how many sessions fit above the fold. Every extra line
+      is paid by every session in the list, forever, so that one field can be read
+      without hovering — and the fields that keep getting proposed (project
+      directory, branch, model, workspace) are constant for the life of the
+      session, i.e. exactly the information a user does NOT re-read on every scan.
+      The rows that exist are earned: they are mutually exclusive turn state, or
+      they disappear when empty.
+
+      The permitted lines, in order:
+      1. Agent/meta line — agent name, then inline glyphs (popped-out, channel
+         origin, mirror links, clean/incognito/temporary, autopilot), then ONE
+         `ml-auto` group holding the folder chip (flat view) and the timestamp.
+      2. Title line.
+      3. ONE status line, and only one — the branches are a ternary chain
+         (pending approval > sub-agent approval > goal loop > workflow >
+         sub-agents > running > last message), never two lines at once.
+      4. Source-link chips (PR / MR / issue), only when the session has links.
+      5. Tag chips, only when the session has tags.
+
+      To surface a new per-session field, in order of preference:
+      - Put it on the agent/meta line, directly AFTER the agent name, as an inline
+        glyph (`size={10}`) or a compact chip with `truncate` and a `title`
+        tooltip — this is where the project directory belongs.
+      - Fold it into an existing line as trailing detail (the `goalLoopDetail`
+        pattern: ` · <detail>` after the primary label).
+      - Put it in the row's tooltip, the `SessionActionsMenu`, or the session
+        detail/flyout surface.
+
+      Never introduce a fourth-and-a-half stacked `<div>` under the title, and
+      never widen the row to compensate — a wider row is not an option either
+      (the sidebar width is user-controlled and the list must not scroll
+      horizontally).
+
+      Bad:
+      ```tsx
+      <div className="text-[12px] text-muted truncate mt-0.5">{s.project}</div>
+      ```
+
+      Good:
+      ```tsx
+      {/* on the agent/meta line, after the agent name */}
+      {s.project && (
+        <span className="text-muted shrink-0 inline-flex items-center gap-0.5 max-w-[90px]"
+          title={s.project}>
+          <FolderGit2 size={10} className="shrink-0" aria-hidden />
+          <span className="truncate">{basename(s.project)}</span>
+        </span>
+      )}
+      ```
+
   - id: use-react-query
     blocking: false
     file-patterns:
