@@ -3962,6 +3962,20 @@ class DashboardState:
                 raw = json.loads(columns_path.read_text(encoding="utf-8"))
                 if isinstance(raw, list):
                     self._tag_boards = [c for c in raw if isinstance(c, dict) and c.get("id")]
+                    # Prune column tag_ids missing from the vocabulary: tag
+                    # deletion commits the vocab write first (crash-atomic),
+                    # so a crash mid-delete can leave dangling ids here. The
+                    # column API rejects unknown ids, so a dangling id left
+                    # in place would make that column's filter permanently
+                    # un-editable (the popover echoes the full list back).
+                    # Same fail-open rule as the slot-restore prune: only
+                    # prune when the vocabulary is authoritative.
+                    if self._tags_authoritative:
+                        known = {t.get("id") for t in self._tags}
+                        for col in self._tag_boards:
+                            tag_ids = col.get("tag_ids")
+                            if isinstance(tag_ids, list):
+                                col["tag_ids"] = [t for t in tag_ids if t in known]
         except Exception:
             logger.warning("Failed to load sidebar columns", exc_info=True)
 

@@ -1419,6 +1419,15 @@ function ChatSidebar({
   const updateColumnMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: { name?: string; tag_ids?: string[]; mode?: TagColumnMode; order?: number; include_untagged?: boolean } }) => api.updateTagColumn(id, body),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tag-columns'] }),
+    // The server rejects a tag_ids payload naming an unknown tag (400
+    // invalid_column_payload) instead of silently dropping it — e.g. the tag
+    // was deleted from another window while this popover's cache was stale.
+    // Re-sync both caches so the popover redraws from reality (the stale tag
+    // disappears) rather than leaving a selection that looks applied but isn't.
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ['chat-tags'] })
+      queryClient.invalidateQueries({ queryKey: ['tag-columns'] })
+    },
   })
   const deleteColumnMutation = useMutation({
     mutationFn: (id: string) => api.deleteTagColumn(id),
