@@ -47,7 +47,7 @@
     "afterSign": "scripts/notarize.js",
     "linux": {
       "category": "Development",
-      "icon": "icon.png",
+      "icon": "build/icons",
       "target": [
         "AppImage"
       ]
