@@ -6,12 +6,17 @@ import { useEffect, useState, type ReactNode, type UIEvent } from 'react'
  * remaining rail height. The parent (LeftRail) guarantees exactly one section
  * is expanded at a time. */
 export default function AccordionSection({
-  title, icon: Icon, expanded, onToggle, children,
+  title, icon: Icon, expanded, onToggle, badge, children,
 }: {
   title: string
   icon: LucideIcon
   expanded: boolean
   onToggle: () => void
+  /** Optional status marker rendered in the header, before the chevron — so it
+   * stays visible while the section is COLLAPSED. For a count or state that has to
+   * be readable from any page; a marker inside the body would disappear the moment
+   * another section is opened. */
+  badge?: ReactNode
   children: ReactNode
 }) {
   // Show the top fade only once the body is scrolled away from the top, so it
@@ -34,6 +39,7 @@ export default function AccordionSection({
       >
         <Icon size={13} className="flex-shrink-0" />
         <span className="flex-1 text-left">{title}</span>
+        {badge}
         <ChevronDown size={14} className={`transition-transform ${expanded ? '' : '-rotate-90'}`} />
       </button>
 

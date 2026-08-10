@@ -1850,6 +1850,189 @@ ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
     ],
 )
 
+# ── Tool Schemas (Issue Radar crews) ──
+#
+# The crew ledger is an autonomous agent's ONLY memory across compaction, the
+# per-turn ceiling and a gateway restart, so both tools are on the same
+# internal-secret path as ``issue_radar_record_investigation`` and validated
+# here, next to it.
+#
+# Neither schema carries owner/repo/crew_id. That is a security choice, not an
+# omission: identity is resolved from the CALLING SESSION (see
+# ``mcp_core._crew_identity``). If the model could name the crew, a crew could
+# write into another crew's ledger — clobbering its ``next``, its worktree path
+# or its claim comment id — and the store's "at most one item in an editing
+# phase" invariant is per-crew, so a cross-crew write would also defeat that.
+#
+# The phase / event-kind vocabularies MIRROR
+# ``issue_radar.backend.crew_store.PHASES`` and ``.EVENT_KINDS`` rather than
+# importing them: ``validation`` is core and must not import an app package
+# (apps load dynamically and may be absent). ``test_issue_radar_crew_mcp_tools``
+# asserts the mirrors are exact, so drift fails a test instead of silently
+# rejecting a legitimate phase at the tool boundary.
+_ISSUE_RADAR_CREW_PHASES = frozenset(
+    {
+        "selected",
+        "claimed",
+        "investigating",
+        "implementing",
+        "awaiting-ci",
+        "addressing-review",
+        "awaiting-merge",
+        "awaiting-reply",
+        "resolved",
+        "skipped",
+        "yielded",
+        "handed-back",
+        "preempted",
+    }
+)
+_ISSUE_RADAR_CREW_EVENT_KINDS = frozenset(
+    {
+        "claim",
+        "investigate",
+        "reply",
+        "implement",
+        "ci",
+        "review",
+        "conflict",
+        "merge",
+        "handback",
+        "skip",
+        "yield",
+    }
+)
+#: Mirrors ``crew_store.SKIP_SCOPES`` — the classification a crew attaches to a
+#: pass in the repo-wide shared skip index. Advertised to the model as an enum so
+#: it picks a real one; NOT enforced as ``allowed=`` on the field (see the
+#: ``skip_scope`` spec below for why).
+#:
+#: ``needs-decision`` and ``needs-investigation`` are how a crew says the next step
+#: belongs to a human. They are scopes on a PASS because a crew never holds an
+#: issue waiting for one: it says what it needs on the issue, labels it, records the
+#: pass and moves on.
+_ISSUE_RADAR_CREW_SKIP_SCOPES = frozenset(
+    {
+        "architecture",
+        "new-feature",
+        "needs-design",
+        "needs-decision",
+        "needs-investigation",
+        "duplicate",
+        "already-fixed",
+        "not-reproducible",
+        "wrong-root-cause",
+        "breaking-change",
+        "gate-config",
+        "other",
+    }
+)
+
+# Abbreviated-or-full git object name. Bounds ``base_sha`` to something that can
+# actually be handed to git on a resume; a resumed turn checks out from this
+# value, so an arbitrary 5k string here is a resume that fails much later.
+_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+
+def _validate_crew_record_couples_phase_to_an_event(args: dict[str, Any]) -> None:
+    """Enforce the invariants that justify ONE write tool instead of two.
+
+    * ``event`` and ``event_kind`` travel together — the store refuses an
+      unknown kind, and an event with no kind cannot be filed on either surface
+      it feeds (crew page + the public claim comment).
+    * a ``phase`` write must carry its reason. Splitting upsert and append into
+      two tools is what allows a phase to move with nothing logged; merging them
+      only closes that if the event is actually mandatory on a phase change.
+    """
+    if args.get("event") and not args.get("event_kind"):
+        raise ValidationError("event_kind", "required when 'event' is given")
+    if args.get("event_kind") and not args.get("event"):
+        raise ValidationError("event", "required when 'event_kind' is given")
+    if args.get("phase") and not args.get("event"):
+        raise ValidationError(
+            "event",
+            "required when 'phase' changes — record the reason with the phase "
+            "(also pass 'event_kind')",
+        )
+
+
+ISSUE_RADAR_CREW_READ_SCHEMA = ToolSchema(
+    tool_name="issue_radar_crew_read",
+    fields=[
+        # Deliberately empty: no argument can select WHICH crew is read (see the
+        # block comment above). ``max_events`` is not exposed either — the
+        # handler bounds the log itself so a long-lived crew cannot blow the
+        # caller's context by asking for more.
+    ],
+)
+
+ISSUE_RADAR_CREW_RECORD_SCHEMA = ToolSchema(
+    tool_name="issue_radar_crew_record",
+    fields=[
+        # Bounds the number that becomes the work item's FILENAME
+        # (``crews/<crew_id>/<n>.json``) — same ENAMETOOLONG rationale as the
+        # investigation record, hence the same constant.
+        FieldSpec(
+            "number", int, required=True, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER
+        ),
+        FieldSpec("phase", str, max_len=32, allowed=_ISSUE_RADAR_CREW_PHASES),
+        # Bounded but deliberately NOT ``allowed=``, unlike ``phase`` beside it.
+        # An out-of-vocabulary phase has to be refused — it would corrupt the
+        # phase state machine. A scope is only a filter label, and refusing one
+        # would fail the whole write, which on a ``skipped`` write is the write
+        # that puts the issue in the shared skip index. Weakening "a skip is
+        # always indexed" to buy a tidier label is the wrong trade, so the store
+        # coerces an unknown value to ``other`` (``crew_store.SKIP_SCOPES``) and
+        # the pass is recorded either way. The vocabulary is still advertised as
+        # an enum in the tool schema, so the model is told what to pick.
+        FieldSpec("skip_scope", str, max_len=32),
+        # ``outcome`` is a bounded free string, NOT an enum: the store keeps it
+        # as free text (``crew_store.upsert_work_item``) and no vocabulary is
+        # defined anywhere in the app, so an allowlist invented here would
+        # reject a legitimate terminal outcome and lose it.
+        FieldSpec("outcome", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("next", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("decision", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("why", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("tried_approach", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("tried_rejected_because", str, max_len=MAX_MEDIUM_STRING),
+        # Local-only resume fields. These are the ONE place an absolute path
+        # legitimately belongs, which is why the handler must not scrub them the
+        # way it scrubs the public strings.
+        FieldSpec("worktree", str, max_len=4096),
+        FieldSpec("branch", str, max_len=255),
+        FieldSpec("base_sha", str, max_len=64, pattern=_GIT_SHA_RE),
+        FieldSpec("pr_number", int, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER),
+        # ci_* are flat args assembled into the store's ``ci_state`` dict by the
+        # handler. ``ci_state`` is the forge's own verdict word (success /
+        # failure / pending / neutral / cancelled / timed_out, and GitLab's
+        # differ again), so it is bounded but not enumerated here.
+        FieldSpec("ci_state", str, max_len=32),
+        FieldSpec("ci_passed", int, min_val=0, max_val=100_000),
+        FieldSpec("ci_total", int, min_val=0, max_val=100_000),
+        FieldSpec("ci_round", int, min_val=0, max_val=1_000),
+        FieldSpec("ci_inherited_reds", int, min_val=0, max_val=100_000),
+        # Forge comment ids are large (GitHub is past 3e9 and monotonic).
+        FieldSpec("claim_comment_id", int, min_val=1, max_val=10**18),
+        # No ``crew:``-prefix pattern here on purpose: this field RECORDS what
+        # was applied so a hand-back knows what to remove. The prefix allowlist
+        # belongs to the forge write route that applies a label; enforcing it at
+        # this boundary would reject a truthful record and lose the removal list.
+        FieldSpec(
+            "labels_applied",
+            list,
+            item_type=str,
+            item_max_len=MAX_SHORT_STRING,
+            max_items=20,
+        ),
+        # One public progress line. Short by design: it is rendered as a list
+        # item inside the claim comment's <details> block, not as a report.
+        FieldSpec("event", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("event_kind", str, max_len=16, allowed=_ISSUE_RADAR_CREW_EVENT_KINDS),
+    ],
+    custom_validator=_validate_crew_record_couples_phase_to_an_event,
+)
+
 # ── Tool Schemas (MCP Cron) ──
 
 
@@ -2227,6 +2410,12 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
+    # Registered even though ``issue_radar_crew_read`` takes no arguments: an
+    # unregistered tool's args pass through raw, and the empty-field schema is
+    # also what makes an unknown arg an "Error:" string instead of a stdio-loop
+    # crash that takes the whole kirocrew-core server down for the session.
+    "issue_radar_crew_read": ISSUE_RADAR_CREW_READ_SCHEMA,
+    "issue_radar_crew_record": ISSUE_RADAR_CREW_RECORD_SCHEMA,
 }
 
 MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {

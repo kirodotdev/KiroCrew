@@ -39,6 +39,8 @@
   "apps.issueRadar.components.prBulkBar.merge_warning",
   "apps.issueRadar.components.prBulkBar.selected",
   "apps.issueRadar.components.prList.pr",
+  "apps.issueRadar.views.crews.desk.unit_hours",
+  "apps.issueRadar.views.crews.page.slots_free",
   "apps.meetings.list.synced",
   "apps.meetings.review.closeBlocked",
   "apps.meetings.review.remaining",

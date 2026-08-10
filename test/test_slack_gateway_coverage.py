@@ -1070,7 +1070,10 @@ class TestFireDashboardNudgeDispatch:
         restored.running = False
         restored.key = "chat-9"
 
-        async def _rehydrate(_state, _key):
+        async def _rehydrate(_state, _key, *, adopt_closed=False):
+            assert adopt_closed is True, (
+                "a nudge loop must survive its slot being archived by idle cleanup"
+            )
             return restored
 
         monkeypatch.setattr(gw, "rehydrate_slot_from_history_async", _rehydrate)

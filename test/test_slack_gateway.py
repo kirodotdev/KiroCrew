@@ -3863,7 +3863,15 @@ class TestAutonudgeFire:
 
     @pytest.mark.asyncio
     async def test_fire_slot_missing(self):
-        """Fire with missing slot → removes loop."""
+        """Fire with missing slot → removes loop.
+
+        The rehydrate fallback is stubbed to a miss because that is what "slot
+        missing" means here. It used to be produced incidentally: the mock
+        dashboard state's MagicMock metadata read as ``closed``, and the
+        rehydrate helper's closed-guard bailed. The fire path now passes
+        ``adopt_closed=True`` (idle archival must not destroy a loop), so that
+        accident no longer stops the walk.
+        """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         ds._slots = {}
@@ -3884,7 +3892,11 @@ class TestAutonudgeFire:
         loop.message = "nudge"
         loop.stop_sentinel_path = None
         loop.cycle_count = 0
-        result = await on_fire(loop)
+        with patch(
+            "kiro_crew.slack.gateway.rehydrate_slot_from_history_async",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await on_fire(loop)
         assert result is False
 
     @pytest.mark.asyncio

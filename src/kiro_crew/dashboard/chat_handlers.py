@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
@@ -93,6 +93,9 @@ from kiro_crew.validation import (
     normalize_theme_consent_sha,
     validate_tool_args,
 )
+
+if TYPE_CHECKING:  # circular at runtime: autonudge -> dashboard.chat -> chat_handlers
+    from kiro_crew.autonudge import NudgeLoop
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +224,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 error="app does not own this slot",
             )
             return web.json_response({"error": "not found"}, status=404)
+    else:
+        # FIX 1: a dashboard user (no app token) typed into this slot, so a
+        # human demonstrably has it open. That restores the full 2h approval
+        # window even on an app-owned tab — the deny-fast window is for slots
+        # nobody is watching. Only a caller with an EMPTY request_app reaches
+        # here, so an app cannot forge attendance for its own worker.
+        slot._human_seen = True
 
     if slot.agent not in (None, ""):
         # Slot already has an agent — only reject explicit mismatches (non-empty different agent).
@@ -569,7 +579,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     except Exception:
         logger.debug("on_user_message observer raised; ignoring", exc_info=True)
 
-    task = spawn_guarded_turn(state, slot, _run_chat(state, slot, message))
+    # FIX 2: an unattended app-owned turn runs under the background concurrency
+    # cap; run_background_turn passes an attended slot straight through, so the
+    # interactive path is unchanged (no semaphore is even created).
+    task = spawn_guarded_turn(
+        state, slot, state.run_background_turn(slot, _run_chat(state, slot, message))
+    )
     slot.task = task
     slot._recovery_retrigger_count = 0
     state.push_slots_update()
@@ -1940,6 +1955,135 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+class _NudgeRetireFailed(Exception):
+    """A slot close could not retire the slot's auto-nudge loop.
+
+    Carries the loop so the caller can put it back in MEMORY, which is the point:
+    the failure happens between ``remove()``'s in-memory drop and its registry
+    write, so memory and disk disagree until one of them is corrected. Restoring
+    memory re-agrees with the still-armed disk, leaving the session open and
+    still driven rather than open and abandoned.
+    """
+
+    def __init__(self, loop: "NudgeLoop | None") -> None:
+        super().__init__("autonudge loop removal on slot close failed")
+        self.loop = loop
+
+
+async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
+    """Retire *name*'s auto-nudge loop and return it (None if it had none).
+
+    Retire this slot's loop at the moment the user dismissed the tab. "Respect
+    the close" used to be an emergent property of the fire path's rehydrate miss
+    — and that is precisely the miss the fire path must now adopt through (see
+    ``_fire_dashboard_nudge``'s ``adopt_closed``), or idle archival kills loops
+    terminally. Making the user's ✕ the explicit retirement keeps the rule intact
+    without relying on a cache miss to enforce it.
+
+    MUST be called BEFORE the close path's first await. Two reasons, both of
+    which resurrect a session the user closed:
+
+    * The loop's timer can EXPIRE during an await of the close (the turn-cancel
+      wait, the history persist, the session teardown). The slot is already out
+      of ``state._slots`` by then, so the fire path takes its rehydrate branch
+      and restores the transcript with ``adopt_closed=True`` — the very
+      transcript the persist is marking closed.
+    * Cancelling ``slot.task`` runs ``_run_chat``'s finally, which re-arms the
+      timer through ``notify_turn_complete``. Disarming without removing is
+      therefore not enough: the clock comes straight back mid-close.
+
+    ``remove()`` is what makes this atomic: its uncontended lock acquire does not
+    yield, so the loop leaves the registry and its timer is cancelled before the
+    coroutine can suspend, and ``notify_turn_complete`` then finds nothing to
+    re-arm.
+
+    The returned loop is the only remaining record of it — the persist-failure
+    path uses it to put the clock back (see :func:`_restore_slot_nudge_loop`).
+
+    A removal that FAILS raises :exc:`_NudgeRetireFailed` rather than logging and
+    carrying on. ``remove()`` drops the loop from memory first and only then
+    writes the registry, so a write that raises leaves memory retired while the
+    DISK still lists the loop. Swallowing that let the close finish and persist
+    the slot as closed, and the next start read the surviving record back: the
+    fire path answers the missing slot with ``adopt_closed=True``, so the loop
+    rebuilt the dismissed session and ran an unattended turn in it. Locating a
+    session the user closed is exactly the outcome this function exists to
+    prevent, so the close must not proceed on a half-applied retirement.
+    """
+    loop = None
+    try:
+        from kiro_crew.autonudge import (
+            get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_handlers
+        )
+
+        svc = _autonudge_get()
+        if svc is None:
+            return None
+        loop = svc.get_by_slot(name)
+        if loop is None:
+            return None
+    except Exception:
+        # Only the LOOKUP is tolerated: no service and no loop both legitimately
+        # mean "nothing to retire", and neither can leave state half-applied.
+        logger.warning("autonudge loop lookup on slot close failed", exc_info=True)
+        return None
+    try:
+        await svc.remove(loop.id)
+    except Exception as exc:
+        logger.warning("autonudge loop removal on slot close failed", exc_info=True)
+        raise _NudgeRetireFailed(loop) from exc
+    return loop
+
+
+async def _restore_slot_nudge_loop(loop: "NudgeLoop | None") -> None:
+    """Give a session its clock back after a close that failed to persist.
+
+    The close retires the loop before persisting, so a persist that raises would
+    otherwise leave the restored session live with nothing driving it — an
+    unattended babysit abandoned by a disk error, with no trace but a log line.
+
+    The replacement carries the REMAINING budget, never a fresh one. ``add()``
+    mints a new id and a new ``created_ts``, so the spent allowance is subtracted
+    here instead: a failed close must not buy unattended cycles the user never
+    granted. A loop whose cycle cap or wall-clock budget is already spent is not
+    restored at all (it was one tick from terminal), and neither is a paused one
+    — reviving that would override an explicit stop.
+    """
+    if loop is None or not loop.active:
+        return
+    try:
+        from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers
+
+        svc = autonudge.get_instance()
+        if svc is None:
+            return
+        cycles_left = loop.max_cycles
+        if loop.max_cycles:
+            cycles_left = loop.max_cycles - loop.cycle_count
+            if cycles_left <= 0:
+                return
+        runtime_left = loop.max_runtime_secs
+        if loop.max_runtime_secs and loop.created_ts:
+            if autonudge.runtime_budget_exceeded(loop):
+                return
+            # >=1: a budget of 0 means UNLIMITED, so a spent-to-the-second
+            # remainder must not round into "no budget at all".
+            runtime_left = max(1, int(loop.max_runtime_secs - (time.time() - loop.created_ts)))
+        await svc.add(
+            loop.slot_key,
+            loop.message,
+            idle_secs=loop.idle_secs,
+            max_cycles=cycles_left,
+            stop_sentinel_path=loop.stop_sentinel_path,
+            max_runtime_secs=runtime_left,
+        )
+    except Exception:
+        # Same wedged disk that failed the persist most likely fails this write
+        # too. The 500 already tells the caller the close did not happen; the
+        # retired loop is visible as gone in the dashboard, not silently dead.
+        logger.warning("autonudge loop restore after failed slot close failed", exc_info=True)
+
+
 async def api_chat_slot_delete(request: web.Request) -> web.Response:
     """DELETE /api/chat/slots/{slot} — stop and remove a UI slot.
 
@@ -1979,8 +2123,6 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         # missing one — anti-enumeration (CWE-204); true reason logged via SEL.
         return web.json_response({"error": "not found"}, status=404)
 
-    # Remove from dict before async operations
-    state._slots.pop(name, None)
     # Synchronous tombstone, BEFORE any await: a channel-slot reconcile pass
     # whose snapshot predates this close reads these after its last await, so
     # it cannot re-surface the tab this handler is dismissing (see
@@ -1989,6 +2131,75 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     # stamping save time would make channel activity landing in that window
     # compare as older than the close.
     closed_at = note_slot_closed(state, name)
+    # Retire the auto-nudge loop BEFORE the awaits below, so no nudge can expire
+    # into the session being closed and resurrect it. See
+    # _retire_slot_nudge_loop for why disarming alone does not hold.
+    try:
+        retired_loop = await _retire_slot_nudge_loop(name)
+    except _NudgeRetireFailed as exc:
+        # The loop could not be retired, so the close CANNOT proceed: persisting
+        # the slot as closed while the registry still lists the loop is what lets
+        # the next start rebuild this session and nudge it. Put the in-memory
+        # loop back so memory agrees with the armed disk, and report the failure
+        # the same way a failed history save does — the tab stays open and driven,
+        # which is a state the user can see and retry, unlike a closed tab that
+        # quietly wakes up later.
+        await _restore_slot_nudge_loop(exc.loop)
+        logger.error("Failed to retire nudge loop for slot %s, close aborted", name)
+        _sync_dashboard_slots(state)
+        state.push_slots_update()
+        return web.json_response(
+            {"error": "failed to retire nudge loop", "code": "nudge_retire_failed"},
+            status=500,
+        )
+    # Remove from the registry only AFTER the loop is retired, because the ORDER
+    # is what decides whether a nudge landing in between is harmless or fatal.
+    # Retiring takes the AutoNudge lock, so it awaits; a timer expiring inside
+    # that await used to find the slot already gone from `_slots`, and the fire
+    # path's response to a missing slot is `rehydrate_slot_from_history_async(...,
+    # adopt_closed=True)` — it rebuilds the session and adopts it DESPITE the
+    # closed flag (deliberately, so idle-archived workers survive). So popping
+    # first turned "the user dismissed this tab" into "the tab comes back".
+    #
+    # With the loop retired first there is no timer left to fire, so the removal
+    # below cannot be undone. A nudge that fires BEFORE the retire begins still
+    # runs a turn, but that is the ordinary race with the ✕ click itself and it
+    # resurrects nothing.
+    # Tell the app BEFORE anything durable happens. For a crew this hook is the
+    # write that pauses the worker, so it has to succeed for the dismissal to
+    # mean anything — and it must be undoable if it does not. Sequenced here, a
+    # failure costs nothing: the slot is still in `_slots`, history still says
+    # open, and the only thing to put back is the loop. Sequenced after the
+    # persist (where it used to live) there was nothing to abort INTO — the close
+    # was already committed, so a lost pause left a live auto-approved crew whose
+    # watchdog relaunched the tab, with only a log line to say so.
+    #
+    # Stopping the worker first is also the right order on its own terms: quiet
+    # the thing, then dismantle its surface. The reverse opens exactly the window
+    # this hook exists to close.
+    #
+    # Deliberately NOT in the bulk idle-archive path below: that one closes a slot
+    # for quietness, and an app worker stopped by idleness alone is a silent
+    # failure. Which call site fires IS the signal.
+    if slot._app:
+        from kiro_crew.apps.teardown import (
+            notify_slot_closed,  # circular: apps.teardown -> apps.bridges -> dashboard
+        )
+
+        if not await notify_slot_closed(slot._app, name):
+            # The app could not record the dismissal. Refuse the close rather
+            # than leave a worker running behind a tab the user believes is gone.
+            await _restore_slot_nudge_loop(retired_loop)
+            logger.error(
+                "Slot-close hook for app %r failed on %r, close aborted", slot._app, name
+            )
+            _sync_dashboard_slots(state)
+            state.push_slots_update()
+            return web.json_response(
+                {"error": "failed to notify the app", "code": "app_close_hook_failed"},
+                status=500,
+            )
+    state._slots.pop(name, None)
     # Release any blocking wait before cancelling the task: a pending
     # ask_question holds an MCP worker on a blocked HTTP request, and the slot
     # is going away, so nobody will ever answer its card.
@@ -2012,11 +2223,36 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         # Save failed — restore slot so data isn't lost
         logger.error("Failed to save slot %s to history, restoring", name, exc_info=True)
         state._slots[name] = slot
+        # The close did not happen, so the loop retired for it must come back —
+        # a restored session with no clock is an abandoned unattended worker.
+        await _restore_slot_nudge_loop(retired_loop)
+        # ...and the app's record of the dismissal has to come back too. The
+        # notification above already SUCCEEDED, which for a crew means the worker is
+        # durably paused; without this the failed close would still have stopped it,
+        # so the user gets an error AND a silently disabled worker. Unwound in
+        # reverse order of commitment, which is the only arrangement that leaves no
+        # pair of the three stores disagreeing.
+        if slot._app:
+            from kiro_crew.apps.teardown import (
+                notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
+            )
+
+            if not await notify_slot_close_undone(slot._app, name):
+                logger.error(
+                    "Could not take back the dismissal for app %r on %r; it may still "
+                    "consider this slot closed",
+                    slot._app,
+                    name,
+                )
         _sync_dashboard_slots(state)
         state.push_slots_update()
-        return web.json_response({"error": "failed to save history"}, status=500)
+        return web.json_response(
+            {"error": "failed to save history", "code": "history_save_failed"}, status=500
+        )
     else:
         state._restricted_keys.discard(f"dashboard:{name}")
+    # The app was already told, and compensated if the persist above failed — see
+    # the notify block before the pop and the rollback in the except branch.
     # Kill the per-tab session to free resources
     await state.sessions.remove(_history_key_for(name))
     _sync_dashboard_slots(state)
@@ -2045,11 +2281,43 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     dry_run = body.get("dry_run", False)
     request_app = request.get("app", "")
     cutoff = time.time() - max_days * 86400
+    # FIX 3: slots owning an ARMED auto-nudge loop are exempt from idle archival.
+    # Archiving one marked it closed, and the nudge fire path then could not
+    # reach it and REMOVED the loop — terminally. An unattended worker is idle
+    # by nature between cycles (a 6h CI wait looks exactly like abandonment), so
+    # the 3-day idle heuristic reliably shot the longest-running loops. Resolved
+    # once, outside the per-slot loop, so a large registry costs one pass.
+    _looped: set[str] = set()
+    try:
+        from kiro_crew.autonudge import (
+            get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_handlers
+        )
+
+        _svc = _autonudge_get()
+        if _svc is not None:
+            for _lp in _svc.list_all():
+                if not _lp.active:
+                    continue
+                _looped.add(_lp.slot_key)
+                # A channel-born loop is bound under its channel session key
+                # (slack:<ts>) while its tab is named with the folded form
+                # (slack_<ts>) — match both or the exemption misses the tab.
+                _looped.add(_normalize_slot_key(_lp.slot_key))
+    except Exception:
+        # Fail CLOSED for the loops: if the registry cannot be read we do not
+        # know which slots are protected, so archive nothing this pass rather
+        # than risk destroying a loop. Cleanup is a convenience; the loop is not.
+        logger.warning("Cleanup: auto-nudge registry unreadable; skipping this pass", exc_info=True)
+        return web.json_response(
+            {"ok": True, "archived": 0, "keys": [], "failed": [], "skipped": "autonudge_unknown"}
+        )
     stale_keys: list[str] = []
     active_is_stale = False
     for name in list(state._slots):
         slot = state._slots.get(name)
         if slot is None or slot.pinned:
+            continue
+        if name in _looped:
             continue
         # App Kit ownership isolation: app callers can only archive
         # their own slots. Dashboard users (empty request_app) pass

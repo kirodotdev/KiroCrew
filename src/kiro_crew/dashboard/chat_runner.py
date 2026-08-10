@@ -179,6 +179,7 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_RESULT,
     LLMEvent,
 )
+from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     _EXFIL_PATTERNS,
     StreamRedactor,
@@ -1581,6 +1582,81 @@ def _retain_terminal_native(
     return {sid: info for sid, info in terminal}
 
 
+def _slot_is_trusted(slot: Any) -> bool:
+    """True when this slot's tool calls are auto-approved. TWO representations.
+
+    * ``slot._trust`` — the interactive "trust this session" grant. A human clicked
+      it, so it does not expire and the click is its own audit record.
+    * ``slot._trust_scope`` — a ``SafetyOverride`` SCOPED grant, for an unattended
+      app worker where there is no human to click anything. It is SEL-audited
+      fail-closed at activation, TTL-bounded, and re-checked HERE on every approval
+      via ``is_scope_active`` — so the grant lapsing is what revokes trust, with no
+      cooperation required from whatever armed it.
+
+    Strictly additive: the scope is consulted only when the slot actually carries a
+    key, so a slot without the attribute — which is every ordinary chat session —
+    takes exactly the decision it took before this existed.
+
+    Deliberately does NOT renew the grant. The task runner slides its grant forward
+    on tool activity because the run's own progress is the liveness signal; a crew's
+    signal is its watchdog, and renewing here would let a crew whose watchdog died
+    keep its grant alive off its own tool calls — which is the bound this is for.
+    """
+    if getattr(slot, "_trust", False):
+        return True
+    scope = str(getattr(slot, "_trust_scope", "") or "")
+    if not scope:
+        return False
+    return bool(safety_override().is_scope_active(scope))
+
+
+def _auto_approve_reason(slot: Any, yolo_active: bool) -> str:
+    """SEL provenance for an auto-approval: yolo, session trust, or a scoped grant.
+
+    Yolo first because it is process-wide and outranks anything per-slot, then the
+    human's session flag, then the scoped grant — the same precedence
+    :func:`_slot_is_trusted` decides by. Purely descriptive; it authorises nothing.
+    """
+    if yolo_active:
+        return "yolo"
+    if getattr(slot, "_trust", False):
+        return "trust"
+    if str(getattr(slot, "_trust_scope", "") or ""):
+        return "trust_scope"
+    return "trust"
+
+
+def _persistable_session_policy(slot: Any, yolo_active: bool) -> str:
+    """The session-level approval policy to STORE for this slot: ``"auto"`` or ``""``.
+
+    Deliberately NOT :func:`_slot_is_trusted`, and that difference is the whole
+    point of this function. Everything else on the trust path decides ONE approval
+    and re-decides the next one; this value is written into the session store and
+    read LATER — by the subagent spawn gate and by each subagent's own approval
+    policy — at a point where nothing re-checks whether the grant still holds.
+
+    So only a grant that cannot lapse may be cached here:
+
+    * ``slot._trust`` — a human clicked "trust this session". It does not expire,
+      and the click is its own audit record, so caching it changes nothing.
+    * yolo — process-wide, and revoking it deactivates the override for everyone.
+
+    A ``SafetyOverride`` SCOPED grant (``slot._trust_scope``) must NOT reach here.
+    Its entire value is being re-checked on every approval, so a cached ``"auto"``
+    would outlive it: pause or retire the crew, or disable the app, and a turn
+    already in flight would keep auto-approving subagent tool calls off a policy
+    written before the revocation — exactly the property the scoped grant exists to
+    provide, defeated by caching it.
+
+    A scope-trusted worker is not left stalling: its own tool approvals never
+    consult this value. They go through :func:`_slot_is_trusted` per event, which
+    re-checks the scope each time.
+    """
+    if yolo_active or getattr(slot, "_trust", False):
+        return "auto"
+    return ""
+
+
 def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     """Return True only when a native crew subagent is ACTIVE *and* an
     auto-approve condition holds — otherwise deny (CWE-1188 secure default).
@@ -1588,7 +1664,7 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     Active-crew is a NECESSARY precondition: with no live native subagent the
     parent turn is not blocked on a crew tool, so this path must never
     auto-approve — regardless of the ``auto_approve_subagent_tools`` hook,
-    ``slot._trust``, or yolo. Only when a crew is active do those signals grant
+    the slot's trust, or yolo. Only when a crew is active do those signals grant
     approval; with all three false the tool still falls through to the normal
     interactive/trust gate rather than being silently approved here.
     """
@@ -1599,7 +1675,7 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
         return False
     return bool(
         (state.context_builder and state.context_builder.hooks.auto_approve_subagent_tools)
-        or getattr(slot, "_trust", False)
+        or _slot_is_trusted(slot)
         or state.is_yolo_active()
     )
 
@@ -3373,10 +3449,12 @@ async def _run_chat(
             )
 
         # Propagate trust/YOLO to session so subagents inherit auto-approve.
-        if slot._trust or state.is_yolo_active():
-            state.sessions.set_approval_policy(session_key, "auto")
-        else:
-            state.sessions.set_approval_policy(session_key, "")
+        # A scoped grant is excluded on purpose — see _persistable_session_policy.
+        # Assigned unconditionally (not only when granting) so a turn that starts
+        # after a grant went away clears any policy an earlier turn stored.
+        state.sessions.set_approval_policy(
+            session_key, _persistable_session_policy(slot, state.is_yolo_active())
+        )
 
         # Drain MCP OAuth requests captured during session init. kiro-cli
         # buffers `_kiro.dev/mcp/oauth_request` notifications during MCP
@@ -4714,7 +4792,12 @@ async def _run_chat(
                 # Detect bash tools by tool_input content (title is human-readable)
                 cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
                 yolo_active = state.is_yolo_active()
-                if slot._trust_reads and not slot._trust and not yolo_active and cmd:
+                # Evaluated ONCE for both branches below. Two separate calls could
+                # straddle a scoped grant's expiry and disagree with each other, and
+                # a scope check is not a pure read — it retires a lapsed grant and
+                # logs that, which must happen once per event, not twice.
+                slot_trusted = _slot_is_trusted(slot)
+                if slot._trust_reads and not slot_trusted and not yolo_active and cmd:
                     if is_read_only_bash(cmd):
                         try:
                             validated_tool = _validate_tool_name(
@@ -4750,7 +4833,7 @@ async def _run_chat(
                         )
                         continue
                 # Trust mode (per-slot) or YOLO mode (global) — auto-approve
-                if slot._trust or yolo_active:
+                if slot_trusted or yolo_active:
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:
@@ -4801,7 +4884,9 @@ async def _run_chat(
                         tool_kind=event.tool_kind,
                         outcome="auto_approved",
                         request_id=event.request_id,
-                        metadata={"reason": "yolo" if yolo_active else "trust"},
+                        # Provenance, so an auditor can separate a human's session
+                        # trust from an unattended worker's expiring scoped grant.
+                        metadata={"reason": _auto_approve_reason(slot, yolo_active)},
                     )
                     continue
                 # Auto-reject remaining tools after one rejection in a batch
@@ -4936,7 +5021,26 @@ async def _run_chat(
                 # "rejected" is the correct reading: a cancelled turn never
                 # obtained consent.
                 outcome = "rejected"
-                _approval_window = tool_approval_timeout_secs()
+                # Per-SLOT, not the global config: `approval_timeout_for` is what
+                # gives an app-owned worker with no human responder the background
+                # deny-fast instead of parking for the attended window and being
+                # denied anyway. See DashboardState.approval_timeout_for.
+                #
+                # But it is only ONE of the two bounds. `approval_timeout_for`
+                # returns a flat constant, so on its own it can outlive the turn
+                # it belongs to: the attended 7200s dwarfs the configurable
+                # `tool_approval_timeout_secs()` (600s by default), and neither is
+                # clamped to what is LEFT of a long agentic turn. The outer
+                # `_bounded_turn` then cancels first and the timeout branch below
+                # never runs — no card, no decline line, just a turn that dies
+                # mid-prompt. Taking the MINIMUM keeps both properties: the
+                # unattended deny-fast, and the double bound (ceiling and
+                # remaining budget) that `tool_approval_timeout_secs` applies —
+                # including its 0.0, which is what the no-budget branch reads.
+                _approval_window = min(
+                    state.approval_timeout_for(slot), tool_approval_timeout_secs()
+                )
+                _unattended_wait = slot.unattended
                 _approval_card: str | None = None
                 try:
                     if _approval_window <= 0:
@@ -4963,6 +5067,19 @@ async def _run_chat(
                         _approval_window,
                     )
                     _approval_card = format_approval_timeout_card(_approval_window)
+                    if _unattended_wait:
+                        # The card is for the human; this line is for the AGENT.
+                        # A denial it cannot read makes it retry the same tool
+                        # forever, because nothing in its transcript explains the
+                        # refusal.
+                        slot.append(
+                            "assistant",
+                            "\u26a0\ufe0f A tool needed approval and no one answered within "
+                            f"{int(_approval_window)}s, so it was declined. This session is "
+                            "running unattended — ask for the permission you need instead of "
+                            "retrying the same call.",
+                            "msg msg-a",
+                        )
                 finally:
                     if _approval_card is not None:
                         try:
@@ -4978,7 +5095,8 @@ async def _run_chat(
                     # and record richer decisions like "trust"/"yolo", so only
                     # write when still pending. This is the sole marker for the
                     # paths that resolve the future in-process: the approval
-                    # timeout above and the Slack-delivery auto-reject branches.
+                    # timeout above (2h attended / 180s unattended) and the
+                    # Slack-delivery auto-reject branches.
                     _approved = outcome in ("approved", "approved_trust_reads")
                     if _mark_permission_resolved(
                         slot.messages,

@@ -3487,9 +3487,22 @@ class GatewayOrchestrator:
         # silently abandoned the PR it was watching.
         #
         # Rehydration deliberately does NOT resurrect a session the user
-        # dismissed with ✕ (closed=true in the history metadata) — that is the
-        # documented "respect the close" rule, and returning None for it is
-        # correct. Only a genuinely unreachable session retires the loop.
+        # dismissed with ✕ — that is the documented "respect the close" rule.
+        # It is now enforced where the user acts: api_chat_slot_delete removes
+        # this loop as part of the close, so a loop that is still armed was
+        # never user-dismissed. Only a genuinely unreachable session retires
+        # the loop.
+        #
+        # FIX 3: hence adopt_closed=True. ``closed`` in the metadata is written
+        # by TWO producers, and only one of them is the user: idle archival
+        # (POST /api/chat/slots/cleanup, default 3 days) also marks a slot
+        # closed. An unattended worker is idle by nature between cycles, so it
+        # was archived, became unreachable to this exact call, and the loop was
+        # REMOVED below — terminally, with no way back. Adopting the closed
+        # session is what makes archival survivable; the companion change in
+        # api_chat_slots_cleanup exempts loop-owning slots so it should not
+        # happen in the first place, and this is the backstop for a slot
+        # archived before that landed (or by any other automatic closer).
         slot = self.dashboard_state.get_slot(loop.slot_key)
         if slot is None:
             # Rehydration reads the session's persisted transcript and replays
@@ -3501,12 +3514,12 @@ class GatewayOrchestrator:
             # construction broadcasts through asyncio primitives that are not
             # thread-safe.
             slot = await rehydrate_slot_from_history_async(
-                self.dashboard_state, loop.slot_key
+                self.dashboard_state, loop.slot_key, adopt_closed=True
             )
             if slot is None:
                 logger.warning(
-                    "AutoNudge: session %s unreachable (no history, deleted, or "
-                    "closed by the user) — removing loop %s",
+                    "AutoNudge: session %s unreachable (no history or deleted) "
+                    "— removing loop %s",
                     loop.slot_key,
                     loop.id,
                 )
@@ -3554,10 +3567,17 @@ class GatewayOrchestrator:
                 }
             },
         )
+        # FIX 2: an unattended app-owned nudge turn runs under the background
+        # concurrency cap. This is the fleet's hot path — N armed loops fire
+        # independently and would otherwise put N turns on the runtime at once.
+        # An attended slot (any user session with a monitor loop) is passed
+        # straight through, so babysit loops on human sessions are unaffected.
         task = spawn_guarded_turn(
             self.dashboard_state,
             slot,
-            _run_chat(self.dashboard_state, slot, tagged),
+            self.dashboard_state.run_background_turn(
+                slot, _run_chat(self.dashboard_state, slot, tagged)
+            ),
         )
         # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
         # shows the "turn active" three-dots indicator immediately.

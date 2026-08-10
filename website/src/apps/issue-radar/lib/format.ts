@@ -1,11 +1,11 @@
 // Pure, side-effect-free helpers + localStorage accessors + constants for
 // Issue Radar. No React, no component imports — safe to pull into any module.
-import { Clock, Hash, type LucideIcon } from 'lucide-react'
+import { AlertCircle, ArrowDownAZ, Clock, Hash, type LucideIcon } from 'lucide-react'
 import { fmtRelative, toDate } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { loadColumnCollapsed, loadColumnWidth } from '../../../lib/columnWidth'
 import { DASHBOARD_TABS, SORT_KEYS } from './types'
-import type { ActiveRepo, DashboardTab, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter } from './types'
+import type { ActiveRepo, CrewSortKey, DashboardTab, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter } from './types'
 
 export const ACTIVE_KEY = 'kc:issue-radar:active-repo'
 export const LIST_WIDTH_KEY = 'kc:issue-radar:list-width'
@@ -339,6 +339,18 @@ export const SORT_FIELDS: { key: SortKey; label: string; icon: LucideIcon }[] = 
 export const PR_SORT_FIELDS: { key: PrSortKey; label: string; icon: LucideIcon }[] = [
   { key: 'number', get label() { return i18nT('apps.issueRadar.lib.format.number') }, icon: Hash },
   { key: 'updated', get label() { return i18nT('apps.issueRadar.lib.format.last_update') }, icon: Clock },
+]
+
+/** Sort options for the crew roster, in the order the rail lists them.
+ *
+ * `status` leads because it is the only one that answers "what needs me": its
+ * ascending direction is the urgency order the backend already ranks by (a crew
+ * waiting on a human above one that is merely working). Labels are getters for the
+ * same reason the two lists above use them — a locale switch must re-read them. */
+export const CREW_SORT_FIELDS: { key: CrewSortKey; label: string; icon: LucideIcon }[] = [
+  { key: 'status', get label() { return i18nT('apps.issueRadar.lib.format.crew_sort_status') }, icon: AlertCircle },
+  { key: 'name', get label() { return i18nT('apps.issueRadar.lib.format.crew_sort_name') }, icon: ArrowDownAZ },
+  { key: 'created', get label() { return i18nT('apps.issueRadar.lib.format.crew_sort_created') }, icon: Clock },
 ]
 
 // ── Persisted UI state ────────────────────────────────────────────────────

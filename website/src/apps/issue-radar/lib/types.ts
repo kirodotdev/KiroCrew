@@ -38,13 +38,49 @@ export const DASHBOARD_TABS = ['overview', 'tagging'] as const
 export type DashboardTab = (typeof DASHBOARD_TABS)[number]
 
 /** Main-area mode: a dashboard page, the issue list + detail split, the pull-
- * request list + detail split, or the settings page. Each corresponds to one
- * left-rail accordion section. */
-export type MainView = 'dashboard' | 'issues' | 'pulls' | 'settings'
+ * request list + detail split, the crew list + crew page split, or the settings
+ * page. Each corresponds to one left-rail accordion section.
+ *
+ * `crews` is a MainView rather than a DashboardTab because a dashboard renders
+ * full-width with no list column, and the crews surface needs the list + main
+ * split (roster in column 2, the selected crew's page in column 3). */
+export type MainView = 'dashboard' | 'issues' | 'pulls' | 'crews' | 'settings'
 
 /** Which left-rail accordion section is expanded (the others collapse to their
  * title bar). Follows MainView by default; a header click overrides. */
-export type ExpandedSection = 'dashboards' | 'filters' | 'pulls' | 'settings'
+export type ExpandedSection = 'dashboards' | 'filters' | 'pulls' | 'crews' | 'settings'
+
+/** What the crews main area is showing: one crew's own page, or nothing yet.
+ * The column-2 crew list drives this — each crew row sets `{kind:'crew'}` with
+ * that crew's id. `{kind:'none'}` is the state before a roster has loaded, and on
+ * a repo with no crews at all; `context.tsx` opens the first crew as soon as one
+ * exists, so it is never a page a user navigates TO. */
+export type CrewView = { kind: 'none' } | { kind: 'crew'; id: string }
+
+/** The `kind` discriminants, as a runtime list, so a persisted `CrewView` can be
+ * validated on reload the way `SORT_KEYS` validates a persisted sort key. A
+ * structurally valid kind is not enough on its own: `{kind:'crew'}` also carries
+ * an id, and a crew that has since been retired (or belongs to another repo) must
+ * not survive either — see `context.tsx`, which re-points the selection once the
+ * crew list has loaded without it. */
+export const CREW_VIEW_KINDS = ['none', 'crew'] as const
+
+/** Chip filters over the crew roster. Independent predicates, NOT a partition:
+ * the backend's own tallies are allowed to sum past the crew count (a paused crew
+ * holding in-flight work counts in two), so nothing here should treat them as
+ * slices of a whole. */
+export const CREW_FILTERS = ['all', 'working', 'paused'] as const
+export type CrewFilter = (typeof CREW_FILTERS)[number]
+
+/** Sort fields offered over the crew roster.
+ *
+ * Deliberately only three, because `GET /crews` answers with crew RECORDS plus
+ * repo-wide tallies and carries no work items: a "busiest" or "least recently
+ * active" sort would need one request per crew, or a per-crew summary the payload
+ * does not have. These three are answerable from a record alone — `status` is
+ * derived by the route and already on it. */
+export const CREW_SORT_KEYS = ['status', 'name', 'created'] as const
+export type CrewSortKey = (typeof CREW_SORT_KEYS)[number]
 
 /** Sub-sections of the General settings page the rail nav can jump to. */
 export type GeneralAnchor = 'account' | 'repos'

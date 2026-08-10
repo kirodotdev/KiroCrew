@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -112,6 +113,18 @@ async def teardown_app_runtime(
     warnings: list[str] = []
     failures: list[str] = []
     loop = asyncio.get_running_loop()
+
+    # Stand the app's in-process workers down FIRST, before anything here can block.
+    #
+    # Ordering is the whole point. Every later step can take real time — the app's
+    # own ``onDisable`` script is third-party code, and stopping a backend process
+    # waits on it — so a worker holding something time-bounded (Issue Radar's crews
+    # hold an auto-approval grant) would keep that authority for the duration and
+    # could take one more fully-approved turn after the operator said stop. This
+    # call is first so the window is closed before it can open, and it runs before
+    # ``disable_app`` writes the ``enabled`` flag, so a hook must not wait on that
+    # flag to decide it has been switched off.
+    await notify_app_disabled(name)
 
     # Every note is scrubbed HERE, as it is created, rather than by each caller.
     #
@@ -332,3 +345,164 @@ async def teardown_app_runtime(
             _fail(f"deregister failed: {exc}")
 
     return TeardownResult(warnings=warnings, failures=failures)
+
+
+# ── the user dismissing an app-owned chat tab ───────────────────────────────
+#
+# A second thing that has to stop an app's work, and the reason it lives beside
+# app teardown rather than in the dashboard: the ✕ on a chat tab is core UI, but
+# an app-owned worker slot is only the VISIBLE half of something the app is
+# driving on a timer. Closing the tab has to reach the app, and
+# ``dashboard.chat_handlers`` may not import one.
+#
+# So the close handler dispatches on the slot's OWN ``_app`` string to whatever
+# that app registered here. Core never names an app; an app never patches core.
+
+#: Called with the app's own name when its code is being stopped. Registered per app.
+AppDisableHook = Callable[..., Awaitable[Any]]
+
+_APP_DISABLE_HOOKS: dict[str, AppDisableHook] = {}
+
+
+def register_app_disable_hook(app: str, hook: AppDisableHook) -> None:
+    """Ask to be told, INSIDE the disable request, that *app* is being switched off.
+
+    Same contract as :func:`register_slot_close_hook`: idempotent by app name, and
+    apps re-register from their own watchdog rather than once at boot because this
+    registry is process memory.
+
+    This exists because a periodic sweep is not an off-switch. An app whose workers
+    hold anything time-bounded — an auto-approval grant, a lease, a lock — can act
+    once more in the gap between the operator's click and the next poll, which is a
+    whole turn's worth of authority handed out after permission was withdrawn. A
+    hook fired in the request closes that gap; the app's own sweep stays as the
+    backstop for a disable this process never saw (another process, a hand-edited
+    ``installed.json``, a restart).
+    """
+    if app:
+        _APP_DISABLE_HOOKS[app] = hook
+
+
+def unregister_app_disable_hook(app: str) -> None:
+    """Drop *app*'s hook. Safe when nothing is registered."""
+    _APP_DISABLE_HOOKS.pop(app, None)
+
+
+async def notify_app_disabled(app: str) -> None:
+    """Tell *app* its in-process workers must stop now.
+
+    Never raises: the teardown has to complete whether or not the app could stand
+    its workers down, for the same reason every other step here pushes through.
+    """
+    hook = _APP_DISABLE_HOOKS.get(app)
+    if hook is None:
+        return
+    try:
+        await hook(app)
+    except Exception:  # noqa: BLE001 - the teardown must complete regardless
+        logger.warning("app-disable hook for app %r failed", app, exc_info=True)
+
+
+#: Called with the dismissed slot's key. Registered per app name.
+SlotCloseHook = Callable[[str], Awaitable[None]]
+
+_SLOT_CLOSE_HOOKS: dict[str, SlotCloseHook] = {}
+
+
+def register_slot_close_hook(app: str, hook: SlotCloseHook) -> None:
+    """Ask to be told when the user dismisses one of *app*'s slots.
+
+    Idempotent by app name — re-registering replaces. Apps re-register from their
+    own periodic watchdog rather than once at boot, because this registry is
+    process memory: a gateway restart empties it, and an app that only registered
+    at import time would go quiet after any reload.
+    """
+    if app:
+        _SLOT_CLOSE_HOOKS[app] = hook
+
+
+def unregister_slot_close_hook(app: str) -> None:
+    """Drop *app*'s hook. Safe when nothing is registered."""
+    _SLOT_CLOSE_HOOKS.pop(app, None)
+
+
+_SLOT_CLOSE_UNDO_HOOKS: dict[str, SlotCloseHook] = {}
+
+
+def register_slot_close_undo_hook(app: str, hook: SlotCloseHook) -> None:
+    """Ask to be told when a dismissal *app* already recorded has to be TAKEN BACK.
+
+    The close touches three independent stores — the in-memory slot table, the
+    history file, and whatever the app itself writes — and it cannot make them
+    atomic. So each committed step needs an inverse, or some ordering of the three
+    always leaves a pair disagreeing when a later step fails: notify last leaves a
+    live worker behind a dismissed tab, notify first leaves a stopped worker behind
+    a tab that came back. Only a compensating action closes both, which is the same
+    discipline the crew store's own ``commit_work_progress`` rollback uses.
+
+    Same contract as :func:`register_slot_close_hook`: idempotent by app name, and
+    re-registered from the app's watchdog because this registry is process memory.
+    """
+    if app:
+        _SLOT_CLOSE_UNDO_HOOKS[app] = hook
+
+
+def unregister_slot_close_undo_hook(app: str) -> None:
+    """Drop *app*'s undo hook. Safe when nothing is registered."""
+    _SLOT_CLOSE_UNDO_HOOKS.pop(app, None)
+
+
+async def notify_slot_close_undone(app: str, slot_key: str) -> bool:
+    """Tell *app* the dismissal of ``slot_key`` did NOT happen after all.
+
+    Called only when the close failed AFTER :func:`notify_slot_closed` succeeded,
+    so the app has recorded a stop the user is not getting. Never raises, and
+    returns whether the app was told — a caller that is already reporting failure
+    has nothing better to do with a second failure than log it, and the app's own
+    reconciliation is what recovers from there.
+    """
+    hook = _SLOT_CLOSE_UNDO_HOOKS.get(app)
+    if hook is None:
+        return True
+    try:
+        await hook(slot_key)
+    except Exception:  # noqa: BLE001 - reported to the caller, never raised
+        logger.warning(
+            "slot-close UNDO hook for app %r failed on %r", app, slot_key, exc_info=True
+        )
+        return False
+    return True
+
+
+async def notify_slot_closed(app: str, slot_key: str) -> bool:
+    """Tell *app* the user dismissed ``slot_key``.
+
+    Only for a DELIBERATE dismissal. Idle-slot archival also persists a slot with
+    ``closed=True``, and it must NOT come through here: an app cannot tell the two
+    apart from the transcript afterwards (the ``closed_at`` stamp is written on both
+    paths), so mixing them would make "the user asked this to stop" and "this was
+    quiet for three days" the same event. An app worker that stops because it was
+    merely idle is a silent failure; that is precisely what this seam exists to
+    avoid, so the distinction is drawn by WHICH call site fires — not by a flag the
+    hook has to interpret.
+
+    Never raises, and returns whether the app was actually TOLD. The caller needs
+    that answer because the hook is not a notification for its own sake: for a
+    crew it is the write that pauses the worker. Swallowing a failure silently let
+    the close finish while the crew stayed live and auto-approved, and its
+    watchdog then relaunched the tab the user had just dismissed. So the failure
+    is reported rather than raised — the seam keeps its promise not to blow up an
+    unrelated app's teardown, and the close path decides what a lost dismissal
+    means (see ``api_chat_slot_delete``, which refuses to proceed).
+    """
+    hook = _SLOT_CLOSE_HOOKS.get(app)
+    if hook is None:
+        return True
+    try:
+        await hook(slot_key)
+    except Exception:  # noqa: BLE001 - reported to the caller, never raised
+        logger.warning(
+            "slot-close hook for app %r failed on %r", app, slot_key, exc_info=True
+        )
+        return False
+    return True

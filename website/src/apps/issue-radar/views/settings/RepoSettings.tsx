@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Tags, Check, type LucideIcon,
+  Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Tags, Check, Handshake, type LucideIcon,
 } from 'lucide-react'
 import { ProviderLogo, ProviderHostTag } from '../../components/ProviderBadge'
 import {
@@ -12,6 +12,7 @@ import { repoWebUrl, userUrlFor, membersUrlFor, providerTerms, repoScopeKey } fr
 import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
+import CrewProtocolSettings from './CrewProtocolSettings'
 import { asArray } from '../../lib/format'
 
 import { i18nT } from '../../../../i18n/t'
@@ -62,8 +63,15 @@ const ROLE_MUTED = new Set(['read'])
 
 /** One repo's settings — full width. Local-only triage preferences that teach
  * Issue Radar how this repo labels its work (which labels mean "needs triage",
- * which mark newcomer-friendly issues), plus a per-repo data refresh and a
- * local disconnect. Nothing here is written back to GitHub. */
+ * which mark newcomer-friendly issues), the crew protocol every crew in this repo
+ * negotiates by, plus a per-repo data refresh and a local disconnect. Nothing here
+ * is written back to GitHub.
+ *
+ * The crew protocol block is hosted here, and not on Your Desk, because it is
+ * repo-wide: `/crews/settings` is keyed by owner+repo, and this is the page a
+ * value scoped to one repository is expected to live on. It needs no navigation
+ * entry of its own — the rail's Settings accordion already lists one row per
+ * connected repo, and each opens this page. */
 export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
   const { owner, repo } = repoRef
   const scopeKey = repoScopeKey(repoRef)
@@ -98,6 +106,15 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
     queryKey: ['issue-radar', 'members', scopeKey],
     queryFn: () => issueRadarApi.members(repoRef),
     enabled: issuesQuery.isSuccess,
+  })
+  /** The repo's crew protocol settings — a separate document from `settings`
+   *  above (`/crews/settings` vs `/settings`, its own merge-patch write path and
+   *  no revision guard), so it gets its own query rather than being folded in.
+   *  The key is the one Your Desk already reads, so a save on this page reaches
+   *  the desk's hand-back window without a refetch. */
+  const crewSettingsQuery = useQuery({
+    queryKey: ['issue-radar', 'crew-settings', scopeKey],
+    queryFn: () => issueRadarApi.getCrewSettings(repoRef),
   })
 
   const labels = asArray<RepoLabel>(labelsQuery.data?.labels)
@@ -460,6 +477,32 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {i18nT('apps.issueRadar.views.settings.repoSettings.recommending_a_taxonomy_and_applying_it_to_issue')} {repo}{i18nT('apps.issueRadar.views.settings.repoSettings.s_labels_mean_needs_triage_or_good_first_issue')}
         </StatLine>
+      </Card>
+
+      <Card
+        icon={Handshake}
+        title={i18nT('apps.issueRadar.views.crews.desk.protocol_title')}
+        desc={i18nT('apps.issueRadar.views.crews.desk.protocol_repo_wide')}
+      >
+        {/* Keyed by the FULL repo scope, so a scope change remounts the card and
+            no state can cross it. The card holds an uncommitted draft until the
+            server answers and keeps it when a write fails, so an instance reused
+            for a different repository would let a retry write one repo's typed
+            value into another repo's settings — and the same remount is what
+            drops a stale "saving"/"couldn't save" line that describes a write to
+            the repo just navigated away from.
+
+            `repoScopeKey`, the string this page's queries are already cached
+            under, so the card's identity and its cache entry cannot disagree. It
+            carries provider and host, which is the part that matters: `acme/widget`
+            on GitHub and `acme/widget` on a GitLab instance are two different
+            repositories with one slug, and the settings route keys on owner/repo
+            alone — so that navigation reuses this whole page. */}
+        <CrewProtocolSettings
+          key={scopeKey}
+          repoRef={repoRef}
+          settings={crewSettingsQuery.data?.settings}
+        />
       </Card>
 
       <Card

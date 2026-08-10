@@ -750,6 +750,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # scan hits, and the change degrades to the local queue instead. Lives in
         # push_policy because all three push paths share this one implementation.
         "apps/builtins/auto_improvement/spine/push_policy.py",
+        # Inbound: the crew worker's slot title is derived from an issue title,
+        # which is untrusted text anyone who can open an issue wrote. It is
+        # scrubbed before it becomes a slot title (and fails CLOSED to the slot
+        # key if the redactors are unavailable), so this is inbound sanitisation
+        # rather than an egress boundary — the slot title's user-visible surface
+        # is already covered by the registered dashboard sinks.
+        "apps/builtins/issue_radar/backend/crew_runtime.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
         "dashboard/chat_folders.py",

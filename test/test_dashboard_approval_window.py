@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,9 +74,90 @@ class TestDefaultsAreShort:
 
         src = inspect.getsource(chat_runner._run_chat)
         assert "wait_for(fut, timeout=7200.0)" not in src
+        # No literal at all, whatever its value: the original bug was an inlined
+        # 7200.0, and pinning only that number would let the next literal through.
+        assert not re.search(r"wait_for\(fut, timeout=\d", src)
         # Resolved into a local, not inlined into the await: the timeout card
-        # has to report the SAME number the wait actually used.
-        assert "_approval_window = tool_approval_timeout_secs()" in src
+        # has to report the SAME number the wait actually used. Resolved PER SLOT
+        # rather than from the global config, which is what lets an app-owned
+        # worker with no human responder take the background deny-fast instead of
+        # holding the attended window and being denied anyway.
+        assert "state.approval_timeout_for(slot)" in src
+        # And bounded by the REMAINING turn budget. `approval_timeout_for` returns
+        # a flat constant, so used alone it can outlive its own turn: the outer
+        # `_bounded_turn` cancels first and the timeout branch below never runs —
+        # no card, no decline line. Only `tool_approval_timeout_secs` applies the
+        # ceiling-and-remaining-budget bound (and the 0.0 the no-budget branch
+        # reads), so the window must be the MINIMUM of the two.
+        assert "tool_approval_timeout_secs()" in src
+        assert re.search(
+            r"_approval_window = min\(\s*state\.approval_timeout_for\(slot\),"
+            r"\s*tool_approval_timeout_secs\(\)\s*\)",
+            src,
+        ), "the per-slot window is not bounded by the remaining turn budget"
+
+
+class TestPerSlotWindowIsAlsoBudgetBounded:
+    """The composed window: per-slot deny-fast AND the remaining-turn bound.
+
+    REGRESSION: the runner resolved the window from ``approval_timeout_for``
+    alone. That returns a flat constant — 7200s attended, which dwarfs the 600s
+    default `tool_approval_timeout_secs` resolves, and neither is clamped to what
+    is LEFT of the running turn. So a prompt arming late in a long agentic turn
+    waited past its own deadline, ``_bounded_turn`` cancelled first, and the
+    approval-timeout branch never ran: no card, no decline line, just a turn that
+    died mid-prompt. Taking the MINIMUM of the two is what keeps both properties.
+    """
+
+    @staticmethod
+    def _window(state, slot) -> float:
+        """The runner's expression, evaluated here rather than re-derived."""
+        return min(state.approval_timeout_for(slot), td.tool_approval_timeout_secs())
+
+    @pytest.mark.asyncio
+    async def test_attended_window_is_the_configured_one_not_the_flat_constant(
+        self, cfg
+    ) -> None:
+        # 7200 is what `approval_timeout_for` returns for an attended slot; the
+        # window that actually applies is the configurable, bounded one.
+        cfg(window=600, turn=7200)
+        state = SimpleNamespace(approval_timeout_for=lambda _s: 7200.0)
+        assert self._window(state, object()) == pytest.approx(600.0)
+
+    @pytest.mark.asyncio
+    async def test_unattended_deny_fast_survives_the_bound(self, cfg) -> None:
+        # The 180s deny-fast is SHORTER than the configured window, so composing
+        # must not lengthen it back to the attended value.
+        cfg(window=600, turn=7200)
+        state = SimpleNamespace(approval_timeout_for=lambda _s: 180.0)
+        assert self._window(state, object()) == pytest.approx(180.0)
+
+    @pytest.mark.asyncio
+    async def test_a_late_arming_prompt_cannot_outlive_its_turn(self, cfg) -> None:
+        # 300s left of a 2h turn. Even the attended 7200s must come down to fit,
+        # which is the case the flat constant got wrong.
+        cfg(window=600, turn=7200)
+        loop = asyncio.get_running_loop()
+        state = SimpleNamespace(approval_timeout_for=lambda _s: 7200.0)
+        token = td._TURN_DEADLINE.set(loop.time() + 300.0)
+        try:
+            got = self._window(state, object())
+        finally:
+            td._TURN_DEADLINE.reset(token)
+        assert got == pytest.approx(300.0 - APPROVAL_TURN_MARGIN_SECS, abs=1.0)
+
+    @pytest.mark.asyncio
+    async def test_no_budget_yields_zero_so_the_runner_declines_at_once(self, cfg) -> None:
+        # The 0.0 is load-bearing: it is what the runner's no-budget branch reads
+        # to decline immediately instead of pretending to wait.
+        cfg(window=600, turn=7200)
+        loop = asyncio.get_running_loop()
+        state = SimpleNamespace(approval_timeout_for=lambda _s: 180.0)
+        token = td._TURN_DEADLINE.set(loop.time() + 5.0)
+        try:
+            assert self._window(state, object()) == 0.0
+        finally:
+            td._TURN_DEADLINE.reset(token)
 
 
 class TestResolver:
@@ -258,7 +341,7 @@ class TestNoBudgetCard:
         from kiro_crew.dashboard import chat_runner
 
         src = inspect.getsource(chat_runner._run_chat)
-        idx = src.index("_approval_window = tool_approval_timeout_secs()")
+        idx = src.index("_approval_window = min(")
         branch = src[idx : idx + 1800]
         assert "if _approval_window <= 0:" in branch
         assert "format_approval_no_budget_card()" in branch
@@ -317,7 +400,7 @@ class TestTimeoutCard:
         from kiro_crew.dashboard import chat_runner
 
         src = inspect.getsource(chat_runner._run_chat)
-        idx = src.index("_approval_window = tool_approval_timeout_secs()")
+        idx = src.index("_approval_window = min(")
         branch = src[idx : idx + 2000]
         assert "except asyncio.TimeoutError:" in branch
         assert "format_approval_timeout_card(_approval_window)" in branch
