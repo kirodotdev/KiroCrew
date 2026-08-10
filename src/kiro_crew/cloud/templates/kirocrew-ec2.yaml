@@ -359,43 +359,51 @@ Resources:
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
           echo "--- installing Node.js ---"
-          # AL2023's default AppStream nodejs is the reliable primary path
-          # (validated on AL2023, no external repo); the supported floor is
-          # Node 22+ (24 LTS recommended). The NodeSource fallback does
-          # NOT pipe a remote script into bash (a supply-chain risk if NodeSource
-          # is MITM'd/compromised); instead it imports NodeSource's GPG key over
-          # pinned TLS and writes a signed dnf repo with gpgcheck=1, so every RPM
-          # is signature-verified before install.
+          # The frontend build (vite 8 + rolldown) REQUIRES Node >=22: AL2023's
+          # default AppStream `nodejs` is 18, on which the build dies with
+          # "SyntaxError: ... 'node:util' does not provide an export named
+          # 'styleText'". So enforce a floor -- keep AppStream node only if it is
+          # already >=22, otherwise install Node 24 from the signed NodeSource repo.
+          # The NodeSource path does NOT pipe a remote script into bash (a supply-
+          # chain risk if NodeSource is MITM'd); it imports NodeSource's GPG key
+          # over pinned TLS and writes a signed dnf repo with gpgcheck=1, so every
+          # RPM is signature-verified before install.
+          NODE_MAJOR_MIN=22
           if ! command -v node >/dev/null 2>&1; then
             if ! dnf install -y nodejs npm; then
               # A transient dnf cache/mirror race can drop a dependency RPM
               # mid-transaction ("No such file: .../libbrotli-...rpm"); clean the
-              # cache and retry once before falling back to the NodeSource repo.
+              # cache and retry once.
               echo "nodejs install failed - cleaning dnf cache and retrying"
               dnf clean packages || true
               dnf makecache || true
-            fi
-            if ! command -v node >/dev/null 2>&1 && ! dnf install -y nodejs npm; then
-              echo "AppStream nodejs unavailable - trying signed NodeSource repo"
-              # NodeSource rotated its GPG key URL; the old nodesource-repo.gpg.key
-              # now 404s (caused BOOTSTRAP FAILED). Current: ns-operations-public.key.
-              NS_KEY=https://rpm.nodesource.com/gpgkey/ns-operations-public.key
-              rpm --import "$NS_KEY" || fail "could not import NodeSource GPG key"
-              # Write the repo file line-by-line (kept indented so the YAML |
-              # block stays well-formed; a column-1 heredoc body would break it).
-              # gpgcheck=1 makes dnf verify every RPM signature against the key
-              # imported above — no unverified curl|bash of a remote script.
-              {
-                printf '%s\n' '[nodesource-nodejs]'
-                printf '%s\n' 'name=Node.js Packages'
-                printf '%s\n' 'baseurl=https://rpm.nodesource.com/pub_24.x/nodistro/nodejs/$basearch'
-                printf '%s\n' 'enabled=1'
-                printf '%s\n' 'gpgcheck=1'
-                printf '%s\n' "gpgkey=$NS_KEY"
-              } >/etc/yum.repos.d/nodesource.repo
-              dnf install -y nodejs || fail "Node.js install failed (signed NodeSource repo)"
+              dnf install -y nodejs npm || true
             fi
           fi
+          NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
+          [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
+          if [ "$NODE_MAJOR" -lt "$NODE_MAJOR_MIN" ]; then
+            echo "Node major $NODE_MAJOR is below the required $NODE_MAJOR_MIN - installing Node 24 from the signed NodeSource repo"
+            # NodeSource rotated its GPG key URL; the old nodesource-repo.gpg.key
+            # now 404s (caused BOOTSTRAP FAILED). Current: ns-operations-public.key.
+            NS_KEY=https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+            rpm --import "$NS_KEY" || fail "could not import NodeSource GPG key"
+            # Write the repo file line-by-line (kept indented so the YAML |
+            # block stays well-formed; a column-1 heredoc body would break it).
+            {
+              printf '%s\n' '[nodesource-nodejs]'
+              printf '%s\n' 'name=Node.js Packages'
+              printf '%s\n' 'baseurl=https://rpm.nodesource.com/pub_24.x/nodistro/nodejs/$basearch'
+              printf '%s\n' 'enabled=1'
+              printf '%s\n' 'gpgcheck=1'
+              printf '%s\n' "gpgkey=$NS_KEY"
+            } >/etc/yum.repos.d/nodesource.repo
+            # --allowerasing so NodeSource's nodejs can replace an AppStream node 18.
+            dnf install -y --allowerasing nodejs || fail "Node.js >=$NODE_MAJOR_MIN install failed (signed NodeSource repo)"
+            NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
+            [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
+          fi
+          [ "$NODE_MAJOR" -ge "$NODE_MAJOR_MIN" ] || fail "Node.js too old (major $NODE_MAJOR, need >=$NODE_MAJOR_MIN)"
           echo "node: $(command -v node) $(node --version 2>/dev/null || echo missing)"
           echo "npm:  $(command -v npm) $(npm --version 2>/dev/null || echo missing)"
 

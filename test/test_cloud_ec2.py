@@ -32,6 +32,17 @@ class TestSubTemplateSyntax:
         ]
         assert not bad, f"illegal !Sub variable(s): {bad}"
 
+    def test_bootstrap_enforces_node_major_floor(self):
+        # The frontend build (vite 8 + rolldown) needs Node >=22; AL2023's default
+        # AppStream nodejs is 18, which fails with a node:util/styleText SyntaxError.
+        # The template must (a) declare the >=22 floor, (b) upgrade via the signed
+        # NodeSource 24 repo when the installed node is too old, and (c) fail the
+        # bootstrap if it still cannot reach the floor.
+        text = ec2.load_template()
+        assert "NODE_MAJOR_MIN=22" in text
+        assert "pub_24.x" in text
+        assert 'fail "Node.js too old' in text
+
 
 class TestValidation:
     def test_valid_tag(self):
