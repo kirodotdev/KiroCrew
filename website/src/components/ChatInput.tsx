@@ -55,6 +55,44 @@ import type { SendMode } from '../pages/chat/ChatSettings'
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml'
 const FILE_ACCEPT = IMAGE_ACCEPT + ',.txt,.md,.json,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
+// Extension per image MIME type, mirroring IMAGE_ACCEPT. Used to synthesize a
+// filename for clipboard-pasted images (see nameClipboardImage).
+const IMAGE_MIME_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+}
+
+/** Give a clipboard-pasted image a distinguishable filename.
+ *
+ *  Clipboard image blobs arrive unnamed or with the browser's fixed
+ *  placeholder (Chrome/Firefox hand every pasted screenshot to us as
+ *  "image.png"): an unnamed file has no extension so the server's extension
+ *  allowlist rejects it outright, and repeated pastes in one message all
+ *  render identical attachment-chip labels. Synthesize
+ *  `pasted-image-<timestamp>[-<n>].<ext>` for those; a file that carries a
+ *  real name (e.g. a file copied from the OS file manager) keeps it, so
+ *  pasted and picked files stay indistinguishable downstream.
+ *
+ *  `batchIndex` disambiguates multiple images arriving in a SINGLE paste
+ *  (same-millisecond timestamp). The timestamp is a technical identifier
+ *  embedded in a filename, not display text, so it is deliberately not
+ *  locale-formatted. */
+function nameClipboardImage(f: File, batchIndex: number): File {
+  const ext = IMAGE_MIME_EXT[f.type]
+  if (!ext) return f // not an image type: never rename (spec: images only)
+  const generic = !f.name || f.name === `image.${ext}` || f.name === 'image.png'
+  if (!generic) return f
+  const d = new Date()
+  const pad = (n: number, w = 2) => String(n).padStart(w, '0')
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}${pad(d.getMilliseconds(), 3)}`
+  const suffix = batchIndex > 0 ? `-${batchIndex + 1}` : ''
+  return new File([f], `pasted-image-${stamp}${suffix}.${ext}`, { type: f.type, lastModified: f.lastModified })
+}
+
 import ApprovalModePicker from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
 // Re-exported here for back-compat with existing `from './ChatInput'` imports.
@@ -1770,14 +1808,28 @@ function ChatInput({
     // context-menu paste with no intervening keydown to clear it).
     const forceRaw = rawPasteRef.current
     rawPasteRef.current = false
-    // File paste takes precedence — but not when text is also available (macOS Office
-    // apps include an image rendering alongside the copied text in the clipboard).
+    // File paste takes precedence — but not when text is also insertable. Only
+    // text/plain defers: a <textarea> can only ever insert the text/plain
+    // representation, so when the clipboard carries text/html WITHOUT
+    // text/plain (a browser's "Copy Image", an Office chart copy) deferring
+    // would make the whole paste a silent no-op — there is no text to insert.
+    // macOS Office TEXT copies do include text/plain alongside their junk
+    // image rendering of the selection, so real text pastes still win over
+    // the image (see ChatInput.paste.test.tsx).
     const clipTypes = e.clipboardData.types || []
-    const hasText = clipTypes.includes('text/plain') || clipTypes.includes('text/html')
+    const hasText = clipTypes.includes('text/plain')
+    let renamedCount = 0
     const files = Array.from(e.clipboardData.items)
       .filter(i => i.kind === 'file')
       .map(i => i.getAsFile())
       .filter((f): f is File => f !== null)
+      .map(f => {
+        // Count only files actually renamed, so a paste of [real-name.png,
+        // image.png] synthesizes an unsuffixed name (no orphan "-2").
+        const named = nameClipboardImage(f, renamedCount)
+        if (named !== f) renamedCount += 1
+        return named
+      })
     if (files.length && onUploadFiles && !hasText) {
       e.preventDefault()
       onUploadFiles(files)
