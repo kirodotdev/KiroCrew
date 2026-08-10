@@ -127,6 +127,27 @@ five rules hold on GitHub, GitLab and Bitbucket alike; only the command changes.
 5. **Mergeability is computed asynchronously.** "Unknown", "checking" or
    "unchecked" means **wait**, not pass — and on a non-open object it may never
    resolve at all (see the GitHub limits below).
+6. **A conflicted PR's checks are stale, not signal — so a conflict means rebase
+   NOW, not wait.** This is the mechanism behind rule 1, worth knowing because it
+   is invisible in the status list: a conflicted PR cannot produce a merge ref, so
+   the host dispatches **no** `pull_request` workflows at all, and every check you
+   can see belongs to the old head. A status-only loop therefore reports "nothing
+   new" indefinitely while the clock runs. On GitHub you do not read these fields
+   yourself — `pr_status.py` already reads `mergeable`, `mergeStateStatus` and
+   `reviewDecision`, and it ranks a conflict **above** in-flight checks precisely
+   so this cannot happen: a conflicted PR exits **20** on the first poll rather
+   than reporting "running" forever while nothing can complete. The same holds
+   for `BEHIND`, a draft, and `CHANGES_REQUESTED` — each survives any amount of
+   waiting, so each is surfaced immediately. What this rule adds is the
+   response: on a conflict or `BEHIND`, re-sync and re-push instead of polling,
+   and never report the previous head's green.
+7. **A fully green PR can still be terminally blocked by a human decision.**
+   `reviewDecision == CHANGES_REQUESTED` survives every push and is invisible to
+   the checks rollup; `pr_status.py` reports it as 20 ahead of any in-flight
+   check, so it surfaces on the first poll. The judgment the exit code cannot
+   make is *what kind* of block it is: when the content is a product hold rather
+   than a defect, there is nothing to converge on, so report it **once**, quoting
+   the blocking reviewer, and stop rather than cycling.
 
 ### Where each host keeps those answers
 
@@ -180,7 +201,7 @@ environment problem, escalate rather than loop on it.
 The script's decision is fail-closed about *checks*, but the unresolved-thread
 count it prints is **advisory: it is not part of the exit code**, so a PR with
 open review threads still exits `0`. Before you declare review-ready and call
-`autonudge_stop`, confirm all three:
+`autonudge_stop`, confirm all five:
 
 1. `pr_status.py` exits `0`;
 2. its `unresolved threads (advisory)` line reads `0` — a `?` means the count
@@ -192,8 +213,77 @@ open review threads still exits `0`. Before you declare review-ready and call
    is `Design Review` / `UX Review` reporting `🟡 CONCERNS` while green; in
    another repo it is whatever non-blocking bots and human reviewers comment
    there. See `prepare-pr`'s "Answer every concern".
+4. its `mergeable=` / `mergeState=` / `reviewDecision=` line (the script prints
+   all three) shows no conflict, no `BEHIND`, and no `CHANGES_REQUESTED` — exit 0
+   already implies this, so read the line to know *which* to report, not to
+   re-decide it (rules 6-7);
+5. **no finding on the current head lacks a disposition.** Not "zero findings" —
+   that can never be reached. A **fixed** finding disappears from the bot's
+   in-place-updated body on the next review, but one you **rebutted** or
+   **accepted-and-deferred** keeps being re-raised, so a zero-findings test
+   deadlocks the loop against your own correct answer. The test is *unanswered*,
+   which is also what the `autonudge_stop` prohibition below is keyed on. Where the
+   conclusion cannot be trusted (see below), read the findings from the comment
+   body rather than the check:
+   ```bash
+   HEAD_SHA=$(gh pr view <N> --json headRefOid --jq .headRefOid)   # not git rev-parse:
+                                                                  # the PR need not be checked out
+   gh api --paginate "repos/<o>/<r>/issues/<N>/comments" \
+     --jq ".[] | select(.user.type == \"Bot\")
+               | select(.body | test(\"$HEAD_SHA\"))
+               | {who: .user.login,
+                  findings: [.body | scan(\"(?:FINDING|BLOCKING)[^\\n]{0,120}\")]}"
+   ```
+   Then subtract the ones your own `ai-review-disposition` comments already answer;
+   what remains is the number that must be zero. Three details earn their keep:
+   `--paginate`, because a long-running PR outgrows one page and a missing page reads
+   as "no verdict"; `.user.type == "Bot"`, because your own disposition comments
+   quote the words `FINDING` and `BLOCKING` and would otherwise count as findings
+   forever (the field is more robust than a `[bot]` name suffix); and matching
+   whatever per-SHA stamp your reviewers emit, since the marker names are
+   repo-specific — read one comment first to learn them. A reviewer whose stamp names
+   an older SHA has not reviewed this head yet. This is the one condition
+   `pr_status.py` does not cover today (#2550).
 
-If any of the three is unmet, the loop has not reached its exit condition —
+**Never call `autonudge_stop` while an un-dispositioned finding exists for the
+current head SHA.** If you must stop for another reason, post the open-finding
+list so the handoff is visible to a human — otherwise findings sit unread for
+hours while the loop looks healthy.
+
+### Verify what your reviewer's conclusion actually means — once per repo
+
+Rule 1 says ask the host for its verdict. That holds for CI, but a **review bot is
+not a build**: its check conclusion is whatever its workflow chose to exit with, and
+that is a per-repo implementation detail. So before you build an exit condition on
+it, establish once what it means in the repo you are in, and re-check if the review
+fleet is renamed or replaced. The failure modes to look for, any of which makes a
+status-only loop unsound:
+
+- **Red that only means "found something."** The workflow exits nonzero when the
+  review succeeded and produced a finding. Red becomes its normal state.
+- **A verdict that never posted.** An empty comment while the job log holds the
+  finding — the loop sees no findings and concludes clean.
+- **Green with findings in the body.** Worse than red, because red at least wakes a
+  watch loop.
+- **A verdict that is not reproducible.** Re-dispatch on an identical tree flips it,
+  so bot-green is not terminal and one red is not a stable fact about the diff.
+- **Inflated failure counts.** Per-SHA double dispatch, or runs reporting `failure`
+  with zero failed jobs. Collapse to the newest run per (workflow, SHA) — rule 2 —
+  before counting anything.
+
+> **Establish this per repo before trusting a conclusion, and write down what you
+> found.** If any of the five holds, resolve reviewer state from the **job log plus
+> the comment body for the current head SHA** instead, and treat "stamp matches head
+> AND zero open findings" as the only reviewer-side green. Which repos are affected,
+> and the evidence for each, belongs in that repo's issue tracker — not in this
+> skill, which ships to every install and cannot be corrected in copies already
+> distributed. For kirodotdev/KiroCrew that record is #2548, and #2550 moves the
+> check itself behind the profile/script seam so the conditional becomes data.
+
+Where a reviewer's conclusion *is* trustworthy, none of the above applies and reading
+job logs every cycle is wasted work: check first, then decide.
+
+If any of the five is unmet, the loop has not reached its exit condition —
 keep cycling (or escalate), and do not report the PR as review-ready.
 
 Two GitHub-shaped traps this closes, both of which produce a confidently wrong
@@ -261,19 +351,34 @@ User: "babysit PR #247 until it's review-ready"
 
 ```
 monitor_start(
-  message="Check PR #247 with
+  message="Check PR #247. FIRST read
+           gh pr view 247 --json mergeable,mergeStateStatus,reviewDecision —
+           rules 6 and 7 of the babysit skill govern what each value means.
+           Then run
            python3 \"${KIROCREW_HOME:-$HOME/.kiro/crew}/skills/kirocrew-dev/prepare-pr/scripts/pr_status.py\" 247
            and act on its exit code (10 = still running, report nothing;
            20 = drill in with pr_findings.py, or stop if the reason is a
-           terminal PR state). Fix legitimate High/Medium findings and push,
-           following this repo's history convention. Rebut false positives.
-           Stop ONLY when exit 0 AND the unresolved-thread count is 0 AND
-           every reviewer that raised something has a reply: then tell the
+           terminal PR state). If this repo's reviewer conclusions are on the
+           unreliable list you established for it, resolve the AI review lane
+           from the job log plus the comment body for the current head SHA
+           rather than the conclusion; where the conclusion is trustworthy, use
+           it. Fix legitimate
+           High/Medium findings and push, following this repo's history
+           convention; before rebutting a finding that has returned a 3rd time,
+           re-run the reviewer once on the unchanged SHA and re-derive the claim.
+           Stop ONLY when all five exit conditions in the babysit skill hold, and
+           never while an UN-DISPOSITIONED finding exists for the current head
+           SHA — a finding you rebutted or deferred stays visible in the bot's
+           body, so "any finding at all" would never let the loop finish. Then
+           tell the
            user the PR is review-ready and call autonudge_stop.",
   interval_secs=300,
   max_cycles=20,
 )
 ```
+
+The example deliberately **points at** the five conditions rather than restating
+them; a re-serialized copy inside the prompt drifts from the list above.
 
 On GitLab or Bitbucket the shape is identical — only the first line changes (the
 host's own verdict call from the table above), plus its own thread axis and its

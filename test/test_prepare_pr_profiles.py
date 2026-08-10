@@ -188,6 +188,213 @@ def test_charter_budgets_match_the_ci_workflows():
     )
 
 
+def _ci_workflow_run_text() -> str:
+    """ci.yml with comment-only lines removed.
+
+    Every scan here matches a COMMAND, never a comment. ci.yml explains in
+    prose why the Type check step uses `tsc -b` and not `npm run typecheck`,
+    so a naive grep for `npm run <script>` finds a script CI deliberately does
+    NOT run -- the same trap as reading a ratchet number out of a comment.
+    """
+    text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def test_every_floor_gate_names_a_real_target():
+    """A gate naming a script that does not exist fails for the wrong reason.
+
+    The floor is data, so nothing type-checks it: a renamed script or npm
+    script turns a gate into a command-not-found, which reads as a defect in
+    the branch under review rather than as rot in the floor.
+    """
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    gates = "\n".join(data["gates"])
+
+    for rel in sorted(set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", gates))):
+        assert (REPO_ROOT / rel).is_file(), f"gate references missing script {rel}"
+
+    npm_scripts = set(re.findall(r"\bnpm(?: --prefix \S+)? run ([a-z0-9:-]+)", gates))
+    declared = json.loads(
+        (REPO_ROOT / "website" / "package.json").read_text(encoding="utf-8")
+    )["scripts"]
+    for name in sorted(npm_scripts):
+        assert name in declared, f"gate references undeclared npm script {name!r}"
+
+
+def test_ci_blocking_scans_are_covered_by_the_floor():
+    """CI adding a blocking scan must fail this test, not a later PR's review.
+
+    The floor mirrors ci.yml by hand, and the profile ships frozen into every
+    install -- so a gate CI gains after release is one an installed copy can
+    never learn about. Prose asking the loop to keep them in sync is the same
+    unenforced copy this suite already replaced for reviewer budgets and the
+    opus model id. Anything CI runs that is deliberately NOT a local gate has
+    to be named here with its reason, so the exemption is a decision on the
+    record rather than an omission.
+    """
+    run_text = _ci_workflow_run_text()
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    gates = "\n".join(data["gates"])
+
+    exempt_scripts = {
+        # Chooses WHICH tests to run for the changed surface; not itself a gate.
+        "scripts/ci-surface-tests.py",
+        # Generates the manifest. verify_vendor_manifest.py is the checker, and
+        # that one is in the floor.
+        "scripts/vendor_manifest.sh",
+        # Resolves the diff base inside Actions (it lives under .github/scripts).
+        # The floor resolves the same base with `git merge-base` inline.
+        "scripts/resolve-i18n-base.sh",
+    }
+
+    invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))
+    missing = sorted(s for s in invoked - exempt_scripts if s not in gates)
+    assert not missing, (
+        "ci.yml runs these scripts but the prepare-pr gate floor does not: "
+        f"{missing}. Add them to profiles/kirocrew.json gates[] in their "
+        "CI-exact form, or exempt them here with a reason."
+    )
+
+    npm_invoked = set(re.findall(r"\bnpm run ([a-z0-9:-]+)", run_text))
+    npm_missing = sorted(n for n in npm_invoked if f"run {n}" not in gates)
+    assert not npm_missing, (
+        f"ci.yml runs these npm scripts but the gate floor does not: {npm_missing}"
+    )
+
+    # A blocking step can also be a bare binary -- `cfn-lint`, `mypy`, `flake8`
+    # -- which neither scan above can see. Enumerating the TOOL NAMES keeps that
+    # class visible: a tool CI starts using is either a gate or an exemption,
+    # and this fails until someone decides which.
+    exempt_tools = {
+        # Environment setup, not gates.
+        "pip": "installs the pinned lint tool",
+        "uv": "resolves/installs dependencies",
+        "sudo": "privileged provisioning -- belongs in setup, never in a gate",
+        # Wrappers whose payload is already covered by another assertion.
+        "npm": "covered by the npm-script scan above",
+        "npx": "covered by the npm-script scan and the tsc/eslint assertions",
+        "python": "covered by the scripts/ scan and the pytest gate",
+        "python3": "covered by the scripts/ scan and the pytest gate",
+        "unshare": "namespace wrapper around the pytest gate",
+    }
+    tools = set(re.findall(r"(?m)^\s*run: ([a-z][a-z0-9_-]+) ", run_text))
+    tool_missing = sorted(
+        t for t in tools - set(exempt_tools) if not re.search(rf"\b{re.escape(t)}\b", gates)
+    )
+    assert not tool_missing, (
+        f"ci.yml runs these tools but the gate floor does not: {tool_missing}. "
+        "Add each to profiles/kirocrew.json gates[] in its CI-exact form, or "
+        "add it to exempt_tools here with the reason it is not a local gate."
+    )
+
+
+def test_floor_typechecks_the_way_ci_does():
+    """`npm run typecheck` is a no-op gate; the floor must use `tsc -b`.
+
+    ci.yml documents this: the root tsconfig is `files: []` plus project
+    references, so `tsc --noEmit` -- what the `typecheck` script runs -- checks
+    ZERO files and always passes. A floor carrying the convenient script would
+    look enforced and catch nothing, which is worse than having no gate.
+    """
+    gates = "\n".join(
+        json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))["gates"]
+    )
+    assert "tsc -b" in gates, "the gate floor no longer type-checks with `tsc -b`"
+    assert "run typecheck" not in gates, (
+        "the floor uses the `typecheck` npm script, which checks zero files"
+    )
+
+
+def _decide(**kw):
+    base = dict(
+        state="OPEN",
+        mergeable="MERGEABLE",
+        merge_state="CLEAN",
+        decision="APPROVED",
+        draft=False,
+        readiness_kind="pass",
+        n_running=0,
+        n_fail=0,
+        n_checks=50,
+        readiness_context="PR Readiness",
+    )
+    base.update(kw)
+    return pr_status.decide(**base)
+
+
+def test_conflict_outranks_in_flight_checks():
+    """A conflicted PR must report 20 even with checks still running.
+
+    This is the indefinite-stall bug: a conflicted PR dispatches no
+    pull_request workflows, so ranking "still running" first answers "wait" on
+    every poll while nothing can ever complete. Distrusting the exit code in
+    prose is not a fix -- the precedence belongs here.
+    """
+    for state_field in ({"mergeable": "CONFLICTING"}, {"merge_state": "DIRTY"}):
+        code, status = _decide(readiness_kind="running", n_running=20, **state_field)
+        assert code == 20, f"{state_field} with checks running returned {code}"
+        assert "conflict" in status
+
+
+def test_behind_draft_and_changes_requested_also_outrank_running():
+    """Each survives any wait, so each must surface on the first poll."""
+    code, status = _decide(merge_state="BEHIND", readiness_kind="running", n_running=9)
+    assert (code, "BEHIND" in status) == (20, True)
+    code, status = _decide(draft=True, readiness_kind="running", n_running=9)
+    assert (code, "draft" in status) == (20, True)
+    code, status = _decide(decision="CHANGES_REQUESTED", readiness_kind="running", n_running=9)
+    assert (code, "CHANGES_REQUESTED" in status) == (20, True)
+
+
+def test_running_is_still_a_wait_when_nothing_structural_blocks():
+    assert _decide(readiness_kind="running", n_running=16)[0] == 10
+    assert _decide(readiness_kind=None, n_running=3)[0] == 10
+
+
+def test_non_open_is_terminal_before_any_wait():
+    # mergeable stays UNKNOWN forever on a closed PR, so this must not wait.
+    code, status = _decide(state="MERGED", mergeable="UNKNOWN", readiness_kind="running")
+    assert code == 20 and "not OPEN" in status
+
+
+def test_uncomputed_mergeability_waits_and_empty_rollup_fails_closed():
+    assert _decide(mergeable="UNKNOWN")[0] == 10
+    code, status = _decide(n_checks=0)
+    assert code == 20 and "fail-closed" in status
+
+
+def test_clean_only_when_everything_holds():
+    assert _decide() == (
+        0,
+        "STATUS: CLEAN (readiness passed, mergeable, no blocking review decision)",
+    )
+    assert _decide(merge_state="BLOCKED")[0] == 0  # pending required review
+    assert _decide(readiness_kind="fail")[0] == 20
+
+
+def test_gate_rationale_reference_exists_and_is_pointed_at():
+    """The rationale lives beside the profile, and SKILL.md must point at it.
+
+    Phase 2 carries only the rules the loop executes; the reasons each gate is
+    shaped the way it is moved to a reference file so they do not dilute the
+    operational instructions on every skill load. A pointer to a file that does
+    not ship is worse than no pointer, so pin both directions.
+    """
+    ref = SKILL_DIR / "references" / "gate-floor.md"
+    assert ref.is_file(), "references/gate-floor.md is missing from the skill"
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "references/gate-floor.md" in skill, (
+        "SKILL.md no longer points at the gate-floor rationale"
+    )
+    body = ref.read_text(encoding="utf-8")
+    # The constraints a gate must satisfy are the load-bearing part; if they are
+    # gone the reference has stopped carrying what SKILL.md delegates to it.
+    for needle in ("privilege", "provisions", "base ref"):
+        assert needle in body, f"gate-floor.md no longer covers {needle!r}"
+
+
 def test_bundled_kirocrew_profile_is_valid_json():
     data = json.loads((PROFILES_DIR / "kirocrew.json").read_text())
     assert data["name"] == "kirocrew"
