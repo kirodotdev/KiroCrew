@@ -53,6 +53,32 @@ _POSIX_EXEC_PATHS_ONLY = pytest.mark.skipif(
 )
 
 
+async def _stop_stderr_drain(client: "AcpClient") -> None:
+    """Cancel and await the background stderr-drain task a mocked _spawn started.
+
+    _spawn starts _drain_stderr over self._process.stderr, and a mock process has
+    a truthy stderr, so a test that spawns over a mock and never stops the client
+    leaves that task alive past its own teardown. When the loop later collects it,
+    its exception (the mock stream's readline/decode is not a real coroutine) is
+    reported against whatever unrelated test happened to trigger the collection.
+    Cancelling without awaiting is not enough: the task must be awaited so the
+    loop retrieves the result, per testing-conventions.md Determinism rule 3.
+    """
+    task = client._stderr_task
+    if task is not None:
+        if not task.done():
+            task.cancel()
+        # Await regardless of state so the loop retrieves the result: a mock
+        # stream makes the task fault on its first readline, so it may already
+        # be done here, and a done task with an unretrieved exception is exactly
+        # the leak this guards against.
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    client._stderr_task = None
+
+
 class TestVendoredClaudeAcp:
     """Resolve the vendored claude-agent-acp adapter (no npm/network)."""
 
@@ -560,6 +586,8 @@ class TestAcpClientSessionKey:
             assert env is not None
             assert env["KIROCREW_SESSION_KEY"] == "test-key"
 
+        await _stop_stderr_drain(client)
+
     @pytest.mark.asyncio
     async def test_spawn_sets_env_with_channel_id(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key="k", channel_id="C0ABC123")
@@ -584,6 +612,8 @@ class TestAcpClientSessionKey:
             assert env is not None
             assert env["KIROCREW_CHANNEL_ID"] == "C0ABC123"
             assert env["KIROCREW_SESSION_KEY"] == "k"
+
+        await _stop_stderr_drain(client)
 
     @pytest.mark.asyncio
     async def test_spawn_forwards_claude_config_dir_from_extra_env(self, tmp_path):
@@ -623,6 +653,8 @@ class TestAcpClientSessionKey:
             # Bedrock flag must ride alongside (regression guard).
             assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
 
+        await _stop_stderr_drain(client)
+
     @pytest.mark.asyncio
     async def test_spawn_no_channel_id_env_absent(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key="k", channel_id=None)
@@ -646,6 +678,8 @@ class TestAcpClientSessionKey:
             env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
             assert env is not None
             assert "KIROCREW_CHANNEL_ID" not in env
+
+        await _stop_stderr_drain(client)
 
     @pytest.mark.asyncio
     async def test_spawn_channel_id_only_no_session_key(self, tmp_path):
@@ -674,6 +708,8 @@ class TestAcpClientSessionKey:
             assert env["KIROCREW_CHANNEL_ID"] == "C0ABC123"
             assert "KIROCREW_SESSION_KEY" not in env
 
+        await _stop_stderr_drain(client)
+
     @pytest.mark.asyncio
     async def test_spawn_no_session_key_env_none(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key=None)
@@ -697,6 +733,78 @@ class TestAcpClientSessionKey:
             env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
             assert env is not None, "env should be a dict (SSH_AUTH_SOCK resolution)"
             assert "KIROCREW_SESSION_KEY" not in env
+
+        await _stop_stderr_drain(client)
+
+
+class TestSpawnStderrDrainCleanup:
+    """_spawn's background stderr-drain task must not outlive a mocked spawn.
+
+    Guards the leak in issue #2485: _spawn starts _drain_stderr over
+    self._process.stderr, a mock process has a truthy stderr, and a spawn test
+    that never stops the client leaves the task alive. Its exception is later
+    reported against an unrelated test on the same worker.
+    """
+
+    @pytest.mark.asyncio
+    async def test_spawn_over_mock_leaves_a_live_drain_task(self, tmp_path):
+        # Establish the hazard the cleanup exists for: a bare mocked _spawn does
+        # start a live drain task, so the cleanup below is load-bearing.
+        client = AcpClient(work_dir=tmp_path, session_key="k")
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            mock_proc.returncode = None
+            mock_exec.return_value = mock_proc
+
+            await client._spawn()
+
+            assert client._stderr_task is not None
+            assert not client._stderr_task.done()
+
+        await _stop_stderr_drain(client)
+
+    @pytest.mark.asyncio
+    async def test_stop_stderr_drain_retrieves_the_faulted_task(self, tmp_path):
+        # An AsyncMock stream makes readline() return a coroutine, so the drain
+        # task faults exactly as observed in the issue. _stop_stderr_drain must
+        # retrieve that result so nothing is left unretrieved for the loop to
+        # report later. A one-line MagicMock stub for the stdlib asyncio logger
+        # would hide a re-leak, so assert on the task's own state instead.
+        client = AcpClient(work_dir=tmp_path, session_key="k")
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+        ):
+            mock_proc = AsyncMock()
+            mock_proc.pid = 12345
+            mock_proc.returncode = None
+            mock_exec.return_value = mock_proc
+
+            await client._spawn()
+            task = client._stderr_task
+            assert task is not None
+
+        await _stop_stderr_drain(client)
+
+        assert client._stderr_task is None
+        assert task.done()
+        # The result is retrieved (no exception escapes and none is left pending
+        # for the loop to report). Cancelled or faulted, both are terminal here.
+        assert task.cancelled() or task.exception() is not None
 
 
 class TestAcpClientBackendSelection:
@@ -756,6 +864,8 @@ class TestAcpClientBackendSelection:
                 "/usr/local/lib/claude-agent-acp/index.js",
             ], "claude backend must spawn node + script explicitly"
 
+        await _stop_stderr_drain(client)
+
     @pytest.mark.asyncio
     async def test_spawn_claude_backend_missing_bin_raises(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
@@ -791,6 +901,8 @@ class TestAcpClientBackendSelection:
             assert argv[0] == "/usr/bin/kiro-cli"
             assert argv[1] == "acp"
             assert "--agent" in argv
+
+        await _stop_stderr_drain(client)
 
     @pytest.mark.asyncio
     async def test_initialize_protocol_version_per_backend(self, tmp_path):
@@ -7789,6 +7901,8 @@ class TestResolveKiroBinEnvOverride:
             client = AcpClient(work_dir=tmp_path / "workspace")
             await client._spawn()
             mock_exec.assert_awaited()
+
+            await _stop_stderr_drain(client)
 
     @pytest.mark.asyncio
     async def test_spawn_passes_installed_path_through_exact_wrappers(self, tmp_path):
