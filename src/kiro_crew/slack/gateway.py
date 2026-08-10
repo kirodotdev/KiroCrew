@@ -617,6 +617,89 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
     return HookManager(scoped)
 
 
+class _GateTally:
+    """Tool-gate outcomes accumulated over one cron run.
+
+    A cron whose every tool call was refused still gets prose back from the
+    model, so the reply text alone cannot separate "did the work" from "was
+    blocked at every step". Counting both arms is what makes that verdict
+    available once the turn ends. A multi-agent run tallies across the whole
+    sequence, because status and history are per-run, not per-agent.
+
+    Only an unconditional security block counts as a refusal here. A governance
+    denial and an unattended-approval timeout also arrive unapproved, but they
+    describe the policy state or an absent approver rather than a defect in the
+    job — and a job's failure counter drives auto-pause, which is durable.
+    """
+
+    def __init__(self) -> None:
+        self.refused: list[str] = []
+        self.approved = 0
+        self.unresolved = 0
+
+    def note(self, title: str, approved: bool, security_blocked: bool) -> None:
+        if approved:
+            self.approved += 1
+        elif security_blocked:
+            self.refused.append(title)
+        else:
+            self.unresolved += 1
+
+    @property
+    def all_blocked(self) -> bool:
+        """Every tool the turn attempted was security-blocked, and none ran.
+
+        ``unresolved`` must be zero, not merely uncounted: a governance denial
+        or an approval timeout alongside a security block leaves the run's real
+        capability unknown — that tool might have succeeded with a looser policy
+        or a present approver — so the run does not evidence a job that cannot
+        work. Treating it as evidence would auto-pause a healthy job.
+        """
+        return bool(self.refused) and self.approved == 0 and self.unresolved == 0
+
+
+def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
+    """Record a finished cron run's success or failure from its gate outcomes.
+
+    Shared by both cron agent paths so their verdicts cannot drift. Mutating
+    ``last_status`` is how the non-raising cron paths signal failure:
+    ``CronScheduler._execute`` keeps an explicit "error" rather than
+    overwriting it with "ok".
+
+    Returns whether this call counted a failure, because a run must increment
+    ``consecutive_failures`` **at most once**. On the single-agent path the
+    delivery work that follows (dashboard broadcast, Slack post) runs inside a
+    ``try`` whose handler counts too, so a blocked turn whose delivery then
+    failed would otherwise reach the auto-pause threshold in three runs rather
+    than five — pausing on arithmetic instead of on evidence.
+    """
+    if tally.all_blocked:
+        # Nothing the model attempted was permitted, so the run accomplished
+        # nothing however plausible its reply reads. A success resets
+        # consecutive_failures and clears auto_paused, so recording one here
+        # would keep a structurally-failing job firing on its schedule forever.
+        job.last_status = "error"
+        _named = ", ".join(t or "<untitled tool>" for t in tally.refused[:3])
+        job.last_error = redact(
+            f"all {len(tally.refused)} tool call(s) blocked by the security gate: " + _named
+        )[:500]
+        job.record_failure()
+        if job.auto_paused:
+            logger.warning(
+                "Cron '%s': auto-paused after %d consecutive failures",
+                job.name,
+                job.consecutive_failures,
+            )
+        return True
+    # Clear failure dedup on any success, regardless of whether the success
+    # result itself is a dup. A successful run means the job recovered — next
+    # failure should always alert fresh.
+    job.last_failure_hash = ""
+    job.last_failure_at = 0.0
+    job.record_success()
+    return False
+
+
 def _result_hash(text: str) -> str:
     """Normalize volatile data and return a 16-hex-char SHA-256 prefix.
 
@@ -2433,6 +2516,9 @@ class GatewayOrchestrator:
                 assert self.ctx_builder is not None
                 result_text = "_No response._"
                 _seq_downgraded = False
+                # Run-scoped: a sequence where one agent got a tool through has
+                # done work, even if a later agent was blocked outright.
+                _gate = _GateTally()
                 for agent in agents:
                     agent_session_key = f"cron:{job.id}:{agent}"
                     if self.cron_svc is not None:
@@ -2483,6 +2569,7 @@ class GatewayOrchestrator:
                                 if job.approval_mode == "auto"
                                 else self._interactive_approval("cron")
                             ),
+                            on_tool_gate=_gate.note,
                         )
                         if not result_text:
                             result_text = "_No response._"
@@ -2546,6 +2633,10 @@ class GatewayOrchestrator:
                 if _seq_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
                 job.set_run_result(result_text)
+                # This path owns the same verdict as the single-agent one, so a
+                # multi-agent job's failure counter moves in both directions —
+                # which is what keeps auto-pause both reachable and clearable.
+                _apply_gate_verdict(job, _gate)
                 return result_text
 
             # ── Single-agent path (existing behavior) ──
@@ -2555,6 +2646,9 @@ class GatewayOrchestrator:
 
             _acquired = False
             _model_downgraded = False
+            # Set when the gate verdict below already counted this run, so the
+            # exception handler does not count it a second time.
+            _gate_counted = False
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
@@ -2587,6 +2681,7 @@ class GatewayOrchestrator:
                 # Wall clock for the cron agent turn — see the sequential site
                 # above. acp reports no duration, so this is the row's fallback.
                 _turn_t0 = time.monotonic()
+                _gate = _GateTally()
                 result_text = await stream_and_collect(
                     client,
                     full_message,
@@ -2599,6 +2694,7 @@ class GatewayOrchestrator:
                     on_tool_approval=(
                         None if job.approval_mode == "auto" else self._interactive_approval("cron")
                     ),
+                    on_tool_gate=_gate.note,
                 )
 
                 if not result_text:
@@ -2640,12 +2736,7 @@ class GatewayOrchestrator:
                 # Suppress Slack for repeated identical results to avoid spam.
                 rh = _result_hash(result_text)
 
-                # Clear failure dedup on any success, regardless of whether
-                # the success result itself is a dup. A successful run means
-                # the job recovered — next failure should always alert fresh.
-                job.last_failure_hash = ""
-                job.last_failure_at = 0.0
-                job.record_success()
+                _gate_counted = _apply_gate_verdict(job, _gate)
 
                 if rh == job.last_posted_hash:
                     job.consecutive_dupes += 1
@@ -2876,8 +2967,12 @@ class GatewayOrchestrator:
                 if is_dup and time.time() - job.last_failure_at < _FAILURE_REMINDER_SECS:
                     # record_failure() is the counter's sole owner: a suppressed
                     # duplicate is still a failed run, so it must count toward
-                    # the auto-pause threshold like every other failure path.
-                    job.record_failure()
+                    # the auto-pause threshold like every other failure path —
+                    # unless the gate verdict already counted THIS run, in which
+                    # case counting again would pause on arithmetic rather than
+                    # on five distinct failures.
+                    if not _gate_counted:
+                        job.record_failure()
                     if job.auto_paused:
                         logger.warning(
                             "Cron '%s' auto-paused after %d consecutive failures",
@@ -2994,8 +3089,10 @@ class GatewayOrchestrator:
                 # must still reach the auto-pause threshold. It runs AFTER the
                 # awaited Slack attempt so a timeout cancelling this handler
                 # mid-alert cannot leave the run counted here AND again by the
-                # timeout handler.
-                job.record_failure()
+                # timeout handler. For the same reason it defers when the gate
+                # verdict already counted THIS run.
+                if not _gate_counted:
+                    job.record_failure()
                 if job.auto_paused:
                     logger.warning(
                         "Cron '%s' auto-paused after %d consecutive failures",

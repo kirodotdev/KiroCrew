@@ -96,6 +96,17 @@ class HookResult:
 class ToolHookResult:
     action: str  # TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY
     reason: str = ""
+    #: True when a TOOL_DENY came from a hard security check — the attempt
+    #: itself is the problem. False when it came from policy STATE (the
+    #: governance ceiling ∩ profile), where the same attempt becomes allowed
+    #: once the policy loosens. Callers that count refusals against a durable
+    #: budget must only count the security kind: an unattended cron auto-pauses
+    #: after repeated failures, and a policy denial is not a defect in the job.
+    #: The reason string cannot carry this: most security denies never contain
+    #: ``DENY_REASON_PREFIX`` at all (the sensitive-path, write-protected-config
+    #: and deny-by-default-shell messages do not), so matching on it would
+    #: classify a sensitive-path or exfiltration deny as non-security.
+    security_deny: bool = True
 
     @staticmethod
     def allow() -> ToolHookResult:
@@ -107,7 +118,18 @@ class ToolHookResult:
 
     @staticmethod
     def deny(reason: str) -> ToolHookResult:
-        return ToolHookResult(action=TOOL_DENY, reason=reason)
+        """Deny on a hard security check — the attempt is the problem."""
+        return ToolHookResult(action=TOOL_DENY, reason=reason, security_deny=True)
+
+    @staticmethod
+    def deny_policy(reason: str) -> ToolHookResult:
+        """Deny on policy STATE, which the same attempt can outlive.
+
+        Kept distinct from :meth:`deny` so a caller counting refusals against a
+        durable budget (cron auto-pause) does not treat a governance ceiling as
+        a defect in what it attempted.
+        """
+        return ToolHookResult(action=TOOL_DENY, reason=reason, security_deny=False)
 
 
 # ── Config Types ──
@@ -615,7 +637,7 @@ class HookManager:
             ctx, tool_name, session_key, agent, app, tool_kind, raw_params
         )
         if gov_reason:
-            return ToolHookResult.deny(gov_reason)
+            return ToolHookResult.deny_policy(gov_reason)
 
         # App-own MCP server auto-approve — a FIRST-PARTY (builtin) app agent
         # calling its OWN app-scoped MCP server is intra-app, not a host surface.
@@ -714,7 +736,7 @@ class HookManager:
                     ctx, canonical_mcp_name, session_key, agent, app, tool_kind, raw_params
                 )
                 if gov_reason:
-                    return ToolHookResult.deny(gov_reason)
+                    return ToolHookResult.deny_policy(gov_reason)
                 return ToolHookResult.auto_approve()
 
         # Auto-approve — match against both the original title (preserves
@@ -812,7 +834,7 @@ class HookManager:
         """
         return resolve_denied_notes(self._config)
 
-    def effective_denied_regexes(self) -> list[str]:
+    def effective_denied_regexes(self, *, include_governance_pins: bool = True) -> list[str]:
         """Public accessor for the effective regex-tier denied set.
 
         Resolves the platform context itself, so callers outside the tool-call
@@ -820,8 +842,14 @@ class HookManager:
         workflow / heartbeat surfaces) can honor the SAME user opt-out +
         governance-pin state that ``on_tool_call`` enforces, instead of failing
         closed to all built-ins and re-introducing "disabled but still blocked".
+
+        Pass ``include_governance_pins=False`` only to CLASSIFY a deny that has
+        already been decided by the pinned set — never to decide one. See
+        ``resolve_effective_denied_regexes``.
         """
-        return self._effective_denied(current_context())
+        return resolve_effective_denied_regexes(
+            self._config, current_context(), include_governance_pins=include_governance_pins
+        )
 
 
 # ACP semantic tool kinds treated as read-only for the non-shell auto-approve
@@ -904,20 +932,29 @@ def hooks_config_from_config_dict(hooks_section: dict) -> HooksConfig:
     return HooksConfig.from_dict(merged)
 
 
-def resolve_effective_denied_regexes(config: "HooksConfig", ctx: object = None) -> list[str]:
+def resolve_effective_denied_regexes(
+    config: "HooksConfig", ctx: object = None, *, include_governance_pins: bool = True
+) -> list[str]:
     """Effective regex-tier denied set from a HooksConfig (module-level).
 
     Same resolution as ``HookManager._effective_denied`` but usable by callers
     that hold a config rather than a HookManager (e.g. cron command vetting in
     ``mcp_cron``). Honors the user opt-out (disable_all / disabled_ids /
     user_added) with governance pins force-re-added (tightest-wins).
+
+    ``include_governance_pins=False`` resolves the set the USER's own opt-out
+    state would produce on its own. Enforcement must never use it — dropping
+    pins is exactly the opt-out a pin exists to refuse. It answers a different
+    question: comparing a deny against both sets tells a caller whether the
+    match came ONLY from a pin, i.e. whether the block is policy state (which a
+    later loosening reverses) or a rule the user is enforcing themselves.
     """
     return security.compute_effective_denied(
         security.BUILTIN_DENIED_RULES,
         config.denied_commands_disabled_ids,
         config.denied_commands_disable_all,
         [p.pattern for p in config.denied_commands_user_added if p.enabled],
-        _governance_pinned_command_ids(ctx),
+        _governance_pinned_command_ids(ctx) if include_governance_pins else (),
     )
 
 

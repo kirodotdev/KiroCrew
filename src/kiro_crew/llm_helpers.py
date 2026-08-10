@@ -442,6 +442,7 @@ async def stream_and_collect(
     on_chunk: Callable[[str], None] | None = None,
     on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
     on_steer_consumed: Callable[[str], None] | None = None,
+    on_tool_gate: Callable[[str, bool, bool], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
     session_key: str = "",
@@ -465,6 +466,21 @@ async def stream_and_collect(
             fire-and-forget write, so this echo is the ONLY authoritative signal
             that the backend injected it; a caller that steers must observe this
             to know which of its steers to requeue when the turn ends.
+        on_tool_gate: Optional callback invoked once per tool permission
+            decision with ``(tool_title, approved, security_blocked)``. Lets a
+            caller tell "the model did work" apart from "every tool the model
+            attempted was blocked" — a distinction the returned text cannot
+            carry, because a model whose tools were all refused still returns
+            plausible prose. ``security_blocked`` is True only for the
+            unconditional deny checks (sensitive path, sensitive bash, a deny
+            pattern); a governance ``TOOL_DENY`` and an unattended-approval
+            timeout are refusals that say nothing about the job, so they arrive
+            with ``approved=False`` and ``security_blocked=False``.
+            Delivered when the attempt settles, not mid-stream, and decisions
+            from an abandoned retry attempt are discarded: they describe work
+            the final turn never did. ``tool_title`` is LLM-authored: redact it
+            before display or persistence. Raising from the callback is
+            swallowed; observing a gate decision must never fail the turn.
         retry_transient: When True (default), transient backend errors are
             retried in-place with bounded backoff. Set False from callers that
             already own an outer transient-retry loop, so the inner arm doesn't
@@ -501,6 +517,18 @@ async def stream_and_collect(
         # suppresses the requeue, so dropping the acknowledgement makes the cleanup hand an
         # already-answered question back and ask it twice. Re-initialised per attempt.
         consumed_this_attempt: list[str] = []
+        # Same per-attempt discipline as the steer acknowledgements above, and for the
+        # same reason: a retry re-sends the original message, so decisions from an
+        # abandoned attempt describe work the final turn never did. Committing them
+        # would let a refusal from a discarded attempt outvote a clean retry and fail
+        # a healthy job.
+        gate_this_attempt: list[tuple[str, bool, bool]] = []
+        # Tool calls that reached the gate, and tool calls that actually ran.
+        # A tool auto-approved upstream never raises a permission request, so it
+        # executes without a gate decision: correlating the two by
+        # ``tool_call_id`` is what lets a caller see that work happened.
+        gate_decided_ids: set[str] = set()
+        executed_calls: list[tuple[str, str]] = []
         retrying = False
         try:
             async for event in provider.stream(message):
@@ -509,6 +537,11 @@ async def stream_and_collect(
                     if on_chunk:
                         on_chunk(event.text)
                 elif event.kind == EVENT_PERMISSION_REQUEST:
+                    # Captures this decision's outcome and mechanism, so a hard
+                    # security block is distinguishable from a governance denial
+                    # or an unattended-approval timeout. Only the former says
+                    # anything about the job itself.
+                    _decision: list[tuple[str, str]] = []
                     approved = await _resolve_permission(
                         provider,
                         event,
@@ -518,11 +551,21 @@ async def stream_and_collect(
                         session_key=session_key,
                         agent=agent,
                         app=app,
+                        on_decision=lambda outcome, mech: _decision.append((outcome, mech)),
                     )
+                    if on_tool_gate:
+                        _mech = _decision[-1][1] if _decision else ""
+                        gate_this_attempt.append(
+                            (event.title or "", approved, _mech.startswith("always_deny"))
+                        )
+                        if event.tool_call_id:
+                            gate_decided_ids.add(event.tool_call_id)
                     if not approved:
                         continue
                 elif event.kind == EVENT_TOOL_CALL:
                     tool_call_count += 1
+                    if on_tool_gate:
+                        executed_calls.append((event.tool_call_id or "", event.title or ""))
                     if max_turns is not None and tool_call_count > max_turns:
                         logger.warning(
                             "max_turns=%d exceeded (%d tool calls), breaking",
@@ -640,6 +683,25 @@ async def stream_and_collect(
             if not retrying and on_steer_consumed:
                 for consumed_text in consumed_this_attempt:
                     on_steer_consumed(consumed_text)
+            if not retrying and on_tool_gate:
+                for gate_title, gate_approved, gate_blocked in gate_this_attempt:
+                    try:
+                        on_tool_gate(gate_title, gate_approved, gate_blocked)
+                    except Exception:
+                        # A caller's bookkeeping must never abort the turn.
+                        logger.debug("on_tool_gate callback failed", exc_info=True)
+                # A tool that executed without a matching gate decision was
+                # permitted upstream, so it counts as an approval: work happened.
+                # An id-less execution cannot be correlated, so it counts too —
+                # over-reporting work risks a missed detection, under-reporting
+                # it fails a job that did something.
+                for _exec_id, _exec_title in executed_calls:
+                    if _exec_id and _exec_id in gate_decided_ids:
+                        continue
+                    try:
+                        on_tool_gate(_exec_title, True, False)
+                    except Exception:
+                        logger.debug("on_tool_gate callback failed", exc_info=True)
 
 
 async def stream_and_collect_json(
@@ -667,12 +729,33 @@ async def _resolve_permission(
     session_key: str = "",
     agent: str = "",
     app: str = "",
+    on_decision: Callable[[str, str], None] | None = None,
 ) -> bool:
-    """Resolve a tool permission request. Returns True if approved."""
+    """Resolve a tool permission request. Returns True if approved.
+
+    *on_decision*, when given, receives ``(outcome, mechanism)`` for the single
+    decision this call makes — the same pair that reaches the SEL audit row.
+    ``mechanism`` is one of ``"always_deny"`` / ``"always_deny_input"`` (the
+    unconditional checks), ``"always_deny_hook"`` (a HookManager security deny),
+    ``"policy_deny"`` (the governance ceiling, whether reached through the hook
+    gate or through a regex-tier rule that only a governance PIN put back into
+    the effective set), or ``""`` for an approval or an interactive rejection.
+    The ``always_deny`` prefix is therefore what marks a refusal as "the attempt
+    itself was the problem"; everything else describes policy state or an absent
+    approver. Note that the same regex match can land under either label — what
+    decides it is whether the rule survives without its pin.
+    """
     from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
     from kiro_crew.sel import sel
 
     def _log(outcome: str, **extra):
+        # Single funnel for every decision path, so the sink cannot miss one.
+        if on_decision is not None:
+            _meta = extra.get("metadata") or {}
+            try:
+                on_decision(outcome, str(_meta.get("mechanism") or ""))
+            except Exception:
+                logger.debug("on_decision sink failed", exc_info=True)
         sel().log_tool_invocation(
             session_key=session_key,
             agent=agent,
@@ -716,10 +799,42 @@ async def _resolve_permission(
     # re-introduce "disabled but still blocked" on every non-dashboard surface.
     # No HookManager (rare) → None → fail-closed default (all built-ins).
     _denied_regexes = hooks.effective_denied_regexes() if hooks is not None else None
+
+    def _regex_deny_mechanism(probe: str, unconditional: str) -> str:
+        """Classify an already-decided regex-tier deny by its provenance.
+
+        A governance pin re-adds a built-in rule the user disabled, so the SAME
+        match can mean either "this host enforces this rule" or "policy
+        currently overrides this host's opt-out". Only the former says anything
+        about the tool being attempted; treating the latter as a security block
+        durably auto-pauses a cron that a later policy loosening cannot revive,
+        because clearing the pause never restores ``enabled``.
+
+        Re-runs the match against the pin-free set — deny path only, so the
+        common allow path pays nothing — and reports a match that survives ONLY
+        with pins as policy state.
+        """
+        if hooks is None:
+            return unconditional
+        try:
+            _unpinned = hooks.effective_denied_regexes(include_governance_pins=False)
+        except Exception:
+            # Classification must never change the deny itself. An unresolvable
+            # opt-out state falls back to the unconditional label: over-counting
+            # a block is recoverable by an operator, silently not counting one
+            # restores the runaway this gate exists to catch.
+            logger.debug("deny provenance unresolved; reporting unconditional", exc_info=True)
+            return unconditional
+        return unconditional if is_denied(probe, denied_regexes=_unpinned) else "policy_deny"
+
     _deny_reason = is_denied(normalized, denied_regexes=_denied_regexes)
     if _deny_reason:
         await provider.reject_tool(event.request_id)
-        _log("denied", error=_deny_reason, metadata={"mechanism": "always_deny"})
+        _log(
+            "denied",
+            error=_deny_reason,
+            metadata={"mechanism": _regex_deny_mechanism(normalized, "always_deny")},
+        )
         return False
 
     # Defense-in-depth: also inspect event.tool_input for sensitive paths/commands.
@@ -747,7 +862,11 @@ async def _resolve_permission(
             _input_deny = is_denied(s, denied_regexes=_denied_regexes)
             if _input_deny:
                 await provider.reject_tool(event.request_id)
-                _log("denied", error=_input_deny, metadata={"mechanism": "always_deny_input"})
+                _log(
+                    "denied",
+                    error=_input_deny,
+                    metadata={"mechanism": _regex_deny_mechanism(s, "always_deny_input")},
+                )
                 return False
 
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks:
@@ -763,7 +882,19 @@ async def _resolve_permission(
         )
         if tool_result.action == TOOL_DENY:
             await provider.reject_tool(event.request_id)
-            _log("denied", error=tool_result.reason)
+            # A hook deny is either a hard security check or the governance
+            # ceiling. Only the former says the attempt itself was the problem,
+            # and the distinction rides on the result's own field rather than
+            # its reason text.
+            _log(
+                "denied",
+                error=tool_result.reason,
+                metadata={
+                    "mechanism": (
+                        "always_deny_hook" if tool_result.security_deny else "policy_deny"
+                    )
+                },
+            )
             return False
         if tool_result.action == TOOL_AUTO_APPROVE:
             await provider.approve_tool(event.request_id)

@@ -346,12 +346,23 @@ class CronJob:
     def record_success(self) -> None:
         """Reset the failure counter and lift any execution auto-pause.
 
-        A recovered job clears `auto_paused`; `enabled` is intentionally NOT set
-        back to True here — a job the user paused (`user_paused`) must stay paused
-        across a success, and re-enabling is the user's action (`enable_job`)."""
+        Clearing an auto-pause also re-enables the job, because ``enabled`` is
+        not independent state: :func:`_job_enabled` reconstructs it on load as
+        ``not user_paused and not auto_paused``. Leaving ``enabled`` False after
+        clearing ``auto_paused`` therefore produces a job that is paused in
+        memory and enabled on disk — it stays stopped until the next restart
+        silently resumes it, which is the surprise a manual "Run Now" on an
+        auto-paused job used to create.
+
+        A job the user paused stays paused: ``user_paused`` is never mutated by
+        execution, so it is the discriminator here, and re-enabling THAT is the
+        user's action (``enable_job``).
+        """
         self.consecutive_failures = 0
         if self.auto_paused:
             self.auto_paused = False
+            if not self.user_paused:
+                self.enabled = True
             self._audit_pause_change("auto_pause_cleared")
 
 
