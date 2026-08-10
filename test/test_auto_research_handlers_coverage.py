@@ -735,8 +735,13 @@ class TestWatchdogLoop:
         self, _isolate: Path, fast_watchdog, sse, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(h, "_unresponsive_deadline", lambda _idle: 0)
-        stop_loop = AsyncMock()
-        monkeypatch.setattr(h, "_stop_loop", stop_loop)
+        terminating_loop = SimpleNamespace(id="terminating-loop", active=True)
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=terminating_loop),
+            remove=AsyncMock(),
+            update=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
         cid = _campaign(auto_approve=True)
         _running(cid)
         _write_finding(cid, 1)
@@ -744,7 +749,8 @@ class TestWatchdogLoop:
             {"state": None}, lambda: _status(cid) == h.CampaignStatus.FAILED
         )
         assert "stalled" in (h.get_campaign(cid) or {})["error_message"]
-        stop_loop.assert_awaited_with(cid, remove=True)
+        svc.update.assert_awaited_once_with(terminating_loop.id, active=False)
+        svc.remove.assert_awaited_once_with(terminating_loop.id)
         assert "failed" in sse.types()
 
     @pytest.mark.asyncio
@@ -1573,7 +1579,7 @@ class TestAssortedHelpers:
     ):
         _campaign()  # create the schema
         state = SimpleNamespace(get_or_create_slot=MagicMock())
-        svc = SimpleNamespace(add=AsyncMock())
+        svc = SimpleNamespace(add=AsyncMock(), get_by_slot=MagicMock(return_value=None))
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
         await h._launch_loop(_mk("PATCH", "x", app=_app(state=state)), "deadbeef")
         state.get_or_create_slot.assert_not_called()
@@ -1591,7 +1597,7 @@ class TestAssortedHelpers:
             push_slots_update=MagicMock(),
             conversation_log=None,
         )
-        svc = SimpleNamespace(add=AsyncMock())
+        svc = SimpleNamespace(add=AsyncMock(), get_by_slot=MagicMock(return_value=None))
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
         await h._launch_loop(_mk("PATCH", "x", app=_app(state=state)), cid)
         assert slot.title == "Rate limiting study"

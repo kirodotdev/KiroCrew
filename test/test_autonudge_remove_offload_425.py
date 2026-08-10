@@ -50,3 +50,32 @@ async def test_remove_missing_loop_is_noop(svc, monkeypatch):
     monkeypatch.setattr(svc, "_write_state", lambda payload: writes.append(payload))
     await svc.remove("does-not-exist")
     assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_failed_remove_can_retry_after_in_memory_removal(svc, monkeypatch, tmp_path):
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15)
+    original_write = svc._write_state
+    failed = False
+
+    def _fail_once(payload: dict) -> None:
+        nonlocal failed
+        if not payload["loops"] and not failed:
+            failed = True
+            raise OSError("store unavailable")
+        original_write(payload)
+
+    monkeypatch.setattr(svc, "_write_state", _fail_once)
+
+    with pytest.raises(OSError, match="store unavailable"):
+        await svc.remove(loop.id)
+    assert loop.id not in svc._loops
+
+    await svc.remove(loop.id)
+    svc.stop()
+
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await restored.start()
+    assert restored.get_by_slot("chat-1-123") is None
+    restored.stop()

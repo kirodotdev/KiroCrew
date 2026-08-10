@@ -70,6 +70,12 @@ _OVERDUE_REARM_SECS = 10
 # Sentinel file per loop: creating it halts the loop on next cycle.
 STOP_SENTINEL = "STOP"
 
+# Persisted source category for a deliberate ``autonudge_stop`` directive.
+# The caller's free-form explanation is intentionally not stored: it is
+# model-authored text and the watchdog only needs the deterministic source.
+AUTONUDGE_STOP_REASON = "autonudge_stop"
+_TERMINAL_BOUND_REASONS = frozenset({"cycle_cap", "runtime_budget"})
+
 # Namespaced session-key prefixes that identify messaging-channel sessions
 # (as opposed to bare dashboard chat-slot keys). Channel-bound loops have no
 # dashboard turn-lifecycle hooks (notify_turn_complete / notify_user_input),
@@ -271,7 +277,8 @@ class NudgeLoop:
     max_runtime_secs: int = 0
     # WHY the loop was last deactivated: "" (active / never stopped),
     # "manual" (user pause / any caller that didn't say otherwise),
-    # "cycle_cap", or "runtime_budget" (set by _timer's terminal bounds).
+    # "autonudge_stop" (deliberate directive), "cycle_cap", or
+    # "runtime_budget" (set by _timer's terminal bounds).
     # Persisted so revival logic can distinguish a manual pause from a bound
     # expiry — elapsed wall-clock keeps growing after a manual pause, so
     # WITHOUT this record a paused loop whose budget has since elapsed is
@@ -367,6 +374,10 @@ class AutoNudgeService:
         # complete while the firing task is still persisting, and honouring the
         # hook immediately would cancel that task mid-persist.
         self._rearm_pending: set[str] = set()
+        # Loop ids removed from memory whose durable state write has not yet
+        # succeeded. A caller may retry remove(id) after the first write fails;
+        # an arbitrary unknown id remains a no-op.
+        self._pending_removals: set[str] = set()
         # Loop ids whose timer task is CURRENTLY inside its ``_on_fire`` await.
         # ``update()`` must not cancel such a timer: for channel-bound loops the
         # fire callback runs the unattended turn INLINE, so cancelling it kills
@@ -732,7 +743,26 @@ class AutoNudgeService:
                 # already inactive. The reverse order is already safe — a
                 # manual pause overwriting a bound tag only ever NARROWS
                 # revivability ("manual" never auto-revives).
-                if stopped_reason and not active and not loop.active:
+                if (
+                    not active
+                    and stopped_reason is None
+                    and loop.stopped_reason == AUTONUDGE_STOP_REASON
+                ):
+                    # A reasonless repeat of an already-inactive state is not a
+                    # new stop transition. Preserve source-owned completion
+                    # evidence until its Research Lab watchdog consumes it;
+                    # dashboard retries and unrelated patches must not turn a
+                    # deliberate stop into a revivable manual pause.
+                    logger.info(
+                        "AutoNudge: loop %s retains its source stop reason on "
+                        "reasonless inactive update",
+                        loop.id,
+                    )
+                elif (
+                    stopped_reason in _TERMINAL_BOUND_REASONS
+                    and not active
+                    and not loop.active
+                ):
                     logger.info(
                         "AutoNudge: loop %s already deactivated (%s) — %s bound "
                         "not overwriting it",
@@ -822,29 +852,35 @@ class AutoNudgeService:
     async def remove(self, loop_id: str) -> None:
         async with self._lock:
             existed = loop_id in self._loops
+            if not existed and loop_id not in self._pending_removals:
+                return
             # Remove in-memory but SKIP the blocking save: _save() -> _write_state
             # fsyncs, and a wedged disk must not freeze the event loop. Snapshot
             # under THIS lock hold (serialization vs the post-fire write). Keep
             # the removal INLINE (not a separate task) so _cancel_timer's
             # "never cancel the current task" self-guard still applies when
             # _timer removes its own loop.
-            self.remove_sync(loop_id, persist=False)
             if existed:
-                payload = self._serialize_state()
-                fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
-                try:
-                    await asyncio.shield(fut)
-                except asyncio.CancelledError:
-                    # Caller cancelled mid-write: the executor thread can't be
-                    # cancelled and is still fsyncing. shield re-raised on us
-                    # immediately, so DRAIN the write to completion before this
-                    # `async with` exits and releases _lock — otherwise a waiter
-                    # (add()/update()/_persist_locked) could acquire the lock and
-                    # race a second os.replace(), clobbering newer state with this
-                    # stale removal snapshot ("lost update after restart"). Then
-                    # propagate the cancellation.
-                    await asyncio.shield(fut)
-                    raise
+                self.remove_sync(loop_id, persist=False)
+                self._pending_removals.add(loop_id)
+            payload = self._serialize_state()
+            fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            try:
+                await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                # Caller cancelled mid-write: the executor thread can't be
+                # cancelled and is still fsyncing. shield re-raised on us
+                # immediately, so DRAIN the write to completion before this
+                # `async with` exits and releases _lock — otherwise a waiter
+                # (add()/update()/_persist_locked) could acquire the lock and
+                # race a second os.replace(), clobbering newer state with this
+                # stale removal snapshot ("lost update after restart"). Then
+                # propagate the cancellation.
+                await asyncio.shield(fut)
+                self._pending_removals.discard(loop_id)
+                raise
+            else:
+                self._pending_removals.discard(loop_id)
 
     def get_by_slot(self, slot_key: str) -> NudgeLoop | None:
         return self._find_by_slot(slot_key)
