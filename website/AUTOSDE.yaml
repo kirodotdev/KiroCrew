@@ -171,6 +171,72 @@ custom-rules:
       )}
       ```
 
+  - id: max-two-buttons-per-row
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+    rule: |
+      A row of buttons holds AT MOST 2. The third action and everything after it
+      goes into an overflow `DropdownMenu` (kebab / "More"), or leaves the row.
+
+      Why: peer buttons side by side carry no ranking, so three or more force a
+      read-every-label scan before the user can click anything, and the row is
+      the first thing to break under width pressure — the dashboard sidebar, a
+      split pane, and a table cell all clip or wrap it instead of degrading.
+      Two buttons still read as primary + secondary at a glance.
+
+      Counts toward the 2 — every action control that is a sibling in the same
+      horizontal group, labeled or icon-only: `Btn`, `SendBtn`, shadcn `Button`,
+      raw `<button>`, an icon button, a link styled as a button. A
+      `DropdownMenu` trigger counts as ONE regardless of how many items it
+      holds, so the overflow is always the cheapest way back under the cap.
+
+      Does NOT count:
+      - A segmented single-choice control (view mode, time range, tab-like
+        toggles) — one control expressing one setting, not N actions.
+      - Pagination arrows, and a text field's own affordances (clear, reveal,
+        submit-inside-the-field).
+      - Controls in a genuinely different row or a separated region — the cap is
+        per visual group, not per component.
+
+      Applies to what the diff ADDS. A row that already carries 3+ on the base
+      branch is grandfathered, but must not grow: adding a fourth is a
+      violation, and the fix is to collapse the row, never to widen it or let it
+      wrap onto a second line.
+
+      The established overflow pattern in this codebase is
+      `src/components/CronRowActions.tsx` (row actions) and
+      `src/components/SessionActionsMenu.tsx` (per-item menu). Copy those rather
+      than inventing a new one, and keep the icon-button label rules
+      (`icon-buttons-need-labels`) on the trigger.
+
+      Bad:
+      ```tsx
+      <div className="flex items-center gap-2">
+        <Btn onClick={onRun}>Run</Btn>
+        <Btn onClick={onPause}>Pause</Btn>
+        <Btn onClick={onDuplicate}>Duplicate</Btn>
+        <Btn danger onClick={onDelete}>Delete</Btn>
+      </div>
+      ```
+
+      Good:
+      ```tsx
+      <div className="flex items-center gap-2">
+        <Btn primary onClick={onRun}>Run</Btn>
+        <Btn onClick={onPause}>Pause</Btn>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Btn aria-label="More actions"><MoreVertical size={14} aria-hidden /></Btn>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onDelete}>Delete</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      ```
+
   - id: use-react-query
     blocking: false
     file-patterns:
