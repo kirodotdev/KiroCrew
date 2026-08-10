@@ -471,6 +471,11 @@ describe('useWebSocket frame router', () => {
       ws.simulateMessage({ type: 'chat_message', data: { slot: ACTIVE, role: 'user', content: 'go', ts: '2024-01-01T00:00:00Z' } })
     })
     expect(chat().slotStatusDetail[ACTIVE]?.kind).toBe('thinking')
+    // The recency bump is buffered per slot and flushed once per animation frame,
+    // so it is not observable until a frame runs. This harness hands rAF a queue
+    // that nothing drains on its own — driving it is what makes the assertion read
+    // the flushed value rather than the pre-flush undefined.
+    act(() => { const pending = rafCbs; rafCbs = []; pending.forEach(cb => cb(0)) })
     expect(dash().slots[0].last_ts).toBe('2024-01-01T00:00:00Z')
   })
 

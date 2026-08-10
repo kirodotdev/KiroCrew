@@ -147,12 +147,27 @@ beforeEach(() => {
   apiMocks.meeting.mockResolvedValue({ meta: meta(), live: null })
   apiMocks.outputs.mockResolvedValue({ outputs: {}, tasks: [] })
   for (const key of [
-    'start', 'setStatus', 'stop', 'mute', 'toggleAgent', 'dispatch', 'message',
+    'start', 'setStatus', 'stop', 'mute', 'toggleAgent', 'message',
     'resetAgents', 'attachments', 'addTask', 'updateTask', 'deleteTask', 'fileTask',
     'reviewTask',
   ] as const) {
     apiMocks[key].mockResolvedValue({})
   }
+  // `dispatch` is deliberately absent from the list above: it is the one mutation
+  // whose response the hook READS, so it needs its real DispatchResponse shape
+  // rather than a bare {}. Broadcast's success path commits `response.segment`
+  // into the transcript cache, and a shapeless stub throws inside onSuccess,
+  // which react-query then reports as a failed broadcast.
+  apiMocks.dispatch.mockResolvedValue({
+    dispatched: 1,
+    text: 'please summarize',
+    segment: {
+      id: 'seg-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      source: 'typed',
+      text: 'please summarize',
+    },
+  })
 })
 
 afterEach(() => {
@@ -483,6 +498,10 @@ describe('useMeetingSession lifecycle actions', () => {
       i18nT('apps.meetings.session.broadcastSent'),
       { type: 'info' },
     )
+    // Assert the commit directly. Without this, the success path is only pinned
+    // indirectly: a throw inside it would suppress the notify above, so the test
+    // would fail for the wrong stated reason instead of naming the real one.
+    expect(view.result.current.transcript.map(segment => segment.id)).toContain('seg-1')
   })
 
   it('messages one agent directly', async () => {
