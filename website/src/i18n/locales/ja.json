@@ -3395,6 +3395,86 @@
         "word_count_other": "{{count}} 個の単語"
       }
     },
+    "personalShopper": {
+      "manifest": {
+        "description": "あなたの好みを覚え、あなたのログインで実際のストアを見て回り、購入で終わるとは限らない問題の解決を手伝うパーソナルアドバイザーです。購入は一切行いません — 決めるのはあなたです。",
+        "display_name": "パーソナルショッパー",
+        "highlight_1": "何かを薦める前に問題を見極めます — 買わないことが答えの場合もあります",
+        "highlight_2": "サイズ・ブランド・好み・予算・避けたい条件をセッションをまたいで記憶します",
+        "highlight_3": "設定したストアをあなたのログインで閲覧するので、価格と在庫は実際のものです",
+        "highlight_4": "調査の様子はブラウザーパネルで確認でき、カートや決済には一切触れません",
+        "highlight_5": "覚えている内容を自分のグループに整理できます。呼び出し方には影響しません",
+        "page_label": "パーソナルショッパー"
+      },
+      "historyTab": {
+        "liked": "高評価",
+        "loading_history": "履歴を読み込んでいます…",
+        "no_history_yet": "履歴はまだありません",
+        "no_products_recommended_advice_was_the_solution": "商品の推薦はありません — アドバイスが解決策でした",
+        "no_sessions_matching": "「{{query}}」に一致するセッションはありません",
+        "purchased": "購入済み",
+        "search_past_sessions": "過去のセッションを検索…",
+        "skipped": "スキップ",
+        "your_past_advisor_conversations_and_recommendati": "これまでのアドバイザーとの会話と推薦がここに表示されます。",
+        "mark_liked": "高評価にする",
+        "mark_purchased": "購入済みにする",
+        "mark_skipped": "スキップにする",
+        "change_feedback": "評価を変更"
+      },
+      "personalShopperPage": {
+        "personal_shopper": "パーソナルショッパー",
+        "say_something_like_help_me_find_running_shoes_or": "「ランニングシューズを探して」や「娘の誕生日が近い」のように話しかけてください",
+        "start_a_conversation_with_your_personal_advisor": "どのチャットセッションでもパーソナルアドバイザーと会話を始められます。",
+        "your_life_problem_advisor_solves_first_shops_sec": "暮らしの困りごとのアドバイザー — まず解決、それから買い物",
+        "tab_chat": "チャット",
+        "tab_preferences": "好み",
+        "tab_history": "履歴",
+        "tab_sites": "サイト"
+      },
+      "preferencesTab": {
+        "add": "追加",
+        "add_a_preference_e_g_shoe_size_us_10": "好みを追加（例：「靴のサイズ US 10」）",
+        "add_group": "グループを追加",
+        "cancel": "キャンセル",
+        "create": "作成",
+        "delete": "削除",
+        "delete_group_keeps_preferences": "グループを削除（好みは残ります）",
+        "edit": "編集",
+        "group_name": "グループ名",
+        "loading_preferences": "好みを読み込んでいます…",
+        "no_items_in_this_group": "このグループには項目がありません",
+        "no_preferences_yet": "好みはまだありません",
+        "save": "保存",
+        "ungrouped": "未分類",
+        "assign_to_group": "グループに入れる",
+        "no_group": "グループなし",
+        "delete_named_group": "グループ「{{name}}」を削除",
+        "edit_named_preference": "好み「{{text}}」を編集",
+        "delete_named_preference": "好み「{{text}}」を削除",
+        "add_your_first_preference": "上から追加してください。"
+      },
+      "sitesTab": {
+        "add_shopping_site": "ショッピングサイトを追加",
+        "add_site": "サイトを追加",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "ショッピングサイトを追加すると、アドバイザーが代わりに見て回れます。",
+        "cancel": "キャンセル",
+        "how_login_works": "ログインの仕組み",
+        "loading_sites": "サイトを読み込んでいます…",
+        "no_sites_configured": "サイトが未設定です",
+        "privacy": "プライバシー",
+        "remove_site": "サイトを削除",
+        "shopping_sources_the_advisor_can_browse_login_en": "アドバイザーが見て回れるショッピング先です。ログインすると会員価格やパーソナライズされた結果が使えます。",
+        "site_name_e_g_example_store": "サイト名（例：Example Store）",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "アドバイザーはここで有効にしたサイトだけを見ます。無効なサイトは、関連する結果がありそうでも見に行きません。",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "アドバイザーはショッピングの会話中にブラウザーパネルでサイトを開きます。求められたら一度ログインしてください — セッションクッキーはローカルに残り、次回の検索でも使われます。認証情報がアプリに保存されることはありません。",
+        "url_e_g_store_example_com": "URL（例：store.example.com）",
+        "logged_in": "ログイン済み",
+        "not_logged_in": "未ログイン",
+        "toggle_site": "「{{name}}」を有効にする",
+        "remove_named_site": "「{{name}}」を削除",
+        "save_failed": "保存できませんでした。エラーコード：{{code}}"
+      }
+    },
     "pptxMaker": {
       "boardFrame": {
         "loading": "プレビューを読み込み中…",

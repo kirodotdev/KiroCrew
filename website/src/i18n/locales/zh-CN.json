@@ -3395,6 +3395,86 @@
         "word_count_other": "{{count}} 个词"
       }
     },
+    "personalShopper": {
+      "manifest": {
+        "description": "一位记得你偏好的私人顾问，用你自己账号浏览真实商店，帮你解决未必以购买收场的问题。它从不下单——下单的人是你。",
+        "display_name": "私人购物顾问",
+        "highlight_1": "先诊断问题再推荐——有时答案根本不是买东西",
+        "highlight_2": "跨会话记住你的尺码、品牌、风格、预算和忌讳",
+        "highlight_3": "用你自己的账号浏览已配置商店，价格和库存都是真实的",
+        "highlight_4": "你可以在浏览器面板里看着它查资料，而它绝不碰购物车和结账",
+        "highlight_5": "把它了解到的信息整理进你自己的分组，不影响它如何检索",
+        "page_label": "私人购物顾问"
+      },
+      "historyTab": {
+        "liked": "已点赞",
+        "loading_history": "正在加载历史记录…",
+        "no_history_yet": "暂无历史记录",
+        "no_products_recommended_advice_was_the_solution": "没有推荐商品，建议本身就是答案",
+        "no_sessions_matching": "没有匹配“{{query}}”的会话",
+        "purchased": "已购买",
+        "search_past_sessions": "搜索历史会话…",
+        "skipped": "已跳过",
+        "your_past_advisor_conversations_and_recommendati": "你与顾问的历史对话和推荐会显示在这里。",
+        "mark_liked": "标记为已点赞",
+        "mark_purchased": "标记为已购买",
+        "mark_skipped": "标记为已跳过",
+        "change_feedback": "修改反馈"
+      },
+      "personalShopperPage": {
+        "personal_shopper": "私人购物顾问",
+        "say_something_like_help_me_find_running_shoes_or": "可以这样说：“帮我找跑鞋”，或者“女儿快过生日了”",
+        "start_a_conversation_with_your_personal_advisor": "在任意聊天会话中都能和私人顾问开始对话。",
+        "your_life_problem_advisor_solves_first_shops_sec": "生活问题顾问，先解决，再购物",
+        "tab_chat": "聊天",
+        "tab_preferences": "偏好",
+        "tab_history": "历史",
+        "tab_sites": "网站"
+      },
+      "preferencesTab": {
+        "add": "添加",
+        "add_a_preference_e_g_shoe_size_us_10": "添加偏好（例如“鞋码 US 10”）",
+        "add_group": "添加分组",
+        "cancel": "取消",
+        "create": "创建",
+        "delete": "删除",
+        "delete_group_keeps_preferences": "删除分组（保留偏好）",
+        "edit": "编辑",
+        "group_name": "分组名称",
+        "loading_preferences": "正在加载偏好…",
+        "no_items_in_this_group": "该分组暂无内容",
+        "no_preferences_yet": "暂无偏好",
+        "save": "保存",
+        "ungrouped": "未分组",
+        "assign_to_group": "归入分组",
+        "no_group": "不分组",
+        "delete_named_group": "删除分组 {{name}}",
+        "edit_named_preference": "编辑偏好“{{text}}”",
+        "delete_named_preference": "删除偏好“{{text}}”",
+        "add_your_first_preference": "在上方添加一条。"
+      },
+      "sitesTab": {
+        "add_shopping_site": "添加购物网站",
+        "add_site": "添加网站",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "添加购物网站后，顾问就能替你浏览。",
+        "cancel": "取消",
+        "how_login_works": "登录方式",
+        "loading_sites": "正在加载网站…",
+        "no_sites_configured": "尚未配置网站",
+        "privacy": "隐私",
+        "remove_site": "移除网站",
+        "shopping_sources_the_advisor_can_browse_login_en": "顾问可浏览的购物来源。登录后可使用会员价和个性化结果。",
+        "site_name_e_g_example_store": "网站名称（例如 Example Store）",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "顾问只访问你在这里启用的网站。已停用的网站不会被浏览，即使可能有相关结果。",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "顾问会在购物对话中通过浏览器面板打开网站。出现提示时登录一次即可，会话 Cookie 保存在本地，供后续搜索使用。应用不会保存你的凭据。",
+        "url_e_g_store_example_com": "URL（例如 store.example.com）",
+        "logged_in": "已登录",
+        "not_logged_in": "未登录",
+        "toggle_site": "启用 {{name}}",
+        "remove_named_site": "移除 {{name}}",
+        "save_failed": "保存失败。错误代码：{{code}}"
+      }
+    },
     "pptxMaker": {
       "boardFrame": {
         "loading": "正在加载预览……",

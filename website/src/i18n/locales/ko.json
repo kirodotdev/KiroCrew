@@ -3395,6 +3395,86 @@
         "word_count_other": "단어 {{count}}개"
       }
     },
+    "personalShopper": {
+      "manifest": {
+        "description": "취향을 기억하고, 사용자의 로그인으로 실제 스토어를 둘러보며, 구매로 끝나지 않을 수도 있는 문제의 해결을 돕는 개인 어드바이저입니다. 절대 직접 구매하지 않습니다 — 구매는 사용자가 합니다.",
+        "display_name": "퍼스널 쇼퍼",
+        "highlight_1": "무언가를 추천하기 전에 문제를 먼저 진단합니다 — 답이 구매가 아닐 때도 있습니다",
+        "highlight_2": "사이즈, 브랜드, 스타일, 예산, 제약 조건을 모든 세션에 걸쳐 기억합니다",
+        "highlight_3": "설정한 스토어를 사용자의 로그인으로 둘러보므로 가격과 재고가 실제와 같습니다",
+        "highlight_4": "브라우저 패널에서 조사 과정을 지켜볼 수 있고, 장바구니나 결제는 건드리지 않습니다",
+        "highlight_5": "알고 있는 내용을 사용자만의 그룹으로 정리해도 검색 방식에는 영향이 없습니다",
+        "page_label": "퍼스널 쇼퍼"
+      },
+      "historyTab": {
+        "liked": "좋아요",
+        "loading_history": "기록을 불러오는 중…",
+        "no_history_yet": "아직 기록이 없습니다",
+        "no_products_recommended_advice_was_the_solution": "추천한 제품 없음 — 조언이 해결책이었습니다",
+        "no_sessions_matching": "‘{{query}}’과(와) 일치하는 세션이 없습니다",
+        "purchased": "구매 완료",
+        "search_past_sessions": "지난 세션 검색…",
+        "skipped": "건너뜀",
+        "your_past_advisor_conversations_and_recommendati": "지난 어드바이저 대화와 추천이 여기에 표시됩니다.",
+        "mark_liked": "좋아요로 표시",
+        "mark_purchased": "구매 완료로 표시",
+        "mark_skipped": "건너뜀으로 표시",
+        "change_feedback": "평가 변경"
+      },
+      "personalShopperPage": {
+        "personal_shopper": "퍼스널 쇼퍼",
+        "say_something_like_help_me_find_running_shoes_or": "‘러닝화 찾아 줘’ 또는 ‘딸 생일이 다가와’처럼 말해 보세요",
+        "start_a_conversation_with_your_personal_advisor": "어떤 채팅 세션에서든 퍼스널 어드바이저와 대화를 시작할 수 있습니다.",
+        "your_life_problem_advisor_solves_first_shops_sec": "생활 문제 어드바이저 — 해결이 먼저, 쇼핑은 그다음",
+        "tab_chat": "채팅",
+        "tab_preferences": "선호 항목",
+        "tab_history": "기록",
+        "tab_sites": "사이트"
+      },
+      "preferencesTab": {
+        "add": "추가",
+        "add_a_preference_e_g_shoe_size_us_10": "선호 항목 추가(예: ‘신발 사이즈 US 10’)",
+        "add_group": "그룹 추가",
+        "cancel": "취소",
+        "create": "만들기",
+        "delete": "삭제",
+        "delete_group_keeps_preferences": "그룹 삭제(선호 항목은 유지)",
+        "edit": "편집",
+        "group_name": "그룹 이름",
+        "loading_preferences": "선호 항목을 불러오는 중…",
+        "no_items_in_this_group": "이 그룹에 항목이 없습니다",
+        "no_preferences_yet": "아직 선호 항목이 없습니다",
+        "save": "저장",
+        "ungrouped": "그룹 없음",
+        "assign_to_group": "그룹에 넣기",
+        "no_group": "그룹 없음",
+        "delete_named_group": "‘{{name}}’ 그룹 삭제",
+        "edit_named_preference": "‘{{text}}’ 선호 항목 편집",
+        "delete_named_preference": "‘{{text}}’ 선호 항목 삭제",
+        "add_your_first_preference": "위에서 추가해 보세요."
+      },
+      "sitesTab": {
+        "add_shopping_site": "쇼핑 사이트 추가",
+        "add_site": "사이트 추가",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "쇼핑 사이트를 추가하면 어드바이저가 대신 둘러봅니다.",
+        "cancel": "취소",
+        "how_login_works": "로그인 방식",
+        "loading_sites": "사이트를 불러오는 중…",
+        "no_sites_configured": "설정된 사이트 없음",
+        "privacy": "개인 정보",
+        "remove_site": "사이트 삭제",
+        "shopping_sources_the_advisor_can_browse_login_en": "어드바이저가 둘러볼 수 있는 쇼핑 사이트입니다. 로그인하면 회원가와 맞춤 결과를 쓸 수 있습니다.",
+        "site_name_e_g_example_store": "사이트 이름(예: Example Store)",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "어드바이저는 여기서 켜 둔 사이트만 방문합니다. 꺼 둔 사이트는 관련 결과가 있어도 둘러보지 않습니다.",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "어드바이저는 쇼핑 대화 중에 Browser 패널에서 사이트를 엽니다. 안내가 나오면 한 번 로그인하세요 — 세션 쿠키는 로컬에 남아 다음 검색에도 쓰입니다. 자격 증명은 앱에 저장되지 않습니다.",
+        "url_e_g_store_example_com": "URL(예: store.example.com)",
+        "logged_in": "로그인됨",
+        "not_logged_in": "로그인 안 됨",
+        "toggle_site": "‘{{name}}’ 사용",
+        "remove_named_site": "‘{{name}}’ 삭제",
+        "save_failed": "저장하지 못했습니다. 오류 코드: {{code}}"
+      }
+    },
     "pptxMaker": {
       "boardFrame": {
         "loading": "미리보기를 불러오는 중…",

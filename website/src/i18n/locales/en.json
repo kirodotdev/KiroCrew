@@ -2771,6 +2771,86 @@
         "word_count_other": "{{count}} words"
       }
     },
+    "personalShopper": {
+      "manifest": {
+        "description": "A personal advisor that remembers your preferences, browses real stores as you, and helps solve problems that may or may not end in a purchase. It never buys anything — you do.",
+        "display_name": "Personal Shopper",
+        "highlight_1": "Diagnoses the problem before recommending anything — sometimes the answer is not a purchase at all",
+        "highlight_2": "Remembers your sizes, brands, style, budget and restrictions across every session",
+        "highlight_3": "Browses the stores you configure with your own login, so prices and availability are real",
+        "highlight_4": "You watch the research happen in the Browser panel, and it never touches a cart or checkout",
+        "highlight_5": "Organize what it knows about you into your own groups, without affecting how it recalls them",
+        "page_label": "Personal Shopper"
+      },
+      "historyTab": {
+        "liked": "Liked",
+        "loading_history": "Loading history...",
+        "no_history_yet": "No history yet",
+        "no_products_recommended_advice_was_the_solution": "No products recommended — advice was the solution",
+        "no_sessions_matching": "No sessions matching \"{{query}}\"",
+        "purchased": "Purchased",
+        "search_past_sessions": "Search past sessions...",
+        "skipped": "Skipped",
+        "your_past_advisor_conversations_and_recommendati": "Your past advisor conversations and recommendations will appear here.",
+        "mark_liked": "Mark as liked",
+        "mark_purchased": "Mark as purchased",
+        "mark_skipped": "Mark as skipped",
+        "change_feedback": "Change feedback"
+      },
+      "personalShopperPage": {
+        "personal_shopper": "Personal Shopper",
+        "say_something_like_help_me_find_running_shoes_or": "Say something like \"help me find running shoes\" or \"my daughter's birthday is coming up\"",
+        "start_a_conversation_with_your_personal_advisor": "Start a conversation with your personal advisor in any chat session.",
+        "your_life_problem_advisor_solves_first_shops_sec": "Your life-problem advisor — solves first, shops second",
+        "tab_chat": "Chat",
+        "tab_preferences": "Preferences",
+        "tab_history": "History",
+        "tab_sites": "Sites"
+      },
+      "preferencesTab": {
+        "add": "Add",
+        "add_a_preference_e_g_shoe_size_us_10": "Add a preference (e.g. \"shoe size US 10\")",
+        "add_group": "Add group",
+        "cancel": "Cancel",
+        "create": "Create",
+        "delete": "Delete",
+        "delete_group_keeps_preferences": "Delete group (keeps preferences)",
+        "edit": "Edit",
+        "group_name": "Group name",
+        "loading_preferences": "Loading preferences...",
+        "no_items_in_this_group": "No items in this group",
+        "no_preferences_yet": "No preferences yet",
+        "save": "Save",
+        "ungrouped": "Ungrouped",
+        "assign_to_group": "Assign to group",
+        "no_group": "No group",
+        "delete_named_group": "Delete group {{name}}",
+        "edit_named_preference": "Edit preference “{{text}}”",
+        "delete_named_preference": "Delete preference “{{text}}”",
+        "add_your_first_preference": "Add one above, or import them later."
+      },
+      "sitesTab": {
+        "add_shopping_site": "Add shopping site",
+        "add_site": "Add site",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "Add your shopping sites so the advisor can browse them for you.",
+        "cancel": "Cancel",
+        "how_login_works": "How login works",
+        "loading_sites": "Loading sites...",
+        "no_sites_configured": "No sites configured",
+        "privacy": "Privacy",
+        "remove_site": "Remove site",
+        "shopping_sources_the_advisor_can_browse_login_en": "Shopping sources the advisor can browse. Login enables member prices and personalized results.",
+        "site_name_e_g_example_store": "Site name (e.g. Example Store)",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "The advisor only visits sites you've enabled here. Disabled sites are never browsed, even if they might have relevant results.",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "The advisor opens sites in the Browser panel during a shopping conversation. You log in once when prompted — the session cookie persists locally for future searches. Your credentials are never stored by the app.",
+        "url_e_g_store_example_com": "URL (e.g. store.example.com)",
+        "logged_in": "Logged in",
+        "not_logged_in": "Not logged in",
+        "toggle_site": "Enable {{name}}",
+        "remove_named_site": "Remove {{name}}",
+        "save_failed": "Could not save. Error code: {{code}}"
+      }
+    },
     "pptxMaker": {
       "boardFrame": {
         "loading": "Loading the preview…",

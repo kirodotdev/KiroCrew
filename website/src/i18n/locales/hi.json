@@ -3453,6 +3453,86 @@
         "word_count_other": "{{count}} शब्द"
       }
     },
+    "personalShopper": {
+      "manifest": {
+        "description": "एक निजी सलाहकार जो तुम्हारी पसंद याद रखता है, तुम्हारे लॉगिन से असली स्टोर देखता है, और उन समस्याओं को हल करने में मदद करता है जिनका अंत खरीद पर होना ज़रूरी नहीं। यह कभी कुछ नहीं खरीदता — खरीदते तुम हो।",
+        "display_name": "पर्सनल शॉपर",
+        "highlight_1": "कुछ सुझाने से पहले समस्या समझता है — कभी-कभी जवाब खरीदना नहीं होता",
+        "highlight_2": "तुम्हारे साइज़, ब्रांड, स्टाइल, बजट और परहेज़ हर सत्र में याद रखता है",
+        "highlight_3": "तुम्हारे कॉन्फ़िगर किए स्टोर तुम्हारे लॉगिन से देखता है, इसलिए दाम और उपलब्धता असली होती है",
+        "highlight_4": "तुम ब्राउज़र पैनल में खोज होते देख सकते हो, और यह कार्ट या चेकआउट को कभी नहीं छूता",
+        "highlight_5": "यह तुम्हारे बारे में जो जानता है उसे अपने समूहों में सजाओ, याद करने के तरीके पर असर नहीं पड़ता",
+        "page_label": "पर्सनल शॉपर"
+      },
+      "historyTab": {
+        "liked": "पसंद",
+        "loading_history": "इतिहास लोड हो रहा है…",
+        "no_history_yet": "अभी कोई इतिहास नहीं",
+        "no_products_recommended_advice_was_the_solution": "कोई उत्पाद नहीं सुझाया — सलाह ही समाधान थी",
+        "no_sessions_matching": "“{{query}}” से मेल खाता कोई सत्र नहीं",
+        "purchased": "खरीदा",
+        "search_past_sessions": "पिछले सत्र खोजो…",
+        "skipped": "छोड़ा",
+        "your_past_advisor_conversations_and_recommendati": "तुम्हारी पिछली सलाहकार बातचीत और सुझाव यहाँ दिखेंगे।",
+        "mark_liked": "पसंद के तौर पर चिह्नित करो",
+        "mark_purchased": "खरीदा के तौर पर चिह्नित करो",
+        "mark_skipped": "छोड़ा के तौर पर चिह्नित करो",
+        "change_feedback": "राय बदलो"
+      },
+      "personalShopperPage": {
+        "personal_shopper": "पर्सनल शॉपर",
+        "say_something_like_help_me_find_running_shoes_or": "कुछ ऐसा कहो जैसे “दौड़ने के जूते ढूँढने में मदद करो” या “मेरी बेटी का जन्मदिन आ रहा है”",
+        "start_a_conversation_with_your_personal_advisor": "किसी भी चैट सत्र में अपने निजी सलाहकार से बातचीत शुरू करो।",
+        "your_life_problem_advisor_solves_first_shops_sec": "रोज़मर्रा की दिक्कतों का सलाहकार — पहले हल, फिर खरीद",
+        "tab_chat": "चैट",
+        "tab_preferences": "पसंद",
+        "tab_history": "इतिहास",
+        "tab_sites": "साइटें"
+      },
+      "preferencesTab": {
+        "add": "जोड़ो",
+        "add_a_preference_e_g_shoe_size_us_10": "पसंद जोड़ो (जैसे “जूते का नाप US 10”)",
+        "add_group": "समूह जोड़ो",
+        "cancel": "रद्द करो",
+        "create": "बनाओ",
+        "delete": "हटाओ",
+        "delete_group_keeps_preferences": "समूह हटाओ (पसंद बनी रहेंगी)",
+        "edit": "बदलो",
+        "group_name": "समूह का नाम",
+        "loading_preferences": "पसंद लोड हो रही हैं…",
+        "no_items_in_this_group": "इस समूह में कुछ नहीं",
+        "no_preferences_yet": "अभी कोई पसंद नहीं",
+        "save": "सहेजो",
+        "ungrouped": "बिना समूह",
+        "assign_to_group": "समूह में डालो",
+        "no_group": "कोई समूह नहीं",
+        "delete_named_group": "समूह “{{name}}” हटाओ",
+        "edit_named_preference": "पसंद “{{text}}” बदलो",
+        "delete_named_preference": "पसंद “{{text}}” हटाओ",
+        "add_your_first_preference": "ऊपर से एक जोड़ो।"
+      },
+      "sitesTab": {
+        "add_shopping_site": "खरीदारी साइट जोड़ो",
+        "add_site": "साइट जोड़ो",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "अपनी खरीदारी साइटें जोड़ो ताकि सलाहकार तुम्हारे लिए उन्हें देख सके।",
+        "cancel": "रद्द करो",
+        "how_login_works": "लॉगिन कैसे काम करता है",
+        "loading_sites": "साइटें लोड हो रही हैं…",
+        "no_sites_configured": "कोई साइट सेट नहीं",
+        "privacy": "निजता",
+        "remove_site": "साइट हटाओ",
+        "shopping_sources_the_advisor_can_browse_login_en": "खरीदारी के स्रोत जिन्हें सलाहकार देख सकता है। लॉगिन से सदस्य कीमतें और तुम्हारे मुताबिक नतीजे मिलते हैं।",
+        "site_name_e_g_example_store": "साइट का नाम (जैसे Example Store)",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "सलाहकार सिर्फ़ उन साइटों पर जाता है जिन्हें तुमने यहाँ चालू किया है। बंद साइटें कभी नहीं देखी जातीं, चाहे उनमें काम के नतीजे हों।",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "खरीदारी की बातचीत के दौरान सलाहकार ब्राउज़र पैनल में साइटें खोलता है। पूछे जाने पर एक बार लॉगिन कर देना — सत्र कुकी आगे की खोजों के लिए यहीं रहती है। तुम्हारे लॉगिन विवरण ऐप कभी नहीं सहेजता।",
+        "url_e_g_store_example_com": "URL (जैसे store.example.com)",
+        "logged_in": "लॉगिन है",
+        "not_logged_in": "लॉगिन नहीं है",
+        "toggle_site": "{{name}} चालू करो",
+        "remove_named_site": "{{name}} हटाओ",
+        "save_failed": "सहेजा नहीं जा सका। एरर कोड: {{code}}"
+      }
+    },
     "pptxMaker": {
       "boardFrame": {
         "loading": "पूर्वावलोकन लोड हो रहा है…",

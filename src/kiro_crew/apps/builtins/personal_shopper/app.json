@@ -1,0 +1,51 @@
+{
+  "name": "personal-shopper",
+  "version": "0.1.0",
+  "displayName": "Personal Shopper",
+  "description": "A personal advisor that remembers your preferences, browses real stores as you, and helps solve problems that may or may not end in a purchase. It never buys anything — you do.",
+  "author": "kirocrew",
+  "tags": [
+    "shopping",
+    "advisor",
+    "personal",
+    "recommendations",
+    "lifestyle"
+  ],
+  "highlights": [
+    "Diagnoses the problem before recommending anything — sometimes the answer is not a purchase at all",
+    "Remembers your sizes, brands, style, budget and restrictions across every session",
+    "Browses the stores you configure with your own login, so prices and availability are real",
+    "You watch the research happen in the Browser panel, and it never touches a cart or checkout",
+    "Organize what it knows about you into your own groups, without affecting how it recalls them"
+  ],
+  "defaultEnabled": false,
+  "iconUrl": "/app-assets/personal-shopper/icon.svg",
+  "heroImage": "/app-assets/personal-shopper/hero-light.svg",
+  "heroImageDark": "/app-assets/personal-shopper/hero-dark.svg",
+  "permissions": {
+    "api": [
+      "/api/apps/personal-shopper",
+      "/api/apps/personal-shopper/*"
+    ],
+    "storage": true,
+    "network": true
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/personal-shopper",
+        "label": "Personal Shopper",
+        "icon": "ShoppingBag"
+      }
+    ]
+  },
+  "agents": [
+    "agents/advisor.json"
+  ],
+  "skills": [
+    "skills/personal-shopper"
+  ],
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  }
+}

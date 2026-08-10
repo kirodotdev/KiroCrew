@@ -170,6 +170,7 @@
     "pages.telemetryPanel.p90_col": "Column header on the latency tables: the slow tail, i.e. nine in ten measured samples finished at or below this duration. This is the figure a reader checks when something feels slow.",
     "pages.webhooksPage.0_b": "Size unit in the Webhooks run detail pane: zero bytes, shown when a run returned no result payload. 'B' abbreviates byte and is not a word.",
     "pages.webhooksPage.run": "Noun, not a verb: one recorded execution of an inbound webhook, used as a column heading in the Webhooks run history. Never an instruction to start something.",
-    "utils.schedulePresets.category_ops": "Category heading in the scheduled-job template gallery. Short for \"Operations\" -- the group of templates that watch deployments, CI and infrastructure health. A NOUN naming the category, not the verb \"to operate\". Sits in a row of sibling headings, so keep it about as short as the other category names in your language."
+    "utils.schedulePresets.category_ops": "Category heading in the scheduled-job template gallery. Short for \"Operations\" -- the group of templates that watch deployments, CI and infrastructure health. A NOUN naming the category, not the verb \"to operate\". Sits in a row of sibling headings, so keep it about as short as the other category names in your language.",
+    "apps.personalShopper.preferencesTab.add": "Submit button on the inline 'add a preference' form in the Personal Shopper Preferences tab. The VERB (commit this new preference), not the noun 'an addition'. The sibling add_group is the same verb applied to a group, so a language that inflects by object may need a different form."
   }
 }

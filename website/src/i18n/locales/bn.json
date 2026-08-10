@@ -3453,6 +3453,86 @@
         "word_count_other": "{{count}}টি শব্দ"
       }
     },
+    "personalShopper": {
+      "manifest": {
+        "description": "একজন ব্যক্তিগত পরামর্শদাতা, যে আপনার পছন্দ মনে রাখে, আপনার লগইন দিয়ে সত্যিকারের স্টোর ঘুরে দেখে, এবং এমন সমস্যা সমাধানে সাহায্য করে যার শেষ কেনাকাটায় নাও হতে পারে। এটি কখনও কিছু কেনে না — কেনেন আপনি।",
+        "display_name": "পার্সোনাল শপার",
+        "highlight_1": "কিছু সুপারিশ করার আগে সমস্যাটি বোঝে — কখনও উত্তরটা কেনা নয়",
+        "highlight_2": "আপনার মাপ, ব্র্যান্ড, রুচি, বাজেট ও বিধিনিষেধ প্রতিটি সেশনে মনে রাখে",
+        "highlight_3": "আপনার কনফিগার করা স্টোর আপনার লগইনে দেখে, তাই দাম ও স্টক বাস্তব",
+        "highlight_4": "ব্রাউজার প্যানেলে অনুসন্ধান দেখতে পারেন, আর এটি কার্ট বা চেকআউটে কখনও হাত দেয় না",
+        "highlight_5": "এটি আপনার সম্পর্কে যা জানে নিজের গ্রুপে সাজান, মনে রাখার ধরনে প্রভাব পড়ে না",
+        "page_label": "পার্সোনাল শপার"
+      },
+      "historyTab": {
+        "liked": "পছন্দ",
+        "loading_history": "ইতিহাস লোড হচ্ছে…",
+        "no_history_yet": "এখনও কোনো ইতিহাস নেই",
+        "no_products_recommended_advice_was_the_solution": "কোনো পণ্য সুপারিশ করা হয়নি — পরামর্শই ছিল সমাধান",
+        "no_sessions_matching": "“{{query}}” এর সাথে মেলে এমন কোনো সেশন নেই",
+        "purchased": "কেনা হয়েছে",
+        "search_past_sessions": "আগের সেশন খোঁজো…",
+        "skipped": "বাদ দেওয়া",
+        "your_past_advisor_conversations_and_recommendati": "তোমার আগের পরামর্শ-আলাপ আর সুপারিশ এখানে দেখা যাবে।",
+        "mark_liked": "পছন্দ হিসেবে চিহ্নিত করো",
+        "mark_purchased": "কেনা হিসেবে চিহ্নিত করো",
+        "mark_skipped": "বাদ দেওয়া হিসেবে চিহ্নিত করো",
+        "change_feedback": "মত বদলাও"
+      },
+      "personalShopperPage": {
+        "personal_shopper": "পার্সোনাল শপার",
+        "say_something_like_help_me_find_running_shoes_or": "এমন কিছু বলো যেমন “দৌড়ানোর জুতো খুঁজতে সাহায্য করো” বা “আমার মেয়ের জন্মদিন আসছে”",
+        "start_a_conversation_with_your_personal_advisor": "যেকোনো চ্যাট সেশনে তোমার ব্যক্তিগত পরামর্শদাতার সঙ্গে আলাপ শুরু করো।",
+        "your_life_problem_advisor_solves_first_shops_sec": "রোজকার সমস্যার পরামর্শদাতা — আগে সমাধান, পরে কেনাকাটা",
+        "tab_chat": "চ্যাট",
+        "tab_preferences": "পছন্দ",
+        "tab_history": "ইতিহাস",
+        "tab_sites": "সাইট"
+      },
+      "preferencesTab": {
+        "add": "যোগ করো",
+        "add_a_preference_e_g_shoe_size_us_10": "পছন্দ যোগ করো (যেমন “জুতোর মাপ US 10”)",
+        "add_group": "গ্রুপ যোগ করো",
+        "cancel": "বাতিল",
+        "create": "তৈরি করো",
+        "delete": "মুছে ফেলো",
+        "delete_group_keeps_preferences": "গ্রুপ মুছে ফেলো (পছন্দ থেকে যাবে)",
+        "edit": "সম্পাদনা",
+        "group_name": "গ্রুপের নাম",
+        "loading_preferences": "পছন্দ লোড হচ্ছে…",
+        "no_items_in_this_group": "এই গ্রুপে কিছু নেই",
+        "no_preferences_yet": "এখনও কোনো পছন্দ নেই",
+        "save": "সংরক্ষণ করো",
+        "ungrouped": "গ্রুপ ছাড়া",
+        "assign_to_group": "গ্রুপে দাও",
+        "no_group": "কোনো গ্রুপ নয়",
+        "delete_named_group": "“{{name}}” গ্রুপ মুছে ফেলো",
+        "edit_named_preference": "“{{text}}” পছন্দ সম্পাদনা করো",
+        "delete_named_preference": "“{{text}}” পছন্দ মুছে ফেলো",
+        "add_your_first_preference": "উপরে একটি যোগ করো।"
+      },
+      "sitesTab": {
+        "add_shopping_site": "কেনাকাটার সাইট যোগ করো",
+        "add_site": "সাইট যোগ করো",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "তোমার কেনাকাটার সাইট যোগ করো, যাতে পরামর্শদাতা তোমার হয়ে সেগুলো দেখতে পারে।",
+        "cancel": "বাতিল",
+        "how_login_works": "লগইন কীভাবে কাজ করে",
+        "loading_sites": "সাইট লোড হচ্ছে…",
+        "no_sites_configured": "কোনো সাইট সেট করা নেই",
+        "privacy": "গোপনীয়তা",
+        "remove_site": "সাইট সরাও",
+        "shopping_sources_the_advisor_can_browse_login_en": "পরামর্শদাতা যেসব কেনাকাটার সাইট দেখতে পারে। লগইন করলে সদস্য দাম আর তোমার মতো করে সাজানো ফলাফল মেলে।",
+        "site_name_e_g_example_store": "সাইটের নাম (যেমন Example Store)",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "পরামর্শদাতা কেবল সেই সাইটে যায় যেগুলো তুমি এখানে চালু করেছ। বন্ধ সাইট কখনও দেখা হয় না, তাতে মিলে যাওয়া ফলাফল থাকলেও নয়।",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "কেনাকাটার আলাপের সময় পরামর্শদাতা ব্রাউজার প্যানেলে সাইট খোলে। বলা হলে একবার লগইন করে নিয়ো — সেশন কুকি পরের খোঁজের জন্য এখানেই থাকে। তোমার লগইন তথ্য অ্যাপ কখনও রাখে না।",
+        "url_e_g_store_example_com": "URL (যেমন store.example.com)",
+        "logged_in": "লগইন করা আছে",
+        "not_logged_in": "লগইন করা নেই",
+        "toggle_site": "{{name}} চালু করো",
+        "remove_named_site": "{{name}} সরাও",
+        "save_failed": "সংরক্ষণ করা যায়নি। ত্রুটি কোড: {{code}}"
+      }
+    },
     "pptxMaker": {
       "boardFrame": {
         "loading": "প্রাকদর্শন লোড হচ্ছে…",

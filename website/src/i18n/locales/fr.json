@@ -3511,6 +3511,86 @@
         "word_count_other": "{{count}} mots"
       }
     },
+    "personalShopper": {
+      "manifest": {
+        "description": "Un conseiller personnel qui retient vos préférences, parcourt de vraies boutiques avec votre connexion et aide à résoudre des problèmes qui ne finissent pas forcément par un achat. Il n'achète jamais rien – c'est vous qui décidez.",
+        "display_name": "Personal Shopper",
+        "highlight_1": "Diagnostique le problème avant de recommander quoi que ce soit – parfois la réponse n'est pas un achat",
+        "highlight_2": "Retient vos tailles, marques, style, budget et contraintes d'une session à l'autre",
+        "highlight_3": "Parcourt les boutiques que vous configurez avec votre connexion : prix et stocks réels",
+        "highlight_4": "Vous suivez la recherche dans le panneau Navigateur, et il ne touche jamais au panier ni au paiement",
+        "highlight_5": "Classez ce qu'il sait de vous dans vos propres groupes, sans influencer la façon dont il s'en souvient",
+        "page_label": "Personal Shopper"
+      },
+      "historyTab": {
+        "liked": "Aimé",
+        "loading_history": "Chargement de l'historique…",
+        "no_history_yet": "Pas encore d'historique",
+        "no_products_recommended_advice_was_the_solution": "Aucun produit recommandé — le conseil était la solution",
+        "no_sessions_matching": "Aucune session pour « {{query}} »",
+        "purchased": "Acheté",
+        "search_past_sessions": "Rechercher dans les sessions passées…",
+        "skipped": "Ignoré",
+        "your_past_advisor_conversations_and_recommendati": "Tes conversations et recommandations passées apparaîtront ici.",
+        "mark_liked": "Marquer comme aimé",
+        "mark_purchased": "Marquer comme acheté",
+        "mark_skipped": "Marquer comme ignoré",
+        "change_feedback": "Modifier l'avis"
+      },
+      "personalShopperPage": {
+        "personal_shopper": "Personal Shopper",
+        "say_something_like_help_me_find_running_shoes_or": "Dis quelque chose comme « aide-moi à trouver des chaussures de course » ou « c'est bientôt l'anniversaire de ma fille »",
+        "start_a_conversation_with_your_personal_advisor": "Démarre une conversation avec ton conseiller personnel dans n'importe quelle session de chat.",
+        "your_life_problem_advisor_solves_first_shops_sec": "Ton conseiller pour les problèmes du quotidien — il résout d'abord, il achète ensuite",
+        "tab_chat": "Chat",
+        "tab_preferences": "Préférences",
+        "tab_history": "Historique",
+        "tab_sites": "Sites"
+      },
+      "preferencesTab": {
+        "add": "Ajouter",
+        "add_a_preference_e_g_shoe_size_us_10": "Ajouter une préférence (par ex. « pointure US 10 »)",
+        "add_group": "Ajouter un groupe",
+        "cancel": "Annuler",
+        "create": "Créer",
+        "delete": "Supprimer",
+        "delete_group_keeps_preferences": "Supprimer le groupe (les préférences sont conservées)",
+        "edit": "Modifier",
+        "group_name": "Nom du groupe",
+        "loading_preferences": "Chargement des préférences…",
+        "no_items_in_this_group": "Aucun élément dans ce groupe",
+        "no_preferences_yet": "Pas encore de préférences",
+        "save": "Enregistrer",
+        "ungrouped": "Sans groupe",
+        "assign_to_group": "Affecter à un groupe",
+        "no_group": "Aucun groupe",
+        "delete_named_group": "Supprimer le groupe « {{name}} »",
+        "edit_named_preference": "Modifier la préférence « {{text}} »",
+        "delete_named_preference": "Supprimer la préférence « {{text}} »",
+        "add_your_first_preference": "Ajoute-en une ci-dessus."
+      },
+      "sitesTab": {
+        "add_shopping_site": "Ajouter un site marchand",
+        "add_site": "Ajouter un site",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "Ajoute tes sites marchands pour que le conseiller puisse les parcourir à ta place.",
+        "cancel": "Annuler",
+        "how_login_works": "Comment fonctionne la connexion",
+        "loading_sites": "Chargement des sites…",
+        "no_sites_configured": "Aucun site configuré",
+        "privacy": "Confidentialité",
+        "remove_site": "Retirer le site",
+        "shopping_sources_the_advisor_can_browse_login_en": "Les sources d'achat que le conseiller peut parcourir. La connexion donne accès aux prix membres et aux résultats personnalisés.",
+        "site_name_e_g_example_store": "Nom du site (par ex. Example Store)",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "Le conseiller ne visite que les sites que tu as activés ici. Les sites désactivés ne sont jamais parcourus, même s'ils pourraient avoir des résultats pertinents.",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "Le conseiller ouvre les sites dans le panneau Navigateur pendant une conversation d'achat. Tu te connectes une fois lorsqu'on te le demande — le cookie de session reste en local pour tes prochaines recherches. Tes identifiants ne sont jamais stockés par l'application.",
+        "url_e_g_store_example_com": "URL (par ex. store.example.com)",
+        "logged_in": "Connecté",
+        "not_logged_in": "Non connecté",
+        "toggle_site": "Activer {{name}}",
+        "remove_named_site": "Retirer {{name}}",
+        "save_failed": "Échec de l'enregistrement. Code d'erreur : {{code}}"
+      }
+    },
     "pptxMaker": {
       "boardFrame": {
         "loading": "Chargement de l’aperçu…",
