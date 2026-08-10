@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="640" height="440" viewBox="0 0 640 440">
+  <defs>
+    <filter id="ghost-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="rgba(20,8,50,0.32)"/>
+    </filter>
+    <symbol id="ghost" viewBox="255 110 745 980">
+      <path d="M398.554 818.914C316.315 1001.03 491.477 1046.74 620.672 940.156C658.687 1059.66 801.052 970.473 852.234 877.795C964.787 673.567 919.318 465.357 907.64 422.374C827.637 129.443 427.623 128.946 358.8 423.865C342.651 475.544 342.402 534.18 333.458 595.051C328.986 625.86 325.507 645.488 313.83 677.785C306.873 696.424 297.68 712.819 282.773 740.645C259.915 783.881 269.604 867.113 387.87 823.883L399.051 818.914H398.554Z" fill="#ffffff"/>
+      <path d="M636.123 549.353C603.328 549.353 598.359 510.097 598.359 486.742C598.359 465.623 602.086 448.977 609.293 438.293C615.504 428.852 624.697 424.131 636.123 424.131C647.555 424.131 657.492 428.852 664.447 438.541C672.398 449.474 676.623 466.12 676.623 486.742C676.623 525.998 661.471 549.353 636.375 549.353H636.123Z" fill="#000000"/>
+      <path d="M771.24 549.353C738.445 549.353 733.477 510.097 733.477 486.742C733.477 465.623 737.203 448.977 744.41 438.293C750.621 428.852 759.814 424.131 771.24 424.131C782.672 424.131 792.609 428.852 799.564 438.541C807.516 449.474 811.74 466.12 811.74 486.742C811.74 525.998 796.588 549.353 771.492 549.353H771.24Z" fill="#000000"/>
+    </symbol>
+  </defs>
+
+  <rect width="640" height="440" fill="#aa76ff"/>
+  <g><circle cx="62" cy="96" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="118" cy="268" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="196" cy="62" r="1" fill="#ffffff" opacity="0.09"/><circle cx="231" cy="372" r="1" fill="#ffffff" opacity="0.16"/><circle cx="298" cy="118" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="344" cy="402" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="402" cy="84" r="1" fill="#ffffff" opacity="0.09"/><circle cx="455" cy="322" r="1" fill="#ffffff" opacity="0.16"/><circle cx="508" cy="138" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="556" cy="246" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="592" cy="372" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="86" cy="402" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="268" cy="176" r="1" fill="#ffffff" opacity="0.09"/><circle cx="520" cy="66" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="150" cy="148" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="610" cy="178" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="36" cy="214" r="1.4" fill="#ffffff" opacity="0.09"/><circle cx="430" cy="246" r="1.4" fill="#ffffff" opacity="0.09"/></g>
+
+  <g filter="url(#ghost-shadow)" transform="translate(128.0,-8.8) rotate(175) scale(-1,1) translate(-41.8,-54.8)" opacity="1.0">
+    <use href="#ghost" width="83.6" height="109.5"/>
+  </g>
+  <g filter="url(#ghost-shadow)" transform="translate(473.6,-13.2) rotate(184) translate(-56.7,-74.2)" opacity="1.0">
+    <use href="#ghost" width="113.3" height="148.4"/>
+  </g>
+  <g filter="url(#ghost-shadow)" transform="translate(-12.8,184.8) rotate(87) translate(-49.0,-64.1)" opacity="1.0">
+    <use href="#ghost" width="97.9" height="128.2"/>
+  </g>
+  <g filter="url(#ghost-shadow)" transform="translate(652.8,242.0) rotate(-84) translate(-53.4,-69.9)" opacity="1.0">
+    <use href="#ghost" width="106.7" height="139.8"/>
+  </g>
+  <g filter="url(#ghost-shadow)" transform="translate(76.8,492.8) rotate(-2) translate(-88.6,-116.0)" opacity="1.0">
+    <use href="#ghost" width="177.1" height="232.0"/>
+  </g>
+  <g filter="url(#ghost-shadow)" transform="translate(588.8,105.6) rotate(8) scale(-1,1) translate(-27.5,-36.0)" opacity="1.0">
+    <use href="#ghost" width="55.0" height="72.1"/>
+  </g>
+  <g filter="url(#ghost-shadow)" transform="translate(38.4,325.6) rotate(-7) translate(-33.6,-44.0)" opacity="1.0">
+    <use href="#ghost" width="67.1" height="87.9"/>
+  </g>
+  <g filter="url(#ghost-shadow)" transform="translate(556.8,387.2) rotate(5) scale(-1,1) translate(-30.8,-40.3)" opacity="1.0">
+    <use href="#ghost" width="61.6" height="80.7"/>
+  </g>
+
+  <text x="320.0" y="86" text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif"
+        font-size="30" font-weight="600" letter-spacing="-0.3"
+        fill="#ffffff">Install Kiro Crew</text>
+  <rect x="272.0" y="102" width="96" height="3" rx="1.5" fill="#9f63ff"/>
+
+  <g stroke="#9f63ff" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M 258 200 L 372 200" stroke-dasharray="10 9"/>
+    <path d="M 362 189 L 378 200 L 362 211"
+          stroke-linejoin="round"/>
+  </g>
+
+  <text x="320.0" y="378" text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif"
+        font-size="14" font-weight="600" fill="#ffffff"
+        opacity="0.94">Drag Kiro Crew into your Applications folder</text>
+  <text x="320.0" y="402" text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif"
+        font-size="12" font-weight="500" fill="#ffffff"
+        opacity="0.55">Then eject this disk image and launch it from Applications</text>
+</svg>

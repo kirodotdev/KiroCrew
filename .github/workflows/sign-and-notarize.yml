@@ -352,8 +352,51 @@ jobs:
           rm -rf work/dmg-staging && mkdir -p work/dmg-staging
           cp -R "work/stapled/${APP_NAME}.app" work/dmg-staging/
           ln -s /Applications work/dmg-staging/Applications
+
+          mkdir -p work/dmg-staging/.background
+          cp website/electron/build/background.tiff work/dmg-staging/.background/
+          sips -s format png \
+            work/dmg-staging/.background/background.tiff \
+            --out work/dmg-staging/.background/background.png
+
           hdiutil create -volname "${APP_NAME}" -srcfolder work/dmg-staging \
-            -ov -format UDZO -quiet "work/${ARTIFACT_BASENAME}.dmg"
+            -ov -format UDRW -quiet "work/rw.dmg"
+          MOUNT="$(mktemp -d)"
+          hdiutil attach work/rw.dmg -nobrowse -readwrite -noverify -mountpoint "$MOUNT" -quiet
+
+          osascript <<APPLESCRIPT || echo "::warning::DMG window styling failed -- shipping an unstyled DMG"
+            set bgFile to POSIX file ("$MOUNT/.background/background.png") as alias
+            tell application "Finder"
+              close every window
+              delay 1
+              open disk "${APP_NAME}"
+              delay 2
+              tell disk "${APP_NAME}"
+                set current view of container window to icon view
+                set toolbar visible of container window to false
+                set statusbar visible of container window to false
+                set the bounds of container window to {200, 160, 840, 600}
+                set opts to icon view options of container window
+                set arrangement of opts to not arranged
+                set icon size of opts to 128
+                set background picture of opts to bgFile
+                set position of item "${APP_NAME}.app" of container window to {170, 200}
+                set position of item "Applications" of container window to {470, 200}
+                update without registering applications
+                close container window
+              end tell
+              delay 2
+              open disk "${APP_NAME}"
+              delay 2
+              close every window
+            end tell
+          APPLESCRIPT
+
+          sync
+          hdiutil detach "$MOUNT" -quiet
+          hdiutil convert work/rw.dmg -format UDZO -ov -quiet \
+            -o "work/${ARTIFACT_BASENAME}.dmg"
+          rm -f work/rw.dmg
           ls -lh "work/${ARTIFACT_BASENAME}.dmg"
 
       # Developer ID sign the DMG itself via a second CDSigner task (type:

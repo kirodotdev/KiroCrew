@@ -53,7 +53,21 @@
       ]
     },
     "dmg": {
-      "writeUpdateInfo": false
+      "writeUpdateInfo": false,
+      "iconSize": 128,
+      "contents": [
+        {
+          "x": 170,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 470,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     },
     "files": [
       "main.js",
