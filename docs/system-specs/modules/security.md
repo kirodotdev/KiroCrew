@@ -938,7 +938,17 @@ official installer receives a system-only `PATH`. Explicit login
 inherits only the allowlisted user-path, UI/device-flow, TLS, and proxy values;
 passive probes receive a narrower environment that excludes proxy credentials
 and desktop-session IPC as well as ambient cloud, Slack, SSH-agent, and
-application credentials.
+application credentials. The one deliberate *credential* exception is Kiro CLI's
+OWN model credential (`KIRO_API_KEY`, `_IDENTITY_PROBE_ENV_KEYS`), forwarded to the
+`whoami` identity probe only: the CLI reports an API-key session as signed in only
+when it can see that variable, so filtering it out reports a host that ACP
+authenticates on as signed out. The exposure delta is that one probe's argv — the
+credential reaches the same resolved binary the same probe already executes, in the
+same standard sandbox posture, against the same real home. The `--version` probe,
+which is the first execution of a candidate that has not yet answered anything,
+stays credential-free. `whoami` decides identity from the CLI's exit status alone,
+and that status reports which credential kind is configured rather than whether the
+credential is accepted, so a stale or mistyped key reads as signed in.
 
 Output and client-visible errors are bounded and credential/exfiltration-
 redacted. Only HTTPS URLs on the exact official `app.kiro.dev` host or the

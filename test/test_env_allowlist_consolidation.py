@@ -20,6 +20,13 @@ These tests pin two things:
    oracle on BOTH platforms, evaluated against the upper-cased key spelling a
    real Windows ``os.environ`` yields — which is exactly why the shared fold
    admits the same set there.
+
+``kiro_prerequisite`` passes two different allowlists through the shared matcher:
+``_PROBE_ENV_KEYS`` for the credential-free ``--version`` probe, and
+``_IDENTITY_PROBE_ENV_KEYS`` for the ``whoami`` identity probe, which names Kiro
+CLI's own credential. Both are pinned, and the credential one additionally pins
+WHAT it admits — one name, admitted by no other site — because a fold that
+widened there would forward more than the carve-out names.
 """
 
 from __future__ import annotations
@@ -64,6 +71,9 @@ _POSIX_ENVIRON = {
     "AWS_SECRET_ACCESS_KEY": "secret",
     "SLACK_BOT_TOKEN": "xoxb-secret",
     "SSH_AUTH_SOCK": "/tmp/agent.sock",
+    # Kiro CLI's own credential: admitted by the identity-probe allowlist alone,
+    # and by no other site. Present here so both claims are checked, not assumed.
+    "KIRO_API_KEY": "kiro-secret",
 }
 
 # Windows-shaped synthetic environ: CPython's os.environ upper-cases every key
@@ -81,6 +91,7 @@ _WINDOWS_ENVIRON = {
     "AWS_SECRET_ACCESS_KEY": "secret",
     "SLACK_BOT_TOKEN": "xoxb-secret",
     "SSH_AUTH_SOCK": "/tmp/agent.sock",
+    "KIRO_API_KEY": "kiro-secret",
 }
 
 
@@ -162,6 +173,57 @@ class TestCallSiteParity:
             folds_on_windows=True,
         )
 
+    def test_kiro_prerequisite_identity_probe_allowlist(self, monkeypatch, windows: bool) -> None:
+        """The identity probe's credential carve-out obeys the same convention.
+
+        Separate site from ``_PROBE_ENV_KEYS`` because only ``whoami`` carries the
+        credential; the ``--version`` probe must not. Pinned here so the shared
+        fold stays behavior-preserving for a CREDENTIAL name too, where a widened
+        match would forward more than the one variable the carve-out names.
+        """
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+        environ = _environ_for(windows)
+        filtered = kiro_prerequisite._allowlisted_env(
+            dict(environ), kiro_prerequisite._IDENTITY_PROBE_ENV_KEYS
+        )
+        assert set(filtered) == _oracle_admitted(
+            environ,
+            kiro_prerequisite._IDENTITY_PROBE_ENV_KEYS,
+            windows=windows,
+            folds_on_windows=True,
+        )
+
+    def test_identity_carve_out_is_exactly_one_credential(self, monkeypatch, windows: bool) -> None:
+        """The carve-out admits ``KIRO_API_KEY`` and nothing else, on both platforms.
+
+        The parity test above proves the fold is behavior-preserving; this pins
+        WHAT is admitted. A second credential added to the frozenset — or a
+        prefix/substring match creeping into the matcher — fails here.
+        """
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+        environ = _environ_for(windows)
+        admitted = kiro_prerequisite._allowlisted_env(
+            dict(environ), kiro_prerequisite._IDENTITY_PROBE_ENV_KEYS
+        )
+        assert set(admitted) == {"KIRO_API_KEY"}
+
+    def test_no_other_site_admits_the_kiro_credential(self, monkeypatch, windows: bool) -> None:
+        """``KIRO_API_KEY`` is the identity probe's alone — every other site rejects it.
+
+        Kept separate from :meth:`test_no_secret_admitted_by_any_site` because the
+        identity probe admits this one name ON PURPOSE, so it cannot join that
+        test's blanket secret set without asserting a falsehood.
+        """
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+        for allowed in (
+            registry._SAFE_ENV_KEYS,
+            kiro_prerequisite._PROBE_ENV_KEYS,
+            dev_fleet_server._SAFE_ENV_KEYS,
+            gh_profile._MEASURE_ENV_PASSTHROUGH,
+            source_providers._PROVIDER_BASE_ENV_KEYS,
+        ):
+            assert not platform_compat.env_key_allowed("KIRO_API_KEY", allowed)
+
     def test_dev_fleet(self, monkeypatch, windows: bool) -> None:
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
         environ = _environ_for(windows)
@@ -214,12 +276,17 @@ class TestCallSiteParity:
         )
 
     def test_no_secret_admitted_by_any_site(self, monkeypatch, windows: bool) -> None:
-        """The fold must never turn a credential-bearing name into a match."""
+        """The fold must never turn a credential-bearing name into a match.
+
+        The identity-probe allowlist is included: it names Kiro CLI's own
+        credential deliberately, and must still reject every OTHER one.
+        """
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
         secrets = {"GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "SLACK_BOT_TOKEN"}
         for allowed in (
             registry._SAFE_ENV_KEYS,
             kiro_prerequisite._PROBE_ENV_KEYS,
+            kiro_prerequisite._IDENTITY_PROBE_ENV_KEYS,
             dev_fleet_server._SAFE_ENV_KEYS,
             gh_profile._MEASURE_ENV_PASSTHROUGH,
             source_providers._PROVIDER_BASE_ENV_KEYS,

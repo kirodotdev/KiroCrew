@@ -215,6 +215,32 @@ _PROBE_ENV_KEYS = frozenset(
     }
 )
 
+# Kiro CLI's OWN model credential, forwarded to the identity probe only.
+#
+# ``kiro-cli`` accepts an API key through the environment as an alternative to a
+# ``kiro-cli login`` token store, and ``whoami`` reports "Authenticated with API
+# key" only when it can see that variable. Filtered out, the probe answers "Not
+# logged in" (exit 1) on a host where an ACP session authenticates fine, because
+# ACP inherits the real environment — so dropping it latches
+# ``authenticated=False`` while chat still works, which is the worst of both: the
+# first-run gate demands a sign-in the user has already done, and every
+# ``verified_ready`` caller (``/api/models``, usage polling, the destructive
+# reruns) answers 503.
+#
+# SECURITY: the exposure delta is one probe's argv, not a new surface. The value
+# reaches the same resolved binary this same probe already executes, in the same
+# standard sandbox posture, against the same real home (see
+# :meth:`KiroPrerequisiteService._run_auth_command`'s ``isolate_home=False`` note),
+# on a fixed ``whoami`` argv. It is kept OUT of :data:`_PROBE_ENV_KEYS` because
+# ``--version`` is the FIRST execution of a candidate that has not yet answered
+# anything, and nothing about resolving a version needs a key.
+#
+# The CLI's exit status reports which credential kind is CONFIGURED, not whether
+# the credential is accepted, so a stale or mistyped key reads as signed in. That
+# is the same answer an ACP session acts on, which is the point — but it means
+# presence of this variable must never become a shortcut that skips the probe.
+_IDENTITY_PROBE_ENV_KEYS = frozenset({"KIRO_API_KEY"})
+
 
 @dataclass
 class ProcessResult:
@@ -830,6 +856,21 @@ def _probe_env(environ: MutableMapping[str, str], search_path: str) -> dict[str,
     result["PATH"] = search_path
     result["NO_COLOR"] = "1"
     result["TERM"] = "dumb"
+    return result
+
+
+def _identity_probe_env(
+    environ: MutableMapping[str, str], probe_environment: dict[str, str]
+) -> dict[str, str]:
+    """Add Kiro CLI's own credential env to a probe environment.
+
+    Separate from :func:`_probe_env` so only the identity probe carries the
+    credential; see :data:`_IDENTITY_PROBE_ENV_KEYS` for why ``whoami`` needs it
+    and why ``--version`` must not get it.
+    """
+
+    result = dict(probe_environment)
+    result.update(_allowlisted_env(environ, _IDENTITY_PROBE_ENV_KEYS))
     return result
 
 
@@ -2018,6 +2059,10 @@ class KiroPrerequisiteService:
         runs against the real home (like an ACP session) and detects CLIs whose
         session or tool registry lives there. ``isolate_home=True`` keeps the
         credential-minimal temporary home for callers that need it.
+
+        Either way the environment carries :data:`_IDENTITY_PROBE_ENV_KEYS`, so a
+        host authenticated by Kiro CLI's own API-key variable is detected as
+        signed in rather than reported "Not logged in".
         """
 
         action = "probe_identity"
@@ -2031,7 +2076,7 @@ class KiroPrerequisiteService:
             result = await self._run_auth_command(
                 executable,
                 ["whoami"],
-                base_env=self._probe_environment,
+                base_env=_identity_probe_env(self._environ, self._probe_environment),
                 timeout_secs=_PROBE_TIMEOUT_SECS,
                 isolate_home=isolate_home,
             )

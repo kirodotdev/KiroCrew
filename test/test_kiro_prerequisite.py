@@ -4648,3 +4648,133 @@ class TestAgentSpecRepair:
         for payload in (first_result, second_result):
             assert payload["missing_agent_specs"] == []
             assert payload["agent_spec_repair_error"] == ""
+
+
+class TestKiroCliApiKeyCountsAsSignedIn:
+    """A host authenticated by Kiro CLI's own API-key env var reads as signed in.
+
+    ``kiro-cli`` accepts a model credential through ``KIRO_API_KEY`` as an
+    alternative to a ``kiro-cli login`` token store, and ``whoami`` succeeds only
+    when it can see that variable. Filtering it out of the probe environment
+    latches ``authenticated=False`` on a host where an ACP session — which
+    inherits the real environment — authenticates fine, so the first-run gate
+    demands a sign-in the user has already done and every ``verified_ready``
+    caller answers 503.
+    """
+
+    @staticmethod
+    def _service(
+        tmp_path: Path,
+        run: Any,
+        *,
+        api_key: str = "",
+    ) -> KiroPrerequisiteService:
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+        environ = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+        if api_key:
+            environ["KIRO_API_KEY"] = api_key
+        return KiroPrerequisiteService(
+            platform_name="linux",
+            environ=environ,
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+
+    @pytest.mark.asyncio
+    async def test_identity_probe_gets_the_key_and_version_probe_does_not(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Only ``whoami`` carries the credential; ``--version`` never needs one."""
+
+        seen: dict[str, dict[str, str]] = {}
+
+        async def run(
+            _command: str,
+            args: list[str],
+            **kwargs: Any,
+        ) -> ProcessResult:
+            seen[args[0]] = dict(kwargs.get("env") or {})
+            return ProcessResult(ok=True)
+
+        service = self._service(tmp_path, run, api_key="key-value")
+
+        await service.snapshot(force=True)
+
+        assert seen["whoami"].get("KIRO_API_KEY") == "key-value"
+        assert "KIRO_API_KEY" not in seen["--version"]
+
+    @pytest.mark.asyncio
+    async def test_api_key_host_latches_authenticated(self, tmp_path: Path) -> None:
+        """With the key visible, ``whoami`` succeeds and readiness follows it."""
+
+        async def run(
+            _command: str,
+            args: list[str],
+            **kwargs: Any,
+        ) -> ProcessResult:
+            # Mimic the CLI: `whoami` reports a signed-in identity only when the
+            # API key reaches it. `--version` runs regardless.
+            if args == ["--version"]:
+                return ProcessResult(ok=True)
+            env = kwargs.get("env") or {}
+            return ProcessResult(ok=bool(env.get("KIRO_API_KEY")))
+
+        service = self._service(tmp_path, run, api_key="key-value")
+
+        status = await service.snapshot(force=True)
+
+        assert status["authenticated"] is True
+        assert status["ready"] is True
+        assert await service.session_ready() is True
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_key_is_still_signed_out(self, tmp_path: Path) -> None:
+        """Presence of the variable is not itself proof of a signed-in identity.
+
+        ``whoami`` remains the sole authority: a key the CLI rejects must leave
+        readiness signed out. This pins the invariant against the shortcut a later
+        reader might reach for — treating a set ``KIRO_API_KEY`` as authentication
+        and skipping the probe — which would latch ``ready=True`` on a stale or
+        mistyped key and turn a "sign in" prompt into a failure on every turn.
+        """
+
+        async def run(
+            _command: str,
+            args: list[str],
+            **_kwargs: Any,
+        ) -> ProcessResult:
+            # The key reaches the CLI; the CLI does not accept it.
+            return ProcessResult(ok=args == ["--version"])
+
+        service = self._service(tmp_path, run, api_key="rejected-key")
+
+        status = await service.snapshot(force=True)
+
+        assert status["installed"] is True
+        assert status["authenticated"] is False
+        assert status["ready"] is False
+        assert await service.session_ready() is False
+
+    @pytest.mark.asyncio
+    async def test_absent_api_key_is_not_a_false_positive(self, tmp_path: Path) -> None:
+        """No key and no token store must still read as signed out."""
+
+        async def run(
+            _command: str,
+            args: list[str],
+            **kwargs: Any,
+        ) -> ProcessResult:
+            if args == ["--version"]:
+                return ProcessResult(ok=True)
+            env = kwargs.get("env") or {}
+            return ProcessResult(ok=bool(env.get("KIRO_API_KEY")))
+
+        service = self._service(tmp_path, run)
+
+        status = await service.snapshot(force=True)
+
+        assert status["installed"] is True
+        assert status["authenticated"] is False
+        assert status["ready"] is False
