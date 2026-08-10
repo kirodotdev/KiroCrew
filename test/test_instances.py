@@ -702,6 +702,24 @@ class TestRunMarkerDiscovery:
         (d / "gateway-6776.pid").write_text(" 4242 \n", encoding="utf-8")
         assert run_marker.read_pid(6776) == 4242
 
+    def test_read_launcher_reads_marker_content(self, tmp_path, monkeypatch):
+        """read_launcher returns the recorded path, None for absent/empty, and
+        never creates run/ (read-only, like read_pid)."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        assert run_marker.read_launcher(6776) is None  # absent
+        assert not (tmp_path / "run").exists()  # read never materialises run/
+        d = tmp_path / "run"
+        d.mkdir(parents=True, exist_ok=True)
+        # Empty marker: a source-tree launch records no launcher (port-only).
+        (d / "gateway-6776.bin").write_text("", encoding="utf-8")
+        assert run_marker.read_launcher(6776) is None
+        (d / "gateway-6776.bin").write_text("  \n", encoding="utf-8")
+        assert run_marker.read_launcher(6776) is None
+        (d / "gateway-6776.bin").write_text("/opt/venv/bin/kirocrew\n", encoding="utf-8")
+        assert run_marker.read_launcher(6776) == "/opt/venv/bin/kirocrew"
+
     def test_write_prunes_markers_from_earlier_runs(self, tmp_path, monkeypatch):
         """A gateway is a singleton per home, so markers naming other ports are
         crash residue. Left alone they cost every client command an extra

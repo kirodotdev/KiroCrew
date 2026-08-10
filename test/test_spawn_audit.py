@@ -506,6 +506,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # git rev-parse at startup, no agent input, no sandbox needed).
         "apps/builtins/dev_fleet/server.py::_resolve_primary_checkout",
         "apps/builtins/dev_fleet/server.py::worker",
+        # Foreground last-resort restart (Make Live on hosts with no drivable
+        # service manager): a detached `kirocrew restart --port <marker port>`,
+        # fixed argv whose binary is validated (basenamed kirocrew, absolute,
+        # executable) from the gateway's own keystone-fenced run-marker or
+        # shutil.which — never agent input. Deliberately NOT sandboxed for the
+        # same reason as cli_server.py::_spawn_detached_gateway above: the child
+        # must outlive and REPLACE the gateway (kill + respawn + own session),
+        # which a scoped/sandboxed child cannot do.
+        "apps/builtins/dev_fleet/gateway_service.py::default_detached_spawn",
         # (apps/dependencies.py::_run_aim removed — App Kit capability deps now
         # resolve through the CapabilityManager seam, so the resolver spawns no
         # subprocess at all and needs no allowlist entry.)

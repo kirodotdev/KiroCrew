@@ -54,6 +54,7 @@ from kiro_crew import frontend, hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.instances import run_marker
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
     create_subprocess_limited,
@@ -4022,6 +4023,29 @@ def _gateway_backend() -> "gateway_service.GatewayServiceBackend | None":
     )
 
 
+def _foreground_backend() -> "gateway_service.ForegroundBackend | None":
+    """The last-resort foreground restart backend, or ``None`` off-POSIX.
+
+    Constructed per call for the same reason as :func:`_gateway_backend`, and
+    ``sys.platform`` is read through this module's globals so the tests that
+    patch ``server.sys`` keep controlling it. POSIX-only: the detach mechanism
+    is a new session standing in for ``systemd-run --collect``, and the hosts
+    this exists for (no drivable systemd/launchd) are Linux and macOS; Windows
+    keeps the manual-restart advisory. Whether a restart can actually be
+    attempted is the backend's ``status()``, not this constructor — callers
+    must gate on both :data:`gateway_service.FOREGROUND_ELIGIBLE` and
+    ``status() == ok``.
+    """
+    if sys.platform not in ("linux", "darwin"):
+        return None
+    return gateway_service.ForegroundBackend(
+        marker_ports=run_marker.marker_ports,
+        read_pid=run_marker.read_pid,
+        read_launcher=run_marker.read_launcher,
+        pid_exists=platform_compat.pid_exists,
+    )
+
+
 async def _gateway_service_reason() -> str | None:
     """Human-readable reason the gateway service cannot be driven, or ``None``.
 
@@ -4086,7 +4110,26 @@ async def _gateway_start_id() -> str | None:
     ``_restart_gateway`` / ``_make_live`` actually bounce (pod or live).
     """
     svc = _gateway_backend()
-    return None if svc is None else await svc.start_id()
+    sid = None if svc is None else await svc.start_id()
+    if sid is not None:
+        return sid
+    # Foreground fallback: on a host where no manager can be driven the
+    # handshake still needs an identity that changes when the replacement
+    # starts, or a foreground cutover could never be observed to complete. The
+    # run-marker pid stands in (see ForegroundBackend). Gated on the same
+    # eligibility codes as the foreground restart itself so that a host with a
+    # mis-set-up manager (which this app refuses to bounce) does not start
+    # advertising an identity for a restart path that will never run.
+    if _foreground_eligible(await _live_user_unit_status()):
+        fg = _foreground_backend()
+        if fg is not None:
+            return await fg.start_id()
+    return None
+
+
+def _foreground_eligible(status: str) -> bool:
+    """True when *status* permits the foreground last resort."""
+    return status in gateway_service.FOREGROUND_ELIGIBLE
 
 
 async def _restart_gateway() -> dict:
@@ -4391,25 +4434,32 @@ def _manual_restart_command() -> str:
 
 
 def _make_live_plan(worktree: Path, kcbin: Path, *,
-                    svc: "gateway_service.GatewayServiceBackend | None") -> dict:
+                    svc: "gateway_service.GatewayServiceBackend | None",
+                    foreground: "gateway_service.ForegroundBackend | None" = None,
+                    ) -> dict:
     """Describe — without mutating anything — what making *worktree* live does.
 
     Validates the target the same way the real cutover does, so a dry run
     reports an unusable worktree instead of promising a cutover that would then
     be refused. When the service is drivable the backend's own plan is folded in,
-    because the cutover restages that definition too.
+    because the cutover restages that definition too. *foreground* is the
+    last-resort restart that will be ATTEMPTED when no manager is drivable
+    (see ``_make_live``): a dry run must report that restart as automatic, or
+    the preview would promise a manual step the real call then performs itself.
     """
     live_target.validate(str(worktree))
     plan: dict = {
         "mechanism": "live-target pointer",
         "pointer_path": str(live_target.pointer_path()),
         "exec": str(kcbin),
-        "restart": "automatic" if svc is not None else "manual",
+        "restart": "automatic" if (svc is not None or foreground is not None) else "manual",
     }
-    if svc is None:
-        plan["manual_restart"] = _manual_restart_command()
-    else:
+    if svc is not None:
         plan.update(svc.plan(worktree, kcbin))
+    elif foreground is not None:
+        plan.update(foreground.plan(worktree, kcbin))
+    else:
+        plan["manual_restart"] = _manual_restart_command()
     return plan
 
 
@@ -4474,6 +4524,17 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
     svc = _gateway_backend()
     unit_status = await _live_user_unit_status()
     can_restart = svc is not None and unit_status == "ok"
+    # LAST RESORT (strictly systemd > launchd > foreground): when no manager is
+    # drivable at all, a detached `kirocrew restart` can still finish the
+    # cutover (see gateway_service.ForegroundBackend). Probed ONCE per request,
+    # mirroring can_restart, so the plan and the act cannot disagree. Only the
+    # FOREGROUND_ELIGIBLE codes qualify — a mis-set-up manager keeps its named
+    # remedy instead of being bounced behind its back.
+    foreground: "gateway_service.ForegroundBackend | None" = None
+    if not can_restart and _foreground_eligible(unit_status):
+        fg = _foreground_backend()
+        if fg is not None and await fg.status() == gateway_service.STATUS_OK:
+            foreground = fg
 
     live = await _live_worktree_path()
     same_as_running = live is not None and _same_path(str(real), live)
@@ -4635,7 +4696,8 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
         )}
 
     try:
-        plan = _make_live_plan(real, kcbin, svc=svc if can_restart else None)
+        plan = _make_live_plan(real, kcbin, svc=svc if can_restart else None,
+                               foreground=foreground)
     except live_target.InvalidTarget as exc:
         return {"ok": False, "code": "unsafe_path", "error": (
             "refusing make-live: the worktree path cannot be used as a live "
@@ -4746,15 +4808,42 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
                     "rolled_back": await _unwind(),
                     "error": _redact(str(exc))}
 
-        # Nothing bounces the gateway on this host, so the cutover is STAGED and
-        # the operator finishes it. Reported as a success with the exact command,
-        # not a failure: the pointer is written and correct, and the next start
-        # of the gateway — however it happens — comes up on the new target.
-        # Deliberately NOT latched as committed: no restart is pending, so a
-        # subsequent cutover to a different worktree must stay allowed.
+        # Nothing MANAGED bounces the gateway on this host. When the foreground
+        # last resort is usable it finishes the cutover below; otherwise the
+        # cutover is STAGED and the operator finishes it — reported as a success
+        # with the exact command, not a failure: the pointer is written and
+        # correct, and the next start of the gateway — however it happens —
+        # comes up on the new target. The staged-only outcome is deliberately
+        # NOT latched as committed: no restart is pending, so a subsequent
+        # cutover to a different worktree must stay allowed.
         if not can_restart:
             _LIVE_WORKTREE = None
             _LIVE_CHECK_AT = 0.0
+            if foreground is not None:
+                # Capture identity BEFORE establishing the restart, mirroring
+                # the drivable path: the detached bounce can tear this process
+                # down at any moment after the spawn.
+                start_id = await foreground.start_id()
+                restarted, fg_err = await foreground.restart_detached()
+                if restarted:
+                    # A restart IS pending now — latch exactly as the drivable
+                    # path does, so no further cutover mutates the pointer
+                    # while the detached `kirocrew restart` is acting on it.
+                    _MAKE_LIVE_COMMITTED = True
+                    return {"ok": True, "cutover": True, "target": str(real),
+                            "plan": plan, "start_id": start_id}
+                # FAIL SAFE: the spawn was never established, so nothing has
+                # been signalled and the gateway is untouched. The pointer
+                # stays staged (it is written and correct) and the operator
+                # gets the exact status-quo advisory. Rolling the pointer back
+                # here would be strictly worse: it would turn "finish with one
+                # command" into "start over".
+                logger.warning(
+                    "foreground restart could not be established (%s); "
+                    "falling back to the manual-restart advisory", fg_err,
+                )
+                plan = {**plan, "restart": "manual",
+                        "manual_restart": _manual_restart_command()}
             return {"ok": True, "cutover": True, "staged_only": True,
                     "target": str(real), "plan": plan,
                     "manual_restart": _manual_restart_command(),

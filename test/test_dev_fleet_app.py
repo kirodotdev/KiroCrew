@@ -7429,3 +7429,304 @@ async def test_dirty_unmerged_message_does_not_promise_force_override():
     assert "use force to override" not in result["error"]
     # Should mention uncommitted changes
     assert "uncommitted changes" in result["error"]
+
+
+# =============================================================================
+# Foreground last-resort restart (issue #2566)
+# =============================================================================
+
+def _mk_kcbin(tmp_path: Path, name: str = "kirocrew") -> Path:
+    """An executable file that passes ForegroundBackend's launcher validation."""
+    d = tmp_path / "bin"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text("#!/bin/sh\n")
+    p.chmod(0o755)
+    return p
+
+
+def _fg(tmp_path: Path, *, port: int = 7777, pid: int = 4242,
+        launcher: "str | None" = None, alive: bool = True, spawn=None,
+        ports: "list[int] | None" = None, pids: "dict[int, int] | None" = None,
+        confined: "str | None" = None):
+    """A ForegroundBackend wired to fakes. Returns (backend, spawned_argvs)."""
+    from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
+
+    spawned: list[list[str]] = []
+
+    def default_spawn(argv):
+        spawned.append(list(argv))
+
+    marker_ports = ports if ports is not None else [port]
+    pid_by_port = pids if pids is not None else {port: pid}
+    backend = gs.ForegroundBackend(
+        marker_ports=lambda: list(marker_ports),
+        read_pid=lambda p: pid_by_port.get(p),
+        read_launcher=lambda p: launcher,
+        pid_exists=lambda p: alive,
+        spawn=spawn if spawn is not None else default_spawn,
+        confinement=lambda: confined,
+    )
+    return backend, spawned
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_ok_and_start_id(tmp_path):
+    """Single live marker + resolvable binary -> ok; start_id is the marker pid."""
+    kc = _mk_kcbin(tmp_path)
+    fg, _ = _fg(tmp_path, launcher=str(kc))
+    assert await fg.status() == "ok"
+    assert await fg.start_id() == "4242"
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_unavailable_cases(tmp_path):
+    """No marker, dead pid, or ambiguous markers -> unavailable, start_id None."""
+    kc = _mk_kcbin(tmp_path)
+    # No marker at all.
+    fg, _ = _fg(tmp_path, ports=[], pids={}, launcher=str(kc))
+    assert await fg.status() == "no_foreground_gateway"
+    assert await fg.start_id() is None
+    # Marker whose pid is dead (crash leftover).
+    fg, _ = _fg(tmp_path, alive=False, launcher=str(kc))
+    assert await fg.status() == "no_foreground_gateway"
+    # Two live markers: ambiguous, never guess which gateway to bounce.
+    fg, _ = _fg(tmp_path, ports=[7777, 7778], pids={7777: 1, 7778: 2},
+                launcher=str(kc))
+    assert await fg.status() == "no_foreground_gateway"
+    assert await fg.start_id() is None
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_binary_resolution(tmp_path):
+    """ONLY the keystone-fenced marker launcher is trusted — no PATH fallback
+    (an agent can plant a `kirocrew` in ~/.local/bin); invalid recorded
+    launchers are refused rather than guessed around."""
+    kc = _mk_kcbin(tmp_path)
+    # Marker launcher used, verbatim.
+    fg, spawned = _fg(tmp_path, launcher=str(kc))
+    ok, err = await fg.restart_detached()
+    assert ok and spawned[0][0] == str(kc)
+    # No recorded launcher (source-tree launch, empty marker): refuse — the
+    # PATH fallback is deliberately absent.
+    fg, spawned = _fg(tmp_path, launcher=None)
+    assert await fg.status() == "no_kirocrew_binary"
+    ok, err = await fg.restart_detached()
+    assert not ok and "resolved" in err and spawned == []
+    # A launcher that is not basenamed kirocrew is refused even when executable
+    # (the _own_console_script rule: exec the entry point it claims to be).
+    impostor = _mk_kcbin(tmp_path / "i", name="systemctl")
+    fg, _ = _fg(tmp_path, launcher=str(impostor))
+    assert await fg.status() == "no_kirocrew_binary"
+    # A non-executable launcher is refused: it could stop the gateway but never
+    # start the replacement.
+    limp = _mk_kcbin(tmp_path / "n")
+    limp.chmod(0o644)
+    fg, _ = _fg(tmp_path, launcher=str(limp))
+    assert await fg.status() == "no_kirocrew_binary"
+    # A relative recorded path is refused (never resolved against a cwd).
+    fg, _ = _fg(tmp_path, launcher="bin/kirocrew")
+    assert await fg.status() == "no_kirocrew_binary"
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_refuses_when_confined(tmp_path):
+    """A confined backend (OS sandbox / agents cgroup scope) never spawns: the
+    replacement would inherit the confinement for the gateway's whole life."""
+    kc = _mk_kcbin(tmp_path)
+    fg, spawned = _fg(tmp_path, launcher=str(kc),
+                      confined="the Dev Fleet backend runs inside the sandbox")
+    assert await fg.status() == "backend_confined"
+    ok, err = await fg.restart_detached()
+    assert not ok and "sandbox" in err
+    assert spawned == []
+
+
+def test_default_confinement_detects_sandbox_marker(monkeypatch):
+    """KIROCREW_SANDBOX_ACTIVE — the launcher-exported in-sandbox marker — is
+    detected as confinement (checked before the cgroup read, so this is
+    deterministic on any host)."""
+    from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
+
+    monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+    reason = gs.default_confinement()
+    assert reason is not None and "sandbox" in reason
+
+
+@pytest.mark.asyncio
+async def test_foreground_restart_detached_pins_port(tmp_path):
+    """The detached command is `<bin> restart --port <marker port>`."""
+    kc = _mk_kcbin(tmp_path)
+    fg, spawned = _fg(tmp_path, port=6776, pid=99, launcher=str(kc))
+    ok, err = await fg.restart_detached()
+    assert ok and err == ""
+    assert spawned == [[str(kc), "restart", "--port", "6776"]]
+
+
+@pytest.mark.asyncio
+async def test_foreground_spawn_failure_signals_nothing(tmp_path, monkeypatch):
+    """A spawn that cannot be established returns (False, why) and the backend
+    never signals any process — the incumbent gateway must stay untouched."""
+    kc = _mk_kcbin(tmp_path)
+
+    def bad_spawn(argv):
+        raise OSError("resource temporarily unavailable")
+
+    kills: list = []
+    monkeypatch.setattr(os, "kill", lambda *a: kills.append(a))
+    fg, _ = _fg(tmp_path, launcher=str(kc), spawn=bad_spawn)
+    ok, err = await fg.restart_detached()
+    assert not ok and "resource temporarily unavailable" in err
+    assert kills == []
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_last_resort_cutover(monkeypatch, tmp_path):
+    """When no manager is drivable but a single live foreground gateway exists,
+    make-live finishes the cutover itself: pointer written, detached
+    `kirocrew restart` established, start_id (the pre-restart pid) returned,
+    and the committed latch set exactly as on a drivable host."""
+    kc = _mk_kcbin(tmp_path)
+    for status in ("no_systemd", "no_user_unit", "no_launchd", "no_agent"):
+        wt = _mk_make_live_wt(tmp_path / status, venv=True, dist=True)
+        ptr_dir = tmp_path / "ptr" / status
+        _stub_make_live(monkeypatch, wt, unit_status=status, pointer_dir=ptr_dir)
+        monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+        fg, spawned = _fg(tmp_path, port=7777, pid=31337, launcher=str(kc))
+        monkeypatch.setattr(mod, "_foreground_backend", lambda fg=fg: fg)
+
+        res = await mod._make_live(str(wt), dry_run=False)
+        assert res["ok"] is True and res["cutover"] is True, f"{status}: {res}"
+        assert "staged_only" not in res
+        assert res["start_id"] == "31337"
+        assert spawned == [[str(kc), "restart", "--port", "7777"]]
+        # Pointer written with the target.
+        data = json.loads((ptr_dir / "live_target.json").read_text())
+        assert Path(data["checkout"]).resolve() == wt.resolve()
+        # A restart IS pending: latched like the drivable path.
+        assert mod._MAKE_LIVE_COMMITTED is True
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_is_strictly_last_resort(monkeypatch, tmp_path):
+    """Ordering is systemd > launchd > foreground: on a drivable host — or one
+    whose manager exists but is mis-set-up (named-remedy codes) — the
+    foreground backend is never even constructed."""
+    factory = MagicMock()
+    monkeypatch.setattr(mod, "_foreground_backend", factory)
+    # Drivable systemd host: full managed cutover, no foreground.
+    wt = _mk_make_live_wt(tmp_path / "ok", venv=True, dist=True)
+    _stub_make_live(monkeypatch, wt, unit_status="ok",
+                    pointer_dir=tmp_path / "ptr-ok")
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True and "staged_only" not in res
+    factory.assert_not_called()
+    # Mis-set-up managers keep their named remedy; foreground must not bounce
+    # a gateway behind a manager's back.
+    for status in ("user_unit_inactive", "agent_not_indirected",
+                   "agent_restart_contract_outdated", "live_program_missing"):
+        wt = _mk_make_live_wt(tmp_path / status, venv=True, dist=True)
+        _stub_make_live(monkeypatch, wt, unit_status=status,
+                        pointer_dir=tmp_path / f"ptr-{status}")
+        monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+        res = await mod._make_live(str(wt), dry_run=False)
+        assert res["ok"] is True and res["staged_only"] is True, f"{status}: {res}"
+        factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_spawn_failure_keeps_advisory(monkeypatch, tmp_path):
+    """FAIL SAFE: when the detached spawn cannot be established the running
+    gateway is untouched, the pointer STAYS staged, the committed latch is not
+    set, and the response is the status-quo manual advisory."""
+    kc = _mk_kcbin(tmp_path)
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, unit_status="no_systemd", pointer_dir=ptr_dir)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    def bad_spawn(argv):
+        raise OSError("spawn refused")
+
+    fg, _ = _fg(tmp_path, launcher=str(kc), spawn=bad_spawn)
+    monkeypatch.setattr(mod, "_foreground_backend", lambda: fg)
+
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True and res["staged_only"] is True
+    assert res["manual_restart"]
+    assert res["manual_restart"] in res["notice"]
+    # The plan must not keep promising an automatic restart that failed.
+    assert res["plan"]["restart"] == "manual"
+    # Pointer written and KEPT: "finish with one command", not "start over".
+    data = json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == wt.resolve()
+    # No restart pending -> not latched; a re-point must stay allowed.
+    assert mod._MAKE_LIVE_COMMITTED is False
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_unavailable_keeps_advisory(monkeypatch, tmp_path):
+    """Eligible codes without a usable foreground gateway (no/ambiguous marker,
+    unresolvable binary, confined backend) keep the pre-existing staged_only
+    behaviour."""
+    kc = _mk_kcbin(tmp_path)
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    for label, fg_kwargs in (
+        ("no_marker", dict(ports=[], pids={}, launcher=None)),
+        ("confined", dict(launcher=str(kc), confined="backend is sandboxed")),
+    ):
+        _stub_make_live(monkeypatch, wt, unit_status="no_systemd",
+                        pointer_dir=ptr_dir / label)
+        monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+        fg, spawned = _fg(tmp_path, **fg_kwargs)
+        monkeypatch.setattr(mod, "_foreground_backend", lambda fg=fg: fg)
+
+        res = await mod._make_live(str(wt), dry_run=False)
+        assert res["ok"] is True and res["staged_only"] is True, f"{label}: {res}"
+        assert res["manual_restart"] in res["notice"]
+        assert spawned == []
+        assert mod._MAKE_LIVE_COMMITTED is False
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_dry_run_plan(monkeypatch, tmp_path):
+    """A dry run on a foreground-capable host reports the restart as automatic
+    with the exact command — and mutates nothing, spawns nothing."""
+    kc = _mk_kcbin(tmp_path)
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, unit_status="no_systemd", pointer_dir=ptr_dir)
+    fg, spawned = _fg(tmp_path, port=7777, pid=1, launcher=str(kc))
+    monkeypatch.setattr(mod, "_foreground_backend", lambda: fg)
+
+    res = await mod._make_live(str(wt), dry_run=True)
+    assert res["ok"] is True and res["dry_run"] is True
+    plan = res["plan"]
+    assert plan["restart"] == "automatic"
+    assert plan["restart_backend"] == "foreground"
+    assert plan["restart_command"] == f"{kc} restart --port 7777"
+    assert spawned == []
+    assert not (ptr_dir / "live_target.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_gateway_start_id_foreground_fallback(monkeypatch, tmp_path):
+    """On an eligible host the health handshake identity is the marker pid, so
+    the dashboard can observe a foreground cutover complete; on an ineligible
+    host it stays None (degrade, never wait forever)."""
+    kc = _mk_kcbin(tmp_path)
+    fg, _ = _fg(tmp_path, pid=8080, launcher=str(kc))
+    monkeypatch.setattr(mod, "_foreground_backend", lambda: fg)
+    with patch.object(mod, "sys", MagicMock(platform="linux")), \
+         patch.object(mod, "shutil",
+                      MagicMock(which=MagicMock(return_value=None))):
+        # No systemctl at all -> primary yields None -> foreground pid.
+        assert await mod._gateway_start_id() == "8080"
+    with patch.object(mod, "_live_user_unit_status", new_callable=AsyncMock,
+                      return_value="user_unit_inactive"), \
+         patch.object(mod, "sys", MagicMock(platform="linux")), \
+         patch.object(mod, "shutil",
+                      MagicMock(which=MagicMock(return_value=None))):
+        assert await mod._gateway_start_id() is None
