@@ -35,9 +35,11 @@ from kiro_crew.mcp_caller import (
     build_caller_meta,
 )
 from kiro_crew.mcp_gateway.apps import (
+    WithheldTools,
     append_marker,
     extract_declared_ui_uris,
     extract_ui_resource_uri,
+    strip_model_hidden_tools,
     write_spool,
 )
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
@@ -1351,24 +1353,75 @@ class Backend:
         must NOT deliver it. Returns ``False`` (the common/off path) when the
         caller should deliver the response normally right now. Never raises:
         any classification hiccup falls back to normal delivery.
+
+        The tools/list visibility filter runs even when the feature gate is
+        OFF — see below for why — so this is not a pure no-op in that state.
         """
-        if not _mcp_apps_enabled():
-            return False
         # App-originated callbacks (the app-call relay forwards a tools/call on
         # a ``__app_call__*`` stub) must NEVER be re-intercepted: if the called
         # tool itself declares a ui:// resource, re-spooling would replace the
         # app's real result with an internal marker string and mint a stray
         # spool record. The render/spool path is only for MODEL-originated tool
         # results; app callbacks return verbatim to the requesting app.
+        #
+        # Checked ahead of the feature gate because it also exempts a listing
+        # from the visibility filter, which runs gate-independently.
         if pending.stub_uuid.startswith("__app_call__"):
             return False
-        # Passive harvest: tool declarations are the SEP-1865 PRIMARY place a
-        # server associates a tool with its ui:// resource (the real
-        # pdf-server and Excalidraw declare it ONLY here, not on results).
-        # Every tools/list response that flows through updates the map.
         if pending.method == "tools/list":
             result = msg.get("result")
             if isinstance(result, dict):
+                # SEP-1865 MUST: a tool whose visibility omits "model" is not
+                # the agent's to see. Mutates the response in place before the
+                # caller delivers it. Reachable ONLY for model-facing listings —
+                # the __app_call__ guard above returns first, so an app's
+                # authorization snapshot keeps its app-only tools and the
+                # visibility gate in app_call still sees them.
+                #
+                # DELIBERATELY OUTSIDE the feature gate: visibility is the
+                # SERVER's statement about who may call a tool, not a property
+                # of our renderer. With apps disabled there is no app to call
+                # an app-only tool, so filtering makes it unreachable — which is
+                # the server's own consequence and strictly better than handing
+                # the model a tool the server withheld from it.
+                hidden = strip_model_hidden_tools(result)
+                if hidden.declared:
+                    logger.info(
+                        "mcp-apps: withheld %d app-only tool(s) from the agent's "
+                        "listing for server=%s: %s",
+                        len(hidden.declared), self.pool_key.server_name,
+                        ", ".join(hidden.declared),
+                    )
+                if hidden.unreadable:
+                    # WARNING, not INFO: the server DID declare a visibility and
+                    # this host could not parse it, so a tool disappeared on our
+                    # judgement rather than the server's instruction. That is the
+                    # one drop an operator needs to see — it is the failure mode
+                    # where a real server's shape trips the parser.
+                    logger.warning(
+                        "mcp-apps: withheld %d tool(s) from the agent's listing "
+                        "for server=%s because their _meta.ui.visibility could "
+                        "not be read: %s",
+                        len(hidden.unreadable), self.pool_key.server_name,
+                        ", ".join(hidden.unreadable),
+                    )
+                if hidden:
+                    self._audit_visibility_withhold(pending, hidden)
+                # Passive harvest: tool declarations are the SEP-1865 PRIMARY
+                # place a server associates a tool with its ui:// resource (the
+                # real pdf-server and Excalidraw declare it ONLY here, not on
+                # results). Every tools/list response updates the map.
+                #
+                # Runs AFTER the strip, so a withheld tool's ui:// never enters
+                # the map. That ordering is load-bearing, not incidental: it
+                # means a model-originated call naming an app-only tool cannot
+                # find a declared resource to render. Keep the strip first.
+                #
+                # Also runs REGARDLESS of the feature gate, so the map always
+                # reflects the server's CURRENT declarations. Gating it would
+                # let a listing that arrives while apps are disabled leave a
+                # WITHDRAWN tool→ui association cached, which a later re-enable
+                # would then render from.
                 try:
                     declared = extract_declared_ui_uris(result)
                 except Exception:  # pragma: no cover — defensive; extract is total
@@ -1379,6 +1432,9 @@ class Backend:
                 # so later successful calls would still render the withdrawn
                 # app resource.
                 self._apps_declared_uris = declared
+            return False
+        # Everything below is the RENDER path, which the feature gate owns.
+        if not _mcp_apps_enabled():
             return False
         if pending.method != "tools/call":
             return False
@@ -1407,6 +1463,39 @@ class Backend:
         self._apps_tasks.add(task)
         task.add_done_callback(self._apps_tasks.discard)
         return True
+
+    def _audit_visibility_withhold(
+        self, pending: _PendingRequest, hidden: WithheldTools
+    ) -> None:
+        """SEL-audit a tools/list visibility withhold.
+
+        Removing a tool from the agent's listing is an authorization decision
+        this gateway makes, and the sibling direction (an app calling a tool,
+        in :mod:`kiro_crew.mcp_gateway.app_call`) audits every outcome — so the
+        direction that silently takes capability AWAY from the model must not
+        be the unaudited one. Log lines rotate; the SEL chain is the durable
+        record of what was hidden and why.
+
+        ONE event per listing that actually withheld something, not one per
+        tool and not one per tools/list — a server with a permanent app-only
+        tool would otherwise mint an event on every listing forever.
+        """
+        try:
+            SecurityEventLog().log_api_access(
+                caller=pending.session_key or "unknown",
+                operation="mcp-gateway.tools-list-visibility",
+                outcome="denied",
+                source="gateway",
+                resources=(
+                    f"server={self.pool_key.server_name} "
+                    f"declared={','.join(hidden.declared) or '-'} "
+                    f"unreadable={','.join(hidden.unreadable) or '-'}"
+                ),
+            )
+        except Exception:  # pragma: no cover — audit must never break delivery
+            logger.debug(
+                "SEL audit for tools/list visibility withhold failed", exc_info=True
+            )
 
     async def _fetch_and_deliver_ui(
         self, pending: _PendingRequest, msg: dict[str, Any], resource_uri: str

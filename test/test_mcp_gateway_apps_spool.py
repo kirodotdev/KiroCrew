@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import stat
 import sys
@@ -36,6 +37,7 @@ from kiro_crew.mcp_gateway.apps import (
     append_marker,
     extract_ui_resource_uri,
     spool_dir,
+    strip_model_hidden_tools,
     sweep_spool,
     write_spool,
 )
@@ -43,6 +45,7 @@ from kiro_crew.mcp_gateway.backend import (
     MCP_APPS_ENV_FLAG,
     MCP_APPS_MIME_TYPE,
     Backend,
+    _PendingRequest,
 )
 from kiro_crew.mcp_gateway.pool import PoolKey
 
@@ -325,6 +328,118 @@ class TestExtractDeclaredUiUris:
 
 
 # --------------------------------------------------------------------------
+# strip_model_hidden_tools
+# --------------------------------------------------------------------------
+
+def _tool(name: str, visibility=...) -> dict:
+    """A tools/list entry, with ``_meta.ui.visibility`` only when given.
+
+    ``visibility=...`` (the default) omits the key entirely, which is the shape
+    the SEP-1865 default applies to.
+    """
+    tool: dict = {"name": name, "inputSchema": {"type": "object"}}
+    if visibility is not ...:
+        tool["_meta"] = {"ui": {"visibility": visibility}}
+    return tool
+
+
+class TestStripModelHiddenTools:
+    def test_drops_app_only_tool(self):
+        result = {"tools": [_tool("refresh", ["app"]), _tool("get_weather", ["model", "app"])]}
+        withheld = strip_model_hidden_tools(result)
+        assert withheld.declared == ["refresh"]
+        assert withheld.unreadable == []
+        assert [t["name"] for t in result["tools"]] == ["get_weather"]
+
+    def test_keeps_tool_with_no_visibility(self):
+        """Absent visibility defaults to ["model", "app"] per SEP-1865."""
+        result = {"tools": [_tool("plain")]}
+        assert strip_model_hidden_tools(result).names == []
+        assert [t["name"] for t in result["tools"]] == ["plain"]
+
+    def test_keeps_model_only_tool(self):
+        result = {"tools": [_tool("hidden_from_app", ["model"])]}
+        assert strip_model_hidden_tools(result).names == []
+        assert [t["name"] for t in result["tools"]] == ["hidden_from_app"]
+
+    @pytest.mark.parametrize(
+        "vis",
+        ["app", []],
+        ids=["bare-app", "empty-list"],
+    )
+    def test_readable_declaration_without_model_drops_as_declared(self, vis):
+        """A parseable declaration that omits "model" is the server doing what
+        the spec provides for — routine, so it lands in ``declared``."""
+        result = {"tools": [_tool("t", vis)]}
+        withheld = strip_model_hidden_tools(result)
+        assert withheld.declared == ["t"]
+        assert withheld.unreadable == []
+        assert result["tools"] == []
+
+    @pytest.mark.parametrize(
+        "vis",
+        [None, {}, 42, {"app": True}],
+        ids=["explicit-null", "empty-dict", "int", "dict"],
+    )
+    def test_unreadable_visibility_drops_and_is_reported_separately(self, vis):
+        """A PRESENT visibility this host cannot parse drops, but is bucketed
+        apart so the caller can warn: the tool vanished on OUR judgement, not
+        the server's instruction.
+
+        Only absence gets the permissive default. A leak is silent and lets the
+        model execute a tool the server withheld; an over-drop is logged.
+        """
+        result = {"tools": [_tool("t", vis)]}
+        withheld = strip_model_hidden_tools(result)
+        assert withheld.declared == []
+        assert withheld.unreadable == ["t"]
+        assert result["tools"] == []
+
+    @pytest.mark.parametrize(
+        "vis",
+        ["model", ["model"], ["model", "app"], ["app", "model"]],
+        ids=["bare-model", "list-model", "both", "both-reversed"],
+    )
+    def test_visibility_including_model_keeps(self, vis):
+        """A bare ``"model"`` string is coerced, not treated as unreadable —
+        blanket-dropping malformed values would hide a tool meant to be seen."""
+        result = {"tools": [_tool("t", vis)]}
+        assert strip_model_hidden_tools(result).names == []
+        assert [t["name"] for t in result["tools"]] == ["t"]
+
+    def test_unnamed_app_only_tool_reported_as_placeholder(self):
+        result = {"tools": [{"_meta": {"ui": {"visibility": ["app"]}}}]}
+        assert strip_model_hidden_tools(result).declared == ["<unnamed>"]
+        assert result["tools"] == []
+
+    def test_non_dict_entries_preserved(self):
+        result = {"tools": ["junk", 7, _tool("ok")]}
+        assert strip_model_hidden_tools(result).names == []
+        assert len(result["tools"]) == 3
+
+    def test_missing_or_malformed_tools_key(self):
+        assert strip_model_hidden_tools({}).names == []
+        assert strip_model_hidden_tools({"tools": "nope"}).names == []
+        assert strip_model_hidden_tools({"tools": None}).names == []
+
+    def test_untouched_when_nothing_dropped(self):
+        """The list object is left as-is when no tool is withheld, so a caller
+        holding a reference to it does not see a surprise rebind."""
+        tools = [_tool("a"), _tool("b", ["model"])]
+        result = {"tools": tools}
+        assert strip_model_hidden_tools(result).names == []
+        assert result["tools"] is tools
+
+    def test_both_buckets_populated_together(self):
+        result = {"tools": [_tool("declared_hidden", ["app"]), _tool("bad_shape", 42)]}
+        withheld = strip_model_hidden_tools(result)
+        assert withheld.declared == ["declared_hidden"]
+        assert withheld.unreadable == ["bad_shape"]
+        assert sorted(withheld.names) == ["bad_shape", "declared_hidden"]
+        assert result["tools"] == []
+
+
+# --------------------------------------------------------------------------
 # Backend interception seam (async)
 # --------------------------------------------------------------------------
 
@@ -385,6 +500,217 @@ async def _drain_inbox(inbox: "asyncio.Queue[bytes]", timeout: float = 2.0) -> d
 @pytest.fixture
 def apps_flag_on(monkeypatch):
     monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
+
+
+def _listing_pending(stub_uuid: str) -> _PendingRequest:
+    return _PendingRequest(
+        stub_uuid=stub_uuid, original_id=1, method="tools/list", t_start_ms=0.0
+    )
+
+
+def _listing_msg() -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"tools": [_tool("refresh", ["app"]), _tool("draw")]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_listing_withholds_app_only_tools(apps_flag_on):
+    """SEP-1865 MUST: the agent's tools/list omits a tool whose visibility
+    does not include "model"."""
+    backend = _make_backend()
+    msg = _listing_msg()
+    # False = "caller delivers normally"; the filter mutates in place.
+    assert await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg) is False
+    assert [t["name"] for t in msg["result"]["tools"]] == ["draw"]
+
+
+@pytest.mark.asyncio
+async def test_app_call_listing_keeps_app_only_tools(apps_flag_on):
+    """The app-call authorization snapshot MUST keep app-only tools.
+
+    ``app_call`` authorizes an app's tools/call against a fresh tools/list. If
+    the filter reached that listing, every app-only tool would look
+    non-existent and the interactive-refresh pattern the visibility split
+    exists for would be dead. Pins the ordering of the ``__app_call__`` guard
+    ahead of the tools/list branch in ``_maybe_intercept_ui_result``.
+    """
+    backend = _make_backend()
+    msg = _listing_msg()
+    pending = _listing_pending("__app_call__deadbeef")
+    assert await backend._maybe_intercept_ui_result(pending, msg) is False
+    assert [t["name"] for t in msg["result"]["tools"]] == ["refresh", "draw"]
+
+
+@pytest.mark.asyncio
+async def test_listing_filtered_even_when_feature_disabled(monkeypatch):
+    """The visibility filter is NOT gated on the MCP Apps feature flag.
+
+    ``visibility`` is the server's statement about who may call a tool, not a
+    property of our renderer. With apps disabled there is no app to call an
+    app-only tool, so filtering makes it unreachable — the server's own
+    consequence, and strictly better than handing the model a tool the server
+    withheld from it. The stdout pump calls the interception hook
+    unconditionally, so without this the flag-off path leaked app-only tools.
+    """
+    monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
+    backend = _make_backend()
+    msg = _listing_msg()
+    assert await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg) is False
+    assert [t["name"] for t in msg["result"]["tools"]] == ["draw"]
+
+
+@pytest.mark.asyncio
+async def test_app_call_listing_unfiltered_when_feature_disabled(monkeypatch):
+    """The app-call exemption still wins with the flag off, since its guard is
+    checked ahead of both the filter and the gate."""
+    monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
+    backend = _make_backend()
+    msg = _listing_msg()
+    pending = _listing_pending("__app_call__off01")
+    assert await backend._maybe_intercept_ui_result(pending, msg) is False
+    assert [t["name"] for t in msg["result"]["tools"]] == ["refresh", "draw"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_visibility_drop_warns_declared_drop_informs(apps_flag_on, caplog):
+    """The two drop causes must not log at the same level.
+
+    A well-formed ``["app"]`` is routine (INFO). An unparseable declaration
+    means a tool vanished on THIS host's judgement, which is the case an
+    operator has to be able to find — so it warns.
+    """
+    backend = _make_backend()
+    msg = {
+        "jsonrpc": "2.0", "id": 1,
+        "result": {"tools": [_tool("routine", ["app"]), _tool("bad_shape", 42)]},
+    }
+    with caplog.at_level(logging.INFO, logger="kiro_crew.mcp_gateway.backend"):
+        assert await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg) is False
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+    informed = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert any("bad_shape" in r.getMessage() for r in warned)
+    assert not any("bad_shape" in r.getMessage() for r in informed)
+    assert any("routine" in r.getMessage() for r in informed)
+    assert not any("routine" in r.getMessage() for r in warned)
+
+
+@pytest.mark.asyncio
+async def test_disabled_listing_still_refreshes_declarations(monkeypatch):
+    """A listing that arrives while apps are DISABLED must still refresh the
+    declaration map, or a withdrawn ui:// stays cached and a later re-enable
+    renders it.
+
+    Sequence: enabled listing caches ui://old -> apps disabled -> server
+    withdraws the declaration -> apps re-enabled -> a tools/call falling back
+    to the map must NOT find ui://old.
+    """
+    backend = _make_backend()
+    monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
+    declared = _tool("draw")
+    declared["_meta"] = {"ui": {"resourceUri": "ui://srv/old.html"}}
+    msg = {"jsonrpc": "2.0", "id": 1, "result": {"tools": [declared]}}
+    await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg)
+    assert backend._apps_declared_uris == {"draw": "ui://srv/old.html"}
+
+    # Apps off; the server's new listing no longer declares the resource.
+    monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
+    msg2 = {"jsonrpc": "2.0", "id": 2, "result": {"tools": [_tool("draw")]}}
+    await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg2)
+    assert backend._apps_declared_uris == {}
+
+
+@pytest.mark.asyncio
+async def test_visibility_withhold_is_sel_audited(apps_flag_on, monkeypatch):
+    """Withholding a tool is an authorization decision and must reach the SEL
+    chain — the sibling app-call direction audits every outcome, so the
+    direction that takes capability AWAY from the model cannot be the
+    unaudited one.
+
+    Exactly ONE event per listing that withheld something: a server with a
+    permanent app-only tool would otherwise mint an event on every listing.
+    """
+    calls: list[dict] = []
+
+    class _FakeSel:
+        def log_api_access(self, **kw):
+            calls.append(kw)
+
+    monkeypatch.setattr(
+        "kiro_crew.mcp_gateway.backend.SecurityEventLog", lambda: _FakeSel()
+    )
+    backend = _make_backend()
+    pending = _PendingRequest(
+        stub_uuid="s1", original_id=1, method="tools/list",
+        t_start_ms=0.0, session_key="dashboard:sess-9",
+    )
+    msg = {
+        "jsonrpc": "2.0", "id": 1,
+        "result": {"tools": [_tool("routine", ["app"]), _tool("bad", 42), _tool("ok")]},
+    }
+    assert await backend._maybe_intercept_ui_result(pending, msg) is False
+    assert len(calls) == 1
+    ev = calls[0]
+    assert ev["caller"] == "dashboard:sess-9"
+    assert ev["operation"] == "mcp-gateway.tools-list-visibility"
+    assert ev["outcome"] == "denied"
+    assert "declared=routine" in ev["resources"]
+    assert "unreadable=bad" in ev["resources"]
+    assert "excalidraw-mcp" in ev["resources"]
+
+
+@pytest.mark.asyncio
+async def test_no_sel_event_when_nothing_withheld(apps_flag_on, monkeypatch):
+    calls: list[dict] = []
+
+    class _FakeSel:
+        def log_api_access(self, **kw):
+            calls.append(kw)
+
+    monkeypatch.setattr(
+        "kiro_crew.mcp_gateway.backend.SecurityEventLog", lambda: _FakeSel()
+    )
+    backend = _make_backend()
+    msg = {"jsonrpc": "2.0", "id": 1, "result": {"tools": [_tool("ok")]}}
+    assert await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg) is False
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_sel_failure_does_not_break_the_filter(apps_flag_on, monkeypatch):
+    """A broken audit sink must not cost the user their tools/list response, and
+    must not undo the withhold."""
+    class _ExplodingSel:
+        def log_api_access(self, **kw):
+            raise RuntimeError("sel disk full")
+
+    monkeypatch.setattr(
+        "kiro_crew.mcp_gateway.backend.SecurityEventLog", lambda: _ExplodingSel()
+    )
+    backend = _make_backend()
+    msg = _listing_msg()
+    assert await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg) is False
+    assert [t["name"] for t in msg["result"]["tools"]] == ["draw"]
+
+
+@pytest.mark.asyncio
+async def test_hidden_tool_ui_uri_is_not_harvested(apps_flag_on):
+    """A withheld tool's declared ui:// must never enter _apps_declared_uris.
+
+    The strip runs before the harvest, so a model-originated call naming an
+    app-only tool cannot find a declared resource to render. Pins that
+    ordering — reversing it would resurrect hidden-tool rendering.
+    """
+    backend = _make_backend()
+    hidden = _tool("refresh", ["app"])
+    hidden["_meta"]["ui"]["resourceUri"] = "ui://srv/hidden.html"
+    shown = _tool("draw")
+    shown["_meta"] = {"ui": {"resourceUri": "ui://srv/draw.html"}}
+    msg = {"jsonrpc": "2.0", "id": 1, "result": {"tools": [hidden, shown]}}
+    assert await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg) is False
+    assert backend._apps_declared_uris == {"draw": "ui://srv/draw.html"}
 
 
 @pytest.mark.asyncio
