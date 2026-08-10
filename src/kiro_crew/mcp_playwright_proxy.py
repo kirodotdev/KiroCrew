@@ -1057,6 +1057,32 @@ def run_proxy(args: list[str]) -> None:
     from kiro_crew.env import node_augmented_path
 
     os.environ["PATH"] = node_augmented_path(os.environ.get("PATH", ""))
+
+    # Self-heal a stale config BEFORE handing it to @playwright/mcp: a
+    # contextOptions.storageState pointing at a missing file makes Playwright
+    # raise ENOENT at context creation, breaking every browser_* call (#2491).
+    # This spawn is the config's load moment — the one place every config-mode
+    # launch passes through — so repairing here (the helper drops the dangling
+    # key and rewrites the file to disk) closes the trap for configs written
+    # before the #2209 generation-time fix or whose storage-state file was
+    # later removed. No-config (extension-mode) launches skip this entirely.
+    # Both argv shapes @playwright/mcp accepts are matched: ``--config <path>``
+    # and ``--config=<path>``.
+    config_arg: str | None = None
+    for i, arg in enumerate(args):
+        if arg == "--config" and i + 1 < len(args):
+            config_arg = args[i + 1]
+            break
+        if arg.startswith("--config="):
+            config_arg = arg.split("=", 1)[1]
+            break
+    if config_arg:
+        # circular import: browser.setup imports from THIS module at its
+        # top level, so import at call time (once per proxy spawn, not hot).
+        from kiro_crew.browser.setup import repair_playwright_config
+
+        repair_playwright_config(config_arg)
+
     playwright_cmd = _resolve_playwright_cmd()
     if playwright_cmd is None:
         error_resp = {

@@ -11,6 +11,7 @@ regardless. The enterprise-SSO cookie/storage-state flow remains OSS-neutralized
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import stat
@@ -37,6 +38,7 @@ from kiro_crew.browser.setup import (
     patch_mcp_headless,
     refresh_storage_state,
     register_playwright_proxy,
+    repair_playwright_config,
 )
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -715,6 +717,383 @@ class TestGeneratePlaywrightConfig:
         monkeypatch.setattr(setup_mod, "get_browser_engine", lambda: "webkit")
         config = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
         assert config["browser"]["browserName"] == "webkit"
+
+
+class TestRepairPlaywrightConfig:
+    """Load-time self-heal of a dangling contextOptions.storageState (#2491).
+
+    #2209 fixed GENERATION (storageState only attached when the file exists),
+    but a config written before that fix — or whose storage-state file was
+    later removed — kept the dangling reference forever and broke every
+    browser_* call with ENOENT. repair_playwright_config() runs at the load
+    moment (proxy startup) and drops the key, persisting the repair to disk.
+    """
+
+    def _write_config(self, path: Path, context_options: dict | None) -> None:
+        config: dict = {
+            "browser": {
+                "browserName": "chromium",
+                "isolated": True,
+                "launchOptions": {"headless": True, "args": [], "channel": "chromium"},
+            },
+            "capabilities": ["network", "storage"],
+        }
+        if context_options is not None:
+            config["browser"]["contextOptions"] = context_options
+        path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    def test_dangling_storage_state_is_dropped_and_persisted(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        cfg = tmp_path / "playwright-config.json"
+        missing = tmp_path / "playwright-storage-state.json"
+        self._write_config(cfg, {"storageState": str(missing)})
+        assert not missing.exists()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.browser.setup"):
+            assert repair_playwright_config(cfg) is True
+        # Persisted to disk: the repair must survive a restart, else the
+        # cached-config trap from the issue report stays reachable.
+        on_disk = json.loads(cfg.read_text(encoding="utf-8"))
+        assert "storageState" not in on_disk["browser"]["contextOptions"]
+        # The rest of the config is untouched.
+        assert on_disk["browser"]["browserName"] == "chromium"
+        assert on_disk["capabilities"] == ["network", "storage"]
+        # One clear WARNING names the missing file and the action taken.
+        assert any(
+            str(missing) in rec.message and "storageState" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_existing_storage_state_left_byte_identical(self, tmp_path: Path):
+        cfg = tmp_path / "playwright-config.json"
+        state = tmp_path / "playwright-storage-state.json"
+        state.write_text('{"cookies": [], "origins": []}', encoding="utf-8")
+        self._write_config(cfg, {"storageState": str(state)})
+        before = cfg.read_bytes()
+        assert repair_playwright_config(cfg) is False
+        assert cfg.read_bytes() == before
+
+    def test_config_without_storage_state_key_untouched(self, tmp_path: Path):
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {})
+        before = cfg.read_bytes()
+        assert repair_playwright_config(cfg) is False
+        assert cfg.read_bytes() == before
+
+    def test_repair_is_idempotent_across_two_loads(self, tmp_path: Path):
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        assert repair_playwright_config(cfg) is True
+        after_first = cfg.read_bytes()
+        # Second load: already repaired — no gratuitous rewrite.
+        assert repair_playwright_config(cfg) is False
+        assert cfg.read_bytes() == after_first
+
+    def test_missing_config_file_is_noop(self, tmp_path: Path):
+        assert repair_playwright_config(tmp_path / "playwright-config.json") is False
+
+    def test_unparseable_config_untouched(self, tmp_path: Path):
+        # Never guess at rewriting a broken config the user may have
+        # hand-edited; Playwright MCP's own config error names the file.
+        cfg = tmp_path / "playwright-config.json"
+        cfg.write_text("{not json", encoding="utf-8")
+        before = cfg.read_bytes()
+        assert repair_playwright_config(cfg) is False
+        assert cfg.read_bytes() == before
+
+    def test_non_dict_shapes_untouched(self, tmp_path: Path):
+        cfg = tmp_path / "playwright-config.json"
+        for payload in ("[]", '{"browser": "nope"}', '{"browser": {"contextOptions": []}}'):
+            cfg.write_text(payload, encoding="utf-8")
+            before = cfg.read_bytes()
+            assert repair_playwright_config(cfg) is False
+            assert cfg.read_bytes() == before
+
+    def test_relative_storage_state_resolved_against_config_dir(self, tmp_path: Path):
+        # Playwright resolves a relative storageState against the CONFIG file's
+        # directory. A working relative reference must not be judged missing
+        # from the proxy's CWD and dropped — that would delete a valid
+        # authenticated-context reference, the inverse of the bug being fixed.
+        cfg = tmp_path / "playwright-config.json"
+        (tmp_path / "playwright-storage-state.json").write_text("{}", encoding="utf-8")
+        self._write_config(cfg, {"storageState": "playwright-storage-state.json"})
+        before = cfg.read_bytes()
+        assert repair_playwright_config(cfg) is False
+        assert cfg.read_bytes() == before
+
+    def test_relative_dangling_storage_state_repaired(self, tmp_path: Path):
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {"storageState": "gone.json"})
+        assert repair_playwright_config(cfg) is True
+        on_disk = json.loads(cfg.read_text(encoding="utf-8"))
+        assert "storageState" not in on_disk["browser"]["contextOptions"]
+
+    @pytest.mark.skipif(not IS_POSIX, reason="POSIX permission bits")
+    def test_repair_preserves_file_mode(self, tmp_path: Path):
+        # An operator-tightened 0600 must not silently widen to the umask
+        # default when the repair rewrites the file.
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        cfg.chmod(0o600)
+        assert repair_playwright_config(cfg) is True
+        assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(not IS_POSIX, reason="symlink semantics")
+    def test_repair_writes_through_symlink(self, tmp_path: Path):
+        # os.replace over the symlink path would swap the user's link for a
+        # regular file and leave the linked target unrepaired; the repair must
+        # resolve first and heal the target, preserving the link.
+        real = tmp_path / "real-config.json"
+        self._write_config(real, {"storageState": str(tmp_path / "gone.json")})
+        link = tmp_path / "playwright-config.json"
+        link.symlink_to(real)
+        assert repair_playwright_config(link) is True
+        assert link.is_symlink()
+        on_disk = json.loads(real.read_text(encoding="utf-8"))
+        assert "storageState" not in on_disk["browser"]["contextOptions"]
+
+    @pytest.mark.skipif(not IS_POSIX, reason="symlink semantics")
+    def test_relative_state_beside_symlink_is_kept(self, tmp_path: Path):
+        # Playwright resolves a relative storageState against the config path
+        # AS GIVEN — the LINK's directory. A valid state file beside the link
+        # must not be judged missing from the resolved target's directory and
+        # dropped.
+        link_dir = tmp_path / "linkside"
+        target_dir = tmp_path / "targetside"
+        link_dir.mkdir()
+        target_dir.mkdir()
+        real = target_dir / "real-config.json"
+        self._write_config(real, {"storageState": "state.json"})
+        (link_dir / "state.json").write_text("{}", encoding="utf-8")  # beside the LINK only
+        link = link_dir / "playwright-config.json"
+        link.symlink_to(real)
+        before = real.read_bytes()
+        assert repair_playwright_config(link) is False
+        assert real.read_bytes() == before
+
+    @pytest.mark.skipif(not IS_POSIX, reason="symlink semantics")
+    def test_link_and_target_share_one_lock_sidecar(self, tmp_path: Path):
+        # A writer addressing the link and one addressing the target must
+        # serialize on the SAME sidecar, or they lock independently and race.
+        from kiro_crew.browser.setup import _playwright_config_locked
+
+        real = tmp_path / "real-config.json"
+        real.write_text("{}", encoding="utf-8")
+        link_dir = tmp_path / "links"
+        link_dir.mkdir()
+        link = link_dir / "playwright-config.json"
+        link.symlink_to(real)
+        with _playwright_config_locked(link):
+            pass
+        with _playwright_config_locked(real):
+            pass
+        # Sidecar derived from the resolved path in both cases.
+        assert (tmp_path / "real-config.json.lock").exists()
+        assert not (link_dir / "playwright-config.json.lock").exists()
+
+    def test_repair_read_modify_write_runs_under_config_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The repair must serialize with generate_playwright_config via the
+        # shared interprocess lock, or its read-modify-write could install a
+        # stale snapshot over a concurrent generation (e.g. discarding a
+        # just-selected browser engine).
+        import contextlib as _contextlib
+
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        events: list[str] = []
+        real_atomic_write = setup_mod.atomic_write
+
+        @_contextlib.contextmanager
+        def recording_lock(path):
+            assert path == cfg.resolve()
+            events.append("lock-enter")
+            yield
+            events.append("lock-exit")
+
+        def recording_write(*a, **kw):
+            events.append("write")
+            return real_atomic_write(*a, **kw)
+
+        monkeypatch.setattr(setup_mod, "_playwright_config_locked", recording_lock)
+        monkeypatch.setattr(setup_mod, "atomic_write", recording_write)
+        assert repair_playwright_config(cfg) is True
+        # The write happened INSIDE the locked region.
+        assert events == ["lock-enter", "write", "lock-exit"]
+
+    def test_generate_takes_the_same_config_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import contextlib as _contextlib
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        entered: list[Path] = []
+
+        @_contextlib.contextmanager
+        def recording_lock(path):
+            entered.append(path)
+            yield
+
+        monkeypatch.setattr(setup_mod, "_playwright_config_locked", recording_lock)
+        cfg_path = generate_playwright_config()
+        assert entered == [cfg_path]
+
+    def test_sensitive_path_refused_before_lock_or_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A --config argv pointing into a credential dir must be refused before
+        # the lock helper writes a sidecar next to it or any byte is read.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        cfg = ssh_dir / "playwright-config.json"
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        before = cfg.read_bytes()
+        assert repair_playwright_config(cfg) is False
+        assert cfg.read_bytes() == before
+        # No lock sidecar was created inside the sensitive dir.
+        assert not (ssh_dir / "playwright-config.json.lock").exists()
+
+    @pytest.mark.skipif(not IS_POSIX, reason="symlink semantics")
+    def test_symlink_loop_is_safe_noop(self, tmp_path: Path):
+        # A --config path whose resolution hits a symlink loop (ELOOP) must not
+        # crash the proxy before it spawns Playwright — the unrepairable config
+        # is Playwright MCP's own error to report.
+        a = tmp_path / "a.json"
+        b = tmp_path / "b.json"
+        a.symlink_to(b)
+        b.symlink_to(a)
+        assert repair_playwright_config(a) is False
+
+    def test_concurrent_manual_edit_wins_over_repair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The interprocess lock serializes in-codebase writers, but a manual
+        # editor takes no lock: if the file changes between the repair's
+        # snapshot and its write, the repair must stand down.
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        real_read_text = Path.read_text
+        winner = json.dumps({"browser": {"browserName": "firefox", "contextOptions": {}}})
+        cfg_paths = {cfg, cfg.resolve()}
+        calls = {"n": 0}
+
+        def racing_read_text(self, *a, **kw):  # noqa: ANN001
+            out = real_read_text(self, *a, **kw)
+            if self in cfg_paths:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    # Simulate an unlocked manual edit landing right after the
+                    # repair's snapshot read.
+                    cfg.write_bytes(winner.encode("utf-8"))
+            return out
+
+        monkeypatch.setattr(Path, "read_text", racing_read_text)
+        assert repair_playwright_config(cfg) is False
+        monkeypatch.undo()
+        # The manual edit survived untouched.
+        assert cfg.read_text(encoding="utf-8") == winner
+
+    def test_concurrent_undecodable_save_stands_down_without_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A concurrent manual save of non-UTF-8 bytes between snapshot and
+        # write must count as "changed" (stand down), not raise
+        # UnicodeDecodeError and kill the proxy before it spawns Playwright.
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        real_read_text = Path.read_text
+        cfg_paths = {cfg, cfg.resolve()}
+        calls = {"n": 0}
+
+        def racing_read_text(self, *a, **kw):  # noqa: ANN001
+            if self in cfg_paths:
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    # Second read (the pre-write recheck) sees undecodable bytes.
+                    raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+            return real_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "read_text", racing_read_text)
+        assert repair_playwright_config(cfg) is False
+
+    @pytest.mark.skipif(not IS_POSIX, reason="symlink semantics")
+    def test_planted_sidecar_symlink_is_refused_and_target_untouched(self, tmp_path: Path):
+        # An agent-plantable attack: a symlink pre-planted at the sidecar name
+        # (<config>.lock) pointing at a keystone flag file must NOT be followed
+        # — a follow-through create/truncate would forge the flag. The lock
+        # helper opens with O_NOFOLLOW and rejects non-regular files; the
+        # repair degrades to a safe no-op.
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        keystone = tmp_path / "browser-mode-enabled"
+        (tmp_path / "playwright-config.json.lock").symlink_to(keystone)
+        assert not keystone.exists()
+        assert repair_playwright_config(cfg) is False
+        # The planted link's target was neither created nor truncated, and the
+        # config was left untouched (repair refused, not half-applied).
+        assert not keystone.exists()
+        assert "storageState" in json.loads(cfg.read_text(encoding="utf-8"))["browser"][
+            "contextOptions"
+        ]
+
+    @pytest.mark.skipif(not IS_POSIX, reason="symlink semantics")
+    def test_planted_sidecar_refused_without_o_nofollow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Windows has no O_NOFOLLOW: simulate that fallback path (lstat
+        # pre-check + samestat identity verify) by forcing the constant to 0.
+        from kiro_crew.browser.setup import _playwright_config_locked
+
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        cfg = tmp_path / "playwright-config.json"
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        keystone = tmp_path / "browser-mode-enabled"
+        (tmp_path / "playwright-config.json.lock").symlink_to(keystone)
+        with pytest.raises(OSError, match="symlink"):
+            with _playwright_config_locked(cfg):
+                pass
+        assert not keystone.exists()
+
+    def test_default_path_resolves_config_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # No explicit path: the helper targets <config_dir>/playwright-config.json
+        # — the file generate_playwright_config() writes and the proxy loads.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        cfg = config_dir() / "playwright-config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        self._write_config(cfg, {"storageState": str(tmp_path / "gone.json")})
+        assert repair_playwright_config() is True
+        on_disk = json.loads(cfg.read_text(encoding="utf-8"))
+        assert "storageState" not in on_disk["browser"]["contextOptions"]
+
+    def test_generated_then_orphaned_config_round_trip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # End-to-end shape of the field failure: generate while the state file
+        # exists (key attached), delete the state file, then load — the repair
+        # converges the config on what a fresh generation would produce.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        state = config_dir() / "playwright-storage-state.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text('{"cookies": [], "origins": []}', encoding="utf-8")
+        cfg_path = generate_playwright_config()
+        assert (
+            json.loads(cfg_path.read_text(encoding="utf-8"))["browser"]["contextOptions"][
+                "storageState"
+            ]
+            == str(state)
+        )
+        state.unlink()
+        assert repair_playwright_config(cfg_path) is True
+        repaired = json.loads(cfg_path.read_text(encoding="utf-8"))
+        fresh = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
+        assert repaired == fresh
 
 
 # ── TestBrowseSetupHelpers (guided one-command setup) ────────────────────────
