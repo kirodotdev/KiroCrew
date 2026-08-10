@@ -352,7 +352,7 @@ jobs:
           fi
           pytest -q -n auto --timeout=120 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
-            ${{ matrix.python-version == '3.12' && '--cov=kiro_crew' || '--no-cov' }} \
+            ${{ matrix.python-version == '3.12' && '--cov=kiro_crew --cov=sage_lib' || '--no-cov' }} \
             $BACKEND_DESELECTS
         # Deselected tests require capabilities unavailable on GH Actions:
         #   test_script_hooks, test_cron_script: Linux namespace sandbox (unshare NEWNS)
