@@ -38,18 +38,20 @@ from kiro_crew.weixin.transport import WeixinTransport
 
 
 # ── protocol headers ──────────────────────────────────────────────────────────
-def test_declared_capabilities_do_not_promise_files_without_a_media_path():
-    """``files`` must stay False while the transport has no media path.
+def test_declared_capabilities_match_the_directions_actually_implemented():
+    """Each ``files`` flag must track a real code path, per direction.
 
     The flag is a contract read by capability-aware callers (and, per the
-    channel-plugin RFC, eventually by the agent's own tool surface). iLink's
-    send path carries text only and inbound media is never decrypted or cached,
-    so declaring files=True advertises a capability the transport cannot
-    perform. Flip this together with the media implementation, not before.
+    channel-plugin RFC, eventually by the agent's own tool surface), so it is
+    wrong in BOTH directions: claiming a capability the transport lacks, and
+    denying one it has. Inbound landed (``weixin/media.py`` CDN download +
+    AES-128-ECB decrypt, fed through ``weixin/attachments.py``); outbound still
+    carries text only, because the ``getuploadurl`` + encrypted CDN PUT half is
+    unimplemented. Flip ``files_outbound`` in the change that lands it.
     """
     from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 
-    assert WEIXIN_CAPABILITIES.files_inbound is False
+    assert WEIXIN_CAPABILITIES.files_inbound is True
     assert WEIXIN_CAPABILITIES.files_outbound is False
 
 

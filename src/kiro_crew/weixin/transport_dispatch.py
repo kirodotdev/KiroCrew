@@ -26,15 +26,19 @@ Dependency direction is ``weixin -> messaging`` (allowed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.messaging.attachments import append_attachment_context
+from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn, inbound_permitted
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.weixin.attachments import process_weixin_attachments
 from kiro_crew.weixin.commands import ConversationState, parse_command
 from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 from kiro_crew.weixin.turn_renderer import WeixinRenderer
@@ -103,16 +107,105 @@ class WeixinDispatcher:
         logger.info("weixin inbound from %s: %d chars", user_id, len(text or ""))
 
         # ── Command intercept (no LLM session needed) ──
+        # A command is the WHOLE message (``parse_command`` matches only an exact
+        # alias), so media riding along with one is not something the agent could
+        # act on: the command path runs no turn, and downloading the object just
+        # to discard it would spend a CDN round trip for nothing. It is still
+        # said out loud rather than dropped in silence, which is the failure mode
+        # this channel's media support exists to remove.
         cmd = parse_command(text)
-        if cmd == "new":
-            self._conv.bump_gen(user_id)
-            await self._say(user_id, "✅ 已开始新对话")
-            return
-        if cmd == "compact":
+        if cmd is not None:
+            if inbound.attachments:
+                await self._say(user_id, "📎 附件未读取：这条是命令消息，请把附件单独发送。")
+            if cmd == "new":
+                self._conv.bump_gen(user_id)
+                await self._say(user_id, "✅ 已开始新对话")
+                return
             self._conv.clear_awaiting(user_id)
             await self._handle_compact(user_id)
             return
 
+        # ── Attachment ingestion (mirrors Telegram/Discord) ──
+        # Ingestion produces temp files whose paths are inlined into the text,
+        # and only the fresh-turn path (``session/prompt``) turns those paths
+        # into image blocks. ``steer()`` sends raw text and is fire-and-forget,
+        # so a mid-turn attachment would be cleaned up in this frame's
+        # ``finally`` before the running turn ever read the steer -- handing the
+        # model a path to a deleted file. So a live turn means no ingestion: the
+        # sender is told to resend once the turn ends, and any accompanying text
+        # still reaches the turn via steer.
+        attachment_temp_paths: list[str] = []
+        if inbound.attachments:
+            ingested, attachment_temp_paths = await self._ingest_or_refuse(
+                inbound, user_id, text
+            )
+            if ingested is None:
+                return
+            text = ingested
+            inbound.text = text
+
+        try:
+            await self._drive(inbound, user_id, text)
+        finally:
+            if attachment_temp_paths:
+                await asyncio.to_thread(cleanup_attachments, attachment_temp_paths)
+
+    async def _ingest_or_refuse(
+        self, inbound: InboundMessage, user_id: str, text: str
+    ) -> tuple[str | None, list[str]]:
+        """Ingest the message's attachments, or refuse them for a live turn.
+
+        Returns ``(text, temp_paths)``, where ``text`` is ``None`` when there is
+        nothing left to run -- a refused media-only message. ``inbound`` is
+        mutated so a refused attachment cannot be ingested again on re-entry.
+
+        The busy check is made twice on purpose. A CDN download takes real time,
+        so a turn can start *while* it is in flight; without the second check the
+        already-downloaded paths would be inlined into a steer whose files this
+        frame then deletes -- the exact failure the first check exists to
+        prevent. On the second check the downloads are discarded immediately
+        rather than at the end of the frame, and only the original caption goes
+        on. There is no suspension point between that check and ``_drive``'s own
+        one, so the two cannot disagree.
+        """
+        if self.sessions.is_busy(self._session_key(user_id)):
+            inbound.attachments = []
+            await self._say_resend_after_turn(user_id)
+            return (text if (text or "").strip() else None), []
+
+        try:
+            result = await process_weixin_attachments(inbound.attachments)
+        except Exception:
+            # One unreadable attachment must not lose the message. The user is
+            # told, because silence here is the exact bug this replaced.
+            logger.exception("weixin: attachment ingestion failed for %s", user_id)
+            inbound.attachments = []
+            return (
+                f"{text}\n\n[Attachment could not be read]"
+                if text
+                else "[Attachment could not be read]"
+            ), []
+
+        inbound.attachments = []
+        temp_paths = list(result.temp_paths)
+        if self.sessions.is_busy(self._session_key(user_id)):
+            if temp_paths:
+                await asyncio.to_thread(cleanup_attachments, temp_paths)
+            await self._say_resend_after_turn(user_id)
+            return (text if (text or "").strip() else None), []
+
+        return append_attachment_context(text, result), temp_paths
+
+    async def _say_resend_after_turn(self, user_id: str) -> None:
+        """Tell a mid-turn sender their attachment needs resending."""
+        await self._say(
+            user_id,
+            "⏳ 上一条消息还在处理中，附件无法在这轮读取，请等回复结束后重新发送。",
+        )
+
+    async def _drive(self, inbound: InboundMessage, user_id: str, text: str) -> None:
+        """Session acquisition + turn dispatch for one already-ingested message."""
+        assert self.client is not None
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
         # in-flight turn BEFORE any idle/daily rotation (rotating first could
         # mint a new key and miss the running turn).

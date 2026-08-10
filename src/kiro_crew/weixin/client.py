@@ -64,6 +64,11 @@ ITEM_VOICE = 3
 ITEM_FILE = 4
 ITEM_VIDEO = 5
 
+#: Item types the inbound path downloads from the CDN. Ordered as a frozenset so
+#: membership is the only question asked — the per-type envelope shape lives in
+#: ``weixin/attachments.py``, not here.
+INBOUND_MEDIA_ITEM_TYPES = frozenset({ITEM_IMAGE, ITEM_VOICE, ITEM_FILE, ITEM_VIDEO})
+
 MSG_TYPE_USER = 1
 MSG_TYPE_BOT = 2
 MSG_STATE_FINISH = 2
@@ -122,11 +127,12 @@ def _atomic_json_write(path: Path, payload: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-# NOTE: media (image/voice/file/video) is NOT supported yet — only the text item
-# of an inbound message is read, and replies are text-only. The iLink media path
-# needs an AES-128-ECB envelope over the WeChat CDN (the cipher mode is dictated
-# by the remote protocol, not chosen by us); those helpers land with the media
-# feature rather than sitting here unreachable.
+# NOTE: OUTBOUND media (image/voice/file/video) is NOT supported yet -- replies
+# are text-only. INBOUND media IS supported: ``weixin/media.py`` downloads the
+# CDN object and AES-128-ECB decrypts it (the cipher mode is dictated by the
+# remote protocol, not chosen by us) and ``weixin/attachments.py`` feeds it to
+# the shared ingest pipeline. The upload half (``getuploadurl`` + encrypted CDN
+# PUT) lands with outbound media rather than sitting here unreachable.
 
 
 # --- Credential + ephemeral state persistence ---------------------------------
