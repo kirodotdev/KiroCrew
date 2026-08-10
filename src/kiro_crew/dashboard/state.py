@@ -2506,9 +2506,17 @@ class DashboardState:
             # The dashboard uses this to give prerelease users an obvious way to
             # report a bug; see release_channel.py for the full rule.
             "release_channel": _release_channel_of_build(),
-            # True when the gateway has wired up a live Slack client (Socket Mode
-            # connected). None in pure-dashboard mode or when Slack is disabled.
-            "slack_connected": self.slack_client is not None,
+            # True only when Socket Mode actually connected this session, not
+            # merely that tokens were present at boot. slack_client is set
+            # whenever tokens existed, even if connect() then failed
+            # (invalid_auth, a network error), so keying the status badge on it
+            # alone painted a green "Connected" over a Slack that never came up.
+            # Require BOTH a wired client and the real connect outcome the
+            # gateway records after _connect_slack. This is the same field
+            # /api/slack/config already reports to the settings badge.
+            "slack_connected": (
+                self.slack_client is not None and self.slack_socket_connected
+            ),
             # Governance enforcement health: "active" (enforcing),
             # "disabled" (permissive default / not restricting), "degraded" (a
             # fail-closed trip, integrity mismatch, or unverified policy this
