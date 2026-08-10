@@ -4544,6 +4544,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
+  const sidebarPinnedRef = useRef(sidebarPinned)
+  sidebarPinnedRef.current = sidebarPinned
+  // Pre-focus session-list state while the Web Preview expand mode auto-hides
+  // it, so exiting focus mode restores what the user had. null = focus mode is
+  // not the reason the list is hidden (the user owns the state).
+  const sidebarAutoHidden = useRef<boolean | null>(null)
   const isMobile = useIsMobile()
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const v = parseInt(localStorage.getItem('mc-sidebar-width') || '', 10)
@@ -4765,6 +4771,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // Always-available collapse. Only guard is no-sessions (the sidebar is
       // force-open then anyway, so there is nothing to collapse).
       if (filteredSlotsRef.current.length === 0) return
+      // Explicit user intent outranks the preview-focus auto-hide, so exiting
+      // focus mode leaves this choice alone.
+      sidebarAutoHidden.current = null
       setSidebarPinned(p => {
         const next = !p
         safeSetItem('mc-sidebar-pinned', String(next))
@@ -5696,16 +5705,49 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return true
   }, [dispatch, isMobile, selectSource])
   // Web Preview "focus" (expand) mode — broadcast by the Web Preview tab's
-  // expand toggle. When on, hide the session list (below) and maximize the side
-  // panel (passed to SidePanel), so the preview gets max room and chat shrinks
-  // to its minimum. App collapses the left nav off the same event.
+  // expand toggle. When on, hide the session list and maximize the side panel
+  // (passed to SidePanel), so the preview gets max room and chat shrinks to its
+  // minimum. App collapses the left nav off the same event.
+  //
+  // Hiding the list drives `sidebarPinned` directly instead of overriding
+  // `sidebarOpen`: an override leaves the sessions toggle visibly present but
+  // inert. Driving the real state keeps that toggle working normally inside
+  // focus mode. `sidebarAutoHidden` holds the pre-focus state to restore on
+  // exit, and is cleared once the user toggles the list themselves. Neither
+  // transition persists `mc-sidebar-pinned` — only a user toggle does.
+  //
+  // The ref is read and cleared HERE, in the handler, and only plain values
+  // reach the setter: a state updater must be pure, and React invokes one twice
+  // under StrictMode, which would make the second pass read an already-cleared
+  // ref and lose the restore value.
+  //
+  // The mobile drawer is a separate state, so it is closed outright rather than
+  // suppressed — a swipe or a tap still reopens it, which an override would not
+  // allow.
   const [previewFocused, setPreviewFocused] = useState(false)
   useEffect(() => {
-    const onFocus = (e: Event) => setPreviewFocused(!!(e as CustomEvent<{ focused?: boolean }>).detail?.focused)
+    const onFocus = (e: Event) => {
+      const focused = !!(e as CustomEvent<{ focused?: boolean }>).detail?.focused
+      setPreviewFocused(focused)
+      if (focused) {
+        setMobileSessions(false)
+        if (sidebarAutoHidden.current === null) sidebarAutoHidden.current = sidebarPinnedRef.current
+        setSidebarPinned(false)
+        return
+      }
+      const prior = sidebarAutoHidden.current
+      sidebarAutoHidden.current = null
+      if (prior !== null) setSidebarPinned(prior)
+    }
     window.addEventListener(PREVIEW_FOCUS_EVENT, onFocus)
     return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
   }, [])
-  const sidebarOpen = !previewFocused && (isMobile ? mobileSessions : (sidebarPinned || filteredSlots.length === 0))
+  // The no-sessions force-open yields to focus mode: with an empty list no
+  // sessions toggle is rendered, so suppressing it makes nothing inert, and the
+  // preview would otherwise stay covered by a list that cannot be dismissed.
+  const sidebarOpen = isMobile
+    ? mobileSessions
+    : (sidebarPinned || (filteredSlots.length === 0 && !previewFocused))
 
   // ── Collapsed-sidebar hover flyout ──────────────────────────────────────
   // Hovering the toggle while collapsed opens a recents list over the chat, so
@@ -5718,7 +5760,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const flyoutSurfaceRef = useRef<HTMLDivElement>(null)
   // Touch is a second gate beyond isMobile: a desktop-width touch device has no
   // hover, so the flyout would only ever appear as a tap artefact.
-  const flyoutEligible = !isMobile && !isTouchDevice() && !previewFocused && !splitMode
+  const flyoutEligible = !isMobile && !isTouchDevice() && !splitMode
     && embedMode !== 'chat' && embedMode !== 'sessions'
     && !sidebarOpen && filteredSlots.length > 0
   const flyout = useHoverIntent({
@@ -5761,12 +5803,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     focusComposerAfter(dispatch(createSlot({ agent: defaultAgent || undefined, mode: effectiveMode })).unwrap())
   }, [dispatch, defaultAgent, mode, flyout])
 
+  // Force the list open when there is nothing in it, so a user with no sessions
+  // still has the surface that creates one. Skipped while focus mode owns the
+  // hidden state: re-pinning there would fight the auto-hide and, worse, persist
+  // 'true' over the user's stored preference, which the restore on exit then
+  // contradicts in the live state.
   useEffect(() => {
-    if (filteredSlots.length === 0 && !sidebarPinned) {
+    if (filteredSlots.length === 0 && !sidebarPinned && !previewFocused) {
       setSidebarPinned(true)
       safeSetItem('mc-sidebar-pinned', 'true')
     }
-  }, [filteredSlots.length, sidebarPinned])
+  }, [filteredSlots.length, sidebarPinned, previewFocused])
 
   // Horizontal space (px) the detail panel must keep clear so it never grows
   // past its flex row and collapses the chat pane: the open sidebar's width
@@ -5820,7 +5867,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           mode, morphTarget below). Desktop, non-embed, with sessions only.
           While collapsed, hovering it opens the recents flyout below; clicking
           hands that flyout's rect to the drawer so the panel grows out of it. */}
-      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && !previewFocused && filteredSlots.length > 0 && (
+      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (
         <button
           ref={flyoutTriggerRef}
           type="button"
@@ -5985,7 +6032,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
-                  onReveal={activeSlot ? () => { if (!sidebarPinned) setSidebarPinned(true); window.dispatchEvent(new CustomEvent('reveal-slot', { detail: activeSlot })) } : undefined}
+                  onReveal={activeSlot ? () => { sidebarAutoHidden.current = null; if (!sidebarPinned) setSidebarPinned(true); window.dispatchEvent(new CustomEvent('reveal-slot', { detail: activeSlot })) } : undefined}
                   onRename={activeSlot ? () => { setEditingTitle(true); setTitleDraft(title) } : undefined}
                   mode={effectiveMode}
                 />

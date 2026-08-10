@@ -1044,12 +1044,33 @@ export default function App() {
   useRumPageView()
   useNotificationSound()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
-  // Preview focus (expand) mode from the Web Preview tab: force the left nav
-  // collapsed while active (restored automatically when it turns off, since we
-  // OR a transient flag rather than mutating navCollapsed).
-  const [previewFocused, setPreviewFocused] = useState(false)
+  const navCollapsedRef = useRef(navCollapsed)
+  navCollapsedRef.current = navCollapsed
+  // Preview focus (expand) mode from the Web Preview tab collapses the left nav
+  // as a STARTING layout, not a lock — the brand toggle keeps its standard
+  // behavior while focus mode is on, so the rail can be brought back without
+  // leaving the preview. This ref holds the pre-focus state to restore on exit,
+  // and is cleared the moment the user toggles the rail themselves so their
+  // choice is not undone. `navCollapsed` is driven directly rather than ORed
+  // with a transient flag, because an OR makes the toggle look broken.
+  //
+  // The ref is read and cleared HERE, in the handler, and only plain values are
+  // passed to the setter: a state updater must be pure, and React invokes one
+  // twice under StrictMode, which would make the second pass read an
+  // already-cleared ref and lose the restore value.
+  const navAutoCollapsed = useRef<boolean | null>(null)
   useEffect(() => {
-    const onFocus = (e: Event) => setPreviewFocused(!!(e as CustomEvent<{ focused?: boolean }>).detail?.focused)
+    const onFocus = (e: Event) => {
+      const focused = !!(e as CustomEvent<{ focused?: boolean }>).detail?.focused
+      if (focused) {
+        if (navAutoCollapsed.current === null) navAutoCollapsed.current = navCollapsedRef.current
+        setNavCollapsed(true)
+        return
+      }
+      const prior = navAutoCollapsed.current
+      navAutoCollapsed.current = null
+      if (prior !== null) setNavCollapsed(prior)
+    }
     window.addEventListener(PREVIEW_FOCUS_EVENT, onFocus)
     return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
   }, [])
@@ -1577,6 +1598,9 @@ export default function App() {
   const toggleNav = () => {
     if (isMobile) { setMobileNavOpen(p => !p) }
     else {
+      // The user has taken ownership of the rail: leaving preview focus mode
+      // must not overwrite this with the pre-focus state.
+      navAutoCollapsed.current = null
       setNavCollapsed(prev => { const next = !prev; safeSetItem('mc-nav', next ? '1' : '0'); return next })
     }
   }
@@ -1584,7 +1608,7 @@ export default function App() {
   useEffect(() => { if (isMobile) setMobileNavOpen(false) }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
   // Reset mobile nav state when leaving mobile viewport
   useEffect(() => { if (!isMobile) setMobileNavOpen(false) }, [isMobile])
-  const effectiveCollapsed = (navCollapsed || previewFocused) && !isMobile
+  const effectiveCollapsed = navCollapsed && !isMobile
   // Publish the rail track so consumers outside the shell can size against the
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value

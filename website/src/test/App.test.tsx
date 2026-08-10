@@ -784,6 +784,48 @@ describe('App routing', () => {
     localStorage.removeItem('mc-nav')
   })
 
+  it('lets the brand toggle expand the rail while preview focus mode is active', () => {
+    localStorage.removeItem('mc-nav')
+    renderWithProviders(<App />, { route: '/chat' })
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+
+    // Entering the Web Preview's expand mode collapses the rail.
+    act(() => {
+      window.dispatchEvent(new CustomEvent('kirocrew-preview-focus', { detail: { focused: true } }))
+    })
+    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+
+    // The logo keeps its standard behavior inside focus mode: it expands.
+    fireEvent.click(within(nav).getByRole('button', { name: 'Expand sidebar' }))
+    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+
+    // Leaving focus mode must not undo that explicit choice.
+    act(() => {
+      window.dispatchEvent(new CustomEvent('kirocrew-preview-focus', { detail: { focused: false } }))
+    })
+    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    localStorage.removeItem('mc-nav')
+  })
+
+  it('restores the pre-focus rail state when preview focus mode ends untouched', () => {
+    localStorage.removeItem('mc-nav') // start expanded
+    renderWithProviders(<App />, { route: '/chat' })
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('kirocrew-preview-focus', { detail: { focused: true } }))
+    })
+    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('kirocrew-preview-focus', { detail: { focused: false } }))
+    })
+    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    // The auto-collapse is transient: it never writes the persisted preference.
+    expect(localStorage.getItem('mc-nav')).toBeNull()
+  })
+
   it('hides the community row when the sidebar is collapsed', () => {
     localStorage.removeItem('mc-nav')
     renderWithProviders(<App />, { route: '/chat' })
