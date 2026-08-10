@@ -1088,6 +1088,17 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         running: false,
         artifact: artifact.slug,
       } as ChatSlot))
+      // Activate the bound slot NOW — back-to-back with writePrefill, mirroring
+      // ChatPage's follow-up worktree handler — so activeSlot is already this
+      // slot BEFORE boundSlot resolves and ArtifactChatPanel mounts the embedded
+      // ChatPage. Otherwise the switch lands in the same commit as that mount,
+      // where ChatPage's mount-only slot re-fetch effect (StrictMode
+      // double-invoked, empty deps → stale activeSlot capture) re-asserts the
+      // PRIOR active slot as the last write. activeSlot then never becomes this
+      // slot on first open, so the per-slot draft-restore effect can't consume
+      // the staged prefill and the composer opens empty (correct only on the
+      // second open). Idempotent once active === res.key.
+      dispatch(switchSlot(res.key))
       api.chatSlotContext(res.key, buildCompanionContext(), {
         source: 'artifact-companion', ephemeral: true,
       }).catch(() => undefined)

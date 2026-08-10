@@ -1179,6 +1179,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
  // forensic attribution. Set on widget pre-fill, consumed
   // and cleared in send(). A genuine from-scratch turn never sets this.
   const widgetPrefillRef = useRef<string | null>(null)
+  // Token (`${slotKey}:${ts}`) of the most recently consumed composer prefill.
+  // Guards the per-slot draft-restore effect against React.StrictMode's mount
+  // double-invoke: the first invoke consumes+removes PREFILL_STORAGE_KEY and
+  // seeds the composer, so without this the second invoke would find no stored
+  // prefill and reset the composer to the (empty) incoming draft — the artifact
+  // companion panel mounts ChatPage fresh, so it hits this double-invoke every
+  // first open. See the draft-restore effect below.
+  const consumedPrefillRef = useRef<string | null>(null)
 
   // Auto-dismiss prefill hint after 10 seconds
   useEffect(() => {
@@ -1384,6 +1392,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
+    const prevSlotVal = prevSlot.current
     prevSlot.current = activeSlot
     const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
     const draftFallback = activeSlot ? drafts.current[activeSlot] ?? '' : ''
@@ -1391,9 +1400,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       try {
         const { slotKey, prompt, ts } = JSON.parse(raw)
         if (Date.now() - (ts ?? 0) > 30_000) { sessionStorage.removeItem(PREFILL_STORAGE_KEY); setInput(draftFallback) }
-        else if (slotKey === activeSlot) { sessionStorage.removeItem(PREFILL_STORAGE_KEY); setInput(prompt) }
+        else if (slotKey === activeSlot) { sessionStorage.removeItem(PREFILL_STORAGE_KEY); consumedPrefillRef.current = `${slotKey}:${ts}`; setInput(prompt) }
         else { setInput(draftFallback) }
       } catch { sessionStorage.removeItem(PREFILL_STORAGE_KEY); setInput(draftFallback) }
+    } else if (prevSlotVal === activeSlot && !!activeSlot && consumedPrefillRef.current?.startsWith(`${activeSlot}:`)) {
+      // StrictMode re-invoked this mount effect for the SAME active slot after
+      // the first invoke already consumed+removed the prefill. The composer
+      // already holds the staged prompt; a setInput(draftFallback) here would
+      // wipe it back to the empty draft. Leave the composer as-is. (A genuine
+      // slot switch changes activeSlot, so prevSlotVal !== activeSlot and this
+      // branch cannot mask a real draft restore.)
     } else { setInput(draftFallback) }
     // Restore the incoming slot's staged file attachments (copy so the
     // live state array and the stored draft don't share a reference).
