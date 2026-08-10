@@ -37,6 +37,27 @@ absolute path, so a restore puts files back where they came from instead of
 inferring it from the layout. A batch can span six figures of sessions, so a
 whole-document manifest rewritten per move would cost quadratic bytes; appending
 also leaves a partial batch fully restorable after an interruption.
+
+Reading is cached; reclaiming never is
+--------------------------------------
+Enumerating the stores is the entire cost of a read here — half a million replay
+files on the measured machine — so a pass is kept briefly and shared between the
+row list, the totals and each row's detail. Only the FILESYSTEM half is cached:
+which sessions are in use is recomputed from the caller's index every call, and
+every mutation re-enumerates and re-reads the index inside the lock. So no
+refusal is ever answered from a snapshot, and a stale cache can only make the
+report slightly old, never make a reclaim take something it should not.
+
+Sessions this instance does not own
+-----------------------------------
+The replay store can be shared. A pod now gets its own (``pod/runtime.py`` exports
+``KIRO_HOME`` inside the pod home), so a current pod is not a co-tenant — but a
+directory left by a pod from before that export may still own sessions in the
+machine-wide store. Those maps are files at a known host-side path, so
+:func:`cotenant_sids` reads them and protects the sessions they name individually,
+exactly like this instance's own. A blanket refusal is kept only where ownership
+genuinely cannot be established: a co-tenant whose map is unreadable, or a data
+home isolated from the store it reads (see :func:`reclaim_block_reason`).
 """
 
 from __future__ import annotations
@@ -46,6 +67,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
@@ -54,7 +76,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import IO, Any
 
-from kiro_crew import platform_compat
+from kiro_crew import hooks, platform_compat
 from kiro_crew.config.paths import (
     CONFIG_DIR_LEAF,
     KIRO_BASE_DIR_NAME,
@@ -64,6 +86,7 @@ from kiro_crew.config.paths import (
     legacy_home,
 )
 from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, SESSIONS_DIR_NAME
+from kiro_crew.session_map import SESSION_MAP_FILENAME
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +210,24 @@ class SessionUnit:
 
 
 @dataclass(frozen=True)
+class _RawUnit:
+    """One session as the FILESYSTEM sees it: its files, their total, their age.
+
+    Everything here is derived from the two stores plus the transcript-to-replay
+    pairing, and nothing from which sessions are in use — which is exactly why a
+    pass of these can be cached and reused while the in-use flags are recomputed
+    per call. Keeping the two apart is what stops a cache from ever answering
+    "may this be reclaimed" off stale state.
+    """
+
+    uid: str
+    sid: str
+    stems: tuple[str, ...]
+    bytes: int
+    mtime: float
+
+
+@dataclass(frozen=True)
 class StorageBucket:
     """Reclaimable sessions grouped by how long ago they were last touched."""
 
@@ -276,18 +317,156 @@ def _archive_index() -> dict[str, list[tuple[Path, int, float]]]:
     return index
 
 
-def _scan_units(index: SessionIndex) -> list[SessionUnit]:
+# ------------------------------------------------------------------ scan cache
+#
+# Enumerating both stores is the whole cost of every read on this surface. The
+# measured motivating machine holds ~470,000 replay files, which is ~2s of
+# stat() per pass — and one open of the inventory screen needs the same
+# enumeration for the row list, again for the totals printed beside it, and again
+# for every row the user expands. That is seconds of disk per interaction for an
+# answer that cannot meaningfully change between them.
+#
+# So a pass is kept for a few seconds and shared. Two properties make that safe
+# rather than merely faster:
+#
+# * Only the filesystem half is cached. Which sessions are active or live is
+#   applied over it from the caller's index on every call, so no refusal is ever
+#   decided from a snapshot.
+# * Only READ paths opt in. A reclaim re-enumerates, and additionally re-reads
+#   the index inside the mutation lock, so the selection it acts on is current.
+#
+# A mutation invalidates the entry outright, so a screen refetching after a move
+# does not show what it just deleted.
+_SCAN_CACHE_TTL = 30.0
+
+_scan_cache_lock = threading.Lock()
+# (expires_at, cache key, units)
+_scan_cache: tuple[float, tuple[object, ...], list[_RawUnit]] | None = None
+
+
+def _scan_key(sid_for_stem: Mapping[str, str]) -> tuple[object, ...]:
+    """Everything a cached pass depends on besides the contents of the stores.
+
+    The store LOCATIONS are part of it. Both are resolved per call by design — a
+    pod overrides the data home, and an unmigrated install resolves the legacy one
+    — so a process can legitimately enumerate different stores over its lifetime,
+    and a key without them would answer a question about one store with a pass over
+    another. This was not hypothetical: it showed up immediately as one test's
+    totals being served to the next.
+
+    Pairing is the rest of it: it decides which unit a transcript belongs to, so a
+    session that gained or lost its mapping must not be answered from an older
+    pass. Compared by value rather than hashed — a hash collision here would serve
+    a pass built under different assumptions, and the whole point of the key is
+    that it cannot.
+    """
+    return (
+        str(kiro_sessions_dir()),
+        str(_crew_sessions_dir()),
+        tuple(sorted(sid_for_stem.items())),
+    )
+
+
+def _cached_scan(sid_for_stem: Mapping[str, str]) -> list[_RawUnit] | None:
+    with _scan_cache_lock:
+        if _scan_cache is None:
+            return None
+        expires, key, units = _scan_cache
+        if time.monotonic() >= expires or key != _scan_key(sid_for_stem):
+            return None
+        return units
+
+
+def _store_scan(sid_for_stem: Mapping[str, str], units: list[_RawUnit]) -> None:
+    global _scan_cache
+    with _scan_cache_lock:
+        _scan_cache = (time.monotonic() + _SCAN_CACHE_TTL, _scan_key(sid_for_stem), units)
+
+
+def invalidate_scan_cache() -> None:
+    """Drop any cached filesystem pass. Called after anything moves or is deleted.
+
+    Public rather than private because a test needs to start from a known state:
+    the cache is process-wide and its key covers the store paths and the pairing,
+    not the CONTENTS of the stores, so a test that writes more files and re-reads
+    inside the TTL would otherwise be answered from its own earlier pass.
+    """
+    global _scan_cache
+    with _scan_cache_lock:
+        _scan_cache = None
+
+
+def _scan_units(index: SessionIndex, *, cached: bool = False) -> list[SessionUnit]:
     """Enumerate sessions across both stores, one entry per session.
+
+    Two halves of the answer, deliberately separated. :func:`_scan_raw` does the
+    filesystem work and knows nothing about which sessions are in use; this
+    applies the caller's index over that result. So the expensive half can be
+    reused (see *cached*) while the answer to "may this be reclaimed" is always
+    computed from the index the caller passed in this call.
+
+    *cached* permits a recent filesystem pass to be reused. It is for READ paths
+    only: no refusal is derived from the cached half, but a reclaim must not
+    select against a snapshot at all, so every mutation path leaves it False.
+    """
+    raw = _scan_raw(index.stem_to_sid, cached=cached)
+    active_stems = index.active_stems
+    live_stems = index.live_stems
+    # Sessions another instance sharing this replay store can still resume. Marked
+    # active HERE rather than folded into the caller's index, because this is the
+    # one place every read and every reclaim passes through — measure, the row
+    # list, the pre-classification and move_to_trash all derive `active` from it,
+    # so one assignment protects all of them. A caller cannot forget to ask.
+    cotenant, _unreadable = cotenant_sids()
+    units = []
+    for entry in raw:
+        active = (
+            entry.sid in index.active_sids
+            or entry.sid in cotenant
+            or any(stem in active_stems for stem in entry.stems)
+        )
+        live = entry.sid in index.live_sids or any(stem in live_stems for stem in entry.stems)
+        units.append(
+            SessionUnit(
+                uid=entry.uid,
+                sid=entry.sid,
+                stems=entry.stems,
+                bytes=entry.bytes,
+                mtime=entry.mtime,
+                active=active,
+                live=live,
+            )
+        )
+    return units
+
+
+def _scan_raw(sid_for_stem: Mapping[str, str], *, cached: bool = False) -> list[_RawUnit]:
+    """Enumerate both stores: what each session is made of and what it costs.
 
     A session's age is the NEWEST mtime across every file it owns: a transcript is
     appended to while the session runs, so an older metadata file or a long-since
     rotated archive segment would make a live session look stale.
+
+    Carries no in-use flags. That is what makes the result cacheable: it depends
+    on the filesystem and on the transcript-to-replay-log pairing, neither of
+    which can turn a retired session back into a resumable one.
     """
+    if cached:
+        hit = _cached_scan(sid_for_stem)
+        if hit is not None:
+            return hit
+    result = _scan_raw_uncached(sid_for_stem)
+    if cached:
+        _store_scan(sid_for_stem, result)
+    return result
+
+
+def _scan_raw_uncached(sid_for_stem: Mapping[str, str]) -> list[_RawUnit]:
     sizes: dict[str, int] = {}
     mtimes: dict[str, float] = {}
     sids: dict[str, str] = {}
     stems: dict[str, list[str]] = {}
-    sid_for_stem = dict(index.stem_to_sid)
+    sid_for_stem = dict(sid_for_stem)
 
     def record(uid: str, size: int, mtime: float) -> None:
         sizes[uid] = sizes.get(uid, 0) + size
@@ -359,26 +538,16 @@ def _scan_units(index: SessionIndex) -> list[SessionUnit]:
         for _path, size, mtime in segments:
             record(uid, size, mtime)
 
-    active_stems = index.active_stems
-    live_stems = index.live_stems
-    units = []
-    for uid, size in sizes.items():
-        sid = sids.get(uid, "")
-        owned = tuple(stems.get(uid, []))
-        active = sid in index.active_sids or any(stem in active_stems for stem in owned)
-        live = sid in index.live_sids or any(stem in live_stems for stem in owned)
-        units.append(
-            SessionUnit(
-                uid=uid,
-                sid=sid,
-                stems=owned,
-                bytes=size,
-                mtime=mtimes.get(uid, 0.0),
-                active=active,
-                live=live,
-            )
+    return [
+        _RawUnit(
+            uid=uid,
+            sid=sids.get(uid, ""),
+            stems=tuple(stems.get(uid, [])),
+            bytes=size,
+            mtime=mtimes.get(uid, 0.0),
         )
-    return units
+        for uid, size in sizes.items()
+    ]
 
 
 def _cli_index() -> dict[str, list[Path]]:
@@ -483,10 +652,21 @@ def _same_filesystem(a: Path, b: Path) -> bool:
     return dev_a is not None and dev_a == dev_b
 
 
-def measure(index: SessionIndex, *, now: float | None = None) -> StorageReport:
-    """Measure session storage and report what is reclaimable."""
+def measure(
+    index: SessionIndex,
+    *,
+    now: float | None = None,
+    units: list[SessionUnit] | None = None,
+) -> StorageReport:
+    """Measure session storage and report what is reclaimable.
+
+    *units* lets a caller that already enumerated the stores hand that result over
+    rather than paying for a second pass. The inventory screen needs both the rows
+    and these totals, and they must describe the same instant anyway — computing
+    them from one pass makes agreement structural instead of coincidental.
+    """
     clock = time.time() if now is None else now
-    units = _scan_units(index)
+    units = _scan_units(index, cached=True) if units is None else units
     active = [u for u in units if u.active]
     # Sub-floor sessions are neither active nor offered: reporting them as
     # reclaimable would promise bytes no threshold can actually move.
@@ -527,8 +707,11 @@ def list_units(index: SessionIndex) -> list[SessionUnit]:
     A filesystem scan only — no file CONTENT is read, so this stays usable on a
     six-figure store. Anything requiring a read (a title's metadata line, a first
     message, a turn or image count) is fetched per row instead.
+
+    A recent scan is reused when there is one: this is a read, and the in-use
+    flags are recomputed from *index* on every call regardless.
     """
-    return _scan_units(index)
+    return _scan_units(index, cached=True)
 
 
 def select_reclaimable(
@@ -551,28 +734,145 @@ def select_reclaimable(
     return [u for u in _scan_units(index) if not u.active and u.age_days(clock) >= cutoff]
 
 
+def _pod_root() -> Path:
+    raw = os.environ.get("KIROCREW_POD_ROOT")
+    return Path(raw).expanduser() if raw else Path.home() / ".kirocrew-pods"
+
+
 def _replay_store_cotenants() -> list[str]:
-    """Names of pod instances that read the same kiro-cli replay store.
+    """Names of pod instances that may read the same kiro-cli replay store.
 
-    A pod isolates ``KIROCREW_HOME`` but deliberately NOT ``KIRO_HOME``, so every
-    pod reads the machine-wide replay store while keeping its own session map. From
-    the default instance's side that is the mirror of the isolated-instance hazard:
-    the pod's sessions are absent from the map THIS process consults, so they read
-    as retired.
+    A pod now gets its OWN store (``pod/runtime.py`` exports ``KIRO_HOME`` inside
+    the pod home), so a current pod is not a co-tenant at all — its sessions never
+    enter the machine-wide store. What remains is a pod directory left by a build
+    from before that export existed: those pods did share the store, and a
+    surviving map still names sessions in it.
 
-    The pod root is host-side state at a known location, which makes this the one
-    co-tenant that can actually be discovered. A dev gateway pointed at some other
+    So this returns CANDIDATES, and :func:`cotenant_sids` decides by reading each
+    one's map. The pod root is host-side state at a known location, which is what
+    makes even that much discoverable. A dev gateway pointed at some other
     ``KIROCREW_HOME`` cannot be, and stays a documented limitation.
     """
-    raw = os.environ.get("KIROCREW_POD_ROOT")
-    pod_root = Path(raw).expanduser() if raw else Path.home() / ".kirocrew-pods"
     try:
-        entries = list(pod_root.iterdir())
+        entries = list(_pod_root().iterdir())
     except OSError:
         return []
     return sorted(
         entry.name for entry in entries if entry.is_dir() and not entry.name.startswith(".")
     )
+
+
+def cotenant_sids() -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
+    """Replay-store sessions a co-tenant instance can still resume.
+
+    Returns ``(sids, refusals)``. The sids are protected exactly like this
+    instance's own mapped sessions. *refusals* names the instances that make a
+    reclaim unsafe at all, as ``(instance, why)`` — the cases per-session
+    protection cannot cover.
+
+    A co-tenant's mapping is not a mystery: it is a file at a known host-side
+    path, and reading it turns "some other instance may still want these" into the
+    specific list of sessions it wants. The blanket refusal this replaces keyed on
+    a pod DIRECTORY existing, which was wrong twice over on a machine that has run
+    pods — a current pod keeps its own replay store and so cannot be harmed by a
+    reclaim here at all, and a torn-down pod's leftover directory owns nothing.
+
+    Three outcomes, because they need different treatment:
+
+    * **Its own replay store** (``<pod home>/kiro`` exists). It cannot own anything
+      in this store, so its sids are recorded but it constrains nothing. This is
+      what a pod provisioned by current code looks like.
+    * **No own store but a map naming sids** — a genuine shared-store instance.
+      Per-session protection is NOT enough for these: they can seed and resume a
+      session at any moment, including part-way through a move loop that runs for
+      six figures of sessions, so the snapshot this function returns can go stale
+      mid-move. Those force a refusal.
+    * **Unreadable or malformed map.** Ownership cannot be established, so also a
+      refusal.
+
+    A co-tenant with no session map has mapped nothing and protects nothing; that
+    is an ordinary state (a pod torn down mid-provision leaves its audit log and
+    little else), not a failure to read.
+
+    Liveness is deliberately not the test anywhere here. A stopped instance's map
+    still names sessions it would resume if restarted, so ownership — not whether a
+    process is running this second — is what protects them.
+    """
+    protected: set[str] = set()
+    refusals: list[tuple[str, str]] = []
+    root = _pod_root()
+    for name in _replay_store_cotenants():
+        home = root / name
+        path = home / SESSION_MAP_FILENAME
+        try:
+            # Through the centralized gate, never a bare read: the pod root is
+            # writable, so a session_map.json replaced with a symlink would
+            # otherwise make the gateway read whatever it points at.
+            # ``safe_read_file`` resolves the link, re-checks the RESOLVED target
+            # against ``is_sensitive_path``, and opens with ``O_NOFOLLOW``.
+            raw = hooks.safe_read_file(str(path))
+        except FileNotFoundError:
+            continue
+        except (PermissionError, OSError, UnicodeDecodeError):
+            # Refused as sensitive, lost a symlink race, genuinely unreadable, or
+            # not valid UTF-8 — ``safe_read_file`` decodes, and
+            # ``UnicodeDecodeError`` is a ``ValueError``, so it would otherwise
+            # escape past the parse guard below and reach the caller. All four
+            # mean the same thing here — which sessions this instance claims
+            # cannot be established — so fail closed on it.
+            logger.warning("co-tenant %s has an unreadable session map", name, exc_info=True)
+            refusals.append((name, "its session map could not be read"))
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            logger.warning("co-tenant %s has a malformed session map", name)
+            refusals.append((name, "its session map could not be parsed"))
+            continue
+        if not isinstance(data, dict):
+            refusals.append((name, "its session map is not an object"))
+            continue
+
+        claimed: set[str] = set()
+        for entry in data.values():
+            # A plain string is the LEGACY entry format, and
+            # ``SessionMap._load`` still migrates it to ``{"sid": ...}`` on read.
+            # Skipping it would fail OPEN on exactly the population this function
+            # exists for — a co-tenant old enough to predate the pod store split
+            # is also old enough to have been written in that format.
+            if isinstance(entry, str):
+                if entry and _UNIT_ID_RE.match(entry):
+                    claimed.add(entry)
+                continue
+            if not isinstance(entry, dict):
+                continue
+            # Both the live sid and a discarded one. A discarded sid is a session
+            # the co-tenant has stopped resuming but still remembers, and taking
+            # its files is not this module's decision to make on another
+            # instance's behalf.
+            for field_name in ("sid", "discarded_sid"):
+                value = entry.get(field_name)
+                if isinstance(value, str) and value and _UNIT_ID_RE.match(value):
+                    claimed.add(value)
+
+        protected |= claimed
+        if claimed and not _has_own_replay_store(home):
+            refusals.append(
+                (name, "it shares this replay store and can resume sessions at any time")
+            )
+    return frozenset(protected), tuple(refusals)
+
+
+def _has_own_replay_store(pod_home: Path) -> bool:
+    """Whether a co-tenant reads its own replay store rather than this one.
+
+    Current pods export ``KIRO_HOME`` into the pod home, so their replay logs never
+    enter the machine-wide store. The directory is the only observable proxy for
+    that from outside the process, and it is read in the fail-CLOSED direction: an
+    instance we cannot show to be self-contained is treated as sharing this store,
+    which refuses rather than reclaims.
+    """
+    return (pod_home / KIRO_BASE_DIR_NAME.lstrip(".")).is_dir() or (pod_home / "kiro").is_dir()
 
 
 def reclaim_block_reason() -> str:
@@ -598,6 +898,10 @@ def reclaim_block_reason() -> str:
     The freshness floor narrows the window but does not close it — a session idle
     for a day is still resumable — so the operation is refused rather than
     attempted. Isolating both homes together, or neither, is safe.
+
+    Pods are handled per session rather than per instance, because their mappings
+    ARE discoverable: see :func:`cotenant_sids`. Only a pod whose map cannot be
+    read still costs the whole instance its ability to reclaim.
     """
 
     def _norm(path: Path) -> Path:
@@ -620,14 +924,13 @@ def reclaim_block_reason() -> str:
         # retired from here. Only checked when the store is the default one, since
         # that is the only store a pod reads.
         if _norm(kiro_home()) == home / KIRO_BASE_DIR_NAME:
-            cotenants = _replay_store_cotenants()
-            if cotenants:
-                listed = ", ".join(cotenants[:3])
+            _protected, refusals = cotenant_sids()
+            if refusals:
+                listed = "; ".join(f"{name} — {why}" for name, why in refusals[:3])
                 return (
-                    f"{len(cotenants)} other instance(s) share this kiro-cli session "
-                    f"store ({listed}), so their resumable sessions cannot be told "
-                    "apart from retired ones. Evict them with `kirocrew pod down "
-                    "<name>` to reclaim from here."
+                    f"{len(refusals)} other instance(s) sharing this kiro-cli session "
+                    f"store make reclaiming unsafe ({listed}). Evict them with "
+                    "`kirocrew pod down <name>` to reclaim from here."
                 )
         return ""
     # An isolated instance may reclaim only when its replay store is provably its
@@ -1057,7 +1360,13 @@ def move_to_trash(
     one half of a session in each batch and leave neither able to restore it.
     """
     with _mutation_lock():
-        return _move_to_trash_locked(uids, reason=reason, index=index, now=now, refresh=refresh)
+        try:
+            return _move_to_trash_locked(uids, reason=reason, index=index, now=now, refresh=refresh)
+        finally:
+            # In a finally, not after a success: a partially-completed batch has
+            # already moved files, so a raised refusal still leaves any cached
+            # pass describing sessions that are no longer where it says.
+            invalidate_scan_cache()
 
 
 def _move_to_trash_locked(
@@ -1111,6 +1420,26 @@ def _move_to_trash_locked(
     else:
         live_sids = index.active_sids
         live_stems = index.active_stems
+
+    # Co-tenant ownership is re-read here for exactly the reason *refresh* exists,
+    # and must not be left out of it: the scan above is the slow part, so the
+    # co-tenant view taken during it is seconds stale by the time anything moves.
+    # Refreshing only the local map would leave a co-tenant that adopted a
+    # PRE-EXISTING replay log in that window unprotected — and the freshness floor
+    # does not cover that case, because the session it adopted is old.
+    #
+    # An instance that genuinely shares this store refuses the move outright rather
+    # than being handled per session: it can seed and resume a session at any
+    # moment, including part-way through the loop below, which a snapshot taken
+    # here cannot cover however fresh it is.
+    cotenant_now, refusals = cotenant_sids()
+    if refusals:
+        name, why = refusals[0]
+        raise SessionStorageError(
+            f"{len(refusals)} instance(s) sharing this session store make reclaiming "
+            f"unsafe ({name} — {why}); nothing was moved"
+        )
+    live_sids = live_sids | cotenant_now
 
     def is_live(uid: str) -> bool:
         unit = by_uid.get(uid)
@@ -1297,7 +1626,10 @@ def restore(batch_id: str, uids: list[str] | None = None) -> int:
     session's other half while this one is putting it back.
     """
     with _mutation_lock():
-        return _restore_locked(batch_id, uids)
+        try:
+            return _restore_locked(batch_id, uids)
+        finally:
+            invalidate_scan_cache()
 
 
 def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
@@ -1435,7 +1767,10 @@ def empty_trash(batch_ids: list[str] | None = None) -> int:
     restore is mid-way through putting its files back.
     """
     with _mutation_lock():
-        return _empty_trash_locked(batch_ids)
+        try:
+            return _empty_trash_locked(batch_ids)
+        finally:
+            invalidate_scan_cache()
 
 
 def _empty_trash_locked(batch_ids: list[str] | None = None) -> int:

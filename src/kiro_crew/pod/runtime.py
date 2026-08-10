@@ -700,21 +700,6 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         # Inside the pod HOME so the zero-residue ``ExecStopPost`` teardown
         # reclaims it.
         "KIRO_HOME": str(home_dir / "kiro"),
-        # NOTE: deliberately NO ``KIRO_HOME`` here, though it is tempting — it
-        # would give the pod its own agent specs and stop pod boots rewriting the
-        # machine-wide ``~/.kiro/agents``. ``KIRO_HOME`` is a DIRECTORY-WIDE
-        # kiro-cli override (agents, prompts, skills, steering, settings AND
-        # sessions), while KiroCrew still resolves the host paths for roughly two
-        # dozen of those readers — ``session_map.py``, ``subagent_persistence.py``,
-        # ``acp/{client,session_handle,session_provider}.py``,
-        # ``providers/acp.py``, ``dashboard/handlers/usage.py`` and the
-        # ``settings/mcp.json`` sites. Exporting it here would move where kiro-cli
-        # WRITES session transcripts without moving where KiroCrew READS them, so a
-        # pod restart would lose session resume and ``SessionMap`` would prune
-        # mappings whose transcripts it can no longer see: a worse split brain than
-        # the one this change set fixes. The write guard in ``agent.py`` covers the
-        # shared-spec hazard for pods in the meantime. Setting it here is safe only
-        # once those readers resolve through ``kiro_home()`` too.
         # Give the pod its OWN workspace root. Without this, `workspace_root()`
         # finds no `KIROCREW_WORKSPACE` and no `config_dir()/workspace_dir` file in
         # a fresh pod home, so it falls through to the platform default under the

@@ -28,6 +28,19 @@ _NOW = 1_700_000_000.0
 _DAY = 86400.0
 
 
+@pytest.fixture(autouse=True)
+def _fresh_scan_cache() -> None:
+    """Start every test with no cached filesystem pass.
+
+    The cache is real process state, and its key covers the store paths and the
+    pairing — not the CONTENTS of the stores. So a test that writes more files and
+    re-reads within the TTL would be answered from its own earlier pass. Clearing
+    here makes that isolation explicit instead of depending on each test happening
+    to read only once.
+    """
+    session_storage.invalidate_scan_cache()
+
+
 @pytest.fixture()
 def stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     """Point both stores at temp dirs; return (crew data home, kiro home).
@@ -789,6 +802,130 @@ class TestBatchIdentityIsTheDirectory:
         assert (session_storage.trash_root() / listed[0].batch_id).is_dir()
 
 
+class TestScanCache:
+    """The cache must save disk without ever answering a refusal from stale state."""
+
+    def test_a_read_reuses_one_pass_for_the_rows_and_the_totals(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The screen needs both, and re-enumerating cost seconds per open."""
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=32, age_days=40)
+        calls = 0
+        real = session_storage._scan_raw_uncached
+
+        def counted(sid_for_stem):
+            nonlocal calls
+            calls += 1
+            return real(sid_for_stem)
+
+        monkeypatch.setattr(session_storage, "_scan_raw_uncached", counted)
+
+        index = _index()
+        units = session_storage.list_units(index)
+        session_storage.measure(index, units=units, now=_NOW)
+        session_storage.list_units(index)
+
+        assert calls == 1, "three reads of one snapshot must enumerate the stores once"
+
+    def test_a_resumed_session_is_never_reported_retired_from_a_cached_pass(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The in-use flags come from the caller's index on every call.
+
+        This is what makes caching safe at all: the filesystem half is reused, but
+        "may this be reclaimed" is recomputed, so a session that became active
+        after the pass cannot be offered.
+        """
+        crew_home, kiro_home = stores
+        stem = transcript_stem("dashboard:chat-1")
+        _cli_half(kiro_home, "aaaa1111", log_bytes=32, age_days=40)
+        _transcript(crew_home, stem, size=64, age_days=40)
+
+        idle = _index({"aaaa1111": stem})
+        assert session_storage.measure(idle, now=_NOW).reclaimable_sessions == 1
+
+        # Same stores and same pairing, so the cached filesystem pass is eligible
+        # for reuse — only the active set changed.
+        resumed = _index({"aaaa1111": stem}, active={"aaaa1111"})
+        report = session_storage.measure(resumed, now=_NOW)
+        assert report.reclaimable_sessions == 0
+        assert report.active_sessions == 1
+
+    def test_a_new_pairing_is_not_answered_from_an_older_pass(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """Pairing decides which unit a transcript belongs to, so it keys the cache."""
+        crew_home, kiro_home = stores
+        stem = transcript_stem("dashboard:chat-1")
+        _cli_half(kiro_home, "aaaa1111", log_bytes=32, age_days=40)
+        _transcript(crew_home, stem, size=64, age_days=40)
+
+        unpaired = session_storage.list_units(_index())
+        assert len(unpaired) == 2, "unpaired, the two halves are separate units"
+
+        paired = session_storage.list_units(_index({"aaaa1111": stem}))
+        assert len(paired) == 1, "the pairing change must not be served from the old pass"
+
+    def test_a_different_store_is_not_answered_from_an_older_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Store locations resolve per call, so they are part of the cache key.
+
+        A pod overrides the data home and an unmigrated install resolves the legacy
+        one, so one process can enumerate different stores over its lifetime. Keyed
+        only on the pairing, the second home was answered with the first's contents.
+        """
+        first = tmp_path / "home-a"
+        (first / "sessions").mkdir(parents=True)
+        (first / "kiro" / "sessions" / "cli").mkdir(parents=True)
+        monkeypatch.setenv("KIROCREW_HOME", str(first))
+        monkeypatch.setenv("KIRO_HOME", str(first / "kiro"))
+        _cli_half(first / "kiro", "aaaa1111", log_bytes=32, age_days=40)
+        assert len(session_storage.list_units(_index())) == 1
+
+        second = tmp_path / "home-b"
+        (second / "sessions").mkdir(parents=True)
+        (second / "kiro" / "sessions" / "cli").mkdir(parents=True)
+        monkeypatch.setenv("KIROCREW_HOME", str(second))
+        monkeypatch.setenv("KIRO_HOME", str(second / "kiro"))
+
+        assert session_storage.list_units(_index()) == [], "an empty store must read as empty"
+
+    def test_a_reclaim_does_not_select_against_a_cached_pass(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A mutation re-enumerates: a snapshot is for reporting, never for moving."""
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=32, age_days=40)
+        session_storage.list_units(_index())  # prime the cache
+
+        calls = 0
+        real = session_storage._scan_raw_uncached
+
+        def counted(sid_for_stem):
+            nonlocal calls
+            calls += 1
+            return real(sid_for_stem)
+
+        monkeypatch.setattr(session_storage, "_scan_raw_uncached", counted)
+        session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW)
+
+        assert calls >= 1, "the move must enumerate the stores itself"
+
+    def test_a_move_drops_the_cache_so_a_refetch_cannot_list_it(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The screen refetches straight after a move; it must not show the row."""
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=32, age_days=40)
+        assert len(session_storage.list_units(_index())) == 1
+
+        session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW)
+
+        assert session_storage.list_units(_index()) == []
+
+
 class TestSharedStoreRefusal:
     """An isolated data home over a shared replay store cannot see who is live."""
 
@@ -925,12 +1062,53 @@ class TestSharedStoreRefusal:
         # The origin is still absent rather than occupied by a dangling link.
         assert not (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").exists()
 
-    def test_a_pod_sharing_the_default_store_blocks_the_default_instance(
+    def test_a_pod_with_a_readable_map_protects_its_sessions_without_blocking(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The mirror case: a pod reads THIS store while keeping its own map."""
+        """The mirror case: a pod reads THIS store while keeping its own map.
+
+        Its mapping is a file at a known host path, so the sessions it can resume
+        are knowable. Naming them is strictly better than refusing the whole
+        operation: the pod's own sessions stay protected and everything else stays
+        reclaimable.
+        """
         pod_root = tmp_path / "pods"
-        (pod_root / "wt-feature").mkdir(parents=True)
+        pod = pod_root / "wt-feature"
+        pod.mkdir(parents=True)
+        # Current pods export KIRO_HOME into the pod home, so this one reads its own
+        # replay store and cannot be harmed by a reclaim here.
+        (pod / "kiro" / "sessions" / "cli").mkdir(parents=True)
+        (pod / "session_map.json").write_text(
+            json.dumps({"dashboard:chat-1": {"sid": "podsid01"}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
+        monkeypatch.setattr(paths, "_config_dir_memo", None)
+
+        assert session_storage.reclaim_block_reason() == ""
+        protected, refusals = session_storage.cotenant_sids()
+        assert protected == frozenset({"podsid01"})
+        assert refusals == ()
+
+    def test_a_shared_store_instance_with_mappings_refuses_the_whole_reclaim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Per-session protection is not enough for a genuine co-tenant.
+
+        An instance without its own replay store can seed and resume a session at
+        any moment — including part-way through a move loop that runs for six
+        figures of sessions — so no ownership snapshot can cover it. Those refuse
+        outright, which is the one case the blanket refusal was right about.
+        """
+        pod_root = tmp_path / "pods"
+        pod = pod_root / "wt-legacy-shared"
+        pod.mkdir(parents=True)
+        # No `kiro/` directory: nothing shows this instance to be self-contained.
+        (pod / "session_map.json").write_text(
+            json.dumps({"dashboard:chat-1": {"sid": "sharedsid1"}}), encoding="utf-8"
+        )
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
@@ -938,8 +1116,217 @@ class TestSharedStoreRefusal:
         monkeypatch.setattr(paths, "_config_dir_memo", None)
 
         reason = session_storage.reclaim_block_reason()
-        assert "share this kiro-cli session store" in reason
-        assert "wt-feature" in reason
+        assert "wt-legacy-shared" in reason
+        assert "shares this replay store" in reason
+        protected, refusals = session_storage.cotenant_sids()
+        assert protected == frozenset({"sharedsid1"}), "still named, so still protected"
+        assert [name for name, _why in refusals] == ["wt-legacy-shared"]
+
+    def test_a_pod_that_left_only_a_directory_does_not_block_reclaiming(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A torn-down pod's leftover directory owns no sessions.
+
+        This is the state a machine that has run pods for weeks is actually in, and
+        blocking on it made reclaiming permanently unavailable while naming
+        directories whose gateway exited long ago.
+        """
+        pod_root = tmp_path / "pods"
+        (pod_root / "wt-long-gone").mkdir(parents=True)
+        # What an evicted pod leaves behind: its audit log, and no session map.
+        (pod_root / "wt-long-gone" / "security_events.jsonl").write_text("", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
+        monkeypatch.setattr(paths, "_config_dir_memo", None)
+
+        assert session_storage.reclaim_block_reason() == ""
+        assert session_storage.cotenant_sids() == (frozenset(), ())
+
+    def test_a_legacy_string_map_entry_still_protects_its_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A plain-string entry is the LEGACY format, and must not fail open.
+
+        ``SessionMap._load`` still migrates ``{"key": "<sid>"}`` to the dict form on
+        read, so a map written that way is live data, not corruption. Skipping it
+        would fail open on precisely the population this protection exists for: a
+        co-tenant old enough to predate the pod store split is also old enough to
+        have been written in the old format.
+        """
+        pod_root = tmp_path / "pods"
+        pod = pod_root / "wt-legacy"
+        pod.mkdir(parents=True)
+        # Self-contained, so this isolates the entry-format question from the
+        # shared-store refusal.
+        (pod / "kiro" / "sessions" / "cli").mkdir(parents=True)
+        (pod / "session_map.json").write_text(
+            json.dumps({"dashboard:chat-1": "legacysid01"}), encoding="utf-8"
+        )
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
+        monkeypatch.setattr(paths, "_config_dir_memo", None)
+
+        protected, refusals = session_storage.cotenant_sids()
+        assert protected == frozenset({"legacysid01"})
+        assert refusals == ()
+
+    def test_a_cotenant_claiming_a_session_during_the_scan_is_refused(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Co-tenant ownership is re-read in the FINAL authority check.
+
+        The store scan is the slow part of a move, so a co-tenant view taken during
+        it is stale by the time files move. This simulates a co-tenant adopting a
+        pre-existing replay log in that window: the first read (during the scan)
+        does not know about it, the last one does. The freshness floor cannot cover
+        this — the adopted session is 40 days old.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "adopted001", log_bytes=64, age_days=40)
+
+        calls = {"n": 0}
+
+        def claimed_late() -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
+            calls["n"] += 1
+            # Empty while the scan runs; owned by the time the move is authorized.
+            return (frozenset() if calls["n"] == 1 else frozenset({"adopted001"})), ()
+
+        monkeypatch.setattr(session_storage, "cotenant_sids", claimed_late)
+
+        with pytest.raises(SessionStorageError, match="still in use"):
+            session_storage.move_to_trash(
+                ["adopted001"], reason="manual", index=_index(), now=_NOW
+            )
+        assert (kiro_home / "sessions" / "cli" / "adopted001.jsonl").is_file()
+
+    def test_a_cotenant_map_that_becomes_unreadable_mid_move_refuses(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ownership that stops being establishable cannot be worked around."""
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+
+        calls = {"n": 0}
+
+        def unreadable_late() -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
+            calls["n"] += 1
+            return frozenset(), (() if calls["n"] == 1 else (("wt-corrupt", "unreadable map"),))
+
+        monkeypatch.setattr(session_storage, "cotenant_sids", unreadable_late)
+
+        with pytest.raises(SessionStorageError, match="make reclaiming unsafe"):
+            session_storage.move_to_trash(
+                ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+            )
+        assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
+
+    def test_a_symlinked_cotenant_map_is_refused_not_followed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pod root is writable, so its map must go through the file gate.
+
+        A ``session_map.json`` replaced with a symlink would otherwise make the
+        gateway read whatever it points at. The read is routed through
+        ``hooks.safe_read_file``, which resolves the link and re-checks the
+        RESOLVED target — so a link into a protected path is refused, and the
+        co-tenant is treated as ownership-unknown rather than silently skipped.
+        """
+        secret = tmp_path / "aws-credentials"
+        secret.write_text("[default]\naws_secret_access_key = shhh\n", encoding="utf-8")
+        pod_root = tmp_path / "pods"
+        pod = pod_root / "wt-symlinked"
+        pod.mkdir(parents=True)
+        (pod / "session_map.json").symlink_to(secret)
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
+
+        def refuse_everything(resolved: str) -> bool:
+            return Path(resolved) == secret
+
+        monkeypatch.setattr(session_storage.hooks, "is_sensitive_path", refuse_everything)
+
+        protected, refusals = session_storage.cotenant_sids()
+
+        assert protected == frozenset(), "nothing may be harvested from the target"
+        assert [name for name, _why in refusals] == ["wt-symlinked"]
+        # The REASON is what distinguishes refused-before-reading from
+        # read-then-failed-to-parse. A bare read would follow the link, fail to
+        # parse the credential file, and report "could not be parsed" — which is
+        # the same refusal from the caller's side but means the read happened.
+        assert refusals[0][1] == "its session map could not be read"
+        assert "parsed" not in refusals[0][1]
+
+    def test_a_map_that_is_not_valid_utf8_is_refused_not_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Undecodable bytes are an unreadable map, not an exception to the caller.
+
+        ``safe_read_file`` decodes as UTF-8, and ``UnicodeDecodeError`` is a
+        ``ValueError`` rather than an ``OSError`` — so an undecodable map would
+        travel past the refusal path and out of the storage endpoints as a 500,
+        breaking the whole screen instead of protecting one co-tenant.
+        """
+        pod_root = tmp_path / "pods"
+        pod = pod_root / "wt-binary"
+        pod.mkdir(parents=True)
+        (pod / "session_map.json").write_bytes(b"\xff\xfe{\x00")
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
+
+        protected, refusals = session_storage.cotenant_sids()
+
+        assert protected == frozenset()
+        assert [name for name, _why in refusals] == ["wt-binary"]
+        # Undecodable is a failure to READ, not to parse: the bytes never became
+        # text, so no parse was ever attempted.
+        assert refusals[0][1] == "its session map could not be read"
+
+    def test_a_pod_whose_map_cannot_be_read_still_blocks_and_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unknown ownership is the one case that must still refuse.
+
+        A map that is present but unparseable says a co-tenant claims SOMETHING
+        without saying what, which is exactly when reclaiming cannot be made safe.
+        """
+        pod_root = tmp_path / "pods"
+        pod = pod_root / "wt-corrupt"
+        pod.mkdir(parents=True)
+        (pod / "session_map.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
+        monkeypatch.setattr(paths, "_config_dir_memo", None)
+
+        reason = session_storage.reclaim_block_reason()
+        assert "make reclaiming unsafe" in reason
+        assert "wt-corrupt" in reason
+        assert "could not be parsed" in reason
+
+    def test_a_cotenant_session_is_refused_like_a_mapped_one(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The protection has to bite at the move, not only in the report.
+
+        Patched at :func:`cotenant_sids` rather than through the pod root, because
+        the *stores* fixture isolates both homes — the arrangement in which the pod
+        discovery path is correctly not consulted. What is under test here is that
+        whatever that function returns is enforced by ``move_to_trash``.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "podsid01", log_bytes=64, age_days=40)
+        monkeypatch.setattr(
+            session_storage, "cotenant_sids", lambda: (frozenset({"podsid01"}), ())
+        )
+
+        with pytest.raises(SessionStorageError, match="still in use"):
+            session_storage.move_to_trash(
+                ["podsid01"], reason="manual", index=_index(), now=_NOW
+            )
+        assert (kiro_home / "sessions" / "cli" / "podsid01.jsonl").is_file()
 
     def test_no_pods_leaves_the_default_instance_able_to_reclaim(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

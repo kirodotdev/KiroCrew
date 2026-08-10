@@ -24,7 +24,12 @@ from kiro_crew.messaging.link import (
 
 logger = logging.getLogger(__name__)
 
-_SESSION_MAP_FILE = "session_map.json"
+# Public because another instance's map is read by file path, not through this
+# class: :func:`kiro_crew.session_storage.cotenant_sids` opens the map belonging
+# to a pod that shares the replay store. A second literal there would be a silent
+# hazard rather than a duplicate — a rename would turn that read into "no file",
+# which reads as "that instance owns nothing" and withdraws the protection.
+SESSION_MAP_FILENAME = "session_map.json"
 
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
@@ -74,7 +79,7 @@ class SessionMap:
     """
 
     def __init__(self) -> None:
-        self._path = config_dir() / _SESSION_MAP_FILE
+        self._path = config_dir() / SESSION_MAP_FILENAME
         self._data: dict[str, dict] = {}  # key → {"sid", "slack_thread_ts", "slack_channel_id"}
         self._thread_to_session: dict[str, str] = {}  # slack_thread_ts → session_key
         self._load()

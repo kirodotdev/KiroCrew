@@ -22,6 +22,7 @@ import type {
   SessionInventoryItem,
   SessionInventoryList,
   SessionStorageBatch,
+  SessionStorageCleanup,
   SessionTrashRefusal,
 } from '../../types'
 
@@ -116,9 +117,18 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
     return sorted
   }, [foreground, search, sort])
 
-  // Background group summary
-  const bgBytes = useMemo(() => backgroundGroup.reduce((s, x) => s + x.bytes, 0), [backgroundGroup])
+  // The replay-only group's true size and total come from the server. The rows in
+  // `data.sessions` are only its largest members — deriving the group from them
+  // would under-report by six figures on the installs this screen exists for.
+  const bgSummary = data?.background
   const bgExpanded = expanded.has('__background__')
+  const bgNotListed = Math.max(0, (bgSummary?.sessions ?? 0) - backgroundGroup.length)
+  // Whether the age sweep is actually on screen. The truncation note tells the
+  // reader where to reclaim the rest, so it must not point at a control that is
+  // hidden — which it is when reclaiming is refused, or when no threshold has
+  // anything to take.
+  const sweepShown =
+    !blocked && (data?.age_options ?? []).some(o => o.sessions > 0)
 
   /**
    * The largest row, which scales every bar.
@@ -225,6 +235,16 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
             </div>
           )}
 
+          {/* Bulk reclaim by age — the only path that reaches the sessions the
+              list does not name individually. Hidden when reclaiming is refused
+              outright, so the screen never offers an action that can only fail.
+              `?? []` because this arrives over the wire: a tab left open across a
+              gateway upgrade would otherwise crash the whole screen on a field
+              the older build did not send. */}
+          {!blocked && (
+            <ReclaimByAge options={data.age_options ?? []} busy={busy} onDone={invalidate} />
+          )}
+
           {/* Toolbar: search + sort */}
           <div className="flex items-center gap-2">
             <label className="flex-1 flex items-center gap-2 bg-bg-elevated border border-border rounded-md px-2.5 py-1.5">
@@ -306,7 +326,7 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
             ))}
 
             {/* Background agents group */}
-            {backgroundGroup.length > 0 && (
+            {backgroundGroup.length > 0 && bgSummary && (
               <div className="border-b border-border">
                 <Clickable
                   className="flex items-center gap-2.5 px-1.5 py-2 cursor-pointer hover:bg-bg-hover"
@@ -315,12 +335,25 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
                 >
                   <ChevronRight className={`w-3.5 h-3.5 text-muted transition-transform ${bgExpanded ? 'rotate-90' : ''}`} />
                   <span className="text-[13px] font-medium text-text-strong">
-                    {i18nT('pages.sessionStorage.background_group', { count: fmtNumber(backgroundGroup.length) })}
+                    {i18nT('pages.sessionStorage.background_group', { count: fmtNumber(bgSummary.sessions) })}
                   </span>
-                  <span className="text-[12px] text-muted font-mono tabular-nums">{fmtBytes(bgBytes)}</span>
+                  <span className="text-[12px] text-muted font-mono tabular-nums">{fmtBytes(bgSummary.bytes)}</span>
                 </Clickable>
                 {bgExpanded && (
                   <div className="pl-4">
+                    {bgNotListed > 0 && (
+                      <p className="text-[11.5px] text-muted px-1.5 pb-2">
+                        {i18nT(
+                          sweepShown
+                            ? 'pages.sessionStorage.background_truncated_sweep'
+                            : 'pages.sessionStorage.background_truncated',
+                          {
+                            listed: fmtNumber(backgroundGroup.length),
+                            total: fmtNumber(bgSummary.sessions),
+                          },
+                        )}
+                      </p>
+                    )}
                     {backgroundGroup.map(session => (
                       <SessionRow
                         key={session.uid}
@@ -358,6 +391,121 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
   )
 }
 
+/* ─────────────────── Reclaim by age ─────────────────── */
+
+/**
+ * Bulk reclaim by last-used age.
+ *
+ * The per-row checkboxes cannot reach the bulk of a large store: the replay-only
+ * group holds six figures of sessions and only its largest are listed. This is
+ * the surface that can, and it needs no selection — the server re-derives which
+ * sessions a threshold covers at the moment of the move, so the numbers shown
+ * here are a preview and never the thing acted upon.
+ *
+ * A preview is mandatory rather than a convenience. The counts arriving with the
+ * listing are seconds old at best, so the confirm step re-asks the server (the
+ * endpoint's own `dry_run`) and shows what IT says it would take. Confirming then
+ * repeats the same threshold, not the previewed uids.
+ */
+function ReclaimByAge({
+  options, busy, onDone,
+}: {
+  options: SessionInventoryList['age_options']
+  busy: boolean
+  onDone: () => void
+}) {
+  const offered = options.filter(o => o.sessions > 0)
+  const [days, setDays] = useState(() => offered[offered.length - 1]?.days ?? 90)
+  // The preview carries the threshold it was TAKEN for, so the numbers shown and
+  // the sweep the confirm runs are read from the SAME object. That makes "the
+  // preview describes the action" structural rather than something to keep in
+  // sync — and this is a bulk delete, so the two must never disagree. Changing
+  // the threshold clears it, and the selector is locked while one is in flight,
+  // so a late response cannot land over a different selection.
+  const [preview, setPreview] = useState<{ days: number; result: SessionStorageCleanup } | null>(
+    null,
+  )
+
+  const previewMut = useMutation({
+    mutationFn: (d: number) => api.sessionStorageCleanup(d, true),
+    onSuccess: (result, d) => setPreview({ days: d, result }),
+  })
+  const sweepMut = useMutation({
+    mutationFn: (d: number) => api.sessionStorageCleanup(d, false),
+    onSuccess: () => { setPreview(null); onDone() },
+  })
+  const working = busy || previewMut.isPending || sweepMut.isPending
+  // A refused cleanup must say so. Without this the button simply re-enables and
+  // nothing on screen explains why nothing moved — the same "looks broken, no
+  // reason given" symptom this screen exists to remove, at a destructive moment.
+  const failed = previewMut.isError || sweepMut.isError
+
+  if (offered.length === 0) return null
+  const chosen = offered.find(o => o.days === days) ?? offered[offered.length - 1]
+
+  return (
+    <div className="bg-bg-elevated border border-border rounded-md px-3 py-2.5 flex flex-wrap items-center gap-3 text-[12px]">
+      <span className="text-text-strong font-medium">
+        {i18nT('pages.sessionStorage.reclaim_by_age')}
+      </span>
+      <SimpleSelect
+        options={offered.map(o => String(o.days))}
+        optionLabels={offered.map(o =>
+          // `count` is the pluralising variable i18next selects the form on, so the
+          // option never reads "1 sessions". `days` and `size` are plain
+          // interpolations; only the session count varies in number here, since
+          // every threshold offered is 7 days or more.
+          i18nT('pages.sessionStorage.age_option', {
+            count: o.sessions,
+            days: fmtNumber(o.days),
+            size: fmtBytes(o.bytes),
+          }),
+        )}
+        value={String(chosen.days)}
+        onChange={value => { setDays(Number(value)); setPreview(null) }}
+        disabled={working}
+        aria-label={i18nT('pages.sessionStorage.reclaim_by_age')}
+      />
+      <span className="flex-1" />
+      {failed && (
+        <span className="text-danger">{i18nT('pages.sessionStorage.sweep_failed')}</span>
+      )}
+      {preview === null ? (
+        <Btn disabled={working} onClick={() => previewMut.mutate(chosen.days)}>
+          {i18nT('pages.sessionStorage.preview_sweep')}
+        </Btn>
+      ) : (
+        <>
+          <span className="text-muted">
+            {i18nT('pages.sessionStorage.sweep_preview', {
+              count: preview.result.sessions,
+              size: fmtBytes(preview.result.bytes),
+            })}
+            {/* Above the per-batch cap the preview is NOT the whole job, so say
+                that a repeat sweep is needed rather than letting the number read
+                as the total. */}
+            {preview.result.remaining > 0 && (
+              <> {i18nT('pages.sessionStorage.sweep_remaining', {
+                remaining: fmtNumber(preview.result.remaining),
+              })}</>
+            )}
+          </span>
+          <Btn disabled={working} onClick={() => setPreview(null)}>
+            {i18nT('pages.sessionStorage.cancel')}
+          </Btn>
+          <Btn
+            danger
+            disabled={working || preview.result.sessions === 0}
+            onClick={() => sweepMut.mutate(preview.days)}
+          >
+            {i18nT('pages.sessionStorage.move_to_trash_bulk')}
+          </Btn>
+        </>
+      )}
+    </div>
+  )
+}
+
 /* ─────────────────── Session Row ─────────────────── */
 
 function SessionRow({
@@ -384,10 +532,20 @@ function SessionRow({
         className="cursor-pointer hover:bg-bg-hover"
         style={{ display: 'grid', gridTemplateColumns: '20px minmax(0, 1fr) 100px 66px 18px', gap: '10px', alignItems: 'center', padding: '8px 6px' }}
       >
+        {/* Disabled with a reason attached. A greyed checkbox and no explanation
+            reads as a broken screen — the reason is already known here, and the
+            badge beside the title is easy to miss on a long list. */}
         <input
           type="checkbox"
           checked={isSelected}
           disabled={session.active}
+          title={
+            session.active
+              ? session.live
+                ? i18nT('pages.sessionStorage.cannot_delete_running')
+                : i18nT('pages.sessionStorage.cannot_delete_resumable')
+              : undefined
+          }
           onChange={onToggleSelect}
           onClick={e => e.stopPropagation()}
           className="w-[13px] h-[13px] accent-muted cursor-pointer disabled:opacity-35 disabled:cursor-default"

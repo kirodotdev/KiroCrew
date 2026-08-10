@@ -113,6 +113,8 @@
   "pages.schedulePage.cronFolders.job_count",
   "pages.schedulePage.scheduled_job",
   "pages.schedulePage.this_permanently_removes_the_selected_job",
+  "pages.sessionStorage.age_option",
+  "pages.sessionStorage.sweep_preview",
   "pages.settings.webhooksPanel.tokens_count",
   "pages.telemetryPanel.startups_recorded",
   "pages.telemetryPanel.turn_faults",

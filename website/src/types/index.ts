@@ -132,7 +132,17 @@ export interface SessionInventoryList {
   total_sessions: number
   reclaimable_bytes: number
   reclaim_blocked_reason: string
+  /** Every conversation, plus only the LARGEST replay-only sessions — see `background`. */
   sessions: SessionInventoryItem[]
+  /** The replay-only group as a whole. `listed` is how many of `sessions` it
+   *  contributed, so the difference is what the list does not name. Never derive
+   *  the group's size or total by filtering `sessions`: on a long-lived install
+   *  the group holds six figures of rows and the list carries a capped sample. */
+  background: { sessions: number; bytes: number; listed: number }
+  /** What an age sweep would reclaim at each offered threshold, cumulative
+   *  ("older than `days`") and already excluding anything in use — so an option
+   *  can be labelled with real numbers before any dry run. */
+  age_options: { days: number; sessions: number; bytes: number }[]
   trash: {
     bytes: number
     still_on_disk: boolean
@@ -154,7 +164,8 @@ export interface SessionInventoryDetail {
 /** One uid the server refused in POST .../trash */
 export interface SessionTrashRefusal {
   uid: string
-  reason: 'in_use' | 'too_fresh' | 'unknown'
+  /** `resumable` is the common one: idle, but the product could still resume it. */
+  reason: 'in_use' | 'resumable' | 'too_fresh' | 'unknown'
 }
 
 /** POST /api/system/session-storage/trash response */
