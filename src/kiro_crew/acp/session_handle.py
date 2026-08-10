@@ -354,6 +354,16 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._last_stop_reason = ""
+        # Consumer-park accounting, read by the idle clocks in _dispatch_events
+        # and by external observers via parked_for_secs(). `_parked_total` is
+        # cumulative for the turn; `_parked_since` is set only while suspended at
+        # a yield in prompt().
+        self._parked_total: float = 0.0
+        self._parked_since: float | None = None
+        # Set when a permission event is yielded, cleared when it is answered.
+        # Distinguishes "waiting for a human" (legitimate, bounded elsewhere)
+        # from "the consumer stopped pulling for some other reason".
+        self._awaiting_permission: bool = False
         # toolCallId -> redacted input string, written by the shared parser so a
         # later tool result can recover its originating input (mirrors AcpClient).
         self._tool_call_inputs: dict[str, str] = {}
@@ -479,6 +489,12 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._inflight_tool = None
+        # Park state is per-turn: carrying it across would charge the previous
+        # turn's consumer time to this one, and a permission left unanswered when
+        # the last turn died would mask this turn's stalls forever.
+        self._parked_total = 0.0
+        self._parked_since = None
+        self._awaiting_permission = False
         self._retire_liveness_state()
         self._working_logged_ts = _WORKING_NEVER_LOGGED
         self._tool_call_inputs.clear()
@@ -546,10 +562,89 @@ class AcpSessionHandle:
 
         try:
             async for event in self._dispatch_events(req_id, timeout):
-                yield event
+                # Park accounting. The consumer holds this event from here until
+                # it comes back for the next one, and that interval is CONSUMER
+                # time, not backend silence: the dispatch loop is suspended at
+                # its own yield throughout, so its idle clocks would otherwise
+                # charge a consumer-side await to the runtime. Measured at this
+                # single choke point because `_dispatch_events` yields from 15
+                # places and every one of them funnels through this `async for`.
+                self._parked_since = time.monotonic()
+                try:
+                    yield event
+                finally:
+                    # `finally`, not a trailing statement: an abandoned generator
+                    # unwinds with GeneratorExit and would otherwise leave
+                    # `_parked_since` set forever, which reads from outside as a
+                    # turn parked since the abandonment.
+                    self._parked_total += time.monotonic() - self._parked_since
+                    self._parked_since = None
         finally:
             if not self._turn_done.is_set():
                 self._turn_done.set()
+
+    # ── Turn park state (readable from OUTSIDE the turn) ──
+
+    def parked_for_secs(self) -> float:
+        """Seconds the consumer has been holding the current event; 0.0 if not parked.
+
+        This is the one signal the in-band watchdog structurally cannot report on
+        itself. That watchdog is the ``except asyncio.TimeoutError`` arm of
+        :meth:`_dispatch_events`, an async generator, so it only advances when a
+        consumer pulls it — a consumer that awaits inside its own ``async for``
+        body freezes the generator at the yield and the arm never executes again
+        for the rest of the turn. It is not slow or mis-configured there; it is
+        not called. An observer with its own timer reads this instead.
+        """
+        since = self._parked_since
+        if since is None:
+            return 0.0
+        # Clamped: a monotonic clock cannot go backwards, but a negative duration
+        # leaking into a caller's threshold comparison would read as "not parked".
+        return max(0.0, time.monotonic() - since)
+
+    @property
+    def parked_since(self) -> float | None:
+        """Monotonic timestamp the current park began, or None if not parked.
+
+        Exposed so an observer can latch on a park's IDENTITY rather than its
+        duration: a park that outlives the observer's tick would otherwise be
+        re-reported on every pass.
+        """
+        return self._parked_since
+
+    @property
+    def awaiting_permission(self) -> bool:
+        """True while a permission event has been yielded and not yet answered.
+
+        A turn parked here is waiting for a HUMAN, which is not a stall: that wait
+        is already bounded by ``agent.tool_approval_timeout_secs``. An external
+        observer must exclude it — otherwise every approval prompt reads as a
+        stalled turn, and two components end up racing to end the same wait on
+        different budgets.
+        """
+        return self._awaiting_permission
+
+    def _end_human_wait(self) -> None:
+        """Close the human-wait segment of the current park.
+
+        The consumer is still parked when a permission is answered — it resolves
+        the approval and then finishes its own branch (an IM send, a hook, a
+        transcript write) before coming back for the next event. Banking the wait
+        into ``_parked_total`` and restarting ``_parked_since`` keeps the in-band
+        correction exact (it wants the WHOLE park, all of which was consumer time
+        from the runtime's point of view) while making ``parked_for_secs()``
+        measure only what the consumer itself has spent since the answer.
+
+        Without this the observer reports a park whose duration is almost
+        entirely the human's thinking time — the same misattribution the in-band
+        clocks were fixed to avoid, reappearing one layer out.
+        """
+        self._awaiting_permission = False
+        if self._parked_since is not None:
+            now = time.monotonic()
+            self._parked_total += max(0.0, now - self._parked_since)
+            self._parked_since = now
 
     # ── Cancel ──
 
@@ -593,6 +688,10 @@ class AcpSessionHandle:
         """
         resolved_id = option_id
         recorded = self._permission_options.pop(request_id, None)
+        # Answered — the turn is no longer waiting on a human. Also closes the
+        # human-wait segment of the park so an observer does not attribute the
+        # person's thinking time to the consumer (see _end_human_wait).
+        self._end_human_wait()
         if recorded:
             if resolved_id is None:
                 resolved_id = recorded.get("once") or recorded.get("always")
@@ -618,6 +717,8 @@ class AcpSessionHandle:
         handles as an ordinary rejection.
         """
         recorded = self._permission_options.pop(request_id, None)
+        # Answered (see approve_tool) — a rejection ends the human wait too.
+        self._end_human_wait()
         reject_id = recorded.get("reject") if recorded else None
         if reject_id:
             await self._runtime.send_response(
@@ -1177,6 +1278,10 @@ class AcpSessionHandle:
         """Core event dispatch loop. Yields AcpEvent objects from the session queue."""
         deadline = time.monotonic() + timeout
         last_data_ts = time.monotonic()
+        # Consumer time already accounted for at the moment `last_data_ts` was
+        # taken. The idle clocks below measure BACKEND silence, so any park that
+        # happens after this point must be subtracted from them.
+        parked_at_data = self._parked_total
 
         _buffered: list[JsonRpcMessage] = []
         try:
@@ -1243,9 +1348,18 @@ class AcpSessionHandle:
                         continue
                     wd = self._watchdog
                     now = time.monotonic()
+                    # Consumer time since the last frame. Both clocks below are
+                    # meant to measure how long the RUNTIME has been silent, but
+                    # the loop is suspended at its yield for the whole of a
+                    # consumer-side await, so without this the wait a consumer
+                    # spends on an approval, an IM send, or a hook is charged to
+                    # the backend — and a turn can be cancelled moments after a
+                    # human approves it. Subtracted rather than clamped forward so
+                    # a burst of short parks accumulates correctly.
+                    _parked = max(0.0, self._parked_total - parked_at_data)
 
                     if self._tool_dispatched:
-                        _tool_idle = now - last_data_ts
+                        _tool_idle = max(0.0, (now - last_data_ts) - _parked)
                         if _tool_idle <= wd.check_after_secs:
                             continue
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=False)
@@ -1266,7 +1380,17 @@ class AcpSessionHandle:
                         return
 
                     if self._stale_eligible:
-                        _stale_idle = now - max(last_data_ts, self._runtime._last_activity)
+                        # `_parked` is measured from the last QUEUE frame, while
+                        # this clock can key off the newer stderr/keepalive
+                        # activity instead. When it does, some of `_parked`
+                        # predates the reference point and is subtracted twice
+                        # over — which only ever makes this branch MORE patient,
+                        # never quicker to probe, so it errs toward leaving a
+                        # working turn alone.
+                        _stale_idle = max(
+                            0.0,
+                            (now - max(last_data_ts, self._runtime._last_activity)) - _parked,
+                        )
                         if _stale_idle <= wd.check_after_secs:
                             continue
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=True)
@@ -1313,6 +1437,7 @@ class AcpSessionHandle:
                     raise AcpProcessDied("Runtime process died during prompt")
 
                 last_data_ts = time.monotonic()
+                parked_at_data = self._parked_total
                 self.last_prompt_stats.event_count += 1
 
                 # Turn-complete response
@@ -1383,6 +1508,10 @@ class AcpSessionHandle:
                 action = self._classify(msg)
 
                 if action == "permission":
+                    # Mark BEFORE the yield: the consumer parks on this event, and
+                    # an observer reading the park mid-flight must be able to tell
+                    # "waiting for a human" from "the consumer stopped pulling".
+                    self._awaiting_permission = True
                     yield self._build_permission_event(msg)
                 elif action == "server_request_unknown":
                     await self._runtime.send_error(msg.id, -32601, "Method not found")

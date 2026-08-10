@@ -183,9 +183,30 @@ send time.
   onto `self._idle_sweep_enabled`/`self._idle_timeout` by `_cleanup_loop`),
   `orphan_mcp` (maintenance-executor offload), `denied_commands`
   (re-enforcement offloaded to the maintenance executor — deliberate
-  sync→thread change from the old inline block), and `rss_threshold`. The
+  sync→thread change from the old inline block), `rss_threshold`, and
+  `stuck_turn`. The
   orphan-PID / session-root / sandbox-profile sweeps remain inline in
   `_cleanup_loop` (CR 2 extracts them).
+- **Stuck-turn reporting** (`_stuck_turn_check`, threshold
+  `_STUCK_TURN_REPORT_SECS` = 300s, not configurable): reports a turn whose
+  consumer has stopped pulling events. Exists because the per-turn watchdog in
+  `acp-client.md` cannot report on itself — it is the `TimeoutError` arm of an
+  async generator, so a consumer awaiting inside its own `async for` body
+  freezes the generator and that arm never runs again for the turn, which is why
+  such a turn emits no stall WARNING at all. This loop has its own timer and no
+  dependency on any consumer. Considers only sessions whose semaphore is held
+  (the only in-flight signal at this layer), reads `parked_for_secs()` /
+  `parked_since` / `awaiting_permission` duck-typed off `provider._handle` so any
+  transport growing those accessors is covered, and latches on the park's
+  monotonic start so a park outliving the tick is reported once rather than every
+  pass. **Detection only**, deliberately: a turn awaiting a human is excluded
+  because `agent.tool_approval_timeout_secs` already bounds that wait; ending a
+  live turn stays with the in-band path that owns the terminal-event seam and the
+  non-lethal continue-nudge; and what the park is blocked on is not knowable from
+  here. Logs at WARNING and fires the optional `on_stuck_turn(key, parked_secs)`
+  callback — a seam so a surface that can reach the user decides what to do,
+  keeping the session layer free of any dashboard import. Swallows its own errors
+  like its sibling hooks.
 - **RSS-threshold recycle** (`_rss_threshold_check`, config
   `session.watchdog_rss_max_mb`, default 0 = disabled): recycles non-busy
   sessions whose `/proc` process-tree RSS (MiB) exceeds the ceiling. Skips

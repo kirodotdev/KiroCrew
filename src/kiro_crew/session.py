@@ -268,6 +268,15 @@ _DRAIN_ACTIVE_TURNS_TIMEOUT_SECS = 5.0
 # expected to be hit in practice.
 _WON_RACE_MAX_RETRIES = 8
 
+#: How long a turn's consumer may hold one event before the stuck_turn hook
+#: reports it. Not configurable: the hook only reports, so an operator has no
+#: behaviour to tune. Deliberately BELOW the cleanup loop's own tick so a park
+#: worth reporting is caught on the first pass that sees it rather than the
+#: second; re-reporting is prevented by latching on the park's identity, not by
+#: sizing this above the tick (which is derived from `session.timeout_secs` and
+#: so is not a fixed number to sit above).
+_STUCK_TURN_REPORT_SECS = 300.0
+
 _SUBAGENT_PREFIX = "subagent:"
 _CHANNEL_PREFIX = "channel:"
 _SIDE_PREFIX = "side:"
@@ -845,6 +854,14 @@ class SessionManager:
         # Callback fired when a session expires (idle or orphaned).
         # Used by HistoryConsolidator to trigger skill extraction.
         self.on_session_expire: Callable[[str], None] | None = None
+        # Fired by the stuck_turn hook for a turn whose consumer has stopped
+        # pulling events. A seam, not a policy: this class only reports, and a
+        # surface that can reach the user (a dashboard notification, a Slack DM)
+        # decides what to do with it. Args: (session_key, parked_secs).
+        self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # session key -> the monotonic start of the park already reported for it,
+        # so a park outliving the cleanup tick is reported once, not every pass.
+        self._stuck_reported: dict[str, float] = {}
 
         # Shared runtime for _bg callers (title gen, suggestions, folders, nav).
         # Each caller gets its own ephemeral AcpSessionHandle via get_bg_session().
@@ -881,6 +898,7 @@ class SessionManager:
                 CleanupHook("idle_expiry", self._expire_idle_hook),
                 CleanupHook("orphan_mcp", self._orphan_mcp_hook),
                 CleanupHook("rss_threshold", self._rss_threshold_check),
+                CleanupHook("stuck_turn", self._stuck_turn_check),
             ]
         )
 
@@ -4441,6 +4459,95 @@ class SessionManager:
                 await self._fire_recycle_callback(key, reason=f"memory limit ({rss}MB)")
             except Exception:
                 logger.exception("RSS recycle failed for session %s", key)
+
+    async def _stuck_turn_check(self) -> None:
+        """Report a turn whose consumer has stopped pulling events.
+
+        This exists because the per-turn watchdog cannot report on itself. That
+        watchdog is the ``except asyncio.TimeoutError`` arm of
+        ``AcpSessionHandle._dispatch_events``, an async generator, so it advances
+        only when a consumer pulls it — and a consumer that awaits inside its own
+        ``async for`` body (a tool approval, an IM send, a hook) freezes the
+        generator at the yield, after which that arm never executes again for the
+        rest of the turn. It is not slow or mis-verdicted there; it is not called,
+        which is why such a turn produces no stall WARNING at all. This loop has
+        its own timer and no dependency on any consumer, so it still runs.
+
+        Detection only, for three separate reasons:
+
+        * A turn waiting for a HUMAN is excluded outright. That wait is bounded by
+          ``agent.tool_approval_timeout_secs``, and acting on it here would put
+          two components on different budgets racing to end the same wait.
+        * Ending a live-but-parked turn belongs to the in-band path, which owns
+          the terminal-event seam and the non-lethal continue-nudge recovery. A
+          second terminator would either double-emit or land a cancel ack on a
+          turn that has already completed.
+        * What the park is blocked ON is not knowable from here, so there is no
+          unambiguous action to take. Reporting converts a silent freeze into a
+          named one, which is the whole of the diagnostic gap.
+
+        Swallows its own errors like its sibling hooks: an observer must never be
+        able to break the cleanup pass it rides on.
+        """
+        try:
+            stuck: list[tuple[str, float]] = []
+            live_parks: dict[str, float] = {}
+            async with self._lock:
+                for key, sess in self._sessions.items():
+                    # No turn in flight: the semaphore is the only in-flight
+                    # signal available at this layer, and a park is meaningless
+                    # without one.
+                    if not sess.semaphore.locked():
+                        continue
+                    # Duck-typed on the capability rather than the provider class,
+                    # so any transport that grows the same accessors is covered
+                    # without touching this hook.
+                    handle = getattr(sess.provider, "_handle", None)
+                    if handle is None:
+                        continue
+                    parked_for = getattr(handle, "parked_for_secs", None)
+                    if not callable(parked_for):
+                        continue
+                    parked = float(parked_for())
+                    if parked <= _STUCK_TURN_REPORT_SECS:
+                        continue
+                    if getattr(handle, "awaiting_permission", False):
+                        continue
+                    # Latch on the park's IDENTITY (the monotonic instant it
+                    # began), not its duration. The report threshold is below the
+                    # cleanup tick so a park is caught on the first pass that sees
+                    # it, which means a park outliving the tick would otherwise
+                    # re-warn and re-fire the callback every pass — and any future
+                    # consumer that DMs the user would inherit that dedup burden.
+                    began = getattr(handle, "parked_since", None)
+                    # A handle exposing the duration but not the identity cannot
+                    # be de-duplicated; report it once per tick rather than not
+                    # at all, since a missed stall is worse than a repeated line.
+                    ident = float(began) if isinstance(began, (int, float)) else parked
+                    live_parks[key] = ident
+                    if self._stuck_reported.get(key) == ident:
+                        continue
+                    stuck.append((key, parked))
+            # Drop latches for sessions that are no longer parked, so the same
+            # session parking again later reports afresh instead of being
+            # silenced by a stale entry.
+            self._stuck_reported = live_parks
+            # Reported outside the lock: the callback is consumer-supplied and
+            # must not run while the registry lock is held.
+            for key, parked in stuck:
+                logger.warning(
+                    "Turn on session %s has not been pulled for %.0fs — its "
+                    "consumer is parked, so the in-band watchdog cannot run",
+                    key,
+                    parked,
+                )
+                if self.on_stuck_turn:
+                    try:
+                        self.on_stuck_turn(key, parked)
+                    except Exception:
+                        logger.debug("on_stuck_turn callback failed", exc_info=True)
+        except Exception:
+            logger.exception("Cleanup loop: _stuck_turn_check crashed; continuing")
 
     async def _cleanup_loop(self) -> None:
         timeout = self._cfg.session.timeout_secs

@@ -435,6 +435,28 @@ _SESSION_RECYCLED_NOTICE = (
     "♻️ This session was recycled by the watchdog ({reason}). "
     "Conversation history is preserved — your next message starts a fresh process."
 )
+#: Shown when the out-of-band watchdog finds a turn whose consumer stopped
+#: pulling events. Deliberately describes the observation rather than promising a
+#: remedy: nothing is cancelled or retried, because what the turn is blocked on
+#: is not knowable from the loop that noticed. Stating a duration is the point —
+#: it is what distinguishes this from a turn that is merely slow.
+_STUCK_TURN_NOTICE = (
+    "⏳ This turn has produced nothing for {minutes} min and is not waiting on an "
+    "approval — it may be stuck. Nothing has been cancelled. Press Stop to end it "
+    "and try again."
+)
+
+
+def stuck_turn_notice(parked_secs: float) -> str:
+    """Render the stuck-turn notice for a park of ``parked_secs``.
+
+    Module-level and pure so the rounding is testable without standing up a whole
+    ``DashboardState``. Floors at 1 minute: the hook's threshold is minutes-scale,
+    so "0 min" would only ever read as a bug to the person seeing it.
+    """
+    return _STUCK_TURN_NOTICE.format(minutes=max(1, int(parked_secs // 60)))
+
+
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
 
 #: Roles that exist only on the wire: appended so a reader/flush can see them,
@@ -2376,6 +2398,40 @@ class DashboardState:
                 )
 
         self.sessions.set_recycle_callback(_on_recycled)
+
+        def _on_stuck_turn(key: str, parked_secs: float) -> None:
+            """Surface a stuck turn in the chat where it is happening.
+
+            Same delivery choice as the recycle notice above, for the same
+            reason: the person who needs to know is whoever is watching that
+            session, so the notice goes to that transcript rather than to a DM or
+            a global feed. A WARNING in the journal is not reaching a user.
+
+            Sync, unlike ``_on_recycled``: the hook that fires this is not
+            awaiting anything, and appending to a slot needs no I/O.
+            """
+            from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+            # A channel-born session's key is the channel's own even while its tab
+            # is open, so ask which tab displays it (see _on_recycled).
+            slot_key = dashboard_slot_key(key)
+            if not slot_key:
+                return
+            slot = self.get_slot(slot_key)
+            if slot is None:
+                return
+            message = stuck_turn_notice(parked_secs)
+            try:
+                # kind="compaction" for the same reason as the recycle notice: it
+                # keeps the dashboard's follow-up [OPTIONS:] backward scan from
+                # treating a proactive system notice as the turn's own output.
+                slot.append("assistant", message, "msg msg-a", meta={"kind": "compaction"})
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to append stuck-turn notice to slot %s", slot_key
+                )
+
+        self.sessions.on_stuck_turn = _on_stuck_turn
 
     def _count_lessons(self) -> int:
         """Count lessons from JSONL store + vector store (if enabled)."""
