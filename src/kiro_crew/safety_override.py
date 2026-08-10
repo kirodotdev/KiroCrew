@@ -412,19 +412,57 @@ class SafetyOverride:
         return RenewResult(renewed=True, ttl=ttl, source=source)
 
     def deactivate(self, source: str) -> None:
-        """Deactivate the override immediately.  No-op if already inactive."""
+        """Deactivate the override immediately.
+
+        Emits a ``safety_override:deactivate`` SEL event whenever a grant
+        exists in ANY form — live, or already lapsed via lazy expiry. Lazy
+        expiry (``is_active``) clears only ``_active`` and leaves the rest of
+        the grant's state in place, so ``_expires_at`` still holding a nonzero
+        deadline is what distinguishes "lapsed" from "never activated": the
+        0.0 sentinel means no grant ever existed (or it was already explicitly
+        deactivated), and only that case stays silent. The SEL stream is the
+        durable record of who changed the auto-approval posture, so an
+        operator's explicit decision to switch back to normal mode must be
+        recorded even when the TTL happened to elapse first.
+
+        Zeroing ``_expires_at`` here also closes the renew grace window, so a
+        grant the operator explicitly revoked cannot be resurrected by a
+        subsequent ``renew()`` — regardless of whether it was live or lapsed
+        at the time of the call.
+        """
+        now_mono = time.monotonic()
         with self._lock:
-            if not self._active:
+            if not self._active and self._expires_at <= 0.0:
                 return
+            # _active alone can overstate liveness: a lapsed TTL is only
+            # reconciled when is_active() polls, so derive liveness the same
+            # way renew() does — permanence or an unexpired deadline.
+            was_active = self._active and (self._permanent or self._expires_at > now_mono)
+            was_permanent = was_active and self._permanent
+            prior_source = self._source
+            remaining = (
+                -1
+                if was_permanent
+                else (max(0, int(self._expires_at - now_mono)) if was_active else 0)
+            )
             self._active = False
             self._permanent = False
             self._expires_at = 0.0
 
+        # SEL write happens OUTSIDE the lock (same rule as renew(): never hold
+        # the state lock across I/O). This is a REVOCATION, not a grant, so it
+        # is deliberately NOT fail-closed like _commit_activation: refusing to
+        # deactivate because an audit write failed would leave auto-approval
+        # ON, which is strictly worse. The state change above is unconditional.
         self._log_sel(
             caller="safety_override",
             operation="safety_override:deactivate",
             outcome="disabled",
-            resources=f"source:{source}",
+            resources=(
+                f"source:{source}, was_active:{was_active}, "
+                f"was_permanent:{was_permanent}, remaining:{remaining}s, "
+                f"prior_source:{prior_source}"
+            ),
         )
 
     # ── Task-scoped grants ───────────────────────────────────────────────────

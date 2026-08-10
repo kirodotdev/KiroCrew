@@ -182,6 +182,113 @@ class TestDeactivation:
         assert result.renewed is False
         assert result.reason == "not_active"
 
+    def test_deactivate_lapsed_grant_emits_sel(self, override: SafetyOverride) -> None:
+        """An explicit deactivate against a grant that already lapsed is an
+        operator DECISION and must reach the SEL sink — lazy expiry clearing
+        ``_active`` first must not swallow it."""
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack")
+        override._expires_at = time.monotonic() - 1
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            assert not override.is_active()  # trips lazy expiry
+        # Pin the discriminator: lazy expiry clears _active but NOT _expires_at,
+        # which is exactly why the deactivate guard must not key off _active.
+        assert override._active is False
+        assert override._expires_at > 0.0
+
+        mock_sel_instance = MagicMock()
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
+            override.deactivate("dashboard")
+        mock_sel_instance.log_api_access.assert_called_once()
+        kwargs = mock_sel_instance.log_api_access.call_args.kwargs
+        assert kwargs["operation"] == "safety_override:deactivate"
+        assert kwargs["outcome"] == "disabled"
+        assert "source:dashboard" in kwargs["resources"]
+        assert "was_active:False" in kwargs["resources"]
+        assert "was_permanent:False" in kwargs["resources"]
+        assert "remaining:0s" in kwargs["resources"]
+        assert "prior_source:slack" in kwargs["resources"]
+
+    def test_deactivate_live_grant_emits_sel_with_was_active(
+        self, override: SafetyOverride
+    ) -> None:
+        """A live-grant deactivate keeps its event, with was_active recording
+        that a real grant was revoked — the lapsed-grant event does not
+        replace or dilute the existing signal."""
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack", ttl=600)
+        mock_sel_instance = MagicMock()
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
+            override.deactivate("slack")
+        mock_sel_instance.log_api_access.assert_called_once()
+        kwargs = mock_sel_instance.log_api_access.call_args.kwargs
+        assert kwargs["operation"] == "safety_override:deactivate"
+        assert kwargs["outcome"] == "disabled"
+        assert "was_active:True" in kwargs["resources"]
+
+    def test_deactivate_permanent_grant_records_permanence(
+        self, override: SafetyOverride
+    ) -> None:
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate_declared()
+        mock_sel_instance = MagicMock()
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
+            override.deactivate("dashboard")
+        kwargs = mock_sel_instance.log_api_access.call_args.kwargs
+        assert "was_active:True" in kwargs["resources"]
+        assert "was_permanent:True" in kwargs["resources"]
+        assert "remaining:-1s" in kwargs["resources"]
+
+    def test_second_deactivate_is_silent(self, override: SafetyOverride) -> None:
+        """After an explicit deactivate the 0.0 sentinel is restored, so a
+        repeat call has no grant to report and emits nothing."""
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack")
+            override.deactivate("slack")
+        mock_sel_instance = MagicMock()
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
+            override.deactivate("slack")
+        mock_sel_instance.log_api_access.assert_not_called()
+
+    def test_deactivate_lapsed_unpolled_grant_reports_inactive(
+        self, override: SafetyOverride
+    ) -> None:
+        """A TTL that lapsed WITHOUT an intervening is_active() poll leaves
+        _active stale at True; the event must still report was_active:False —
+        liveness is derived from the deadline, not the unreconciled flag."""
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack")
+        override._expires_at = time.monotonic() - 1
+        assert override._active is True  # lazy expiry has NOT run
+        mock_sel_instance = MagicMock()
+        with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
+            override.deactivate("dashboard")
+        mock_sel_instance.log_api_access.assert_called_once()
+        kwargs = mock_sel_instance.log_api_access.call_args.kwargs
+        assert "was_active:False" in kwargs["resources"]
+        assert "remaining:0s" in kwargs["resources"]
+
+    def test_renew_after_deactivating_lapsed_grant_fails(
+        self, override: SafetyOverride
+    ) -> None:
+        """Deactivating a lapsed grant zeroes _expires_at, so the renew grace
+        window cannot resurrect an explicitly revoked grant."""
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("slack")
+            override._expires_at = time.monotonic() - 60  # lapsed, within 300s grace
+            assert not override.is_active()
+            override.deactivate("slack")
+            result = override.renew("slack")
+        assert result.renewed is False
+        assert result.reason == "not_active"
+
 
 # ─── Renewal ────────────────────────────────────────────────────────────────
 

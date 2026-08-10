@@ -1184,7 +1184,7 @@ SEL audit events are emitted on every lifecycle transition:
 - `safety_override:activate` — override enabled
 - `safety_override:renew` — session extended within grace window
 - `safety_override:expired` — TTL reached, auto-deactivated
-- `safety_override:deactivate` — manually disabled
+- `safety_override:deactivate` — manually disabled; emitted for every explicit deactivation against a grant that exists in any form, including one whose TTL already lapsed (`resources` records the pre-call state: `was_active`, `was_permanent`, `remaining`, `prior_source`). Only a never-activated instance stays silent.
 
 Fleet governance endpoints:
 - `/api/status` now reports `yolo_active` (bool) and `yolo_expires_at` (ISO 8601) fields
