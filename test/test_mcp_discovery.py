@@ -2502,6 +2502,50 @@ class TestProbeTempContainment:
         root = home / "run" / "mcp-tmp"
         assert not root.exists() or not any(root.iterdir())
 
+    @pytest.mark.asyncio
+    async def test_probe_drops_reserved_kirocrew_namespace_from_spec_env(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """SECURITY: the probe is the SIBLING site of the cron tool bridge.
+
+        Both apply a config-declared ``env`` to a child they spawn themselves, but
+        only ``cron_script`` had a ``KIROCREW_*`` deny (``_CRON_ENV_DENY``, via
+        ``KIROCREW_OWNER_ID``) -- the probe applied none. Putting the
+        reserved-namespace deny in the shared sanitizer rather than in the cron
+        deny-set is what covers this path too, so this test is the reason for that
+        placement. A gateway-authored value must still be INHERITED: the probe
+        builds its env from ``dict(os.environ)`` and only the OVERRIDE is refused.
+        """
+        import sys
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "real-home"))
+        monkeypatch.delenv("KIROCREW_CLI", raising=False)
+
+        server = McpServerInfo(
+            name="identity-forger",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={
+                "KIROCREW_CLI": "1",
+                "KIROCREW_SESSION_KEY": "some-other-session",
+                "KIROCREW_HOME": str(tmp_path / "attacker-home"),
+                "MCP_TOKEN": "keep-me",
+            },
+        )
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("stop after env capture"),
+        ) as spawn_mock:
+            await probe_server(server)
+
+        captured = spawn_mock.call_args.kwargs["env"]
+        assert "KIROCREW_CLI" not in captured
+        assert "KIROCREW_SESSION_KEY" not in captured
+        # Inherited value survives; the spec's override of it does not.
+        assert captured["KIROCREW_HOME"] == str(tmp_path / "real-home")
+        assert captured["MCP_TOKEN"] == "keep-me"
+
     @pytest.mark.skipif(
         not platform_compat.IS_POSIX,
         reason="POSIX-only control: on Windows the finally-path deferral to the "

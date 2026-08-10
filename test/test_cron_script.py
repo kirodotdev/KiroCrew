@@ -642,11 +642,13 @@ class TestResolveMcpServer:
     """Tests for _resolve_mcp_server config lookup."""
 
     def test_returns_none_for_missing_config(self, tmp_path):
+        _resolve_mcp_server.cache_clear()
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _resolve_mcp_server("nonexistent-server")
         assert result is None
 
-    def test_returns_argv_for_valid_config(self, tmp_path):
+    def test_returns_argv_and_env_for_valid_config(self, tmp_path):
+        _resolve_mcp_server.cache_clear()
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         config = {
@@ -657,7 +659,128 @@ class TestResolveMcpServer:
         (agents_dir / "kirocrew.json").write_text(json.dumps(config))
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _resolve_mcp_server("test-server")
-        assert result == ("node", "server.js", "--port", "3000")
+        # New shape: (argv, env). No env block in config -> empty env dict.
+        assert result == (("node", "server.js", "--port", "3000"), {})
+
+    def test_returns_env_block_from_config(self, tmp_path):
+        """Regression: the per-server `env` block (e.g. the PATH that makes a
+        launcher's helper binary resolvable) must be returned, not silently
+        dropped."""
+        _resolve_mcp_server.cache_clear()
+        agents_dir = tmp_path / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        config = {
+            "mcpServers": {
+                "path-server": {
+                    "command": "some-mcp",
+                    "args": ["--mode", "stdio"],
+                    "env": {"PATH": "/custom/path", "MCP_REGION": "us-east-1"},
+                }
+            }
+        }
+        (agents_dir / "kirocrew.json").write_text(json.dumps(config))
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            argv, env = _resolve_mcp_server("path-server")
+        assert argv == ("some-mcp", "--mode", "stdio")
+        assert env == {"PATH": "/custom/path", "MCP_REGION": "us-east-1"}
+
+    def test_env_values_coerced_to_str(self, tmp_path):
+        """env keys/values are stringified so a numeric config value can't crash
+        the subprocess env update."""
+        _resolve_mcp_server.cache_clear()
+        agents_dir = tmp_path / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        config = {
+            "mcpServers": {
+                "num-env": {
+                    "command": "node",
+                    "args": [],
+                    "env": {"PORT": 3000},
+                }
+            }
+        }
+        (agents_dir / "kirocrew.json").write_text(json.dumps(config))
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            _argv, env = _resolve_mcp_server("num-env")
+        assert env == {"PORT": "3000"}
+
+    @staticmethod
+    def _write_env_config(tmp_path, env_block):
+        """Write an agent config whose sole server declares *env_block*."""
+        agents_dir = tmp_path / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (agents_dir / "kirocrew.json").write_text(
+            json.dumps(
+                {"mcpServers": {"bad-env": {"command": "some-mcp", "env": env_block}}}
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "bad_key,bad_value,label",
+        [
+            ("A=B", "v", "'=' in name -> ValueError('illegal environment variable name')"),
+            ("A\0B", "v", "NUL in name -> ValueError('embedded null byte')"),
+            ("A", "v\0w", "NUL in value -> ValueError('embedded null byte')"),
+            ("", "v", "empty name -> unreachable, getenv('') is always NULL"),
+        ],
+    )
+    def test_env_entry_popen_would_reject_is_dropped(
+        self, tmp_path, bad_key, bad_value, label
+    ):
+        """An env pair Popen refuses is dropped here, not carried to the spawn.
+
+        Popen validates the env BEFORE the fork and fails the whole spawn over
+        one bad pair, so carrying any of these through aborted every
+        ``ctx.call_tool`` for the server with a traceback naming Popen instead of
+        the config. Dropping is per-entry: the well-formed sibling must survive,
+        or the fix would trade a crash for the env-drop bug this function exists
+        to fix.
+        """
+        _resolve_mcp_server.cache_clear()
+        self._write_env_config(tmp_path, {bad_key: bad_value, "MCP_REGION": "us-east-1"})
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            _argv, env = _resolve_mcp_server("bad-env")
+        # The malformed entry is gone...
+        assert bad_key not in env, label
+        # ...and the honourable sibling is untouched.
+        assert env == {"MCP_REGION": "us-east-1"}
+
+    @pytest.mark.skipif(
+        not pc.IS_POSIX,
+        reason="asserts the POSIX execve env contract Popen enforces "
+               "(`=`/NUL -> ValueError); Windows validates its env block differently",
+    )
+    def test_resolved_env_clears_the_popen_boundary_that_rejected_it(self, tmp_path):
+        """End of the crash path, asserted where it actually decides.
+
+        The test above proves the pairs are filtered. This one hands both shapes
+        to the real ``Popen`` and pins the difference: the raw config env raises
+        ValueError before any fork, the resolved env gets far enough to fail on
+        the missing binary instead. The baseline half matters -- without it a
+        future refactor that stops filtering would still pass, since a test that
+        only asserts "no ValueError" cannot tell a fixed boundary from one that
+        never rejected anything.
+        """
+        import subprocess
+
+        _resolve_mcp_server.cache_clear()
+        raw_block = {"A=B": "v", "N\0K": "v", "NV": "v\0w", "": "v", "MCP_REGION": "us-east-1"}
+        self._write_env_config(tmp_path, raw_block)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            _argv, env = _resolve_mcp_server("bad-env")
+
+        missing = str(tmp_path / "does-not-exist")
+        # Baseline: each rejected shape really is a spawn-killer, so the pass
+        # below means the filter worked rather than that Popen tolerates it.
+        # The empty name is absent here on purpose -- Popen accepts it, and it is
+        # dropped for being unreachable by the child rather than for crashing.
+        for key, value in [("A=B", "v"), ("N\0K", "v"), ("NV", "v\0w")]:
+            with pytest.raises(ValueError):
+                subprocess.Popen([missing], env={**env, key: value})
+        # The resolved env clears env encoding and dies on the absent command --
+        # a different failure, reached only after the env was accepted.
+        with pytest.raises(FileNotFoundError):
+            subprocess.Popen([missing], env=env)
 
 
 class TestExceptionClasses:
@@ -707,6 +830,287 @@ class TestMcpToolClient:
         client._sandbox_cleanup = None
         client.close()
         client._proc.terminate.assert_called_once()
+
+    def test_init_passes_spec_env_to_popen_and_scrubs_secrets(self, monkeypatch):
+        """Regression: McpToolClient must hand the spawned MCP subprocess the
+        per-server `env` (so a launcher can resolve its helper binary on PATH)
+        while still scrubbing cron secrets (Slack tokens / owner id)."""
+        from kiro_crew.cron_script import (
+            _CRON_ENV_DENY,
+            McpToolClient,
+            _resolve_mcp_server,
+        )
+
+        _resolve_mcp_server.cache_clear()
+        # A secret that must NEVER reach the child subprocess env...
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-should-not-leak")
+        # ...and an ordinary var that SHOULD be inherited from the cron env.
+        monkeypatch.setenv("KIROCREW_PROBE_VAR", "keep-me")
+
+        # Mock proc whose stdout answers the initialize handshake (id == 1).
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stdout.readline.return_value = (
+            '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+        )
+
+        # The spec env carries the PATH the launcher needs, plus a denied key to
+        # prove the deny-set is applied to the spec overlay too.
+        spec_env = {"PATH": "/custom/launcher/path", "SLACK_BOT_TOKEN": "spec-also-blocked"}
+        with patch(
+            "kiro_crew.cron_script._resolve_mcp_server",
+            return_value=(("some-mcp", "--mode", "stdio"), spec_env),
+        ), patch(
+            "kiro_crew.cron_script.wrap_argv",
+            return_value=(["some-mcp", "--mode", "stdio"], None),
+        ), patch(
+            "kiro_crew.cron_script.cgroup_scope_argv",
+            side_effect=lambda argv: argv,
+        ), patch(
+            "kiro_crew.cron_script.popen_limited", return_value=mock_proc
+        ) as mock_popen:
+            client = McpToolClient("path-server")
+            client.close()
+
+        passed_env = mock_popen.call_args.kwargs["env"]
+        # Spec PATH is forwarded so the launcher can find its helper binary.
+        assert passed_env["PATH"] == "/custom/launcher/path"
+        # Ordinary inherited vars survive.
+        assert passed_env.get("KIROCREW_PROBE_VAR") == "keep-me"
+        # The denied secret is scrubbed from BOTH the inherited env and the
+        # spec overlay (it never reaches the child).
+        assert "SLACK_BOT_TOKEN" not in passed_env
+        assert "SLACK_BOT_TOKEN" in _CRON_ENV_DENY
+
+    def _mock_handshake_proc(self):
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stdout.readline.return_value = '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+        return mock_proc
+
+    def test_init_leaves_an_operator_command_argv0_for_the_spec_path_to_resolve(
+        self, tmp_path, monkeypatch
+    ):
+        """The spawn site must NOT re-pin argv[0].
+
+        Confinement wrappers are pinned to absolute paths by the functions that
+        prepend them (``cgroup_scope_argv``, ``sandbox_exec_argv``), so nothing is
+        left for this spawn site to protect. Re-pinning here would be actively
+        wrong on the fail-open no-sandbox path, where NO wrapper is prepended and
+        argv[0] is the OPERATOR-declared command: resolving that against the
+        gateway's own directories would silently run a different copy than the one
+        the spec ``PATH`` selects -- overriding the very PATH forwarding this PR
+        exists to deliver. Regression guard for that inversion.
+        """
+        from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
+
+        _resolve_mcp_server.cache_clear()
+
+        # The SAME command name exists in two places: one on the gateway's PATH,
+        # one on the spec PATH. The spec's copy is the one the operator asked for.
+        gateway_dir = tmp_path / "gateway"
+        gateway_dir.mkdir()
+        spec_dir = tmp_path / "spec"
+        spec_dir.mkdir()
+        for d in (gateway_dir, spec_dir):
+            binary = d / "some-mcp"
+            binary.write_text("#!/bin/sh\n")
+            binary.chmod(0o755)
+        monkeypatch.setenv("PATH", str(gateway_dir))
+
+        spec_env = {"PATH": str(spec_dir)}
+        with patch(
+            "kiro_crew.cron_script._resolve_mcp_server",
+            return_value=(("some-mcp",), spec_env),
+        ), patch(
+            # Fail-open no-sandbox path: neither helper prepends a wrapper, so
+            # argv[0] stays the operator's own command.
+            "kiro_crew.cron_script.wrap_argv",
+            return_value=(["some-mcp"], None),
+        ), patch(
+            "kiro_crew.cron_script.cgroup_scope_argv",
+            side_effect=lambda argv: list(argv),
+        ), patch(
+            "kiro_crew.cron_script.popen_limited", return_value=self._mock_handshake_proc()
+        ) as mock_popen:
+            client = McpToolClient("path-server")
+            client.close()
+
+        popen_argv = mock_popen.call_args.args[0]
+        passed_env = mock_popen.call_args.kwargs["env"]
+        # Handed to Popen verbatim -- NOT rewritten to the gateway's copy.
+        assert popen_argv[0] == "some-mcp"
+        assert str(gateway_dir) not in popen_argv[0]
+        # ...so the spec PATH is what resolves it.
+        assert passed_env["PATH"] == str(spec_dir)
+
+    def test_init_drops_loader_injection_keys_from_spec_env(self, monkeypatch):
+        """SECURITY regression: a spec ``env`` must not carry loader/interpreter
+        injection keys into the spawn.
+
+        ``_CRON_ENV_DENY`` covers secrets, NOT ``LD_*``/``DYLD_*``/``PYTHON*``, and
+        the spec env is externally authorable (pasted ``mcpServers`` blocks). Those
+        keys are honoured by the dynamic loader/interpreter INSIDE the confinement
+        wrapper process -- i.e. before the wrapper establishes containment -- so
+        forwarding them is arbitrary pre-confinement code execution. Pinning
+        argv[0] does not help: the loader acts on the pinned binary. The spec env
+        therefore goes through ``env.sanitize_spec_env``, the same filter the
+        discovery probe uses. ``PATH`` is deliberately NOT dropped -- forwarding it
+        is the feature.
+        """
+        from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
+
+        _resolve_mcp_server.cache_clear()
+        for key in ("LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "PYTHONPATH"):
+            monkeypatch.delenv(key, raising=False)
+
+        spec_env = {
+            "LD_PRELOAD": "/tmp/evil.so",
+            "LD_LIBRARY_PATH": "/tmp/evil-libs",
+            "DYLD_INSERT_LIBRARIES": "/tmp/evil.dylib",
+            "PYTHONPATH": "/tmp/evil-py",
+            # Lowercase reaches the loader on Windows, where env names are
+            # case-insensitive; the sanitizer folds case for that reason.
+            "ld_preload": "/tmp/evil-lower.so",
+            "PATH": "/opt/helper/bin",
+            "MCP_TOKEN": "keep-me",
+        }
+        with patch(
+            "kiro_crew.cron_script._resolve_mcp_server",
+            return_value=(("some-mcp",), spec_env),
+        ), patch(
+            "kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)
+        ), patch(
+            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: list(argv)
+        ), patch(
+            "kiro_crew.cron_script.popen_limited", return_value=self._mock_handshake_proc()
+        ) as mock_popen:
+            client = McpToolClient("path-server")
+            client.close()
+
+        passed_env = mock_popen.call_args.kwargs["env"]
+        for denied in (
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "PYTHONPATH",
+            "ld_preload",
+        ):
+            assert denied not in passed_env, f"{denied} reached the spawn"
+        # The point of the PR survives the filter.
+        assert passed_env["PATH"] == "/opt/helper/bin"
+        assert passed_env["MCP_TOKEN"] == "keep-me"
+
+    def test_init_drops_reserved_kirocrew_namespace_from_spec_env(self, monkeypatch):
+        """SECURITY regression: a spec ``env`` must not forge caller identity.
+
+        The server this bridge most often spawns is ``kirocrew-cron`` itself, and
+        ``mcp_cron._caller_is_cli()`` is just ``os.environ.get("KIROCREW_CLI") ==
+        "1"`` -- a true return makes every cron tool skip per-session ownership.
+        So a ``KIROCREW_CLI: "1"`` in that server's ``env`` block would let a
+        SCRIPT CRON present itself as the admin CLI and call ``cron_remove_all``
+        over every session's jobs, plus read every session's rows through
+        ``cron_list``.
+
+        Neither existing filter stops it: ``_CRON_ENV_DENY`` covers secrets and
+        ``KIROCREW_OWNER_ID``, and the loader prefixes cover ``LD_*``/``PYTHON*``.
+        And unlike those, the OS sandbox is not a mitigation at all -- confinement
+        bounds what the child may touch, not whose jobs Kiro Crew believes it
+        owns. Hence the reserved-namespace deny in the shared sanitizer.
+        """
+        from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
+
+        _resolve_mcp_server.cache_clear()
+        for key in ("KIROCREW_CLI", "KIROCREW_SESSION_KEY", "KIROCREW_HOST_PID"):
+            monkeypatch.delenv(key, raising=False)
+
+        spec_env = {
+            # The reported finding.
+            "KIROCREW_CLI": "1",
+            # Siblings in the same class: two of the three sources the STRICT
+            # session resolver accepts because "an agent cannot write them".
+            "KIROCREW_SESSION_KEY": "some-other-session",
+            "KIROCREW_HOST_PID": "4242",
+            # Lowercase reaches the same lookup on Windows.
+            "kirocrew_cli": "1",
+            # ...and the forwarding this PR exists to deliver still works.
+            "PATH": "/opt/helper/bin",
+            "MCP_TOKEN": "keep-me",
+        }
+        with patch(
+            "kiro_crew.cron_script._resolve_mcp_server",
+            return_value=(("some-mcp",), spec_env),
+        ), patch(
+            "kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)
+        ), patch(
+            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: list(argv)
+        ), patch(
+            "kiro_crew.cron_script.popen_limited", return_value=self._mock_handshake_proc()
+        ) as mock_popen:
+            client = McpToolClient("kirocrew-cron")
+            client.close()
+
+        passed_env = mock_popen.call_args.kwargs["env"]
+        for denied in (
+            "KIROCREW_CLI",
+            "KIROCREW_SESSION_KEY",
+            "KIROCREW_HOST_PID",
+            "kirocrew_cli",
+        ):
+            assert denied not in passed_env, f"{denied} reached the spawn"
+        assert passed_env["PATH"] == "/opt/helper/bin"
+        assert passed_env["MCP_TOKEN"] == "keep-me"
+
+    def test_caller_is_cli_cannot_be_forged_through_a_cron_spec_env_block(
+        self, monkeypatch
+    ):
+        """The end of the attack path, asserted where it actually decides.
+
+        The test above proves the key never reaches the child env. This one runs
+        the real consumer against that env: ``_caller_is_cli()`` evaluated in the
+        environment the spawned server would have started with must be False, so
+        the admin bypass is unreachable from a cron spec's ``env`` block even if
+        some future refactor changes which filter drops the key.
+
+        SCOPE, deliberately narrow: this covers the ``env`` block only, which is
+        the channel ``sanitize_spec_env`` controls. The same spec's ``command``
+        field is equally config-authored and reaches the identical consumer
+        (``sh -c 'KIROCREW_CLI=1 exec kirocrew-cron'``), so it is a sibling
+        forgery channel this filter does not close and this test does not claim
+        to -- confinement bounds what the child may touch, not whose jobs Kiro
+        Crew believes it owns. Closing it needs consumer-side vouching rather
+        than another deny-list, which is a separate change; naming the boundary
+        here keeps the assertion honest about which half is proven.
+        """
+        from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
+        from kiro_crew.mcp_cron import _caller_is_cli
+
+        _resolve_mcp_server.cache_clear()
+        monkeypatch.delenv("KIROCREW_CLI", raising=False)
+        # Baseline: the flag really is the bypass, so a False below means the
+        # filter worked rather than that the flag never mattered.
+        monkeypatch.setenv("KIROCREW_CLI", "1")
+        assert _caller_is_cli() is True
+        monkeypatch.delenv("KIROCREW_CLI")
+
+        with patch(
+            "kiro_crew.cron_script._resolve_mcp_server",
+            return_value=(("some-mcp",), {"KIROCREW_CLI": "1"}),
+        ), patch(
+            "kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)
+        ), patch(
+            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: list(argv)
+        ), patch(
+            "kiro_crew.cron_script.popen_limited", return_value=self._mock_handshake_proc()
+        ) as mock_popen:
+            client = McpToolClient("kirocrew-cron")
+            client.close()
+
+        child_env = mock_popen.call_args.kwargs["env"]
+        with patch.dict("os.environ", child_env, clear=True):
+            assert _caller_is_cli() is False
 
     def test_rpc_disconnect_includes_rc_and_stderr_tail(self, tmp_path):
         """a handshake EOF must surface exit code + stderr tail."""
@@ -1130,16 +1534,19 @@ class TestResolveMcpServerAimFallback:
     """Tests for _resolve_mcp_server AIM agent spec fallback."""
 
     def test_aim_fallback_path(self, tmp_path):
-        # No kirocrew.json, but an AIM agent spec exists
+        # No kirocrew.json, but a fallback agent spec exists
+        _resolve_mcp_server.cache_clear()
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         config = {"mcpServers": {"builder-mcp": {"command": "npx", "args": ["-y", "builder-mcp"]}}}
         (agents_dir / "my-kirocrew-agent.json").write_text(json.dumps(config))
         with patch("pathlib.Path.home", return_value=tmp_path):
             result = _resolve_mcp_server("builder-mcp")
-        assert result == ("npx", "-y", "builder-mcp")
+        # Fallback path returns the same (argv, env) shape; no env block -> {}.
+        assert result == (("npx", "-y", "builder-mcp"), {})
 
     def test_server_not_in_config(self, tmp_path):
+        _resolve_mcp_server.cache_clear()
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         config = {"mcpServers": {"other-server": {"command": "node", "args": []}}}

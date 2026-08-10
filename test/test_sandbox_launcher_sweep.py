@@ -62,20 +62,31 @@ def _isolated_legacy_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 class TestNamespaceArgvPlacement:
     """namespace_argv() launcher lands in ~/.kirocrew/run/ with PID."""
 
+    @staticmethod
+    def _launcher_of(argv: list[str]) -> str:
+        """The generated launcher script within *argv*.
+
+        Located by suffix rather than a fixed index: the argv is
+        ``[python, *interpreter_flags, launcher_path, *real_argv]`` and that flag
+        list is itself a security control that can legitimately grow (it gained
+        ``-I -S`` to stop startup-time code execution), so indexing would make
+        these placement tests break on unrelated hardening.
+        """
+        return next(a for a in argv if a.endswith(".py"))
+
     @patch("kiro_crew.sandbox.detect_backend", return_value="namespace")
     def test_launcher_in_run_dir(self, _mock_detect, fake_home: Path):
         run_dir = fake_home / ".kirocrew" / "run"
         result = namespace_argv(["kiro-cli", "--version"])
 
-        # Result should be [python, launcher_path, *real_argv]
         assert len(result) >= 2
-        launcher = result[1]
+        launcher = self._launcher_of(result)
         assert launcher.startswith(str(run_dir)), f"launcher {launcher} not under {run_dir}"
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="namespace")
     def test_launcher_has_pid_in_name(self, _mock_detect, fake_home: Path):
         result = namespace_argv(["kiro-cli", "--version"])
-        launcher = Path(result[1])
+        launcher = Path(self._launcher_of(result))
         # Filename pattern: kirocrew_sandbox_{pid}_{random}.py
         assert launcher.name.startswith(f"kirocrew_sandbox_{os.getpid()}_")
         assert launcher.suffix == ".py"
@@ -83,7 +94,7 @@ class TestNamespaceArgvPlacement:
     @patch("kiro_crew.sandbox.detect_backend", return_value="namespace")
     def test_launcher_is_executable(self, _mock_detect, fake_home: Path):
         result = namespace_argv(["kiro-cli", "--version"])
-        launcher = result[1]
+        launcher = self._launcher_of(result)
         stat = os.stat(launcher)
         assert stat.st_mode & 0o700 == 0o700
 

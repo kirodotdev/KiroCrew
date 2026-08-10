@@ -337,7 +337,9 @@ class TestFlagIsOtherwiseInert:
         assert with_flag == without_flag == (_ARGV, None)
 
     def test_backend_available_flag_is_inert(self, monkeypatch):
-        stub = ["launcher", "/tmp/launcher.py", *_ARGV]
+        # Real namespace_argv shape: [python, *interpreter_flags, script, *argv].
+        script = "/tmp/launcher.py"
+        stub = ["launcher", *sandbox_mod._LAUNCHER_INTERPRETER_FLAGS, script, *_ARGV]
         monkeypatch.setattr(
             sandbox_mod, "detect_backend", lambda config_mode="auto": "namespace"
         )
@@ -346,7 +348,7 @@ class TestFlagIsOtherwiseInert:
         )
         with_flag = wrap_argv(_ARGV, mode="standard", first_party_fixed_argv=True)
         without_flag = wrap_argv(_ARGV, mode="standard")
-        assert with_flag == without_flag == (stub, stub[1])
+        assert with_flag == without_flag == (stub, script)
 
 
 class TestChokepointThreading:

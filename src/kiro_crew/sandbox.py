@@ -2270,6 +2270,35 @@ def _ensure_run_dir() -> str:
     return run_dir
 
 
+# Interpreter flags for the namespace launcher. These matter for CONFINEMENT
+# ORDERING, not tidiness: the launcher IS a Python process, and everything the
+# interpreter does at startup happens BEFORE the script reaches ``unshare``. With
+# site processing enabled, ``site`` executes code from env-derived paths at startup
+# -- user-site ``.pth`` files (whose location comes from ``PYTHONUSERBASE``, else
+# ``HOME``) and ``sitecustomize`` (from ``PYTHONPATH``). For a config-declared
+# server ``env`` block that is externally authorable text, so it is arbitrary code
+# running unconfined. No argv[0] pin helps: the interpreter is the pinned binary.
+#   -I (isolated) ignores PYTHON* startup vars and drops the script dir from
+#      sys.path; implies -E and -s.
+#   -S skips ``site`` altogether, which is what closes the class rather than
+#      individual keys -- no .pth and no sitecustomize run at all.
+# Safe because the generated launcher imports stdlib only (sys, os, stat, struct,
+# tempfile, platform, ctypes) and never needs site-packages. The namespace probe
+# and spawn shims already start their interpreters with these exact flags; this
+# launcher was the one Python entrypoint that did not.
+_LAUNCHER_INTERPRETER_FLAGS: tuple[str, ...] = ("-I", "-S")
+
+
+def _launcher_script_of(launcher_argv: list[str]) -> str:
+    """The generated launcher script inside a ``namespace_argv`` result.
+
+    Derived from the flag count rather than hardcoded, so adding a flag cannot
+    silently return a flag token where a path is expected — which would both leak
+    the tempfile and hand the caller ``"-I"`` to ``unlink``.
+    """
+    return launcher_argv[1 + len(_LAUNCHER_INTERPRETER_FLAGS)]
+
+
 def namespace_argv(
     argv: list[str],
     sandbox_level: str = "strict",
@@ -2302,7 +2331,7 @@ def namespace_argv(
     os.close(fd)
     platform_compat.chmod_safe(path, 0o700)
 
-    return [sys.executable, path, *resolved_argv]
+    return [sys.executable, *_LAUNCHER_INTERPRETER_FLAGS, path, *resolved_argv]
 
 
 # ── Backend: macOS sandbox-exec ──
@@ -2429,6 +2458,33 @@ _KIRO_INTERNAL_SANDBOX_KEY = "sandbox"
 # One loud warning per process for the delegation decision (per-spawn logs
 # would spam warm-pool refills); every delegated spawn is still SEL-audited.
 _kiro_delegation_warned = False
+
+
+def _pinned_env_bin() -> str:
+    """Absolute path to ``env``, resolved WITHOUT consulting PATH.
+
+    ``env`` is the process that applies the credential scrub (``env -u KEY ...``)
+    on the delegation paths, where no Seatbelt/namespace layer wraps the child.
+    A bare ``"env"`` token is resolved by the OS through the PATH in the
+    environment we hand ``Popen`` -- and on the script-cron MCP path that PATH can
+    come from a config-declared server ``env`` block. Redirecting ``env`` does not
+    merely run an attacker binary: it means the scrub NEVER RUNS, so the child
+    receives the very credentials (Slack tokens, owner id) the ``-u`` flags exist
+    to strip, and can exfiltrate them. Pinning is therefore load-bearing on these
+    paths even though they intentionally apply no OS confinement of our own.
+
+    ``trusted_system_bin`` ignores ``os.environ`` PATH entirely (fixed system dirs
+    only); the ``/usr/bin/env`` fallback matches the idiom already used by
+    ``sandbox_exec_argv`` and ``cgroup_scope_argv`` so an unusual host layout
+    still yields an absolute path rather than a redirectable bare name.
+
+    Deliberately does NOT pin the inner command: that is the operator's agent or
+    server binary (``kiro-cli``, ``npx``, ...), which legitimately must be found on
+    PATH, and it carries the same config-file trust level as the ``env`` block
+    itself -- an author who can set PATH can already set ``command`` directly, so
+    pinning it would buy nothing while breaking normal installs.
+    """
+    return platform_compat.trusted_system_bin("env") or "/usr/bin/env"
 
 
 def kiro_internal_sandbox_enabled() -> bool:
@@ -2558,7 +2614,7 @@ def _delegate_to_kiro_internal_sandbox(
         return list(argv), None
     unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env)
     if unset_args:
-        return ["env", *unset_args, *argv], None
+        return [_pinned_env_bin(), *unset_args, *argv], None
     return list(argv), None
 
 
@@ -2608,8 +2664,24 @@ def sandbox_exec_argv(
     # position so the scrub cannot drop it — an in-sandbox wrap_argv
     # passthrough compares it against the requested tier to detect downgrades.
     level_assign = f"{_IN_SANDBOX_LEVEL_VAR}={sandbox_level}"
+    # SECURITY: BOTH wrappers this function prepends are pinned here, at the layer
+    # that prepends them, so no spawn site has to remember to re-pin (the caller's
+    # ``env`` may carry a config-declared PATH, and CPython resolves a slash-less
+    # argv[0] through THAT PATH via os.get_exec_path):
+    #   * the outer ``env`` (argv[0]), which runs first of all;
+    #   * the inner ``sandbox-exec``, which ``env`` itself resolves through the
+    #     PATH in the environment it is handed -- BEFORE the Seatbelt profile is
+    #     applied, so a hostile PATH there is a pre-confinement escape.
+    # ``trusted_system_bin`` ignores PATH entirely rather than reading os.environ:
+    # a gateway's PATH can legitimately lead with agent-writable directories
+    # (a worktree venv's bin, ~/.local/bin), so resolving through it would leave
+    # the hole half-open. Both fall back to their canonical macOS locations,
+    # matching the _probe_sandbox_exec probe, so a host with an unusual layout
+    # still gets an absolute path rather than a redirectable bare name.
+    outer_env = _pinned_env_bin()
+    sandbox_exec = platform_compat.trusted_system_bin("sandbox-exec") or "/usr/bin/sandbox-exec"
     return (
-        ["env", *unset_args, marker, level_assign, "sandbox-exec", "-f", path, *resolved_argv],
+        [outer_env, *unset_args, marker, level_assign, sandbox_exec, "-f", path, *resolved_argv],
         path,
     )
 
@@ -3675,7 +3747,7 @@ def wrap_argv(
                 )
             unset_args = _sandbox_env_unset_args("standard", strip_python_env)
             if unset_args:
-                return ["env", *unset_args, *argv], None
+                return [_pinned_env_bin(), *unset_args, *argv], None
             return list(argv), None
         # Fix #3: Make the degradation loud — both layers are inactive.
         _warn_mode_off_unconfined(argv, kiro_spawn_off)
@@ -3885,8 +3957,11 @@ def wrap_argv(
                 sandbox_level,
                 strip_python_env=strip_python_env,
             )
-        # The launcher script is argv[1] — caller should clean it up
-        return wrapped, wrapped[1]
+        # Caller deletes the generated launcher script. Its position is
+        # ``1 + len(flags)``, NOT a hardcoded 1: the interpreter flags sit between
+        # the executable and the script, so hardcoding leaks the tempfile (and
+        # hands the caller a flag to unlink) the moment that list changes.
+        return wrapped, _launcher_script_of(wrapped)
     if backend == "sandbox-exec":
         if extra_hidden_dirs or extra_visible_dirs:
             return sandbox_exec_argv(
@@ -4889,11 +4964,34 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     On a host without cgroup v2 delegation (older Linux, no systemd user
     session, macOS), returns *argv* unchanged and logs a one-time loud SECURITY
     warning — the RLIMIT_NOFILE preexec still applies, but the fork-bomb/memory
-    DoS ceiling is NOT enforced there.
+    DoS ceiling is NOT enforced there. The same degradation applies when
+    ``systemd-run`` resolves outside the trusted system directories: prepending
+    an unpinned wrapper name would trade a DoS ceiling for an exec-hijack
+    channel, which is the worse of the two.
+
+    The returned wrapper is an ABSOLUTE path, so callers may hand the result to
+    a spawn whose ``env`` carries a config-declared PATH without that PATH being
+    able to redirect argv[0].
     """
     available, reason = _probe_cgroup_scope()
     if not available:
         _warn_cgroup_unavailable(reason)
+        return argv
+    # SECURITY: the wrapper this function prepends becomes argv[0], and a caller
+    # that hands the result to a spawn with a config-influenced ``env`` has
+    # CPython resolve a slash-less argv[0] through THAT env's PATH
+    # (os.get_exec_path) -- so a bare name here is an exec-hijack channel that
+    # runs BEFORE ``--scope`` establishes confinement. Pin it at the layer that
+    # prepends it, so every caller inherits the protection rather than each
+    # spawn site remembering to re-pin (the same reason ``sandbox_exec_argv``
+    # pins its own wrappers). ``trusted_system_bin`` ignores PATH entirely: a
+    # gateway's PATH can legitimately lead with agent-writable directories, so
+    # resolving through it would leave the hole half-open. An unresolvable
+    # wrapper degrades exactly like a missing cgroup backend -- no ceiling, loud
+    # warning -- rather than emitting an unpinned name.
+    systemd_run = platform_compat.trusted_system_bin("systemd-run")
+    if not systemd_run:
+        _warn_cgroup_unavailable("systemd-run is not in a trusted system directory")
         return argv
     # Reconcile the slice-level aggregate ceiling off-thread: this call site
     # runs on the gateway event loop during agent spawn, and reconciliation
@@ -4916,7 +5014,7 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         if max_cpu_percent > 0:
             props += ["-p", f"CPUQuota={max_cpu_percent}%"]
     return [
-        "systemd-run",
+        systemd_run,
         "--user",
         "--scope",
         "-q",

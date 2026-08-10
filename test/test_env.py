@@ -1185,6 +1185,30 @@ class TestSanitizeSpecEnv:
         )
         assert out == {"TOKEN": "t"}
 
+    def test_pythonuserbase_is_dropped(self) -> None:
+        """User-site relocation is the same startup-execution channel.
+
+        ``PYTHONUSERBASE`` moves user-site, and ``site.py`` EXECUTES ``.pth`` lines
+        found there during interpreter startup. The launcher now also runs ``-I
+        -S`` (which is what truly closes this), but the sanitizer is the primary
+        control for any future launcher that forgets those flags, so it must cover
+        the key in its own right.
+        """
+        out = env_mod.sanitize_spec_env(
+            [("PYTHONUSERBASE", "/tmp/evil"), ("pythonuserbase", "/tmp/evil2"), ("OK", "1")]
+        )
+        assert out == {"OK": "1"}
+
+    def test_home_is_deliberately_not_dropped(self) -> None:
+        """Documents a deliberate boundary, so a future reader does not "fix" it.
+
+        ``HOME`` also derives user-site when ``PYTHONUSERBASE`` is unset, but many
+        servers legitimately need it, so stripping it would break real configs. The
+        launcher's ``-I -S`` closes that path instead: with site processing off, no
+        ``.pth`` runs regardless of where the paths point.
+        """
+        assert env_mod.sanitize_spec_env([("HOME", "/home/u")]) == {"HOME": "/home/u"}
+
     def test_benign_env_passes_untouched(self) -> None:
         pairs = [("TOKEN", "t"), ("MODE", "prod"), ("LANG", "C")]
         assert env_mod.sanitize_spec_env(pairs) == dict(pairs)
@@ -1213,6 +1237,96 @@ class TestSanitizeSpecEnv:
         assert out["LD_PRELOAD"] == "/x.so"
 
 
+class TestSanitizeSpecEnvReservedNamespace:
+    """SECURITY: a config-declared ``env`` may not author the ``KIROCREW_``
+    namespace, because that namespace carries the caller identity our own
+    authorization checks read.
+
+    Distinct class from the loader prefixes: confinement does not mitigate it.
+    A sandbox bounds what the child may touch, not whose scheduled jobs Kiro
+    Crew believes the child is entitled to delete.
+    """
+
+    def test_caller_identity_keys_are_dropped(self) -> None:
+        """The four vouched-for identity channels, and the shared secret.
+
+        ``KIROCREW_CLI`` is the admin-bypass flag (``_caller_is_cli``);
+        ``KIROCREW_SESSION_KEY``/``KIROCREW_HOST_PID`` are two of the three
+        sources ``_resolve_session_key_strict`` accepts *on the grounds that an
+        agent cannot write them*; ``KIROCREW_OWNER_ID`` is the Slack owner.
+        """
+        out = env_mod.sanitize_spec_env(
+            [
+                ("KIROCREW_CLI", "1"),
+                ("KIROCREW_SESSION_KEY", "victim-session"),
+                ("KIROCREW_HOST_PID", "4242"),
+                ("KIROCREW_CHANNEL_ID", "C0DEADBEEF"),
+                ("KIROCREW_OWNER_ID", "UATTACKER"),
+                ("KIROCREW_INTERNAL_SECRET", "s3cret"),
+                ("MCP_TOKEN", "keep-me"),
+                ("PATH", "/opt/helper/bin"),
+            ]
+        )
+        assert out == {"MCP_TOKEN": "keep-me", "PATH": "/opt/helper/bin"}
+
+    def test_whole_namespace_is_denied_not_a_key_list(self) -> None:
+        """The point of the prefix: a variable nobody has invented yet is
+        already covered.
+
+        A key-by-key denylist fails open for the next identity variable someone
+        adds, which is why the control is stated as "a config cannot author our
+        namespace" instead.
+        """
+        out = env_mod.sanitize_spec_env(
+            [
+                ("KIROCREW_SANDBOX_LEVEL", "none"),
+                ("KIROCREW_APPROVAL_MODE", "yolo"),
+                ("KIROCREW_NOT_A_REAL_VAR_YET", "x"),
+                ("OK", "1"),
+            ]
+        )
+        assert out == {"OK": "1"}
+
+    def test_matching_is_case_insensitive(self) -> None:
+        """Windows env names are case-insensitive, so ``kirocrew_cli`` reaches
+        ``os.environ.get("KIROCREW_CLI")`` there exactly like the upper spelling.
+        """
+        out = env_mod.sanitize_spec_env(
+            [("kirocrew_cli", "1"), ("KiroCrew_Session_Key", "v"), ("OK", "1")]
+        )
+        assert out == {"OK": "1"}
+
+    def test_unrelated_namespaces_are_untouched(self) -> None:
+        """Scoped deliberately: only OUR namespace is reserved.
+
+        ``MC_*`` is the legacy prefix and carries no identity variable (only
+        ``MC_MCP_SOCKET``/``MC_MCP_LOG``/``MC_GATEWAYD_LOG`` diagnostics), and a
+        server's own ``KIRO*`` settings are its business.
+        """
+        pairs = [
+            ("MC_MCP_LOG", "/tmp/x.log"),
+            ("KIRO_SOMETHING", "1"),
+            ("MY_KIROCREW_VAR", "1"),
+        ]
+        assert env_mod.sanitize_spec_env(pairs) == dict(pairs)
+
+    def test_denying_the_overlay_cannot_strip_an_inherited_value(self) -> None:
+        """Why the namespace deny is safe, stated as a test.
+
+        Callers build the child env from ``os.environ`` FIRST and overlay the
+        spec on top, so a gateway-authored ``KIROCREW_*`` value is inherited
+        regardless. The sanitizer only decides whether a config may OVERRIDE
+        one — so filtering the overlay removes the forgery and keeps the real
+        value.
+        """
+        inherited = {"KIROCREW_HOME": "/real/home", "KIROCREW_CLI": ""}
+        child = dict(inherited)
+        child.update(env_mod.sanitize_spec_env([("KIROCREW_CLI", "1"), ("OK", "1")]))
+        assert child["KIROCREW_HOME"] == "/real/home"
+        assert child["KIROCREW_CLI"] == ""
+        assert child["OK"] == "1"
+
+
 class TestDeniedSpecEnvKeys:
     """The reporting counterpart of the sanitizer: what did policy remove?"""
 
@@ -1234,3 +1348,21 @@ class TestDeniedSpecEnvKeys:
     def test_non_string_keys_are_ignored(self) -> None:
         """Config JSON is unvalidated; a malformed key must not raise here."""
         assert env_mod.denied_spec_env_keys({1: "x"}) == []  # type: ignore[dict-item]
+
+    def test_reserved_namespace_is_deliberately_not_reported(self) -> None:
+        """Pinned so a future change does not "align" the two and make the
+        dashboard lie.
+
+        This function feeds ``_note_denied_env``, whose message says the key
+        "execute[s] in the sandbox launcher before confinement, so the probe
+        cannot honour them — a session still does". Every clause of that is false
+        for ``KIROCREW_CLI``: it is not a launcher-execution channel, and a
+        session must not honour a forged caller identity either. The sanitizer
+        still drops it (log-only); only the user-facing explanation is scoped to
+        the loader class.
+        """
+        env = {"KIROCREW_CLI": "1", "PYTHONPATH": "/srv", "TOKEN": "t"}
+        assert env_mod.denied_spec_env_keys(env) == ["PYTHONPATH"]
+        assert "KIROCREW_CLI" not in env_mod.sanitize_spec_env(
+            [(k, v) for k, v in env.items()]
+        )

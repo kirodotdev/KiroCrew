@@ -874,13 +874,23 @@ def mcp_search_path(env_path: str) -> str:
 #
 # * ``LD_*`` / ``DYLD_*`` are dynamic-loader channels honoured by every
 #   ELF/Mach-O binary in the spawn chain, the sandbox wrapper included.
-# * ``PYTHON*`` matters because Kiro Crew's Linux sandbox launcher IS a Python
-#   process: ``sandbox._python_launcher_argv`` returns
-#   ``[sys.executable, <generated script>, *argv]`` (sandbox.py), and that
-#   interpreter starts with the env we hand ``Popen``. A declared
+# * The listed ``PYTHON*`` keys matter because Kiro Crew's Linux sandbox launcher
+#   IS a Python process: ``sandbox.namespace_argv`` returns
+#   ``[sys.executable, "-I", "-S", <generated script>, *argv]`` (sandbox.py), and
+#   that interpreter starts with the env we hand ``Popen``. A declared
 #   ``PYTHONPATH`` carrying ``sitecustomize.py`` — or a shadowing ``os.py`` —
-#   is imported at interpreter startup, i.e. before ``unshare`` and before the
-#   target is exec'd. ``PYTHONSTARTUP``/``PYTHONHOME`` are the same channel.
+#   would be imported at interpreter startup, i.e. before ``unshare`` and before
+#   the target is exec'd. ``PYTHONSTARTUP``/``PYTHONHOME`` are the same channel.
+#   ``PYTHONUSERBASE`` is too: it relocates user-site, whose ``.pth`` files are
+#   EXECUTED during startup.
+#
+# NOTE this list is a prefix set, not the glob ``PYTHON*`` — do not describe it as
+# such. It does not cover ``HOME``, which also derives the user-site path when
+# ``PYTHONUSERBASE`` is unset, and stripping ``HOME`` from a spec overlay would
+# break servers that legitimately need it. The launcher's ``-I -S`` is what
+# actually closes that class (site processing never happens, so no ``.pth`` runs
+# whatever the paths point at); these prefixes are defense in depth for it and the
+# primary control for any future launcher that forgets those flags.
 #
 # Prefix-matched, case-insensitively (Windows env is case-insensitive).
 #
@@ -899,17 +909,81 @@ _SPEC_ENV_DENIED_PREFIXES: tuple[str, ...] = (
     "PYTHONPATH",
     "PYTHONHOME",
     "PYTHONSTARTUP",
+    "PYTHONUSERBASE",
 )
+
+# The env namespace Kiro Crew reserves for ITSELF. A spec-declared ``env`` may
+# not set any key in it.
+#
+# This is an AUTHORIZATION boundary, and it is a different class from the loader
+# prefixes above — not a variant of them. Several ``KIROCREW_*`` variables are
+# how the gateway tells a process it spawns WHO IS CALLING, and the consumers
+# treat them as vouched-for:
+#
+# * ``KIROCREW_CLI`` — ``mcp_cron._caller_is_cli()`` is exactly
+#   ``os.environ.get("KIROCREW_CLI") == "1"``, and a true return makes the cron
+#   tools skip per-session ownership entirely. Forged, it turns
+#   ``cron_remove_all`` into "delete every session's jobs" and ``cron_list``
+#   into the cross-principal disclosure ``mcp_cron`` explicitly refuses (see its
+#   ownerless-row note: an allowlisted Slack participant is not the operator).
+# * ``KIROCREW_SESSION_KEY`` / ``KIROCREW_HOST_PID`` — two of the three sources
+#   ``mcp_core._resolve_session_key_strict()`` accepts, chosen precisely because
+#   they are, in its own words, sources "the gateway authors and an agent cannot
+#   write". A spec overlay authoring one makes that claim false, which is worse
+#   than the loader class: it corrupts the resolver the ownership checks are
+#   built on rather than the process that hosts them.
+# * ``KIROCREW_OWNER_ID`` / ``KIROCREW_INTERNAL_SECRET`` — the Slack owner
+#   identity and the loopback shared secret. ``cron_script`` already denies these
+#   two on its own path; putting them here extends the same control to the probe,
+#   which had no such deny.
+#
+# Denying the NAMESPACE rather than those five keys is deliberate. Dozens of
+# ``KIROCREW_*`` variables are read across the tree today, several of them
+# security-relevant beyond identity (sandbox level, approval mode, admission
+# policy), and a key-by-key list fails open for the next one somebody adds —
+# the reviewable property we want is "a config cannot author our namespace",
+# which a prefix states and a list only approximates.
+#
+# Nothing legitimately needs the namespace in a spec overlay. Every caller of
+# this sanitizer builds its child env from ``os.environ`` FIRST and overlays the
+# spec on top (``cron_script._clean_cron_env()``, ``mcp_discovery``'s
+# ``dict(os.environ)``), so a gateway-authored ``KIROCREW_*`` value is INHERITED
+# either way. Denying it here removes only a config file's ability to OVERRIDE
+# one — exactly the capability being abused, and nothing else. Kiro Crew's own
+# spawn paths set these variables directly on the child env
+# (``apps.backend``'s ``KIROCREW_APP_NAME``, the gateway's
+# ``KIROCREW_MCP_TARGET_*``), never by declaring them in an ``mcpServers``
+# ``env`` block, so no first-party surface depends on the overlay either.
+#
+# Prefix-matched case-insensitively, like the loader set above.
+_SPEC_ENV_RESERVED_PREFIXES: tuple[str, ...] = ("KIROCREW_",)
 
 
 def sanitize_spec_env(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
-    """Drop loader/interpreter-injection keys from a spec-declared env.
+    """Drop loader-injection and reserved-namespace keys from a spec env.
 
     For spawn paths that apply a config-declared ``env`` to a child THEY
     launch (the probe). The declared env is config-file
     text — the same trust level as the command itself, which those paths
     already refuse to run unsandboxed — so a key that executes code in the
     launcher before confinement is established must not pass through.
+
+    Two independent classes are dropped, for two different reasons:
+
+    * ``_SPEC_ENV_DENIED_PREFIXES`` — loader/interpreter channels that execute
+      code in the launcher before confinement exists.
+    * ``_SPEC_ENV_RESERVED_PREFIXES`` — Kiro Crew's own namespace, which carries
+      the caller identity our authorization checks read. Sandboxing does not
+      mitigate this one at all: confinement bounds what the child may touch, not
+      whose jobs Kiro Crew believes the child is entitled to. That is why "the
+      command is equally config-authored, and it runs sandboxed" does not settle
+      this class the way it settles the command itself. This prefix set is
+      interim depth, not the authorization control: it stops the ``env`` block
+      from spelling an identity key, while the same config's ``command`` field
+      reaches the identical consumer (``sh -c 'KIROCREW_CLI=1 exec ...'``). The
+      real fix is consumer-side vouching so the claim is one a config cannot
+      author -- tracked in #6624. Keep this set when that lands; it also covers
+      KIROCREW_SESSION_KEY / KIROCREW_HOST_PID.
 
     Matching is case-INSENSITIVE on purpose: Windows environment variables
     are case-insensitive, so ``pythonpath`` reaches Python exactly like
@@ -928,6 +1002,17 @@ def sanitize_spec_env(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
                 "dropping spec env key %r: loader/interpreter injection channel", key
             )
             continue
+        if any(folded.startswith(p) for p in _SPEC_ENV_RESERVED_PREFIXES):
+            # Distinct message on purpose: reporting a forged KIROCREW_CLI as a
+            # "loader injection channel" would send the next reader looking for a
+            # sandbox-escape that is not there, and hide the one that is.
+            logger.warning(
+                "dropping spec env key %r: the KIROCREW_ namespace is reserved for "
+                "the gateway's own caller-identity channel and cannot be declared "
+                "by a config",
+                key,
+            )
+            continue
         out[key] = value
     return out
 
@@ -940,6 +1025,18 @@ def denied_spec_env_keys(env: "Mapping[str, object]") -> list[str]:
     looking: a Python server configured through ``env.PYTHONPATH`` probes as an
     error while working fine in a session, and without naming the dropped key
     that reads as a probe bug rather than a policy decision.
+
+    Deliberately covers the LOADER prefixes only, not
+    ``_SPEC_ENV_RESERVED_PREFIXES``. The consumer
+    (``mcp_discovery._note_denied_env``) tells the reader the drop happens
+    because the key "execute[s] in the sandbox launcher before confinement, so
+    the probe cannot honour them — a session still does", and every clause of
+    that is false for a reserved key: it is not a launcher-execution channel, and
+    a session must not honour a forged caller identity either. Reserved-namespace
+    drops are therefore log-only. A spec declaring one is a policy violation to
+    be recorded, not a working server to be apologised to — so this stays the
+    "here is why your legitimate config was refused" surface, and does not become
+    a hint sheet for the identity boundary.
     """
     return [
         k

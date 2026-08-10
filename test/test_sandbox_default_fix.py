@@ -13,6 +13,7 @@ Verifies the fixes from the security audit:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 import pytest
@@ -76,8 +77,11 @@ class TestFix2DelegationVerification:
         monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
 
         argv, cleanup = sb.wrap_argv(["kiro-cli", "chat"], mode="off", is_kiro_cli=True)
-        # Should have env -u prefix (scrubbing the sensitive var)
-        assert argv[0] == "env", "expected env scrub prefix on delegation"
+        # Should have env -u prefix (scrubbing the sensitive var), pinned absolute:
+        # this path applies no confinement of ours, so the scrub is the only
+        # control, and a PATH-redirectable scrubber means it silently never runs.
+        assert os.path.isabs(argv[0]), f"expected pinned env scrubber, got {argv[0]!r}"
+        assert os.path.basename(argv[0]) == "env", "expected env scrub prefix on delegation"
         assert "-u" in argv
         assert "kiro-cli" in argv
         assert cleanup is None  # No seatbelt profile to clean up
