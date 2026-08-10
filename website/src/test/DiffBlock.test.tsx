@@ -271,6 +271,111 @@ describe('DiffBlock', () => {
     expect(screen.queryByTitle(/Open .*\/wrong\/path.*in side panel/)).toBeNull()
   })
 
+  describe('prefix-stripped absolute paths (issue #2493)', () => {
+    // `git diff --no-index /tmp/a /tmp/b` joins git's `b/` prefix onto the
+    // absolute path, collapsing the leading slash: the header reads
+    // `+++ b/tmp/b`. Naive prefix-stripping then yielded `tmp/b` — a rootless
+    // spelling of an absolute path — and probing it as a relative path was the
+    // captured `path=home/<user>/…&resolve=1` → 400 from the issue. Such a
+    // header is now treated as ambiguous: probed ONLY as the rooted spelling,
+    // and only when the surrounding chat text corroborates it (pathHint);
+    // uncorroborated it gets no probe and no affordance. Existence probing
+    // cannot arbitrate the ambiguity — with no project dir configured the
+    // backend 400s every relative path, so absence is not evidence.
+    const noIndexDiff = `diff --git a/home/user/src/app.ts b/home/user/src/app.ts\n--- a/home/user/src/app.ts\n+++ b/home/user/src/app.ts\n@@ -1,2 +1,2 @@\n-old\n+new`
+
+    const probedPaths = (mock: ReturnType<typeof vi.fn>) =>
+      mock.mock.calls.map(c => decodeURIComponent(String(c[0]).match(/path=([^&]*)/)?.[1] ?? ''))
+
+    it('suppresses the probe entirely for an uncorroborated ambiguous header', async () => {
+      // THE captured bug: no pathHint, `+++ b/home/user/…` header. The old
+      // code fired `path=home/user/…&resolve=1` (the 400); the fix sends
+      // nothing at all and offers no button.
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} />)
+      await new Promise(r => setTimeout(r, 20))
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
+    })
+
+    it('probes only the rooted spelling when the chat text corroborates it, and opens it', async () => {
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      const onFileOpen = vi.fn()
+      render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={onFileOpen} pathHint="/home/user/src/app.ts" />)
+      await waitFor(() => expect(screen.getByTitle(/^Open .* in side panel$/)).toBeInTheDocument())
+      // Exactly one request, for the rooted spelling, with no resolve=1.
+      expect(probedPaths(fetchMock)).toEqual(['/home/user/src/app.ts'])
+      expect(String(fetchMock.mock.calls[0][0])).not.toContain('resolve=1')
+      fireEvent.click(screen.getByTitle(/^Open .* in side panel$/))
+      expect(onFileOpen).toHaveBeenCalledWith('/home/user/src/app.ts')
+    })
+
+    it('shows no button when the corroborated rooted spelling does not exist', async () => {
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 404 }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} pathHint="/home/user/src/app.ts" />)
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
+    })
+
+    it('a pathHint naming a DIFFERENT file does not corroborate — header stays suppressed', async () => {
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} pathHint="/somewhere/else.ts" />)
+      await new Promise(r => setTimeout(r, 20))
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
+    })
+
+    it('does not treat an ordinary repo-relative header as ambiguous', async () => {
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      render(<DiffBlock code={simpleDiff} complete={true} onFileOpen={() => {}} />)
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+      expect(probedPaths(fetchMock)).toEqual(['file.ts'])
+    })
+
+    it('does not treat a plain-diff header without a git prefix as ambiguous', async () => {
+      // `+++ home/user/x` with NO `b/` prefix carries no evidence of a join —
+      // treating it as absolute would be a guess, so it stays relative.
+      const plainDiff = `--- home/user/notes.md\n+++ home/user/notes.md\n@@ -1,2 +1,2 @@\n-old\n+new`
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      render(<DiffBlock code={plainDiff} complete={true} onFileOpen={() => {}} />)
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+      expect(probedPaths(fetchMock)).toEqual(['home/user/notes.md'])
+    })
+
+    it('still shows the filename in the header while suppressed or unresolved', () => {
+      globalThis.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch
+      render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} />)
+      expect(screen.getByText(/— app.ts/)).toBeInTheDocument()
+    })
+
+    it('a header change drops the previous verdict — Open never carries a stale path', async () => {
+      // Review finding: a probe that settled before abort() must not leave the
+      // Open button targeting the OLD header's path once the diff content
+      // (e.g. a streaming header) changes. The resolved state is keyed to the
+      // header it was measured for; a mismatch renders no button.
+      const fetchMock = vi.fn((url: string) =>
+        Promise.resolve({ ok: String(url).includes(encodeURIComponent('/home/user/src/app.ts')) }))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      const onFileOpen = vi.fn()
+      const { rerender } = render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={onFileOpen} pathHint="/home/user/src/app.ts" />)
+      await waitFor(() => expect(screen.getByTitle(/^Open .* in side panel$/)).toBeInTheDocument())
+      // Header changes to a different (never-existing) file.
+      const changedDiff = `--- a/other/place/thing.ts\n+++ b/other/place/thing.ts\n@@ -1,2 +1,2 @@\n-old\n+new`
+      rerender(<DiffBlock code={changedDiff} complete={true} onFileOpen={onFileOpen} />)
+      // The old verdict is keyed to the old header — button gone immediately
+      // and it never comes back for the missing new path.
+      expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
+      await new Promise(r => setTimeout(r, 10))
+      expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
+    })
+  })
+
   describe('line-number gutter width', () => {
     // Regression: gutters were hardcoded to w-[3.5ch], which fits only 3
     // digits. Diffs at line 1000+ overflowed the column — the old/new

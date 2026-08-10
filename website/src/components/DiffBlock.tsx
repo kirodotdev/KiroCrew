@@ -68,8 +68,16 @@ const CTX_COLLAPSE_THRESHOLD = 20
  *
  * Skips conventional placeholder paths like `/dev/null` (used for adds /
  * deletes) and bare `-`/`+` markers.
+ *
+ * `prefixStripped` reports whether the winning candidate had a git `a/` / `b/`
+ * prefix removed. That matters because git JOINS the prefix onto the path,
+ * collapsing an absolute path's leading slash: `git diff --no-index /tmp/x /tmp/y`
+ * emits `+++ b/tmp/y`, so the stripped remainder `tmp/y` is a rootless spelling
+ * of `/tmp/y` — syntactically indistinguishable from a genuine repo-relative
+ * path. The caller resolves the ambiguity with an existence probe (see
+ * `ROOTLESS_ABS_RE` below); this function only preserves the signal.
  */
-function extractFilePath(lines: DiffLine[]): string | null {
+function extractFilePath(lines: DiffLine[]): { path: string; prefixStripped: boolean } | null {
   let plusFallback: string | null = null
   let minusGit: string | null = null
   let minusPlain: string | null = null
@@ -79,7 +87,7 @@ function extractFilePath(lines: DiffLine[]): string | null {
     if (l.type !== 'meta') continue
     // +++ b/<path> — the strongest signal (git format, explicitly new file).
     const plusGitMatch = /^\+\+\+ b\/(.+?)(?:\s+|$)/.exec(l.content)
-    if (plusGitMatch && !skip(plusGitMatch[1])) return plusGitMatch[1]
+    if (plusGitMatch && !skip(plusGitMatch[1])) return { path: plusGitMatch[1], prefixStripped: true }
     // +++ <path> — plain unified diff.
     const plusPlainMatch = /^\+\+\+ ([^\s].+?)(?:\s+|$)/.exec(l.content)
     if (plusPlainMatch && !skip(plusPlainMatch[1]) && !plusFallback) {
@@ -101,8 +109,24 @@ function extractFilePath(lines: DiffLine[]): string | null {
       if (gitMatch) gitFallback = gitMatch[1]
     }
   }
-  return plusFallback ?? minusGit ?? minusPlain ?? gitFallback
+  if (plusFallback) return { path: plusFallback, prefixStripped: false }
+  if (minusGit) return { path: minusGit, prefixStripped: true }
+  if (minusPlain) return { path: minusPlain, prefixStripped: false }
+  if (gitFallback) return { path: gitFallback, prefixStripped: true }
+  return null
 }
+
+/** Prefix-stripped candidates whose first segment names a conventional
+ * filesystem root — the shape a mangled absolute path takes after git's
+ * `a/` / `b/` join swallowed its leading slash (issue #2493: the dashboard was
+ * observed requesting `path=home/<user>/…`, which the backend correctly 400s).
+ * A header matching this is treated as AMBIGUOUS: it is probed only as the
+ * rooted spelling, and only when the surrounding chat text independently
+ * names that spelling (pathHint corroboration) — otherwise it gets no probe
+ * and no affordance. Existence probing cannot arbitrate the ambiguity itself,
+ * because with no project dir configured the backend rejects every relative
+ * path, making "relative spelling absent" meaningless as evidence. */
+const ROOTLESS_ABS_RE = /^(home|Users|tmp|var|opt|workplace)\//
 
 export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, streaming }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; streaming?: boolean }) {
   const [copied, setCopied] = useState(false)
@@ -113,8 +137,33 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   // pathHint extracted from the surrounding chat text by MarkdownRenderer
   // (helps when a tool emits "Created /path/to/file:" before a
   // bare diff with no +++/--- headers).
-  const filePath = useMemo(() => extractFilePath(lines) ?? pathHint ?? null, [lines, pathHint])
-  const [fileExists, setFileExists] = useState(false)
+  const extracted = useMemo(() => extractFilePath(lines), [lines])
+  const headerPath = extracted?.path ?? pathHint ?? null
+  // When a git prefix was stripped and the remainder starts with a
+  // conventional root (`home/…`, `tmp/…`, …), the header is ambiguous between
+  // a repo-relative path and an absolute path whose leading slash git's
+  // `a/` / `b/` join collapsed (`git diff --no-index /tmp/x` → `+++ b/tmp/x`).
+  // An existence probe cannot settle this safely: with no project dir
+  // configured the backend 400s EVERY relative path, so "relative spelling
+  // absent" is not evidence, and an existence race could point the Open
+  // button (which leads to an editor a save can write through) at an
+  // unrelated host file. So the ambiguity is resolved by OUTSIDE
+  // corroboration only: when the surrounding chat text independently names
+  // the rooted spelling (pathHint), that spelling is probed instead; without
+  // corroboration the header is suppressed outright — no probe (this was the
+  // captured `path=home/<user>/…&resolve=1` 400 from issue #2493) and no
+  // affordance, because no button beats a guessed target.
+  const ambiguousRootless = extracted != null && extracted.prefixStripped && ROOTLESS_ABS_RE.test(extracted.path)
+  const corroboratedRooted = ambiguousRootless && extracted != null && pathHint === '/' + extracted.path ? pathHint : null
+  const probePath = ambiguousRootless ? corroboratedRooted : headerPath
+  // The path the Open button acts on — committed by the probe effect, KEYED to
+  // the headerPath that initiated the probe. The keyed derivation means a
+  // verdict measured for a PREVIOUS header is never rendered against the
+  // current one (same pattern as usePathKind): during the one render between a
+  // header change and the effect re-running, the stale entry mismatches and
+  // the button disappears instead of targeting the old path.
+  const [resolved, setResolved] = useState<{ forHeader: string; path: string } | null>(null)
+  const filePath = resolved && resolved.forHeader === headerPath ? resolved.path : null
   const hasLineNums = lines.some(l => l.oldNum !== undefined || l.newNum !== undefined)
   // Gutter width must fit the widest line number. A fixed 3.5ch fits only
   // 3 digits — at 4+ digits (line 1000+) the numbers overflow the column,
@@ -131,25 +180,33 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   }, [lines])
   const gutterStyle = { width: `${gutterCh}ch` }
 
-  // Stash onFileOpen in a ref so the effect below only depends on filePath.
-  // If onFileOpen were a direct dep, every parent re-render that produced a
-  // new function reference would refire the effect → setFileExists(false) →
-  // HEAD probe → setFileExists(true), causing the Open button to flicker
-  // and reflowing the diff body by 1-2px each time. usePanelState /
-  // useTouchedFiles now memoize their returns so the upstream churn is
-  // mostly gone, but a ref here is cheap defense in depth and protects
-  // future callers from re-introducing the same flicker.
+  // Stash onFileOpen in a ref so the effect below only depends on the probe
+  // candidates. If onFileOpen were a direct dep, every parent re-render that
+  // produced a new function reference would refire the effect →
+  // setFilePath(null) → HEAD probe → setFilePath(path), causing the Open
+  // button to flicker and reflowing the diff body by 1-2px each time.
+  // usePanelState / useTouchedFiles now memoize their returns so the upstream
+  // churn is mostly gone, but a ref here is cheap defense in depth and
+  // protects future callers from re-introducing the same flicker.
   const onFileOpenRef = useRef(onFileOpen)
   onFileOpenRef.current = onFileOpen
 
   useEffect(() => {
-    setFileExists(false)
-    if (!filePath || !isSafePath(filePath) || !onFileOpenRef.current) return
+    setResolved(null)
+    if (!probePath || !headerPath || !isSafePath(probePath) || !onFileOpenRef.current) return
     const ac = new AbortController()
-    const url = fileReadUrl(filePath)
-    fetch(url, { method: 'HEAD', signal: ac.signal }).then(r => setFileExists(r.ok)).catch(e => { if (e.name !== 'AbortError') setFileExists(false) })
+    ;(async () => {
+      let ok = false
+      try {
+        ok = (await fetch(fileReadUrl(probePath), { method: 'HEAD', signal: ac.signal })).ok
+      } catch { /* network failure / abort → no affordance */ }
+      // An aborted run must not commit: its fetch may have settled before
+      // abort() fired, and the next run's setResolved(null) has already
+      // cleared the slate this result was measured against.
+      if (ok && !ac.signal.aborted) setResolved({ forHeader: headerPath, path: probePath })
+    })()
     return () => ac.abort()
-  }, [filePath])
+  }, [headerPath, probePath])
   const segments = useMemo(() => groupContextRuns(lines), [lines])
   const sbsPairs = useMemo(() => sideBySide ? buildSideBySide(lines) : [], [lines, sideBySide])
 
@@ -179,12 +236,12 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   return (
     <div className="diff-block group/diff rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
-        <span className="text-muted text-[13px] font-mono">{i18nT('components.diffBlock.diff')}{filePath && <span className="ml-1.5 text-muted/70">— {filePath.split('/').pop()}</span>}</span>
+        <span className="text-muted text-[13px] font-mono">{i18nT('components.diffBlock.diff')}{headerPath && <span className="ml-1.5 text-muted/70">— {headerPath.split('/').pop()}</span>}</span>
         <div className="flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity">
           {/* Open: hover-gated alongside the other diff actions for visual
               consistency. Plain "Open" label, no icon, since the diff header
               already prefixes the file name. */}
-          {filePath && onFileOpen && fileExists && (
+          {filePath && onFileOpen && (
             <button
               className="px-1.5 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
               onClick={() => onFileOpen(filePath)}
