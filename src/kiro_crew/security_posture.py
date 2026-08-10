@@ -456,6 +456,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "The direct-send path that bypasses TurnDriver, redacted independently.",
     ),
     (
+        "Telegram failure reason",
+        "telegram/transport_dispatch.py",
+        "The bounded failure reason a permanent AcpError surfaces in the chat "
+        "reply instead of the generic retry text. The message is backend error "
+        "text rather than stream output, so it bypasses the shared TurnDriver "
+        "redaction and is scanned (credentials, exfiltration URLs, local "
+        "paths) at this egress before the renderer posts it.",
+    ),
+    (
         "Discord session-resume replay",
         "discord/session_resume.py",
         "Session titles in the `!sessions` picker and the transcript replayed when a "
