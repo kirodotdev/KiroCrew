@@ -206,15 +206,33 @@ Step 5 drains MCP server init notifications (both after `session/load` and
 `_mcp_notifications` instead of discarding them. `_drain_notifications()`
 processes buffered notifications first, then reads any remaining from stdout.
 
-The multiplexed `AcpRuntime` has the same guarantee for session-scoped OAuth
-requests even though it cannot register the session queue until `session/new`
+The multiplexed `AcpRuntime` has the same guarantee for session-scoped init
+frames even though it cannot register the session queue until `session/new`
 or `session/load` returns the session id. While either request is in flight, the
-runtime stages matching `_kiro.dev/mcp/oauth_request` notifications in a bounded
-buffer, transfers them into the new handle's queue once the id is known, and
-`AcpSessionHandle.drain_init()` retains them for
-`pop_pending_oauth_requests()`. Staging is cleared when the last concurrent init
+runtime stages matching `_kiro.dev/mcp/oauth_request`,
+`_kiro.dev/mcp/server_initialized`, and `_kiro.dev/mcp/server_init_failure`
+notifications in a bounded buffer and transfers them into the new handle's
+queue once the id is known. `AcpSessionHandle.drain_init()` retains OAuth
+requests for `pop_pending_oauth_requests()`; the registration frames are what
+arm its idle shortcut (below). Staging is cleared when the last concurrent init
 finishes, including failure paths, so a stale approval URL cannot leak into a
 later session.
+
+`drain_init()`'s idle shortcut means "quiet **after** the servers reported",
+not "quiet, therefore done": until the first MCP registration frame
+(`server_initialized` / `server_init_failure` / `oauth_request`) is observed,
+queue silence is treated as a server still booting — an npx-based stdio server
+spends seconds on npm resolution plus a Node boot before emitting anything —
+and the drain keeps waiting, bounded by `_MCP_DRAIN_NO_REPORT_CEILING`. Once a
+report has been seen it allows up to `_MCP_DRAIN_DURATION` more and exits
+after `_MCP_DRAIN_IDLE_EXIT` of silence, so warm sessions (whose registration
+frames were staged during `session/new`) arm immediately and pay no extra
+latency. A session with no MCP servers at all is the one case that pays the
+full no-report ceiling; a runtime whose agent is KNOWN to be MCP-free — the
+`kirocrew-lite` background runtime, whose config Kiro Crew itself writes with
+an empty `mcpServers` map — opts out via
+`AcpRuntime(expect_mcp_reports=False)`, which passes a zero ceiling and keeps
+the idle shortcut active from the start (the pre-ceiling behavior).
 
 ## Key APIs
 

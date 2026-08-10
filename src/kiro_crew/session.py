@@ -1149,6 +1149,13 @@ class SessionManager:
                     runtime = AcpRuntime(
                         agent="kirocrew-lite",
                         sandbox_mode=getattr(self._cfg.agent, "sandbox", "auto"),
+                        # kirocrew-lite's config is written by Kiro Crew itself
+                        # with an empty mcpServers map, so no MCP server can
+                        # ever report on this runtime. Opting out keeps hot
+                        # one-liner paths (chat titles, suggestions, STT
+                        # endpointing) from holding drain_init() open for a
+                        # first report that cannot arrive.
+                        expect_mcp_reports=False,
                     )
                     await runtime.spawn()
                     self._bg_runtime = runtime

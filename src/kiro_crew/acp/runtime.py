@@ -49,6 +49,8 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
     METHOD_MCP_OAUTH_REQUEST,
+    METHOD_MCP_SERVER_INIT_FAILURE,
+    METHOD_MCP_SERVER_INITIALIZED,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SESSION_TERMINATE,
@@ -474,6 +476,7 @@ class AcpRuntime:
         max_age_secs: float = _DEFAULT_MAX_AGE_SECS,
         max_rss_mb: float = _DEFAULT_MAX_RSS_MB,
         model: str | None = None,
+        expect_mcp_reports: bool = True,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -498,6 +501,13 @@ class AcpRuntime:
             str(mcp_gateway_settings_mcp_json) if mcp_gateway_settings_mcp_json else None
         )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
+        # Whether sessions on this runtime should hold drain_init() open for
+        # slow MCP servers (the no-report ceiling). A runtime whose agent is
+        # KNOWN to have zero MCP servers — the kirocrew-lite background runtime,
+        # whose config Kiro Crew itself writes with an empty mcpServers map —
+        # opts out so hot one-liner paths (chat titles, suggestions, STT
+        # endpointing) don't pay a full ceiling wait that can never be armed.
+        self._expect_mcp_reports = expect_mcp_reports
         self._sandbox_cleanup: str | None = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
@@ -1090,12 +1100,19 @@ class AcpRuntime:
                     queue = self._session_queues.get(session_id)
                     if queue is not None:
                         await queue.put(msg)
-                    elif self._session_inits_in_flight and msg.is_method(
-                        METHOD_MCP_OAUTH_REQUEST
+                    elif self._session_inits_in_flight and (
+                        msg.is_method(METHOD_MCP_OAUTH_REQUEST)
+                        or msg.is_method(METHOD_MCP_SERVER_INITIALIZED)
+                        or msg.is_method(METHOD_MCP_SERVER_INIT_FAILURE)
                     ):
-                        # session/new can emit OAuth before its response. The
-                        # response is what gives create_session the id needed to
-                        # register this queue, so retain the frame until then.
+                        # session/new can emit OAuth and MCP registration frames
+                        # before its response. The response is what gives
+                        # create_session the id needed to register this queue,
+                        # so retain the frames until then. Registration frames
+                        # matter beyond logging: drain_init() arms its idle
+                        # shortcut on the first one, so dropping them here would
+                        # make every warm session look report-less and pay the
+                        # full no-report ceiling.
                         self._pending_init_notifications.append(msg)
                     else:
                         # Counted, not logged per frame: this is the measured
@@ -1418,6 +1435,7 @@ class AcpRuntime:
         # Populate state from session/new response (configOptions, available models)
         handle.store_session_config(resp)
 
+        mode_switched = False
         # Set agent mode if specified. If set_mode raises, no handle is returned
         # to the caller, so terminate the session we just created above —
         # session/new already succeeded so the session exists in kiro-cli; a
@@ -1442,6 +1460,14 @@ class AcpRuntime:
             except Exception:
                 await self.terminate_session(session_id)
                 raise
+            # Whether set_mode actually SWITCHED modes: the servers that
+            # initialized during session/new belong to the mode kiro-cli
+            # started the session on. If the requested agent differs, those
+            # staged registration frames describe the pre-switch roster and
+            # must not arm the drain's idle shortcut while the switched-to
+            # agent's own servers may still be booting.
+            _ids, _current, _adv = parse_session_modes(resp)
+            mode_switched = bool(_current) and agent != _current
         elif agent:
             _ids, _current, _adv = parse_session_modes(resp)
             await self.terminate_session(session_id)
@@ -1455,8 +1481,15 @@ class AcpRuntime:
 
         # Drain MCP-server-init / oauth / config notifications before the first
         # prompt so they don't race into the first turn (parity with
-        # AcpClient._drain_notifications). Best-effort, bounded (~1s).
-        await handle.drain_init()
+        # AcpClient._drain_notifications). Best-effort, bounded: exits shortly
+        # after the servers report, or at the no-report ceiling if none do.
+        # A runtime declared MCP-free skips the ceiling — nothing can arm it.
+        # After a real mode SWITCH, reports staged during session/new describe
+        # the pre-switch roster, so they must not arm the idle shortcut.
+        if self._expect_mcp_reports:
+            await handle.drain_init(ignore_queued_reports=mode_switched)
+        else:
+            await handle.drain_init(no_report_ceiling=0.0)
 
         logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
         return handle
@@ -1523,6 +1556,7 @@ class AcpRuntime:
         )
         handle.store_session_config(resp)
 
+        mode_switched = False
         # Activate the agent (mirrors AcpClient step 4 — set_mode applies to a
         # resumed session too, not just fresh ones). If set_mode raises, the
         # caller falls back to create_session() (a fresh sid + its own queue),
@@ -1539,6 +1573,10 @@ class AcpRuntime:
             except Exception:
                 await self.terminate_session(resume_sid)
                 raise
+            # See create_session: after a real mode switch, registration frames
+            # staged during session/load describe the pre-switch roster.
+            _ids, _current, _adv = parse_session_modes(resp)
+            mode_switched = bool(_current) and agent != _current
         elif agent:
             # Guard (A) — see create_session. A resumed session always echoes a
             # `modes` list (checked above), so an absent agent means its config
@@ -1557,8 +1595,12 @@ class AcpRuntime:
         # Drain MCP-init / oauth / config notifications before the first prompt
         # (parity with AcpClient). Transcript-replay frames were already dropped
         # before the queue was registered above, so only genuine init frames
-        # remain to drain here.
-        await handle.drain_init()
+        # remain to drain here. MCP-free runtimes skip the no-report ceiling.
+        # After a real mode SWITCH, staged reports are pre-switch — don't arm.
+        if self._expect_mcp_reports:
+            await handle.drain_init(ignore_queued_reports=mode_switched)
+        else:
+            await handle.drain_init(no_report_ceiling=0.0)
 
         logger.info("Resumed session %s on runtime PID %d", resume_sid, self._pid or 0)
         return handle
