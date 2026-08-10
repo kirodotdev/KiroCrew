@@ -315,6 +315,38 @@ export function parseSourceLinkUrl(
   return parseCandidate(url, gitlabHostSet(gitlabHosts), false, jiraHostSet(jiraHosts))
 }
 
+/** Chip label for a GitHub / GitLab link, in each forge's own reference
+ *  convention: `owner/repo#123` for GitHub (issues and pull requests alike),
+ *  `group/project#123` for GitLab issues and `group/project!123` for merge
+ *  requests. The FULL project path (subgroups included) is recovered from the
+ *  parser's own canonical `url` — `repo` deliberately keeps only the last
+ *  segment for the sidebar chips, so it cannot label a chip unambiguously.
+ *  Derives from a url THIS module built, never from raw chat text; returns
+ *  null for Jira (which labels itself with the issue key) and for any shape
+ *  the parser would not have produced. */
+export function forgeChipLabel(link: PullRequestLink): string | null {
+  if (link.provider !== 'github' && link.provider !== 'gitlab') return null
+  let path: string
+  try {
+    path = new URL(link.url).pathname
+  } catch {
+    return null
+  }
+  if (link.provider === 'github') {
+    // Canonical shape: /owner/repo/(pull|issues)/N
+    const parts = path.split('/').filter(Boolean)
+    if (parts.length !== 4) return null
+    return `${parts[0]}/${parts[1]}#${link.number}`
+  }
+  // GitLab: the project path is everything before the /-/ marker.
+  for (const { marker } of GITLAB_MARKERS) {
+    const idx = path.lastIndexOf(marker)
+    if (idx <= 0) continue
+    return `${path.slice(1, idx)}${link.kind === 'change' ? '!' : '#'}${link.number}`
+  }
+  return null
+}
+
 function roleCount(found: Map<string, AttributedLink>, role: MentionRole): number {
   let n = 0
   for (const link of found.values()) if (link.mentionedBy === role) n += 1

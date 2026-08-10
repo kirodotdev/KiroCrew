@@ -36,9 +36,11 @@ import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
-import { parseSourceLinkUrl, type PullRequestLink } from '../utils/pullRequestLinks'
+import { parseSourceLinkUrl, forgeChipLabel, type PullRequestLink } from '../utils/pullRequestLinks'
 import { JiraHostsCtx } from '../lib/jiraHosts'
 import JiraLogo from './icons/JiraLogo'
+import GithubLogo from './icons/GithubLogo'
+import GitlabLogo from './icons/GitlabLogo'
 import DiffBlock from './DiffBlock'
 import MonacoCodeBlock from './MonacoCodeBlock'
 import { SmoothResize } from './SmoothResize'
@@ -405,21 +407,35 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   // the unfurl gate for a claimed href also means a claimed link is never
   // fetched, so the priority holds at the network boundary, not just visually.
   const claimed = href && override ? override({ href, children }) : null
-  const target = useUnfurlHref(claimed ? null : href)
-  const meta = useLinkMeta(target ?? undefined, target !== null)
-  // Jira issue URLs chip synchronously from the URL alone (icon + issue key) —
-  // no fetch, unlike the unfurl chip below. Jira instances sit behind auth, so
-  // an unfurl of one can never succeed; parsing the key out of the path is the
-  // only way these links ever get at-a-glance recognition. Self-hosted
-  // instances come through `JiraHostsCtx` from the operator allowlist.
+  // Jira, GitHub, and GitLab issue / PR / MR URLs chip synchronously from the
+  // URL alone (provider mark + reference) — no fetch, unlike the unfurl chip
+  // below, so these chips render in user messages and with `link_previews`
+  // off. Jira instances sit behind auth, so an unfurl of one can never
+  // succeed; GitHub/GitLab pages unfurl fine but only in assistant messages
+  // and only when the operator opted in, which left forge links as raw text
+  // in most contexts (#2579). The parser matches hostnames EXACTLY
+  // (`github.com` / `gitlab.com`, `www.` stripped) — a lookalike host such as
+  // `evil-github.com.attacker.test` falls through to the plain anchor.
+  // Self-hosted Jira instances come through `JiraHostsCtx` from the operator
+  // allowlist. Forge chips additionally require `safeHttpUrl`: the chip keeps
+  // the AUTHORED href (preserving e.g. `#issuecomment` fragments the parser's
+  // canonical url drops), so a credential-smuggling `user:pass@github.com`
+  // href must never be dressed up as a trusted-looking chip.
   const jiraHosts = useContext(JiraHostsCtx)
-  const jira = useMemo(() => {
+  const source = useMemo(() => {
     if (!href || claimed) return null
     const link = parseSourceLinkUrl(href, [], jiraHosts)
-    return link?.provider === 'jira' ? link : null
+    if (!link) return null
+    if (link.provider === 'jira') return link
+    return safeHttpUrl(href) ? link : null
   }, [href, claimed, jiraHosts])
+  // A chipped link is never handed to the unfurl gate — mirroring `claimed`,
+  // so the no-fetch guarantee holds at the network boundary, not just visually.
+  const target = useUnfurlHref(claimed || source ? null : href)
+  const meta = useLinkMeta(target ?? undefined, target !== null)
   if (claimed) return <>{claimed}</>
-  if (jira) {
+  if (source?.provider === 'jira') {
+    const jira = source
     return (
       <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
         <a
@@ -431,6 +447,25 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
         >
           <JiraLogo size={12} className="shrink-0" />
           <span className="truncate max-w-[24ch]">{`${jira.repo}-${jira.number}`}</span>
+        </a>
+      </span>
+    )
+  }
+  const forgeLabel = source ? forgeChipLabel(source) : null
+  if (source && forgeLabel) {
+    return (
+      <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={href}
+          className="inline-flex min-w-0 items-center gap-1.5 text-text no-underline focus-ring"
+        >
+          {source.provider === 'github'
+            ? <GithubLogo size={12} className="shrink-0" />
+            : <GitlabLogo size={12} className="shrink-0" />}
+          <span className="truncate max-w-[32ch]">{forgeLabel}</span>
         </a>
       </span>
     )
