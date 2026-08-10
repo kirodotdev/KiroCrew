@@ -28,18 +28,17 @@ def _init_frame(capabilities=None):
     return {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}
 
 
-def _patch_pooling(monkeypatch, *, enabled: bool) -> None:
+def _patch_pooling(monkeypatch, *, enabled: bool, apps_enabled: bool = True) -> None:
     """Force both flags the config-keyed gate reads.
 
-    ``apps_enabled`` is pinned alongside ``enabled`` so these tests assert
-    against a known config rather than whatever the host's config.json happens
-    to carry.
+    Both are pinned so these tests assert against a known config rather than
+    whatever the host's config.json happens to carry.
     """
     import kiro_crew.config.loader as loader
 
     real = loader.KiroCrewConfig.load()
     monkeypatch.setattr(real.mcp_gateway, "enabled", enabled, raising=False)
-    monkeypatch.setattr(real.mcp_gateway, "apps_enabled", True, raising=False)
+    monkeypatch.setattr(real.mcp_gateway, "apps_enabled", apps_enabled, raising=False)
     monkeypatch.setattr(loader.KiroCrewConfig, "load", staticmethod(lambda: real))
 
 
@@ -79,19 +78,32 @@ class TestFlagOff:
         ext = out["params"]["capabilities"]["extensions"]
         assert ext[MCP_APPS_EXTENSION_KEY] == {"mimeTypes": [MCP_APPS_MIME_TYPE]}
 
-    def test_unset_respects_pooling_opt_out(self, monkeypatch):
-        """Pooling disabled => apps off, even with the env var unset.
+    def test_unset_respects_apps_opt_out(self, monkeypatch):
+        """Apps switched off => no capability, even with the env var unset.
 
         This is the adopted-daemon case: ``_shutdown_locked`` refuses to
         terminate a daemon it did not spawn, so a survivor keeps serving stubs
-        after the operator disables ``mcp_gateway``. Keying the gate on "am I
+        after the operator switches the feature off. Keying the gate on "am I
         running" would keep intercepting results and spooling payloads (which
         carry a callback_secret) after an explicit opt-out.
         """
         monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
-        _patch_pooling(monkeypatch, enabled=False)
+        _patch_pooling(monkeypatch, enabled=True, apps_enabled=False)
         msg = _init_frame(capabilities={})
         assert _inject_client_extensions(msg) is msg
+
+    def test_pooling_opt_out_does_not_disable_apps(self, monkeypatch):
+        """Turning pooling off must not take MCP Apps down with it.
+
+        The stub is still emitted with pooling off — each connection just gets
+        its own backend — so the render path is intact and the capability must
+        still be advertised.
+        """
+        monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
+        _patch_pooling(monkeypatch, enabled=False, apps_enabled=True)
+        out = _inject_client_extensions(_init_frame(capabilities={}))
+        ext = out["params"]["capabilities"]["extensions"]
+        assert ext[MCP_APPS_EXTENSION_KEY] == {"mimeTypes": [MCP_APPS_MIME_TYPE]}
 
     def test_kill_switch_beats_pooling_enabled(self, monkeypatch):
         monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")

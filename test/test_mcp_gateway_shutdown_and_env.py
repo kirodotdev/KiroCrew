@@ -551,3 +551,69 @@ class TestForwardDeclaredEnvFlag:
         assert gatewayd._declared_env_to_forward(key) == {
             "TOOL_PERSONALIZATION_ENABLED": "false"
         }
+
+
+class TestPrivateBackendDeclaredEnv:
+    """A connection-private backend gets its declared env in full.
+
+    Both filters the pooled path applies exist for co-tenancy: no single value is
+    correct when several sessions share one process. A private backend has one
+    stub, so the declaring session and the only consuming session are the same
+    one -- and withholding the env would be a regression, since the same server
+    spawned without a gateway receives it from the agent runtime.
+    """
+
+    def test_forwards_declared_env_with_the_flag_off(self, tmp_path, monkeypatch):
+        """The flag governs the co-tenancy hazard, which does not exist here."""
+        key = _pool_key(server="builder-mcp", agent="gpu-dev")
+        key = TestDeclaredEnvForwarding._write_sidecar(
+            tmp_path, monkeypatch, {"TOOL_PERSONALIZATION_ENABLED": "false"}, key
+        )
+        monkeypatch.setattr(gatewayd, "forward_declared_env_enabled", lambda: False)
+
+        assert gatewayd._declared_env_for_private_backend(key) == {
+            "TOOL_PERSONALIZATION_ENABLED": "false"
+        }
+        # The pooled path is unchanged and still withholds it.
+        assert gatewayd._declared_env_to_forward(key) == {}
+
+    def test_forwards_secret_bearing_keys_the_pooled_path_drops(
+        self, tmp_path, monkeypatch
+    ):
+        """The case that breaks servers: a token the server needs to start.
+
+        The pooled path drops it because co-tenants may hold different values.
+        For a private backend there is no other holder, and dropping it leaves
+        the server unable to authenticate.
+        """
+        pairs = {
+            "AWS_SECRET_ACCESS_KEY": "shh",
+            "OAUTH_CLIENT_SECRET": "shh",
+            "SSH_AUTH_SOCK": "/tmp/agent.sock",
+            "REGION": "us-west-2",
+        }
+        key = _pool_key(server="gh-mcp", agent="dev")
+        key = TestDeclaredEnvForwarding._write_sidecar(
+            tmp_path, monkeypatch, pairs, key
+        )
+        monkeypatch.setattr(gatewayd, "forward_declared_env_enabled", lambda: True)
+
+        assert gatewayd._declared_env_for_private_backend(key) == pairs
+        # The pooled path keeps only the key every co-tenant agrees on.
+        assert gatewayd._declared_env_to_forward(key) == {"REGION": "us-west-2"}
+
+    def test_incoherent_sidecar_still_yields_nothing(self, tmp_path, monkeypatch):
+        """The coherence gate is not a co-tenancy filter and still applies: a
+        spec edited after this session started must not reach the backend under a
+        hash the running stub never registered.
+        """
+        key = _pool_key(server="builder-mcp", agent="gpu-dev")
+        key = TestDeclaredEnvForwarding._write_sidecar(
+            tmp_path, monkeypatch, {"A": "1"}, key
+        )
+        sidecar = env_sidecar_dir(resolve_overlay_dir()) / env_sidecar_name(
+            key.agent_name, key.server_name
+        )
+        sidecar.write_text(json.dumps({"A": "2"}), encoding="utf-8")
+
+        assert gatewayd._declared_env_for_private_backend(key) == {}

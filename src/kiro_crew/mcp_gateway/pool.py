@@ -447,6 +447,16 @@ class BackendPool:
         # requests but are invisible to acquire. The heartbeat sweeper reaps
         # them on refcount==0 or deadline expiry.
         self._draining: list[_DrainingBackend] = []
+        # Backends bound to ONE connection, keyed by stub_uuid. Deliberately a
+        # separate map from ``_backends``: an entry here is never a reuse
+        # candidate (that is the point), sits at refcount 1 for its whole life,
+        # and is released when its stub disconnects rather than by the idle or
+        # LRU sweeper. Keeping it out of ``_backends`` also keeps it out of the
+        # ``_max_backends`` budget — a refcount-1 backend can never be an
+        # eviction victim, so counting these would let them accumulate as
+        # unevictable occupants until a new SHARED acquire finds nothing to
+        # evict and is rejected outright.
+        self._exclusive: dict[str, "Backend"] = {}
         # Blue-green cutover generation. Bumped on every drain so an in-flight
         # spawn that started before a credential rotation can detect that a
         # cutover landed while it was suspended and refuse to pool its
@@ -472,6 +482,10 @@ class BackendPool:
             "spawns": self._spawns,
             "capacity_rejects": self._capacity_rejects,
             "draining": len(self._draining),
+            # Reported separately because these sit outside ``max_backends`` by
+            # design: an operator reading "size" against the budget would
+            # otherwise have no way to see the per-connection processes at all.
+            "exclusive": len(self._exclusive),
         }
 
     def _metrics_snapshot(self) -> dict[str, Any]:
@@ -567,6 +581,10 @@ class BackendPool:
         """
         pids = [b.pid for b in self._backends.values() if b.pid is not None]
         pids.extend(e.backend.pid for e in self._draining if e.backend.pid is not None)
+        # Connection-private backends are ordinary child processes; being outside
+        # the reuse index and the capacity budget does not make them any less
+        # orphanable by a SIGKILLed gatewayd.
+        pids.extend(b.pid for b in self._exclusive.values() if b.pid is not None)
         return pids
 
     async def add(
@@ -793,7 +811,7 @@ class BackendPool:
             return self._backends.get(digest)
 
     async def get_by_digest(self, digest: str) -> Optional["Backend"]:
-        """Return the ALIVE backend whose PoolKey digest is exactly ``digest``.
+        """Return the ALIVE backend whose storage digest is exactly ``digest``.
 
         Used by the MCP Apps ``app-call`` control path: the spool record binds
         the PRODUCING backend's full PoolKey digest, and the callback resolves
@@ -802,12 +820,87 @@ class BackendPool:
         (different credentials / sandbox / approval identity) — an exact-digest
         match makes cross-partition execution impossible; a dead or evicted
         backend is a plain deny, never a fallback.
+
+        A per-connection backend's storage digest carries its ``stub_uuid``, so
+        two connections to the same server under an identical PoolKey do NOT
+        share a digest. That is what preserves the exact-match guarantee here:
+        without it an app callback could resolve onto another session's private
+        backend for the same server.
         """
         async with self._lock:
             backend = self._backends.get(digest)
+            if backend is None:
+                backend = next(
+                    (b for b in self._exclusive.values() if b.storage_digest == digest),
+                    None,
+                )
         if backend is not None and backend.is_alive:
             return backend
         return None
+
+    def _spawn_shutdown(self, backend: "Backend") -> None:
+        """Reap ``backend`` on the event loop without awaiting it here.
+
+        Used where the caller may itself be cancelled: an ``await`` on a
+        cancelled task re-raises before the shutdown runs, leaking the child.
+        The task is strongly referenced until done, since the loop holds only a
+        weak reference to a bare ``create_task``.
+        """
+        task = asyncio.create_task(_safe_shutdown(backend))
+        self._shutdown_tasks.add(task)
+        task.add_done_callback(self._shutdown_tasks.discard)
+
+    async def acquire_exclusive(
+        self,
+        key: PoolKey,
+        stub_uuid: str,
+        spawn: Callable[[], Awaitable["Backend"]],
+    ) -> "Backend":
+        """Spawn a backend bound to ``stub_uuid`` alone and register it.
+
+        Never consults ``_backends``, so an identical PoolKey arriving on
+        another connection can never resolve onto this backend. Also skips the
+        ``_max_backends`` budget -- this is the process topology the host would
+        have with no gateway at all, and subjecting it to the pooling capacity
+        limit would let opted-out connections reject pooled ones.
+
+        The caller MUST call :meth:`release_exclusive` when the connection ends.
+        """
+        backend = await spawn()
+        # Before registering: ``storage_digest`` derives from this, and both the
+        # app-call resolver and the spool record read it the moment the backend
+        # is reachable.
+        backend.exclusive_token = stub_uuid
+        try:
+            async with self._lock:
+                existing = self._exclusive.pop(stub_uuid, None)
+                self._exclusive[stub_uuid] = backend
+                self._spawns += 1
+        except BaseException:
+            # Between spawn() returning and registration completing the child is
+            # reachable from NOTHING: not the connection teardown, not
+            # shutdown_all. Acquiring ``_lock`` can yield, so a cancel landing
+            # here would leak the process. Reap it on the way out, as a tracked
+            # task rather than an await — this handler may itself be cancelled,
+            # and an await would re-raise before the shutdown ran.
+            self._spawn_shutdown(backend)
+            raise
+        if existing is not None:
+            # stub_uuid is a fresh uuid4 per connection, so this means the same
+            # connection registered twice. Reap the loser rather than orphaning
+            # a live subprocess by overwriting the entry.
+            await _safe_shutdown(existing)
+        return backend
+
+    async def release_exclusive(self, stub_uuid: str) -> Optional["Backend"]:
+        """Unregister ``stub_uuid``'s private backend and return it for shutdown.
+
+        Returns ``None`` when the connection had no private backend -- the
+        normal case for a pooled stub, which makes this safe to call
+        unconditionally on every disconnect.
+        """
+        async with self._lock:
+            return self._exclusive.pop(stub_uuid, None)
 
     def reserve(self, key: PoolKey) -> None:
         """Mark ``key`` as in-flight (handed out, not yet attached).
@@ -1079,8 +1172,19 @@ class BackendPool:
         calls until refcount-0 or the drain deadline). Omitting them would let a
         stop/abort during the drain window miss in-flight calls on the old
         backend, which would then run to completion instead of being cancelled.
+
+        Includes connection-private backends for the same reason. They are held
+        apart from ``_backends`` to keep them out of the reuse index and the
+        capacity budget — not out of the process lifecycle. Omitting them here
+        would let a shutdown decide no work is outstanding and discard a private
+        backend's pending reply, and would leave a stop/abort unable to cancel
+        its in-flight calls.
         """
-        return list(self._backends.values()) + [e.backend for e in self._draining]
+        return (
+            list(self._backends.values())
+            + [e.backend for e in self._draining]
+            + list(self._exclusive.values())
+        )
 
     async def shutdown_all(self, timeout: float = 5.0) -> None:
         """Shut down every registered backend and clear the pool.
@@ -1094,9 +1198,14 @@ class BackendPool:
             backends = list(self._backends.values())
             # Also collect draining backends so they don't leak on shutdown.
             backends.extend(entry.backend for entry in self._draining)
+            # Per-connection backends are reaped on their stub's disconnect, but
+            # a daemon teardown races that — collect them or they outlive the
+            # gateway as orphans holding their pipes open.
+            backends.extend(self._exclusive.values())
             self._backends.clear()
             self._spawn_locks.clear()
             self._draining.clear()
+            self._exclusive.clear()
             pending = list(self._shutdown_tasks)
         # Shutdowns are independent: fan out + join with gather.
         # ``return_exceptions=True`` keeps one slow/bad backend from

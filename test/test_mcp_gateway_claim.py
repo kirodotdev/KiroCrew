@@ -189,7 +189,7 @@ def _patch_env(monkeypatch: pytest.MonkeyPatch) -> tuple[_FakeBackend, list[dict
         def log_api_access(self, **kwargs: Any) -> None:
             sel_calls.append(kwargs)
 
-    async def _fake_acquire(_pool: Any, _key: Any, _resolver: Any):
+    async def _fake_acquire(_pool: Any, _key: Any, _resolver: Any, **_kw: Any):
         return fake_backend, True
 
     async def _fake_drain(_inbox: Any, _writer: Any, _stub_uuid: str = "") -> None:

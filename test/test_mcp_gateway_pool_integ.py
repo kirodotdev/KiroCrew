@@ -82,9 +82,20 @@ def _init_frame(req_id: int) -> str:
 
 
 async def _spawn_stub(
-    *, socket_path: Path, server: str, agent: str, work_dir: Path, home: Path
+    *,
+    socket_path: Path,
+    server: str,
+    agent: str,
+    work_dir: Path,
+    home: Path,
+    poolable: bool = True,
 ) -> asyncio.subprocess.Process:
-    """Launch a REAL stub process, exactly as the rewriter's overlay would."""
+    """Launch a REAL stub process, exactly as the rewriter's overlay would.
+
+    ``poolable`` mirrors the flag the rewriter passes: set, the backend may be
+    shared with other connections carrying the same PoolKey; unset, this
+    connection gets its own.
+    """
     return await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -97,6 +108,7 @@ async def _spawn_stub(
         "--socket", str(socket_path),
         "--sandbox-mode", "off",
         "--approval-mode", "auto",
+        *(["--poolable"] if poolable else []),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -257,6 +269,87 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
             f"{_launch_count(launch_log)} backends total, expected 2 — PoolKey "
             "is not partitioning by agent, so two agents would share one MCP "
             "server process and its state."
+        )
+    finally:
+        await _reap(procs)
+        stop.set()
+        try:
+            await asyncio.wait_for(daemon, timeout=30)
+        except asyncio.TimeoutError:  # pragma: no cover - daemon shutdown hang
+            daemon.cancel()
+
+
+@pytest.mark.asyncio
+async def test_real_stubs_without_poolable_get_their_own_backend(
+    tmp_path: Path, short_sock_dir
+) -> None:
+    """The decoupling assertion: a stub exists either way, sharing does not.
+
+    3 real stubs, one identical PoolKey, none declared poolable -> 3 MCP server
+    processes. Two things have to hold at once, and only asserting both
+    distinguishes a real decoupling from either failure mode:
+
+    * 3 backends, not 1 -- opting out of pooling really means opting out. One
+      backend here would be the silent cross-session sharing the PoolKey has no
+      dimension to prevent.
+    * no stub degraded to per-session exec -- the stub IS in the path, which is
+      what gives the connection an address for an MCP Apps callback. 3 backends
+      with 3 fallbacks would be the old behaviour wearing this test's result.
+    """
+    endpoint_root = short_sock_dir
+    sock = endpoint_root / "gw.sock"
+    work_dir = tmp_path / "ws"
+    work_dir.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    launch_log = tmp_path / "launches.txt"
+
+    def _resolver(_key: object) -> tuple[str, list[str], dict[str, str], str]:
+        return (sys.executable, [str(_FAKE_SERVER), str(launch_log)], {}, str(work_dir))
+
+    stop = asyncio.Event()
+    daemon = asyncio.create_task(
+        gw.run_gatewayd(
+            socket_path=sock,
+            # Deliberately smaller than the number of private backends: they are
+            # outside this budget, so a cap of 1 must not throttle or reject
+            # them. A shared-budget implementation fails here.
+            max_backends=1,
+            idle_timeout_secs=300,
+            stop_event=stop,
+            target_resolver=_resolver,
+            prewarm_count=0,
+        )
+    )
+    procs: list[asyncio.subprocess.Process] = []
+    try:
+        for _ in range(100):
+            if transport.endpoint_exists(sock):
+                break
+            await asyncio.sleep(0.05)
+        assert transport.endpoint_exists(sock), "gatewayd never bound its endpoint"
+
+        for i in range(3):
+            proc = await _spawn_stub(
+                socket_path=sock, server="fake", agent="probe",
+                work_dir=work_dir, home=home, poolable=False,
+            )
+            procs.append(proc)
+            reply = await _drive_initialize(proc, req_id=i + 1)
+            assert "result" in reply, f"stub {i} got no initialize result: {reply}"
+
+        assert _launch_count(launch_log) == 3, (
+            f"3 non-poolable stubs sharing one PoolKey produced "
+            f"{_launch_count(launch_log)} backends, expected 3 — they were "
+            "collapsed onto a shared backend, which is the silent cross-session "
+            "sharing this path exists to avoid."
+        )
+
+        fallback = home / "logs" / "stub_fallback.jsonl"
+        assert not fallback.exists(), (
+            "a non-poolable stub degraded to per-session exec instead of going "
+            f"through the gateway, so it has no callback address: "
+            f"{fallback.read_text()}"
         )
     finally:
         await _reap(procs)

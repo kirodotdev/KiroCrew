@@ -31,14 +31,15 @@ Both live on the **Developer** page (sidebar → **Developer**):
    new MCP routing, so in-flight agent work is interrupted — do it between tasks,
    not mid-turn. Your dashboard stays signed in. The toggle asks for confirmation
    and offers a roll-back.
-2. **In "Poolable MCP servers," switch on the server whose app you want.** The
-   toggle writes the central allowlist and re-applies it in-process — no restart.
-   You can set this up before enabling the gateway; it simply has no effect until
-   the gateway is on.
+2. **Nothing else is required for apps.** "Share MCP Backends" and the poolable
+   allowlist decide whether several sessions reuse one MCP server *process* —
+   a resource choice, independent of whether apps render. A server that is not
+   shared still renders its apps.
 
-   A row is **read-only** when the server can't be pooled: it's denylisted, its
-   transport isn't stdio (HTTP servers aren't poolable), or it's already poolable
-   via its own `poolable: true` and so isn't governed by the allowlist.
+   A row in the allowlist is **read-only** when the server can't be shared: it's
+   denylisted, its transport isn't stdio (HTTP servers aren't shared), or it's
+   already opted in via its own `poolable: true` and so isn't governed by the
+   allowlist.
 
 Optionally, to render apps in the right side panel instead of inline, turn on
 **Settings → Chat → Messages → "MCP Apps in Side Panel."** No restart or refresh
@@ -50,9 +51,16 @@ For scripted or headless setups:
 
 ```json
 {
-  "mcp_gateway": { "enabled": true, "poolable_servers": ["excalidraw"] },
+  "mcp_gateway": { "apps_enabled": true },
   "dashboard":   { "mcp_app_panel": true }
 }
+```
+
+`apps_enabled` defaults to `true`, so an untouched config already renders apps.
+Backend sharing is a separate, opt-in decision:
+
+```json
+{ "mcp_gateway": { "enabled": true, "poolable_servers": ["excalidraw"] } }
 ```
 
 A server can also opt itself in from its own MCP entry, which is the escape hatch
@@ -62,16 +70,16 @@ for third-party configs you don't want to duplicate into the allowlist:
 { "mcpServers": { "excalidraw": { "command": "...", "poolable": true } } }
 ```
 
-MCP Apps have **no enablement flag of their own** — they follow
-`mcp_gateway.enabled`. The full resolution order in `_mcp_apps_enabled()` is:
+MCP Apps have their own switch, `mcp_gateway.apps_enabled`, independent of
+backend sharing. The full resolution order in `_mcp_apps_enabled()` is:
 
 | Condition | Result |
 |---|---|
 | `KIROCREW_MCP_APPS` = `0`/`false`/`no`/`off` | disabled (explicit kill-switch, wins over everything) |
 | `KIROCREW_MCP_APPS` = `1`/`true`/`yes` | enabled (explicit override — tests, e2e harness) |
-| `KIROCREW_MCP_APPS` unset | follows `mcp_gateway.enabled`, read **live** from config |
+| `KIROCREW_MCP_APPS` unset | follows `mcp_gateway.apps_enabled`, read **live** from config |
 
-Read live per call, so toggling the gateway takes effect without restarting the
+Read live per call, so toggling the feature takes effect without restarting the
 daemon.
 
 ### Worked example: excalidraw diagrams
@@ -80,23 +88,21 @@ The excalidraw MCP server ships a `ui://` app, so it is the quickest way to see
 this working end to end:
 
 1. Add the server to your MCP config as usual and confirm the agent can call it.
-2. **Developer → Shared MCP gateway → on.**
-3. **Developer → Poolable MCP servers → `excalidraw` → on.**
-4. Ask for a diagram: *"draw me a sequence diagram of the login flow."*
+2. Ask for a diagram: *"draw me a sequence diagram of the login flow."*
 
 You should get a live, editable Excalidraw canvas in the chat — hand-drawn shapes
-that animate in as they stream, which you can then drag around and edit. If you
-instead get a wall of JSON-ish text, step 3 is almost certainly the one that
-didn't take.
+that animate in as they stream, which you can then drag around and edit.
 
-**Why the poolable gate is the usual culprit:** a server that isn't poolable is
-parented to `kiro-cli` and never passes through the gateway, so nothing intercepts
-its result. The tool still works — you just get its text. There is no error
-message, which is exactly what makes it confusing.
+**If you get a wall of JSON-ish text instead:** nothing intercepted the result.
+Check `KIROCREW_MCP_APPS` is not set to an off value and that
+`mcp_gateway.apps_enabled` is on — those are the only two switches that govern
+rendering. There is no error message when a result goes un-intercepted, which is
+what makes it confusing: the tool still worked, you just got its text.
 
-**Not every server should be pooled.** A pooled backend is shared across
-sessions, so a server that reads per-session credentials or env vars from its own
-process environment must stay unpooled.
+**Sharing is a separate question.** A shared backend serves several sessions from
+one process, so a server that reads per-session credentials or env vars from its
+own process environment should stay unshared. That choice does not affect whether
+its apps render.
 
 ## Where apps render: inline or side panel
 
@@ -230,10 +236,10 @@ app HTML is **server-controlled code running in your dashboard**.
 
 | Symptom | Most likely cause |
 |---|---|
-| Tool output renders as plain text | the server is not switched on in **Developer → Poolable MCP servers** — check this first |
-| Still text after enabling the server | the **Shared MCP gateway** toggle is off, or `KIROCREW_MCP_APPS` is set to an off value and is overriding it |
-| The gateway toggle is disabled / greyed out | you're on Windows — the shared gateway needs Unix-domain sockets (macOS and Linux only) |
-| A server's poolable row won't toggle | it's denylisted, or not stdio transport (HTTP servers can't be pooled), or already poolable via its own `poolable: true` |
+| Tool output renders as plain text | `mcp_gateway.apps_enabled` is off, or `KIROCREW_MCP_APPS` is set to an off value and is overriding it |
+| Still text with both of those right | the broker did not start — check the gateway log for `mcp-gateway: broker ready`, which names the switch that started it |
+| The gateway toggle is disabled / greyed out | you're on Windows — the broker needs Unix-domain sockets (macOS and Linux only) |
+| A server's sharing row won't toggle | it's denylisted, or not stdio transport (HTTP servers can't be shared), or already opted in via its own `poolable: true` |
 | Frame mounts but the canvas is blank | the app's scripts did not execute — check the browser console for CSP or network errors reaching its CDN |
 | Feature toggle missing from Settings | stale frontend bundle — hard-refresh the dashboard |
 | A new render appears inline despite `mcp_app_panel: true` | the flag is read at render time; diagrams already in scrollback do not move |

@@ -3458,8 +3458,13 @@ class McpGatewayConfig:
     enabled: bool = field(
         default=False,
         metadata=_meta(
-            "Enabled",
-            "Route MCP traffic through the shared sidecar broker. Default False — opt-in.",
+            "Share MCP Backends",
+            "Let sessions with an identical server configuration share one MCP "
+            "server process instead of each getting its own. Off, every session "
+            "gets its own backend — the same process topology as running without "
+            "the broker. Either this or MCP Apps starts the broker; see "
+            "docs/architecture/design-notes/mcp-stub-decoupling.md. "
+            "Default False — opt-in.",
         ),
     )
     apps_enabled: bool = field(
@@ -3467,10 +3472,13 @@ class McpGatewayConfig:
         metadata=_meta(
             "MCP Apps",
             "Render interactive HTML returned by an MCP server (the MCP Apps "
-            "extension) in chat, and accept callbacks from it. Requires the broker: "
-            "the render and callback paths live inside it, so this grants nothing "
-            "while Enabled is off. Default True — turning it off keeps pooling and "
-            "suppresses only server-authored UI.",
+            "extension) in chat, and accept callbacks from it. Independent of "
+            "backend sharing: the broker starts for either, and callbacks are "
+            "routed by a stub that is interposed on every stdio server whether or "
+            "not its backend is shared. Either this or backend sharing starts the "
+            "broker; see docs/architecture/design-notes/mcp-stub-decoupling.md. "
+            "Default True — turning it off suppresses "
+            "server-authored UI and leaves sharing untouched.",
         ),
     )
     forward_declared_env: bool = field(
@@ -5867,10 +5875,14 @@ class KiroCrewConfig:
         # configured default instead of the provider/model default.
         default_effort = self.agent.reasoning_effort
 
-        # MCP gateway: resolve overlay + socket once when enabled. None when
-        # the feature flag is off -> AcpClient falls through to per-session MCP.
+        # MCP gateway: resolve overlay + socket once when the stub layer is
+        # needed. The stub is the addressing layer MCP Apps routes callbacks
+        # through, so it is required whenever EITHER pooling or MCP Apps is on —
+        # with pooling off the stubs are still emitted, each connection just
+        # gets its own backend. None only when neither is on -> AcpClient falls
+        # through to per-session MCP with no gateway in the path at all.
         _gw = self.mcp_gateway
-        if _gw.enabled:
+        if _gw.enabled or _gw.apps_enabled:
             _gw_overlay = _gw.overlay_dir or str(default_overlay_dir())
             _gw_socket = _gw.socket_path or str(default_socket_path())
             _gw_settings = str(Path(_gw_overlay).parent / "settings" / "mcp.json")

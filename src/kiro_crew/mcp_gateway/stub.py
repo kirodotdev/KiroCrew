@@ -167,6 +167,18 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--auto-approve", default="", dest="auto_approve")
     p.add_argument("--approval-mode", default="interactive", dest="approval_mode")
     p.add_argument("--trust-all", action="store_true", dest="trust_all")
+    p.add_argument(
+        "--poolable",
+        action="store_true",
+        dest="poolable",
+        help=(
+            "Declare this connection's backend shareable with other connections "
+            "carrying an identical PoolKey. Absent, the gateway gives this "
+            "connection its own backend -- the same process topology as no "
+            "gateway at all, which is why absent is the safe default: a stub "
+            "from an overlay predating this flag never silently starts sharing."
+        ),
+    )
     p.add_argument("--channel-id", default=None, dest="channel_id")
     p.add_argument(
         "--socket",
@@ -408,6 +420,12 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         ),
         "approval_mode": args.approval_mode,
         "trust_all_tools": bool(args.trust_all),
+        # Not a PoolKey dimension: it selects HOW the backend is acquired
+        # (shared bucket vs this connection's own), not WHICH backends are
+        # interchangeable. Keeping it out of the key is what lets a
+        # per-connection backend exist without making every key
+        # connection-private.
+        "poolable": bool(args.poolable),
         "user_identity": user_identity,
         "channel_id": channel_id,
         "config_snapshot_hash": _CONFIG_SNAPSHOT_PLACEHOLDER,
@@ -468,6 +486,22 @@ async def _safe_close(writer: asyncio.StreamWriter) -> None:
         await writer.wait_closed()
     except Exception:
         pass
+
+
+def must_degrade_unshareable(poolable: bool, capabilities: list[str]) -> bool:
+    """Should this connection abandon the gateway rather than risk being pooled?
+
+    True only when the stub asked for a PRIVATE backend and the daemon did not
+    attest that it reads the ``poolable`` register field. Such a daemon ignores
+    the flag and routes the register through the shared index, so a server the
+    operator never allowlisted would be silently co-tenanted — and a stub cannot
+    detect that after the fact. Degrading gives the per-session exec, which is
+    the private topology it asked for.
+
+    A stub that DID ask to share needs no attestation: an older daemon pools it,
+    which is what it wanted.
+    """
+    return not poolable and "poolable_ack" not in capabilities
 
 
 class FallbackRequestedError(Exception):
@@ -1076,6 +1110,32 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         return 1  # unreachable
     logger.info("registered stub_uuid=%s pool=%s", stub_uuid, pool_label)
 
+    capabilities = registered.get("capabilities") if isinstance(registered, dict) else None
+    _caps = capabilities if isinstance(capabilities, list) else []
+
+    # A private backend is the one thing this connection cannot verify after the
+    # fact. ``poolable`` is a register-payload field, so a daemon predating it
+    # ignores the flag and routes this register through the shared index —
+    # silently co-tenanting a server the operator never allowlisted. Such a
+    # daemon is reachable: the manager adopts anything answering ``pong``, with
+    # no version handshake, so one that outlived a package upgrade serves new
+    # stubs. Degrade instead: the per-session exec IS the private topology this
+    # connection asked for, and kiro-cli's ``initialize`` is still unread, so the
+    # fallback is clean. A stub that DID ask to share needs no check — an old
+    # daemon pools it, which is what it wanted.
+    if must_degrade_unshareable(bool(args.poolable), _caps):
+        reason = "gateway does not honour the poolable field"
+        log_fallback(reason, payload["stub_uuid"], pool_label, args)
+        logger.warning(
+            "handshake: gateway did not advertise poolable_ack and this server is "
+            "not shareable; falling back to a per-session exec rather than risk "
+            "being pooled pool=%s",
+            pool_label,
+        )
+        await _safe_close(writer)
+        fallback_exec(args)
+        return 1  # unreachable
+
     # B1 pre-flight: trigger the gateway's backend spawn with a
     # control frame BEFORE forwarding any real MCP traffic, so a capacity /
     # breaker rejection reaches us while kiro-cli's ``initialize`` is still
@@ -1084,8 +1144,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     # would treat the control frame as a real MCP frame and never reply, so we
     # skip the pre-flight and bridge directly (legacy lazy-spawn path, no 25s
     # skew penalty).
-    capabilities = registered.get("capabilities") if isinstance(registered, dict) else None
-    if isinstance(capabilities, list) and "ensure_backend" in capabilities:
+    if "ensure_backend" in _caps:
         try:
             await _write_frame(writer, {"type": "ensure_backend"})
             ready = await asyncio.wait_for(

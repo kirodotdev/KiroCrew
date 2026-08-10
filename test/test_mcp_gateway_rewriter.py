@@ -17,7 +17,13 @@ import pytest
 from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _rewrite_single_spec
 
 
-def _rewrite(spec: dict, tmp_path: Path) -> tuple[dict, int]:
+def _rewrite(
+    spec: dict,
+    tmp_path: Path,
+    *,
+    poolable_servers: frozenset[str] = frozenset(),
+    pooling_enabled: bool = True,
+) -> tuple[dict, int]:
     return _rewrite_single_spec(
         spec,
         stubs_dir=tmp_path / "stubs",
@@ -25,7 +31,8 @@ def _rewrite(spec: dict, tmp_path: Path) -> tuple[dict, int]:
         work_dir=tmp_path / "wd",
         sandbox_mode="auto",
         approval_mode="interactive",
-        poolable_servers=frozenset(),
+        poolable_servers=poolable_servers,
+        pooling_enabled=pooling_enabled,
     )
 
 
@@ -62,6 +69,133 @@ def test_enabled_poolable_server_is_still_wrapped(tmp_path: Path) -> None:
 
     assert wrapped == 1
     assert entry.get(_WRAPPER_MARKER) is True
+
+
+def test_non_poolable_server_is_wrapped_without_the_poolable_flag(
+    tmp_path: Path,
+) -> None:
+    """The decoupling: a server nobody declared poolable STILL gets a stub.
+
+    The stub is the addressing layer MCP Apps routes callbacks through, so its
+    presence cannot depend on the allowlist. What the allowlist decides is the
+    ``--poolable`` flag on the stub's argv, which the gateway reads to choose
+    between the shared bucket and a backend private to this connection.
+    """
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "stateful": {"command": "some-mcp"},
+        },
+    }
+    new_spec, wrapped = _rewrite(spec, tmp_path)
+    entry = new_spec["mcpServers"]["stateful"]
+
+    assert wrapped == 1
+    assert entry.get(_WRAPPER_MARKER) is True
+    assert "--poolable" not in entry["args"]
+    # The internal hint never reaches kiro-cli.
+    assert "poolable" not in entry
+
+
+def test_allowlisted_server_gets_the_poolable_flag(tmp_path: Path) -> None:
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "shareable": {"command": "some-mcp"},
+        },
+    }
+    new_spec, _ = _rewrite(
+        spec, tmp_path, poolable_servers=frozenset({"shareable"})
+    )
+
+    assert "--poolable" in new_spec["mcpServers"]["shareable"]["args"]
+
+
+def test_private_server_with_declared_env_is_not_warned_about(
+    tmp_path: Path, caplog
+) -> None:
+    """The pooled warnings must not fire for a connection-private backend.
+
+    Both reasons the shared path withholds declared env are absent when there is
+    one stub, and gatewayd forwards the block in full — so the warning would be
+    false on its face. Worse, its remedy ("stop sharing this server") names the
+    state the server is already in, which sends an operator chasing a
+    non-problem. This fires on a default install: sharing off plus an empty
+    allowlist makes every env-declaring server private.
+    """
+    import logging
+
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "needs-env": {
+                "command": "some-mcp",
+                "env": {"API_TOKEN": "x", "REGION": "us-west-2"},
+            },
+        },
+    }
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
+        new_spec, wrapped = _rewrite(spec, tmp_path, pooling_enabled=False)
+
+    assert wrapped == 1  # still stubbed — the stub is unconditional
+    assert "--poolable" not in new_spec["mcpServers"]["needs-env"]["args"]
+    env_warnings = [r for r in caplog.records if "declares" in r.getMessage()]
+    assert env_warnings == [], (
+        "a private backend was warned about with pooled-backend advice: "
+        f"{[r.getMessage() for r in env_warnings]}"
+    )
+
+
+def test_shared_server_with_declared_env_is_still_warned_about(
+    tmp_path: Path, caplog
+) -> None:
+    """The guard must not silence the case that IS real: a shared backend does
+    drop the declared env, and an operator relying on it needs to know."""
+    import logging
+
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "needs-env": {"command": "some-mcp", "env": {"REGION": "us-west-2"}},
+        },
+    }
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
+        _rewrite(
+            spec, tmp_path, poolable_servers=frozenset({"needs-env"})
+        )
+
+    msgs = [r.getMessage() for r in caplog.records if "declares" in r.getMessage()]
+    assert len(msgs) == 1, msgs
+    assert "shared" in msgs[0]
+
+
+def test_pooling_disabled_still_wraps_but_shares_nothing(tmp_path: Path) -> None:
+    """Pooling off is not stubs off.
+
+    With ``mcp_gateway.enabled`` false every server keeps its stub -- so MCP Apps
+    keeps working -- and nothing is marked shareable, so each connection gets its
+    own backend. An entry declaring ``poolable: true`` cannot override the
+    operator's global switch.
+    """
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "declared": {"command": "some-mcp", "poolable": True},
+            "listed": {"command": "other-mcp"},
+        },
+    }
+    new_spec, wrapped = _rewrite(
+        spec,
+        tmp_path,
+        poolable_servers=frozenset({"listed"}),
+        pooling_enabled=False,
+    )
+
+    assert wrapped == 2
+    for name in ("declared", "listed"):
+        entry = new_spec["mcpServers"][name]
+        assert entry.get(_WRAPPER_MARKER) is True, f"{name} lost its stub"
+        assert "--poolable" not in entry["args"], f"{name} still marked shareable"
 
 
 def test_rewriter_calls_restrict_to_owner_on_windows(

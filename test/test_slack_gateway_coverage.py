@@ -773,13 +773,95 @@ class TestInitMcpGateway:
     """Broker startup, its two early returns and the rewriter-failure fallback."""
 
     @pytest.mark.asyncio
-    async def test_disabled_returns_without_touching_platform_probe(self):
+    async def test_both_switches_off_returns_without_touching_platform_probe(self):
         orch = _make_orchestrator()
         orch._cfg.mcp_gateway.enabled = False
+        orch._cfg.mcp_gateway.apps_enabled = False
         with patch("kiro_crew.slack.gateway.is_gateway_supported") as probe:
             await orch._init_mcp_gateway()
         probe.assert_not_called()
         assert orch._mcp_gateway_manager is None
+
+    @pytest.mark.asyncio
+    async def test_apps_enabled_alone_still_starts_the_broker(self):
+        """Pooling off must not keep the broker down.
+
+        MCP Apps routes its callbacks through the stub, and the stub needs the
+        broker's socket. Returning early here is what made the apps switch a
+        dead end whenever pooling was off.
+        """
+        orch = _make_orchestrator()
+        orch._cfg.mcp_gateway.enabled = False
+        orch._cfg.mcp_gateway.apps_enabled = True
+        with patch(
+            "kiro_crew.slack.gateway.is_gateway_supported", return_value=False
+        ) as probe:
+            await orch._init_mcp_gateway()
+        probe.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_turning_sharing_off_restarts_rather_than_stops_when_apps_on(self):
+        """The live-apply path must not strand MCP Apps.
+
+        Two things have to happen when sharing goes off while apps stays on, and
+        only asserting both distinguishes the fix from either failure mode:
+
+        * the broker must come back — a plain stop would leave
+          ``_mcp_apps_enabled()`` reporting a feature whose render and callback
+          paths just went away;
+        * it must be a RESTART, not a no-op — the rewriter reads the sharing flag
+          when the broker starts, so re-running it is what re-emits every stub
+          without ``--poolable`` and actually stops the sharing just turned off.
+        """
+        orch = _make_orchestrator()
+        orch._cfg.mcp_gateway.enabled = False
+        orch._cfg.mcp_gateway.apps_enabled = True
+        orch._mcp_gateway_manager = object()  # a broker is currently up
+        calls: list[str] = []
+
+        async def _stop() -> None:
+            calls.append("stop")
+            orch._mcp_gateway_manager = None
+
+        async def _init() -> None:
+            calls.append("init")
+
+        with patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load", return_value=orch._cfg
+        ):
+            with patch.object(orch, "_stop_mcp_broker", _stop), patch.object(
+                orch, "_init_mcp_gateway", _init
+            ):
+                await orch._apply_mcp_gateway_enabled(False)
+
+        assert calls == ["stop", "init"]
+
+    @pytest.mark.asyncio
+    async def test_turning_sharing_off_with_apps_off_leaves_the_broker_down(self):
+        """The guard must not leak the other way: with neither switch on, the
+        broker stays stopped rather than being restarted for nothing."""
+        orch = _make_orchestrator()
+        orch._cfg.mcp_gateway.enabled = False
+        orch._cfg.mcp_gateway.apps_enabled = False
+        orch._mcp_gateway_manager = object()
+        calls: list[str] = []
+
+        async def _stop() -> None:
+            calls.append("stop")
+            orch._mcp_gateway_manager = None
+
+        async def _init() -> None:
+            calls.append("init")
+
+        with patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load", return_value=orch._cfg
+        ):
+            with patch.object(orch, "_stop_mcp_broker", _stop), patch.object(
+                orch, "_init_mcp_gateway", _init
+            ):
+                await orch._apply_mcp_gateway_enabled(False)
+
+        assert calls == ["stop"]
 
     @pytest.mark.asyncio
     async def test_unsupported_platform_returns_early(self):

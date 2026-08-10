@@ -5599,12 +5599,15 @@ class GatewayOrchestrator:
     async def _init_mcp_gateway(self) -> None:
         """Start the MCP gateway sidecar and populate the agent-JSON overlay.
 
-        Gated on ``config.mcp_gateway.enabled``.  Any failure downgrades to
-        today's per-session MCP path — the stub's graceful fallback keeps
-        kiro-cli sessions working even when the broker is unreachable.
+        Runs when ``mcp_gateway.enabled`` OR ``mcp_gateway.apps_enabled`` is set:
+        the stub is the addressing layer MCP Apps routes its callbacks through,
+        so it is needed even with pooling off, where every connection simply gets
+        its own backend. Any failure downgrades to today's per-session MCP path —
+        the stub's graceful fallback keeps kiro-cli sessions working even when
+        the broker is unreachable.
         """
         cfg_gw = self._cfg.mcp_gateway
-        if not cfg_gw.enabled:
+        if not (cfg_gw.enabled or cfg_gw.apps_enabled):
             return
         # Runs on every platform the transport layer covers -- an AF_UNIX socket
         # on POSIX, a named pipe on Windows. Stub delivery is ACP session/new
@@ -5633,6 +5636,7 @@ class GatewayOrchestrator:
                     sandbox_mode=self._cfg.agent.sandbox,
                     approval_mode=self._cfg.agent.approval_mode,
                     poolable_servers=frozenset(cfg_gw.poolable_servers),
+                    pooling_enabled=cfg_gw.enabled,
                 ),
             )
         except Exception:
@@ -5650,7 +5654,19 @@ class GatewayOrchestrator:
         )
         if await manager.start():
             self._mcp_gateway_manager = manager
-            logger.info("mcp-gateway: broker ready (socket=%s)", socket_path)
+            # Name the switch that started it. Two independent flags can, and
+            # "Share MCP Backends: off" beside a live daemon is otherwise a
+            # contradiction an operator has to read a design note to resolve.
+            reasons = []
+            if cfg_gw.enabled:
+                reasons.append("backend sharing")
+            if cfg_gw.apps_enabled:
+                reasons.append("mcp-apps")
+            logger.info(
+                "mcp-gateway: broker ready (socket=%s) for %s",
+                socket_path,
+                " + ".join(reasons) or "no switch (unexpected)",
+            )
 
     async def _stop_mcp_broker(self) -> None:
         """Stop the MCP gateway broker if running and clear the handle."""
@@ -5668,15 +5684,24 @@ class GatewayOrchestrator:
 
         Reloads config so it acts on the value the handler just wrote.
         Returns ``{enabled, running, ping_ok}``.
+
+        The flag governs backend SHARING, not the broker's existence: MCP Apps
+        needs the stub either way. So turning sharing off restarts the broker
+        rather than stopping it whenever Apps is still on — a plain stop would
+        leave ``_mcp_apps_enabled()`` reporting a feature whose render and
+        callback paths just went away. The restart is required, not incidental:
+        the rewriter reads the sharing flag when the broker starts, so re-running
+        it is what re-emits every stub WITHOUT ``--poolable`` and actually stops
+        the sharing the operator just turned off.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
         self._cfg = KiroCrewConfig.load()
-        if enabled:
-            if self._mcp_gateway_manager is None:
-                await self._init_mcp_gateway()
-        else:
+        cfg_gw = self._cfg.mcp_gateway
+        if self._mcp_gateway_manager is not None:
             await self._stop_mcp_broker()
+        if cfg_gw.enabled or cfg_gw.apps_enabled:
+            await self._init_mcp_gateway()
         mgr = self._mcp_gateway_manager
         if self.dashboard_state is not None:
             self.dashboard_state._mcp_gateway_manager = mgr

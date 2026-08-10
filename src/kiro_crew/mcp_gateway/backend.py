@@ -340,9 +340,10 @@ def _mcp_apps_enabled() -> bool:
         return False
     if not gw.apps_enabled:
         return False
-    if override is True:
-        return True
-    return bool(gw.enabled)
+    # Deliberately NOT gated on ``gw.enabled``: pooling decides whether backends
+    # are shared, not whether the stub exists. The stub carries the app-call
+    # relay either way.
+    return True
 
 
 def _inject_client_extensions(msg: dict[str, Any]) -> dict[str, Any]:
@@ -436,6 +437,12 @@ class Backend:
     _stub_inboxes: dict[str, "asyncio.Queue[bytes]"] = field(default_factory=dict)
     _inbox_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     refcount: int = 0
+    # Non-empty on a backend bound to a single connection, holding that
+    # connection's ``stub_uuid``. It makes ``storage_digest`` unique per
+    # connection: PoolKey is identical across connections to the same server, so
+    # without this discriminator two private backends would share a digest and
+    # an app callback could resolve onto the wrong session's process.
+    exclusive_token: str = ""
     # ``pinned`` marks a backend that the warm-pool prewarmer created ahead of
     # any stub. Such a backend sits at ``refcount == 0`` indefinitely (no stub
     # stays attached to it between chats), so the ordinary idle/LRU rules would
@@ -563,6 +570,19 @@ class Backend:
         queued = sum(inbox.qsize() for inbox in list(self._stub_inboxes.values()))
         unfinished_apps = sum(1 for task in self._apps_tasks if not task.done())
         return len(self._pending_requests) + unfinished_apps + queued
+
+    @property
+    def storage_digest(self) -> str:
+        """The pool's key for this backend, and the identity an app callback
+        resolves against.
+
+        Equal to the PoolKey digest for a shared backend -- two connections that
+        may share a process resolve to the same entry, which is the point. A
+        connection-private backend appends its ``exclusive_token`` so it is
+        addressable without being reachable from any other connection.
+        """
+        base = self.pool_key.stable_hash()
+        return f"{base}:{self.exclusive_token}" if self.exclusive_token else base
 
     @staticmethod
     def _now() -> float:
@@ -1436,7 +1456,7 @@ class Backend:
                 # an app can only ever call back into the same pool partition
                 # (same credentials/sandbox/approval identity) that produced
                 # it — never a co-pooled tenant's backend for the same server.
-                "pool_digest": self.pool_key.stable_hash(),
+                "pool_digest": self.storage_digest,
                 "html": html,
                 "csp": csp,
                 "permissions": permissions,
