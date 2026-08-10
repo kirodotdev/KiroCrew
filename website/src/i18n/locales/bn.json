@@ -7493,6 +7493,8 @@
         "turn_other": "{{count}}টি টার্ন"
       },
       "sidePanel": {
+        "dock_bottom": "প্যানেলটি চ্যাটের নিচে ডক করুন",
+        "dock_right": "প্যানেলটি ডানদিকে ডক করুন",
         "close_panel": "প্যানেল বন্ধ করুন",
         "close_tab": "ট্যাব বন্ধ করুন",
         "hide_line_numbers": "লাইন নম্বর লুকাও",

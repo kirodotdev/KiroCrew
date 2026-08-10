@@ -2522,6 +2522,8 @@
         "steer_demoted_to_queue": "The turn ended — queued instead"
       },
       "sidePanel": {
+        "dock_bottom": "Dock panel below chat",
+        "dock_right": "Dock panel to the right",
         "hide_line_numbers": "Hide line numbers",
         "menu_artifacts": "Artifacts",
         "menu_artifacts_desc": "In-session documents & stars",

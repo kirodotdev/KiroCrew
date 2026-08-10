@@ -7392,6 +7392,8 @@
         "turn_other": "{{count}}턴"
       },
       "sidePanel": {
+        "dock_bottom": "패널을 채팅 아래에 도킹",
+        "dock_right": "패널을 오른쪽에 도킹",
         "close_panel": "패널 닫기",
         "close_tab": "탭 닫기",
         "hide_line_numbers": "줄 번호 숨기기",

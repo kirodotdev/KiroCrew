@@ -7594,6 +7594,8 @@
         "turn_other": "{{count}} tours"
       },
       "sidePanel": {
+        "dock_bottom": "Ancrer le panneau sous le chat",
+        "dock_right": "Ancrer le panneau à droite",
         "close_panel": "Fermer le panneau",
         "close_tab": "Fermer l'onglet",
         "hide_line_numbers": "Masquer les numéros de ligne",

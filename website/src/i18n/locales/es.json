@@ -7594,6 +7594,8 @@
         "turn_other": "{{count}} turnos"
       },
       "sidePanel": {
+        "dock_bottom": "Anclar el panel debajo del chat",
+        "dock_right": "Anclar el panel a la derecha",
         "close_panel": "Cerrar el panel",
         "close_tab": "Cerrar la pestaña",
         "hide_line_numbers": "Ocultar los números de línea",

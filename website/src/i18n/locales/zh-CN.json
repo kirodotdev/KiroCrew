@@ -7392,6 +7392,8 @@
         "turn_other": "{{count}} 轮"
       },
       "sidePanel": {
+        "dock_bottom": "将面板停靠到聊天下方",
+        "dock_right": "将面板停靠到右侧",
         "close_panel": "关闭面板",
         "close_tab": "关闭标签页",
         "hide_line_numbers": "隐藏行号",

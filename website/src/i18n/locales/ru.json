@@ -7695,6 +7695,8 @@
         "turn_other": "{{count}} хода"
       },
       "sidePanel": {
+        "dock_bottom": "Закрепить панель под чатом",
+        "dock_right": "Закрепить панель справа",
         "close_panel": "Закрыть панель",
         "close_tab": "Закрыть вкладку",
         "hide_line_numbers": "Скрыть номера строк",

@@ -7493,6 +7493,8 @@
         "turn_other": "{{count}} Züge"
       },
       "sidePanel": {
+        "dock_bottom": "Panel unter dem Chat andocken",
+        "dock_right": "Panel rechts andocken",
         "close_panel": "Panel schließen",
         "close_tab": "Tab schließen",
         "hide_line_numbers": "Zeilennummern ausblenden",

@@ -7493,6 +7493,8 @@
         "turn_other": "{{count}} टर्न"
       },
       "sidePanel": {
+        "dock_bottom": "पैनल को चैट के नीचे डॉक करें",
+        "dock_right": "पैनल को दाईं ओर डॉक करें",
         "close_panel": "पैनल बंद करें",
         "close_tab": "टैब बंद करें",
         "hide_line_numbers": "पंक्ति संख्याएँ छिपाएँ",

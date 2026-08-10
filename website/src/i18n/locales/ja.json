@@ -7392,6 +7392,8 @@
         "turn_other": "{{count}} ターン"
       },
       "sidePanel": {
+        "dock_bottom": "パネルをチャットの下にドッキング",
+        "dock_right": "パネルを右側にドッキング",
         "close_panel": "パネルを閉じる",
         "close_tab": "タブを閉じる",
         "hide_line_numbers": "行番号を非表示",
