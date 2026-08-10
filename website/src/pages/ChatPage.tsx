@@ -2165,6 +2165,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // belonging to another chat lives in this panel subtree, so deciding to unmount
   // on the active slot's (possibly empty) tab list would destroy that canvas.
   const hasLiveAppTab = useAnyLiveAppTab()
+  // Current slot only — unlike app tabs (hosted cross-slot via `allAppTabs`), a
+  // Browser tab renders solely from the active slot's strip, and a background
+  // slot's browser view already unmounts (its WebContentsView released) on the
+  // slot switch. So keep-mounted follows THIS slot's tabs, not every slot's.
+  const hasBrowserTab = tabsCtl.tabs.some(t => t.kind === 'browser')
   // Which file (if any) the Files tab is showing inline — kept PER SLOT (above
   // the SidePanel subtree so it survives panel collapse). Per-slot (not a single
   // value reset on switch) so it stays consistent with the per-slot tab buckets
@@ -6861,7 +6866,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       <AnimatePresence initial={false}>
         {/* Inline side panel — mobile / embed frames where there's no actbar
             grid column. Desktop uses the actbar portal below. */}
-        {shouldMountSidePanel({ activityOpen, hasLiveAppTab, searchOpen: search.isOpen }) && !activitySlot && (
+        {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && !activitySlot && (
           <motion.div
             key="side-panel-inline"
             initial={{ width: 0 }}
@@ -6871,7 +6876,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             className="h-full overflow-hidden flex justify-end shrink-0"
             // Kept mounted for a live app tab: hide instead of unmounting so the
             // iframe (and the drawing inside it) survives a panel close.
-            style={isSidePanelHidden({ activityOpen, hasLiveAppTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
+            style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
           >
             <SidePanel
               tabsCtl={tabsCtl}
@@ -6899,7 +6904,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           the window edge — both sides move together instead of snapping. */}
       {activitySlot && createPortal(
         <AnimatePresence initial={false}>
-          {shouldMountSidePanel({ activityOpen, hasLiveAppTab, searchOpen: search.isOpen }) && (
+          {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && (
             <motion.div
               key="side-panel"
               initial={{ width: 0, opacity: 0 }}
@@ -6907,7 +6912,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               exit={{ width: 0, opacity: 0 }}
               transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
               className="h-full overflow-visible flex justify-end"
-              style={isSidePanelHidden({ activityOpen, hasLiveAppTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
+              style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
             >
               <SidePanel
                 tabsCtl={tabsCtl}

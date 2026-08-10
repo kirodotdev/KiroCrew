@@ -6,8 +6,8 @@
 import { describe, it, expect } from 'vitest'
 import { shouldMountSidePanel, isSidePanelHidden } from '../pages/chat/sidePanelMount'
 
-const S = (activityOpen: boolean, hasLiveAppTab: boolean, searchOpen = false) =>
-  ({ activityOpen, hasLiveAppTab, searchOpen })
+const S = (activityOpen: boolean, hasLiveAppTab: boolean, searchOpen = false, hasBrowserTab = false) =>
+  ({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen })
 
 describe('side panel mount decision', () => {
   it('mounts while open, with or without an app tab', () => {
@@ -54,5 +54,25 @@ describe('side panel mount decision', () => {
         expect(shouldMountSidePanel(S(activityOpen, true, searchOpen))).toBe(true)
       }
     }
+  })
+
+  describe('a live browser tab', () => {
+    // The Browser tab hosts an Electron WebContentsView that useNativeBrowser
+    // destroys on unmount (api.close). Closing the panel must hide, not unmount,
+    // or the loaded page (and its scroll/history) is lost — same shape as the
+    // app-tab invariant above.
+    it('STAYS MOUNTED and hidden on close', () => {
+      expect(shouldMountSidePanel(S(false, false, false, true))).toBe(true)
+      expect(isSidePanelHidden(S(false, false, false, true))).toBe(true)
+    })
+
+    it('survives the find pane claiming the dock', () => {
+      expect(shouldMountSidePanel(S(true, false, true, true))).toBe(true)
+      expect(isSidePanelHidden(S(true, false, true, true))).toBe(true)
+    })
+
+    it('is shown while the panel is open and unobstructed', () => {
+      expect(isSidePanelHidden(S(true, false, false, true))).toBe(false)
+    })
   })
 })

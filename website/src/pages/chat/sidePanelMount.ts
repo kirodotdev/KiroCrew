@@ -19,6 +19,10 @@ export interface SidePanelMountInput {
   activityOpen: boolean
   /** True while at least one `app` tab exists in the current slot's strip. */
   hasLiveAppTab: boolean
+  /** True while a `browser` tab is live. Its Electron WebContentsView is
+   *  destroyed on unmount, so — like an app tab — closing the panel must hide,
+   *  not unmount, or the loaded page is lost. */
+  hasBrowserTab: boolean
   /** The find pane takes the dock slot exclusively. */
   searchOpen: boolean
 }
@@ -28,12 +32,14 @@ export interface SidePanelMountInput {
  *  A live app tab makes this UNCONDITIONAL. Everything else — the user closing
  *  the panel, the find pane claiming the dock — controls *visibility* only
  *  (`isSidePanelHidden`), never mounting. Deciding not to mount is deciding to
- *  destroy the drawing, and no transient UI state is worth that.
+ *  destroy the drawing, and no transient UI state is worth that. A live
+ *  `browser` tab is kept mounted for the same reason: its WebContentsView is
+ *  destroyed on unmount, so a close would lose the loaded page.
  *
  *  With no app tab, behaviour is exactly as before: the find pane takes the dock
  *  exclusively and closing the panel unmounts it, preserving the exit animation. */
-export function shouldMountSidePanel({ activityOpen, hasLiveAppTab, searchOpen }: SidePanelMountInput): boolean {
-  if (hasLiveAppTab) return true
+export function shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen }: SidePanelMountInput): boolean {
+  if (hasLiveAppTab || hasBrowserTab) return true
   if (searchOpen) return false
   return activityOpen
 }
