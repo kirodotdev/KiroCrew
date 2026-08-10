@@ -7192,6 +7192,8 @@
         "menu_artifacts_desc": "会话内的文档与收藏",
         "menu_browser": "浏览器",
         "menu_browser_desc": "查看网页或本地开发服务器",
+        "menu_ledger": "记录本",
+        "menu_ledger_desc": "可关联到任意会话的共享待办和便签列表",
         "menu_changes": "变更",
         "menu_changes_desc": "拉取请求、检查与审查",
         "menu_context": "上下文构成",
@@ -7355,6 +7357,9 @@
         "unpin": "取消置顶",
         "open_pinned_messages": "打开置顶消息",
         "jump_to_message": "跳转到消息"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "永久删除此记录本？"
       }
     },
     "chatPage": {

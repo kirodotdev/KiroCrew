@@ -139,7 +139,7 @@ describe('newMenuSections', () => {
   it('groups by session output, workspaces, then diagnostics', () => {
     expect(kinds({ devMode: true, terminalEnabled: true })).toEqual([
       ['issues', 'subagents', 'workflows'],
-      ['side', 'browser', 'terminal'],
+      ['side', 'browser', 'ledger', 'terminal'],
       ['logs', 'context'],
     ])
   })
@@ -159,12 +159,12 @@ describe('newMenuSections', () => {
     // Workspaces — two groups, not three with a hole.
     expect(kinds({ devMode: false, terminalEnabled: false })).toEqual([
       ['issues', 'subagents', 'workflows'],
-      ['side', 'browser'],
+      ['side', 'browser', 'ledger'],
     ])
     // Terminal back, diagnostics still gated.
     expect(kinds({ devMode: false, terminalEnabled: true })).toEqual([
       ['issues', 'subagents', 'workflows'],
-      ['side', 'browser', 'terminal'],
+      ['side', 'browser', 'ledger', 'terminal'],
     ])
   })
 })

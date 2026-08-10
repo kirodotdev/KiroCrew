@@ -7390,6 +7390,8 @@
         "menu_artifacts_desc": "Documents et favoris de la session",
         "menu_browser": "Navigateur",
         "menu_browser_desc": "Afficher une page web ou un serveur de développement local",
+        "menu_ledger": "Registre",
+        "menu_ledger_desc": "Liste partagée de tâches et notes, rattachable à toute discussion",
         "menu_changes": "Modifications",
         "menu_changes_desc": "Pull requests, vérifications et revues",
         "menu_context": "Répartition du contexte",
@@ -7553,6 +7555,9 @@
         "unpin": "Désépingler",
         "open_pinned_messages": "Ouvrir les messages épinglés",
         "jump_to_message": "Aller au message"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "Supprimer définitivement ce registre ?"
       }
     },
     "chatPage": {

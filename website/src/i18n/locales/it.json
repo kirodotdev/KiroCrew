@@ -7390,6 +7390,8 @@
         "menu_artifacts_desc": "Documenti e preferiti della sessione",
         "menu_browser": "Browser",
         "menu_browser_desc": "Visualizza una pagina web o un server di sviluppo locale",
+        "menu_ledger": "Registro",
+        "menu_ledger_desc": "Elenco condiviso di attività e appunti, collegabile a ogni chat",
         "menu_changes": "Modifiche",
         "menu_changes_desc": "Pull request, controlli e revisioni",
         "menu_context": "Ripartizione del contesto",
@@ -7553,6 +7555,9 @@
         "unpin": "Rimuovi",
         "open_pinned_messages": "Apri messaggi fissati",
         "jump_to_message": "Vai al messaggio"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "Eliminare definitivamente questo registro?"
       }
     },
     "chatPage": {

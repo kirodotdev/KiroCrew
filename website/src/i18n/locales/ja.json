@@ -7192,6 +7192,8 @@
         "menu_artifacts_desc": "セッション内のドキュメントとスター",
         "menu_browser": "ブラウザー",
         "menu_browser_desc": "Web ページまたはローカル開発サーバーを表示",
+        "menu_ledger": "レジャー",
+        "menu_ledger_desc": "チャットに添付できる共有のToDo・メモリスト",
         "menu_changes": "変更",
         "menu_changes_desc": "プルリクエスト、チェック、レビュー",
         "menu_context": "コンテキスト内訳",
@@ -7355,6 +7357,9 @@
         "unpin": "ピン留めを解除",
         "open_pinned_messages": "ピン留めされたメッセージを開く",
         "jump_to_message": "メッセージに移動"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "このレジャーを完全に削除しますか？"
       }
     },
     "chatPage": {

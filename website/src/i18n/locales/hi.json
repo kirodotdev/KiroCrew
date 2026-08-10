@@ -7291,6 +7291,8 @@
         "menu_artifacts_desc": "सत्र के भीतर के दस्तावेज़ और स्टार",
         "menu_browser": "ब्राउज़र",
         "menu_browser_desc": "कोई वेब पेज या स्थानीय डेव सर्वर देखें",
+        "menu_ledger": "लेजर",
+        "menu_ledger_desc": "साझा टू-डू और नोट सूची, किसी भी चैट से जोड़ी जा सकती है",
         "menu_changes": "बदलाव",
         "menu_changes_desc": "पुल रिक्वेस्ट, जाँच और समीक्षाएँ",
         "menu_context": "संदर्भ विश्लेषण",
@@ -7454,6 +7456,9 @@
         "unpin": "अनपिन",
         "open_pinned_messages": "पिन किए गए संदेश खोलें",
         "jump_to_message": "संदेश पर जाएं"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "इस लेजर को स्थायी रूप से हटाएं?"
       }
     },
     "chatPage": {

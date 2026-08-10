@@ -7390,6 +7390,8 @@
         "menu_artifacts_desc": "Documentos e favoritos da sessão",
         "menu_browser": "Navegador",
         "menu_browser_desc": "Ver uma página web ou um servidor de desenvolvimento local",
+        "menu_ledger": "Caderno",
+        "menu_ledger_desc": "Lista compartilhada de tarefas e notas, anexável a qualquer chat",
         "menu_changes": "Alterações",
         "menu_changes_desc": "Pull requests, verificações e revisões",
         "menu_context": "Detalhamento do contexto",
@@ -7553,6 +7555,9 @@
         "unpin": "Desafixar",
         "open_pinned_messages": "Abrir mensagens fixadas",
         "jump_to_message": "Ir para a mensagem"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "Excluir este caderno permanentemente?"
       }
     },
     "chatPage": {

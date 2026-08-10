@@ -7291,6 +7291,8 @@
         "menu_artifacts_desc": "Dokumente & Markierungen in der Sitzung",
         "menu_browser": "Browser",
         "menu_browser_desc": "Eine Webseite oder einen lokalen Entwicklungsserver ansehen",
+        "menu_ledger": "Ledger",
+        "menu_ledger_desc": "Gemeinsame To-do- und Notizliste, an jeden Chat anheftbar",
         "menu_changes": "Änderungen",
         "menu_changes_desc": "Pull Requests, CI-Prüfungen & Reviews",
         "menu_context": "Kontextaufschlüsselung",
@@ -7454,6 +7456,9 @@
         "unpin": "Loslösen",
         "open_pinned_messages": "Angeheftete Nachrichten öffnen",
         "jump_to_message": "Zur Nachricht springen"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "Dieses Ledger endgültig löschen?"
       }
     },
     "chatPage": {

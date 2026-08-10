@@ -7291,6 +7291,8 @@
         "menu_artifacts_desc": "সেশনের ভেতরের ডকুমেন্ট ও স্টার",
         "menu_browser": "ব্রাউজার",
         "menu_browser_desc": "একটি ওয়েব পেজ বা লোকাল ডেভ সার্ভার দেখো",
+        "menu_ledger": "লেজার",
+        "menu_ledger_desc": "শেয়ার করা টু-ডু ও নোট তালিকা, যেকোনো চ্যাটে যুক্ত করা যায়",
         "menu_changes": "পরিবর্তন",
         "menu_changes_desc": "পুল রিকোয়েস্ট, চেক ও রিভিউ",
         "menu_context": "কনটেক্সট বিশ্লেষণ",
@@ -7454,6 +7456,9 @@
         "unpin": "আনপিন",
         "open_pinned_messages": "পিন করা বার্তা খুলুন",
         "jump_to_message": "বার্তায় যান"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "এই লেজারটি স্থায়ীভাবে মুছে ফেলবেন?"
       }
     },
     "chatPage": {

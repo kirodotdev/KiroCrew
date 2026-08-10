@@ -7390,6 +7390,8 @@
         "menu_artifacts_desc": "Documentos y favoritos de la sesión",
         "menu_browser": "Navegador",
         "menu_browser_desc": "Ver una página web o un servidor de desarrollo local",
+        "menu_ledger": "Libreta",
+        "menu_ledger_desc": "Lista compartida de tareas y notas, vinculable a cualquier chat",
         "menu_changes": "Cambios",
         "menu_changes_desc": "Pull requests, comprobaciones y revisiones",
         "menu_context": "Desglose del contexto",
@@ -7553,6 +7555,9 @@
         "unpin": "Desfijar",
         "open_pinned_messages": "Abrir mensajes fijados",
         "jump_to_message": "Ir al mensaje"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "¿Eliminar esta libreta de forma permanente?"
       }
     },
     "chatPage": {

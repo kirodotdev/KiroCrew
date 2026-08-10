@@ -150,6 +150,15 @@ export function splitLineRef(s: string): { path: string; line?: number; endLine?
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
 export const BasePathCtx = createContext<string | null>(null)
 
+/** Opt-in interactive GFM task-list checkboxes (Ledger panel). When a provider
+ *  supplies a handler, rendered `- [ ]` checkboxes become clickable and report
+ *  their ABSOLUTE 0-based source line index (data-sourcepos line + block
+ *  startLine offset − 2 — see resolveSourcePos in MarkdownPanel for the same
+ *  block-offset convention). Null (the default, i.e. all chat rendering) keeps
+ *  the sanitizer's historical disabled checkboxes byte-for-byte identical.
+ *  Requires the renderer to be mounted with `sourcePos` so positions exist. */
+export const TaskToggleCtx = createContext<((lineIdx: number) => void) | null>(null)
+
 /**
  * When true, markdown images render as small previews (a compact thumbnail the
  * user can still click to open the full-size lightbox) instead of the default
@@ -711,8 +720,37 @@ function jiraCardMeta(link: PullRequestLink): LinkMeta {
     fetchedAt: 0,
   }
 }
+/** GFM task-list checkbox. Inert (sanitizer-disabled) everywhere except
+ *  under a TaskToggleCtx provider (Ledger panel), where clicking reports the
+ *  absolute 0-based source line: the parent li carries `data-sourcepos`
+ *  (1-based, block-relative — the sanitizer strips attrs from the input
+ *  itself) and the enclosing sourcePos wrapper carries `data-block-start`
+ *  (1-based). absolute = sourceposLine + blockStart − 2. A stale/wrong line
+ *  can only 409 server-side (expected-text guard), never mis-toggle. */
+function TaskCheckboxInput(props: any) {
+  const onToggle = useContext(TaskToggleCtx)
+  if (props.type !== 'checkbox') return null
+  if (!onToggle) return <input type="checkbox" checked={!!props.checked} disabled readOnly />
+  return (
+    <input
+      type="checkbox"
+      checked={!!props.checked}
+      aria-label="Toggle task"
+      className="mt-1 accent-[var(--accent)] cursor-pointer"
+      onChange={(e) => {
+        const el = (e.target as HTMLElement).closest('[data-sourcepos]')
+        const m = /^(\d+):/.exec(el?.getAttribute('data-sourcepos') || '')
+        if (!m) return
+        const blockEl = el!.closest('[data-block-start]')
+        const blockStart = blockEl ? +(blockEl.getAttribute('data-block-start') || '1') : 1
+        onToggle(+m[1] + blockStart - 2)
+      }}
+    />
+  )
+}
 
 const MD_COMPONENTS: Components = {
+  input: TaskCheckboxInput,
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className || '')
     const lang = match?.[1]

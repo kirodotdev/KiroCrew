@@ -887,6 +887,7 @@ class _ChatSlot:
         "folder_id",
         "_folder_changed",
         "_folder_suggested",
+        "ledger_id",
         "pinned",
         "tags",
         "_pending_subagent_failures",
@@ -1093,6 +1094,7 @@ class _ChatSlot:
         # slot is already titled, so the suggestion hook never re-fires for it
         # and a reset flag cannot produce a second card.
         self._folder_suggested: bool = False
+        self.ledger_id: str = ""  # pinned ledger; "" = none
         self.pinned: bool = False  # pinned to top of sidebar
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         self._pending_subagent_failures: list[str] = []
@@ -2000,6 +2002,7 @@ class _ChatSlot:
             "slack_channel": self._slack_channel,
             "slack_thread_ts": self._slack_thread_ts,
             "folder_id": self.folder_id,
+            "ledger_id": self.ledger_id,
             "pinned": self.pinned,
             "tags": list(self.tags),
             "color_index": self.color_index,
@@ -4541,6 +4544,27 @@ class DashboardState:
                 "_type": "artifact_update",
                 "slug": slug,
                 "version": version,
+                "deleted": deleted,
+            }
+        )
+
+    def push_ledger_update(
+        self, ledger_id: str, title: str, version: int, updated_at: float, *, deleted: bool = False
+    ) -> None:
+        """Broadcast a ledger mutation to all connected clients.
+
+        Emitted from every ledger write (create / content update / rename /
+        toggle / delete / pin) so sessions sharing the ledger can refetch
+        immediately. Fire-and-forget, best-effort: clients keep a react-query
+        staleness window as the safety net.
+        """
+        self._broadcast(
+            {
+                "_type": "ledger_update",
+                "id": ledger_id,
+                "title": title,
+                "version": version,
+                "updated_at": updated_at,
                 "deleted": deleted,
             }
         )

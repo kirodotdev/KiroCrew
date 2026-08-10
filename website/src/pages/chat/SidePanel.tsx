@@ -3,9 +3,10 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, Layers } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, Layers, NotebookPen } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
+import LedgerPanel from './LedgerPanel'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel from '../../components/MarkdownPanel'
@@ -66,6 +67,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
   context: 'pages.chat.sidePanel.menu_context',
   side: 'pages.chat.sidePanel.menu_side',
   browser: 'pages.chat.sidePanel.menu_browser',
+  ledger: 'pages.chat.sidePanel.menu_ledger',
   terminal: 'pages.chat.sidePanel.menu_terminal',
 }
 
@@ -80,6 +82,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   context: 'pages.chat.sidePanel.menu_context_desc',
   side: 'pages.chat.sidePanel.menu_side_desc',
   browser: 'pages.chat.sidePanel.menu_browser_desc',
+  ledger: 'pages.chat.sidePanel.menu_ledger_desc',
   terminal: 'pages.chat.sidePanel.menu_terminal_desc',
 }
 
@@ -113,6 +116,7 @@ const NEW_MENU_GROUPS: { kind: ViewKind | 'terminal'; icon: ReactNode }[][] = [
   [
     { kind: 'side', icon: <MessageSquare size={15} /> },
     { kind: 'browser', icon: <Globe size={15} /> },
+    { kind: 'ledger', icon: <NotebookPen size={15} /> },
     { kind: 'terminal', icon: <TerminalSquare size={15} /> },
   ],
   // Diagnostics.
@@ -709,6 +713,7 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
 }) {
   if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
   if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
+  if (tab.kind === 'ledger') return <LedgerPanel slot={slot} onFileOpen={onFileOpen} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   if (tab.kind === 'file') {
     return (

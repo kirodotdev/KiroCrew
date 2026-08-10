@@ -556,6 +556,8 @@ def _rehydrate_slot_from_history(
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
             slot._channel_folder_filed = True
+        if meta.get("ledger_id"):
+            slot.ledger_id = meta["ledger_id"]
         if meta.get("app"):
             slot._app = meta["app"]
         # Re-validate the companion binding against the slug grammar on restore
@@ -909,6 +911,8 @@ def _restore_recent_sessions_steps(
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
             slot._channel_folder_filed = True
+        if meta.get("ledger_id"):
+            slot.ledger_id = meta["ledger_id"]
         if meta.get("app"):
             slot._app = meta["app"]
         # Same tamper gate as _rehydrate_slot_from_history: re-validate the
@@ -1655,6 +1659,8 @@ def _save_slot_to_history(
                 # makes that whole class of omission harmless — same reason
                 # rotation_generation is carried forward above.
                 meta_line["channel_folder_filed"] = True
+            if slot.ledger_id:
+                meta_line["ledger_id"] = slot.ledger_id
             if slot._app:
                 meta_line["app"] = slot._app
             # Artifact companion binding — persisted so a bound

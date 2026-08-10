@@ -7489,6 +7489,8 @@
         "menu_artifacts_desc": "Документы и избранное в сессии",
         "menu_browser": "Браузер",
         "menu_browser_desc": "Посмотреть веб-страницу или локальный dev-сервер",
+        "menu_ledger": "Блокнот",
+        "menu_ledger_desc": "Общий список задач и заметок, прикрепляется к любому чату",
         "menu_changes": "Изменения",
         "menu_changes_desc": "Пул-реквесты, проверки и ревью",
         "menu_context": "Состав контекста",
@@ -7652,6 +7654,9 @@
         "unpin": "Открепить",
         "open_pinned_messages": "Открыть закреплённые сообщения",
         "jump_to_message": "Перейти к сообщению"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "Удалить этот блокнот навсегда?"
       }
     },
     "chatPage": {

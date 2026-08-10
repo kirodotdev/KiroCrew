@@ -2352,6 +2352,8 @@
         "menu_artifacts_desc": "In-session documents & stars",
         "menu_browser": "Browser",
         "menu_browser_desc": "View a web page or a local dev server",
+        "menu_ledger": "Ledger",
+        "menu_ledger_desc": "Shared todo & scratch list, attachable to any chat",
         "menu_changes": "Changes",
         "menu_changes_desc": "Pull requests, checks & reviews",
         "menu_context": "Context breakdown",
@@ -2436,6 +2438,9 @@
         "wait_ending": "Ending…",
         "wait_remaining": "{{time}} left",
         "wait_status": "Waiting"
+      },
+      "ledgerPanel": {
+        "delete_confirm": "Delete this ledger permanently?"
       }
     },
     "chatPage": {

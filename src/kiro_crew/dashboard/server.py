@@ -114,6 +114,7 @@ from kiro_crew.dashboard.handlers.discover import (
     api_skills_discover_preview,
 )
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
+from kiro_crew.dashboard.handlers.ledgers import setup_ledger_routes
 from kiro_crew.dashboard.handlers.link_meta import setup_link_meta_routes
 from kiro_crew.dashboard.handlers.mcp_custom import (
     api_mcp_custom_add,
@@ -2940,6 +2941,9 @@ async def start_dashboard(
     # Knowledge Library
     setup_knowledge_routes(app)
     setup_weixin_routes(app)
+
+    # Ledgers — attachable todo/scratch lists (side-panel editor)
+    setup_ledger_routes(app)
 
     # Link previews (chat unfurl). Route is always registered; the handler gates
     # itself on cfg.dashboard.link_previews, so toggling the feature needs no
