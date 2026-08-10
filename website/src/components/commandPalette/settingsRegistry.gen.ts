@@ -185,7 +185,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.fallback-model",
     "label": "Fallback Model",
-    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Crews, or pick one inside a session to override it there.",
+    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1

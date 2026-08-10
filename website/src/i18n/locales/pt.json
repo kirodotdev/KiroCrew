@@ -6976,8 +6976,8 @@
       "agent_capabilities": "Recursos do agente",
       "connections_description": "Conecte serviços oficiais e gerencie servidores MCP personalizados",
       "connections_label": "Conexões",
-      "crews_description": "Crews com quem você conversa, cada uma com seu próprio espaço de trabalho",
-      "crews_label": "Crews",
+      "crews_description": "Agentes com quem você conversa, cada um com seu próprio espaço de trabalho",
+      "crews_label": "Agentes",
       "hooks_description": "Comandos de shell executados automaticamente em eventos do agente como prompts, chamadas de ferramentas e início/parada de sessão",
       "hooks_label": "Hooks",
       "prompts_description": "Modelos de prompt reutilizáveis de {{registry}}",
@@ -6986,7 +6986,7 @@
       "skills_label": "Habilidades",
       "steering_description": "Convenções markdown sempre ativas de ~/.kiro/steering e do .kiro/steering do seu projeto",
       "steering_label": "Diretrizes",
-      "templates_description": "Com o que um crew começa: o modelo, as skills, as ferramentas, os servidores MCP e os limites de segurança",
+      "templates_description": "Gerencie com o que cada agente começa: o modelo, as skills, as ferramentas, os servidores MCP e os limites de segurança",
       "templates_label": "Modelos de agente"
     },
     "channelPage": {
@@ -9789,7 +9789,7 @@
         "ultra_concise_3_sentences": "Ultraconciso — resposta primeiro, prosa mínima",
         "ux_designer": "Designer de UX",
         "when_enabled_inline_tool_pills_show_simplified_t": "Quando ativado, as pílulas de ferramenta embutidas mostram a finalidade simplificada do uso da ferramenta em vez do comando exato executado",
-        "which_model_new_sessions_start_with_pick_a_model": "Com qual modelo as novas sessões começam quando o agente delas não fixa nenhum. Defina um modelo por agente em Recursos do agente → Crews ou escolha um dentro de uma sessão para substituí-lo ali.",
+        "which_model_new_sessions_start_with_pick_a_model": "Com qual modelo as novas sessões começam quando o agente delas não fixa nenhum. Defina um modelo por agente em Recursos do agente → Agentes ou escolha um dentro de uma sessão para substituí-lo ali.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Qual parte do fluxo de um subagente manter ao injetar seu evento de conclusão na sessão pai. Início preserva o começo (padrão, corresponde ao comportamento antigo). Fim preserva o resumo final. Ambos mantém um trecho de cada extremidade com um marcador entre eles.",
         "widget_density": "Densidade de widgets",
         "your_role": "Sua função"

@@ -1987,10 +1987,10 @@
   },
   "pages": {
     "capabilitiesPage": {
-      "crews_label": "Crews",
-      "crews_description": "Crews you chat with, each with its own workspace",
+      "crews_label": "Agents",
+      "crews_description": "Agents you chat with, each with its own workspace",
       "templates_label": "Agent Templates",
-      "templates_description": "Installed agent configurations and packages",
+      "templates_description": "Manage what each agent starts from: its model, skills, tools, MCP servers, and guardrails",
       "connections_label": "Connections",
       "connections_description": "Connect official services and manage custom MCP servers",
       "skills_label": "Skills",

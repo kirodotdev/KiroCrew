@@ -6881,8 +6881,8 @@
       "agent_capabilities": "Agenten-Fähigkeiten",
       "connections_description": "Offizielle Dienste verbinden und benutzerdefinierte MCP-Server verwalten",
       "connections_label": "Verbindungen",
-      "crews_description": "Crews, mit denen du chattest – jede mit eigenem Arbeitsbereich",
-      "crews_label": "Crews",
+      "crews_description": "Agenten, mit denen du chattest – jeder mit eigenem Arbeitsbereich",
+      "crews_label": "Agenten",
       "hooks_description": "Shell-Befehle, die automatisch bei Agent-Ereignissen wie Prompts, Tool-Aufrufen und Sitzungsstart/-stopp ausgeführt werden",
       "hooks_label": "Hooks",
       "prompts_description": "Wiederverwendbare Prompt-Vorlagen aus {{registry}}",
@@ -6891,7 +6891,7 @@
       "skills_label": "Fähigkeiten",
       "steering_description": "Stets aktive Markdown-Konventionen aus ~/.kiro/steering und dem .kiro/steering deines Projekts",
       "steering_label": "Steuerung",
-      "templates_description": "Womit eine Crew startet — ihr Modell, ihre Skills, ihre Tools, ihre MCP-Server und ihre Schutzregeln",
+      "templates_description": "Verwalte, womit jeder Agent startet: Modell, Skills, Tools, MCP-Server und Schutzregeln",
       "templates_label": "Agent-Vorlagen"
     },
     "channelPage": {
@@ -9675,7 +9675,7 @@
         "ultra_concise_3_sentences": "Ultraknapp – Antwort zuerst, minimale Prosa",
         "ux_designer": "UX-Designer",
         "when_enabled_inline_tool_pills_show_simplified_t": "Wenn aktiviert, zeigen Inline-Werkzeug-Pills den vereinfachten Zweck der Werkzeugnutzung anstelle des exakt ausgeführten Befehls",
-        "which_model_new_sessions_start_with_pick_a_model": "Mit welchem Modell neue Sitzungen starten, wenn ihr Agent keines festlegt. Lege pro Agent unter Agenten-Fähigkeiten → Crews ein Modell fest oder wähle innerhalb einer Sitzung eines, um es dort zu übersteuern.",
+        "which_model_new_sessions_start_with_pick_a_model": "Mit welchem Modell neue Sitzungen starten, wenn ihr Agent keines festlegt. Lege pro Agent unter Agenten-Fähigkeiten → Agenten ein Modell fest oder wähle innerhalb einer Sitzung eines, um es dort zu übersteuern.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Welcher Teil des Streams eines Subagenten beim Einfügen seines Abschlussereignisses in die übergeordnete Sitzung erhalten bleibt. „Kopf“ bewahrt den Anfang (Standard, entspricht dem Legacy-Verhalten). „Ende“ bewahrt die abschließende Zusammenfassung. „Beides“ behält einen Abschnitt von jedem Ende mit einer Markierung dazwischen.",
         "widget_density": "Widget-Dichte",
         "your_role": "Ihre Rolle"

@@ -6658,7 +6658,7 @@
         "time_window_for_session_restoration": "Time window for session restoration",
         "ultra_concise_3_sentences": "Ultra-concise — answer first, minimal prose",
         "when_enabled_inline_tool_pills_show_simplified_t": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run",
-        "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Crews, or pick one inside a session to override it there.",
+        "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",
         "widget_density": "Widget Density",
         "your_role": "Your Role"

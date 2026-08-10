@@ -6786,8 +6786,8 @@
       "agent_capabilities": "代理能力",
       "connections_description": "连接官方服务并管理自定义 MCP 服务器",
       "connections_label": "连接",
-      "crews_description": "你与之聊天的 Crew，每个都有自己的工作区",
-      "crews_label": "Crews",
+      "crews_description": "你与之聊天的代理，每个都有自己的工作区",
+      "crews_label": "代理",
       "hooks_description": "在 agent 事件（如提示、工具调用、会话开始/停止）时自动运行的 Shell 命令",
       "hooks_label": "Hooks",
       "prompts_description": "来自 {{registry}} 的可复用提示词模板",
@@ -6796,7 +6796,7 @@
       "skills_label": "技能",
       "steering_description": "来自 ~/.kiro/steering 和你项目 .kiro/steering 的常驻 markdown 约定",
       "steering_label": "引导规则",
-      "templates_description": "Crew 启动时用的东西 —— 模型、技能、工具、MCP 服务器和防护规则",
+      "templates_description": "管理每个代理启动时用的东西：模型、技能、工具、MCP 服务器和防护规则",
       "templates_label": "Agent 模板"
     },
     "channelPage": {
@@ -9561,7 +9561,7 @@
         "ultra_concise_3_sentences": "极简 — 先给结论，尽量少用成段文字",
         "ux_designer": "UX 设计师",
         "when_enabled_inline_tool_pills_show_simplified_t": "启用后，内联工具标签显示简化的工具用途，而不是实际执行的命令",
-        "which_model_new_sessions_start_with_pick_a_model": "代理未指定模型时，新会话默认使用的模型。可在“代理能力 → Crew”中为每个代理单独设置模型，或在会话内选择模型以就地覆盖。",
+        "which_model_new_sessions_start_with_pick_a_model": "代理未指定模型时，新会话默认使用的模型。可在“代理能力 → 代理”中为每个代理单独设置模型，或在会话内选择模型以就地覆盖。",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "将子代理的完成事件注入父会话时，保留其输出流的哪一部分。头部保留开头（默认，与旧行为一致）。尾部保留最终摘要。两端则各保留一段，中间加分隔标记。",
         "widget_density": "小组件密度",
         "your_role": "你的角色"

@@ -6976,8 +6976,8 @@
       "agent_capabilities": "Capacités de l'agent",
       "connections_description": "Connectez des services officiels et gérez des serveurs MCP personnalisés",
       "connections_label": "Connexions",
-      "crews_description": "Les Crews avec lesquelles vous discutez, chacune avec son propre espace de travail",
-      "crews_label": "Crews",
+      "crews_description": "Les agents avec lesquels vous discutez, chacun avec son propre espace de travail",
+      "crews_label": "Agents",
       "hooks_description": "Commandes shell qui s'exécutent automatiquement lors d'événements de l'agent comme les prompts, les appels d'outils et le démarrage/arrêt de session",
       "hooks_label": "Hooks",
       "prompts_description": "Modèles de prompt réutilisables depuis {{registry}}",
@@ -6986,7 +6986,7 @@
       "skills_label": "Compétences",
       "steering_description": "Conventions markdown toujours actives depuis ~/.kiro/steering et le .kiro/steering de votre projet",
       "steering_label": "Directives",
-      "templates_description": "Ce dont part un crew : son modèle, ses skills, ses outils, ses serveurs MCP et ses garde-fous",
+      "templates_description": "Gère ce dont part chaque agent : son modèle, ses skills, ses outils, ses serveurs MCP et ses garde-fous",
       "templates_label": "Modèles d'agent"
     },
     "channelPage": {
@@ -9789,7 +9789,7 @@
         "ultra_concise_3_sentences": "Ultra-concis — réponse d'abord, prose minimale",
         "ux_designer": "Designer UX",
         "when_enabled_inline_tool_pills_show_simplified_t": "Lorsque cette option est activée, les pastilles d'outils en ligne indiquent l'objectif simplifié de l'outil au lieu de la commande exacte exécutée",
-        "which_model_new_sessions_start_with_pick_a_model": "Le modèle avec lequel démarrent les nouvelles sessions quand leur agent n’en fixe aucun. Définis un modèle pour chaque crew dans Capacités de l’agent → Crews, ou choisis-en un dans une session pour le remplacer localement.",
+        "which_model_new_sessions_start_with_pick_a_model": "Le modèle avec lequel démarrent les nouvelles sessions quand leur agent n’en fixe aucun. Définis un modèle pour chaque agent dans Capacités de l’agent → Agents, ou choisis-en un dans une session pour le remplacer localement.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Quelle partie du flux d'un sous-agent conserver lors de l'injection de son événement de fin dans la session parente. Début conserve le commencement (par défaut, correspond au comportement historique). Fin conserve le résumé final. Les deux conserve une tranche à chaque extrémité, avec un marqueur entre elles.",
         "widget_density": "Densité des widgets",
         "your_role": "Votre rôle"

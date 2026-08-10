@@ -6786,8 +6786,8 @@
       "agent_capabilities": "에이전트 기능",
       "connections_description": "공식 서비스를 연결하고 사용자 지정 MCP 서버를 관리합니다",
       "connections_label": "연결",
-      "crews_description": "대화하는 크루, 각각 자체 작업 공간을 가집니다",
-      "crews_label": "크루",
+      "crews_description": "대화하는 에이전트, 각각 자증 작업 공간을 가집니다",
+      "crews_label": "에이전트",
       "hooks_description": "프롬프트, 도구 호출, 세션 시작/중지 같은 에이전트 이벤트에서 자동으로 실행되는 셸 명령",
       "hooks_label": "훅",
       "prompts_description": "{{registry}}에서 가져온 재사용 가능한 프롬프트 템플릿",
@@ -6796,7 +6796,7 @@
       "skills_label": "스킬",
       "steering_description": "~/.kiro/steering과 프로젝트의 .kiro/steering에서 항상 적용되는 Markdown 컨벤션",
       "steering_label": "스티어링",
-      "templates_description": "설치된 에이전트 구성과 패키지",
+      "templates_description": "각 에이전트가 시작하는 지점을 관리합니다: 모델, 스킬, 도구, MCP 서버, 가드레일",
       "templates_label": "에이전트 템플릿"
     },
     "channelPage": {
@@ -9561,7 +9561,7 @@
         "ultra_concise_3_sentences": "초간결 — 결론 먼저, 최소한의 줄글",
         "ux_designer": "UX 디자이너",
         "when_enabled_inline_tool_pills_show_simplified_t": "활성화하면 인라인 도구 표시가 실행되는 정확한 명령 대신 간소화된 도구 사용 목적을 표시합니다",
-        "which_model_new_sessions_start_with_pick_a_model": "에이전트가 모델을 고정하지 않았을 때 새 세션이 시작할 모델입니다. Capabilities → Crews에서 에이전트별로 모델을 설정하거나, 세션 안에서 모델을 선택해 재정의하세요.",
+        "which_model_new_sessions_start_with_pick_a_model": "에이전트가 모델을 고정하지 않았을 때 새 세션이 시작할 모델입니다. 에이전트 기능 → 에이전트에서 에이전트별로 모델을 설정하거나, 세션 안에서 모델을 선택해 재정의하세요.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "서브에이전트의 완료 이벤트를 상위 세션에 삽입할 때 스트림의 어느 부분을 유지할지 결정합니다. ‘앞부분’은 스트림 시작을 유지합니다(기본값, 기존 동작과 동일). ‘끝부분’은 최종 요약을 유지합니다. ‘양쪽’은 양 끝에서 일부를 유지하고 그 사이에 표시를 넣습니다.",
         "widget_density": "위젯 밀도",
         "your_role": "사용자 역할"

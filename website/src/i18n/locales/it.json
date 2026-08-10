@@ -6976,8 +6976,8 @@
       "agent_capabilities": "Capacità dell'agente",
       "connections_description": "Connetti servizi ufficiali e gestisci server MCP personalizzati",
       "connections_label": "Connessioni",
-      "crews_description": "Le Crew con cui chatti, ognuna con il proprio spazio di lavoro",
-      "crews_label": "Crews",
+      "crews_description": "Gli agenti con cui chatti, ognuno con il proprio spazio di lavoro",
+      "crews_label": "Agenti",
       "hooks_description": "Comandi shell eseguiti automaticamente su eventi dell'agente come prompt, chiamate a strumenti e avvio/arresto della sessione",
       "hooks_label": "Hooks",
       "prompts_description": "Modelli di prompt riutilizzabili da {{registry}}",
@@ -6986,7 +6986,7 @@
       "skills_label": "Competenze",
       "steering_description": "Convenzioni markdown sempre attive da ~/.kiro/steering e dal .kiro/steering del tuo progetto",
       "steering_label": "Direttive",
-      "templates_description": "Da cosa parte un crew: il suo modello, le sue skill, i suoi strumenti, i suoi server MCP e le sue regole di sicurezza",
+      "templates_description": "Gestisci da cosa parte ogni agente: il suo modello, le sue skill, i suoi strumenti, i suoi server MCP e le sue regole di sicurezza",
       "templates_label": "Modelli di agente"
     },
     "channelPage": {
@@ -9789,7 +9789,7 @@
         "ultra_concise_3_sentences": "Ultraconciso — prima la risposta, prosa minima",
         "ux_designer": "Designer UX",
         "when_enabled_inline_tool_pills_show_simplified_t": "Se attivo, i badge inline degli strumenti mostrano lo scopo semplificato dell'uso dello strumento invece del comando esatto in esecuzione",
-        "which_model_new_sessions_start_with_pick_a_model": "Con quale modello si avviano le nuove sessioni quando il loro agente non ne specifica uno. Imposta un modello per ogni agente in Capacità dell'agente → Crews, oppure scegline uno all'interno di una sessione per sostituirlo lì.",
+        "which_model_new_sessions_start_with_pick_a_model": "Con quale modello si avviano le nuove sessioni quando il loro agente non ne specifica uno. Imposta un modello per ogni agente in Capacità dell'agente → Agenti, oppure scegline uno all'interno di una sessione per sostituirlo lì.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Quale parte del flusso di un subagente conservare quando il suo evento di completamento viene inserito nella sessione principale. \"Inizio\" conserva la parte iniziale (predefinito, corrisponde al comportamento legacy). \"Fine\" conserva il riepilogo finale. \"Entrambi\" conserva una porzione da ciascuna estremità con un indicatore tra le due.",
         "widget_density": "Densità dei widget",
         "your_role": "Il tuo ruolo"
