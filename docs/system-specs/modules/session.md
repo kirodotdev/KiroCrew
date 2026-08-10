@@ -186,6 +186,7 @@ send time.
   sync→thread change from the old inline block), `rss_threshold`, and
   `stuck_turn`. The
   orphan-PID / session-root / sandbox-profile sweeps remain inline in
+
   `_cleanup_loop` (CR 2 extracts them).
 - **Stuck-turn reporting** (`_stuck_turn_check`, threshold
   `_STUCK_TURN_REPORT_SECS` = 300s, not configurable): reports a turn whose
@@ -206,7 +207,11 @@ send time.
   here. Logs at WARNING and fires the optional `on_stuck_turn(key, parked_secs)`
   callback — a seam so a surface that can reach the user decides what to do,
   keeping the session layer free of any dashboard import. Swallows its own errors
-  like its sibling hooks.
+  like its sibling hooks. The reasoning behind putting this check here rather
+  than in the read loop — the placement criterion, what a hook may honestly read
+  at this layer, and how out-of-band action stays clear of the in-band recovery
+  path — is recorded in
+  `../../architecture/design-notes/tool-stall-watchdog-placement.md`.
 - **RSS-threshold recycle** (`_rss_threshold_check`, config
   `session.watchdog_rss_max_mb`, default 0 = disabled): recycles non-busy
   sessions whose `/proc` process-tree RSS (MiB) exceeds the ceiling. Skips
