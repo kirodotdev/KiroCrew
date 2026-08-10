@@ -622,8 +622,13 @@ def _args_look_like_kirocrew(args: str) -> bool:
         if token == "-m" and index + 1 < len(tokens):
             # Only treat "-m" as Python's module flag when a Python interpreter
             # precedes it; otherwise an unrelated tool's "-m" option could be
-            # misread (e.g. "grep -m kiro_crew gateway file").
-            interpreter_seen = any(_basename_stem(t).startswith("python") for t in tokens[:index])
+            # misread (e.g. "grep -m kiro_crew gateway file"). The match is
+            # case-insensitive: the macOS framework build's interpreter basename
+            # is "Python" (capital P), which a case-sensitive startswith would
+            # miss, leaving stop/restart unable to find the gateway.
+            interpreter_seen = any(
+                _basename_stem(t).lower().startswith("python") for t in tokens[:index]
+            )
             if interpreter_seen:
                 # "kiro_crew.gateway" -> ("kiro_crew", "gateway"); a bare
                 # "kiro_crew" -> ("kiro_crew", "").
