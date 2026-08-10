@@ -456,6 +456,37 @@ class TestRevealIsCosmetic:
 
 # ── rehydration: provenance and budget survive a reload ─────────────────────
 class TestRehydration:
+    def test_shared_slot_hydration_restores_complete_title_state(self, monkeypatch):
+        calls: list[tuple[str, str]] = []
+
+        def _redact_urls(value: str):
+            calls.append(("urls", value))
+            return f"url-safe:{value}", []
+
+        def _redact_credentials(value: str):
+            calls.append(("credentials", value))
+            return f"credential-safe:{value}", []
+
+        monkeypatch.setattr(chat_persistence, "redact_exfiltration_urls", _redact_urls)
+        monkeypatch.setattr(chat_persistence, "redact_credentials", _redact_credentials)
+        slot = _ChatSlot("chat-1-1")
+
+        chat_persistence._rehydrate_slot_title(
+            slot,
+            "Model title",
+            titled=True,
+            metadata={"title_origin": "auto", "title_refresh_mark": 8},
+        )
+
+        assert calls == [
+            ("urls", "Model title"),
+            ("credentials", "url-safe:Model title"),
+        ]
+        assert slot.title == "credential-safe:url-safe:Model title"
+        assert slot._titled is True
+        assert slot._title_origin == "auto"
+        assert slot._title_refresh_mark == 8
+
     @pytest.mark.parametrize(
         "titled,stored,expected",
         [

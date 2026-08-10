@@ -10,7 +10,7 @@ import re
 import time
 import uuid
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 
 from kiro_crew import model_registry
 from kiro_crew.agent import kiro_agents_dir_path
@@ -70,6 +70,30 @@ def _rehydrate_title_refresh_mark(stored: object) -> int:
     if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0:
         return stored
     return 0
+
+
+def _rehydrate_slot_title(
+    slot: _ChatSlot,
+    raw_title: str,
+    *,
+    titled: bool,
+    metadata: Mapping[str, object],
+) -> None:
+    """Restore the complete persisted title state through one contract.
+
+    Titles may be model-authored, so display redaction must happen before the
+    value reaches the slot. Keeping provenance and refresh-budget restoration
+    beside that assignment prevents hydration paths from restoring only part
+    of the title state.
+    """
+    safe_title, _ = redact_exfiltration_urls(raw_title)
+    safe_title, _ = redact_credentials(safe_title)
+    slot.title = safe_title
+    slot._titled = titled
+    slot._title_origin = _rehydrate_title_origin(titled, metadata.get("title_origin"))
+    slot._title_refresh_mark = _rehydrate_title_refresh_mark(
+        metadata.get("title_refresh_mark")
+    )
 
 
 _MAX_HISTORY_CHARS = 8000
@@ -494,12 +518,12 @@ def _rehydrate_slot_from_history(
         # is user content, so a prompt injection could craft a title with an
         # exfiltration URL or leaked credential.
         raw_title = meta.get("title") or slot_name
-        raw_title, _ = redact_exfiltration_urls(raw_title)
-        raw_title, _ = redact_credentials(raw_title)
-        slot.title = raw_title
-        slot._titled = bool(meta.get("title"))
-        slot._title_origin = _rehydrate_title_origin(slot._titled, meta.get("title_origin"))
-        slot._title_refresh_mark = _rehydrate_title_refresh_mark(meta.get("title_refresh_mark"))
+        _rehydrate_slot_title(
+            slot,
+            raw_title,
+            titled=bool(meta.get("title")),
+            metadata=meta,
+        )
         if meta.get("created_at"):
             slot.created_at = meta["created_at"]
         if meta.get("agent"):
@@ -844,12 +868,12 @@ def _restore_recent_sessions_steps(
         # dashboard — apply the same redaction as assistant content. Matches
         # the treatment in _rehydrate_slot_from_history above.
         raw_title = s.get("title", slot_name)
-        raw_title, _ = redact_exfiltration_urls(raw_title)
-        raw_title, _ = redact_credentials(raw_title)
-        slot.title = raw_title
-        slot._titled = bool(s.get("title"))
-        slot._title_origin = _rehydrate_title_origin(slot._titled, meta.get("title_origin"))
-        slot._title_refresh_mark = _rehydrate_title_refresh_mark(meta.get("title_refresh_mark"))
+        _rehydrate_slot_title(
+            slot,
+            raw_title,
+            titled=bool(s.get("title")),
+            metadata=meta,
+        )
         if meta.get("created_at"):
             slot.created_at = meta["created_at"]
         if meta.get("agent"):

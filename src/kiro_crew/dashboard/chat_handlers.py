@@ -35,8 +35,7 @@ from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
     _attach_variants,
-    _rehydrate_title_origin,
-    _rehydrate_title_refresh_mark,
+    _rehydrate_slot_title,
     get_reasoning_effort_values,
     save_slot_off_loop,
 )
@@ -3054,13 +3053,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     persisted_title = raw_persisted_title if isinstance(raw_persisted_title, str) else ""
     title = body.get("title", "")
     if persisted_title:
-        safe_title, _ = redact_exfiltration_urls(persisted_title)
-        safe_title, _ = redact_credentials(safe_title)
-        slot.title = safe_title
-        slot._titled = True
-        slot._title_origin = _rehydrate_title_origin(True, meta.get("title_origin"))
-        slot._title_refresh_mark = _rehydrate_title_refresh_mark(
-            meta.get("title_refresh_mark")
+        _rehydrate_slot_title(
+            slot,
+            persisted_title,
+            titled=True,
+            metadata=meta,
         )
     elif title:
         # Never-titled session with a caller-supplied name: apply it, with
