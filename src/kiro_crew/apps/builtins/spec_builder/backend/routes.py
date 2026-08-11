@@ -1945,8 +1945,21 @@ def _dispatch_turn(state: Any, slot: Any, message: str) -> None:
     # circular import (see module header): dashboard.server imports this module.
     from kiro_crew.dashboard.chat_runner import _run_chat
 
+    try:
+        # Deferred like the other dashboard imports; the resolver follows a
+        # raised agent.chat_turn_timeout_secs above the 2h default and runs
+        # OFF the event loop (inside the task, via asyncio.to_thread).
+        from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn
+    except Exception:  # pragma: no cover - resolver always present in prod
+        bounded_chat_turn = None  # type: ignore[assignment]
+
     slot.append("user", message)
-    task = asyncio.create_task(asyncio.wait_for(_run_chat(state, slot, message), timeout=CHAT_TURN_TIMEOUT))
+    if bounded_chat_turn is not None:
+        task = asyncio.create_task(bounded_chat_turn(_run_chat(state, slot, message)))
+    else:
+        task = asyncio.create_task(
+            asyncio.wait_for(_run_chat(state, slot, message), timeout=float(CHAT_TURN_TIMEOUT))
+        )
     slot.task = task
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)

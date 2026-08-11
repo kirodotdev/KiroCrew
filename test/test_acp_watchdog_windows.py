@@ -26,8 +26,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.acp import session_handle
+from kiro_crew.acp.client import _DEFAULT_PROMPT_TIMEOUT
 from kiro_crew.acp.session_handle import (
-    _DEFAULT_PROMPT_TIMEOUT,
     _TURN_BOUNDED_WINDOWS,
     _TURN_CEILING_WINDOW_FRACTION,
     _WORKING_LOG_INTERVAL_SECS,

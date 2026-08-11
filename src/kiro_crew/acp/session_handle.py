@@ -42,9 +42,11 @@ from kiro_crew.acp.client import (
     AcpProcessDied,
     AcpTimeoutError,
     _consume_future_exception,
+    _effective_prompt_timeout_async,
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
     _raise_acp_error,
+    prompt_timeout_for_ceiling,
     resolve_usable_model,
 )
 from kiro_crew.acp.liveness import (
@@ -101,8 +103,6 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──
 
-_DEFAULT_PROMPT_TIMEOUT = 7200.0  # 2 hours
-
 
 @dataclass(frozen=True)
 class WatchdogSettings:
@@ -142,26 +142,31 @@ _TURN_BOUNDED_WINDOWS = (
 )
 
 
-def _clamp_to_prompt_ceiling(key: str, value: float) -> float:
-    """Bound one watchdog window to the transport's own per-prompt timeout.
+def _clamp_to_prompt_ceiling(key: str, value: float, chat_ceiling: float) -> float:
+    """Bound one watchdog window to the transport's per-prompt timeout.
 
-    :data:`_DEFAULT_PROMPT_TIMEOUT` is the one deadline EVERY caller shares —
-    the dispatch loop stops the turn there — so it is the only safe bound for a
-    snapshot that is taken once per handle and reused across prompts.
+    Resolved via :func:`~kiro_crew.acp.client.prompt_timeout_for_ceiling` on the
+    caller's ALREADY-LOADED ``chat_turn_timeout_secs`` (no second config read;
+    the transport's dispatch loop stops the turn at the same deadline), so it
+    is the only safe bound for a snapshot that is taken once per handle and
+    reused across prompts. It follows a raised ``agent.chat_turn_timeout_secs``
+    and never sits below the 2h default, so a proportionately raised watchdog
+    window is honoured instead of being cut to the default's fraction.
 
     Mirrors the shape of ``turn_dispatch.chat_turn_timeout_secs``'s clamp
     against the same timeout: an out-of-range value is honoured as far as the
     system can honour it, and the clamp is logged at warning level so the
     misconfiguration is visible instead of silently ignored.
     """
-    budget = _DEFAULT_PROMPT_TIMEOUT * _TURN_CEILING_WINDOW_FRACTION
+    ceiling = prompt_timeout_for_ceiling(chat_ceiling)
+    budget = ceiling * _TURN_CEILING_WINDOW_FRACTION
     if value <= budget:
         return value
     logger.warning(
         "watchdog.%s=%.0fs leaves no room inside the %.0fs prompt timeout; "
         "clamping to %.0fs. The turn's own timeout would fire first, so the "
         "larger window cannot take effect.",
-        key, value, _DEFAULT_PROMPT_TIMEOUT, budget,
+        key, value, ceiling, budget,
     )
     return budget
 
@@ -197,7 +202,7 @@ def _load_watchdog_settings() -> WatchdogSettings:
         chat_ceiling = float(cfg.agent.chat_turn_timeout_secs)
         bounded = {}
         for key in _TURN_BOUNDED_WINDOWS:
-            value = _clamp_to_prompt_ceiling(key, float(getattr(w, key)))
+            value = _clamp_to_prompt_ceiling(key, float(getattr(w, key)), chat_ceiling)
             _warn_if_above_chat_ceiling(key, value, chat_ceiling)
             bounded[key] = value
         return WatchdogSettings(
@@ -479,14 +484,19 @@ class AcpSessionHandle:
     # ── Prompt ──
 
     async def prompt(
-        self, message: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT
+        self, message: str, timeout: float | None = None
     ) -> AsyncIterator[AcpEvent]:
         """Send session/prompt and yield AcpEvent objects until the turn completes.
 
         Dispatches events from the per-session queue with the same logic as
         AcpClient._dispatch_events. Detects turn boundaries via the JSON-RPC
         response matching the prompt's request_id.
+
+        ``timeout=None`` (every dashboard turn) resolves from
+        ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
+        turn ceiling instead of cutting the turn at the 2h default underneath it.
         """
+        timeout = await _effective_prompt_timeout_async(timeout)
         # Guard against concurrent prompts on the same handle: a second call
         # would clear _turn_done and race on the shared _queue, corrupting
         # turn state and losing events. Each caller should use its own handle.

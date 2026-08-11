@@ -648,7 +648,7 @@ class AgentConfig:
     subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
     subagent_max_turns: int = 100  # default per-subagent tool-call budget. Load-time clamped to [1, 200]
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
-    chat_turn_timeout_secs: int = 7200  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 7200] and to the ACP prompt timeout
+    chat_turn_timeout_secs: int = 7200  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
 
 @dataclass
@@ -849,7 +849,7 @@ just at the dashboard write gate. The ceilings are the single source of truth in
 | `SUBAGENT_AUTO_MAX_CEILING` | 64 | `agent.subagent_auto_max`, `agent.max_subagents` |
 | `SUBAGENT_MAX_TURNS_CEILING` | 200 | `agent.subagent_max_turns` |
 | `POOL_SIZE_MAX` | 10 | `session.pool_size` |
-| `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 7200 | `agent.chat_turn_timeout_secs` |
+| `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 86400 | `agent.chat_turn_timeout_secs` |
 | `TOOL_APPROVAL_TIMEOUT_MIN` / `_MAX` | 30 / 7200 | `agent.tool_approval_timeout_secs` |
 
 `_SECURITY_BOUNDED_FIELDS` lists each `(section, key, min, max)`; the mins match

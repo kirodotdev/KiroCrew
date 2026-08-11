@@ -74,11 +74,7 @@ from kiro_crew.config.loader import (
     data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.constants import (
-    CHAT_TURN_TIMEOUT,
-    DATA_WARNING,
-    SUBAGENT_COMPLETION_META_KEY,
-)
+from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
@@ -118,7 +114,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
-from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn, spawn_guarded_turn
 from kiro_crew.embeddings import (
     embedding_model_is_custom,
     get_shared_embedder,
@@ -4352,10 +4348,7 @@ class GatewayOrchestrator:
                     _retrigger_recovery(slot, parent_key)
 
             _task = asyncio.create_task(
-                asyncio.wait_for(
-                    _run_chat(self.dashboard_state, slot, msg),
-                    timeout=CHAT_TURN_TIMEOUT,
-                ),
+                bounded_chat_turn(_run_chat(self.dashboard_state, slot, msg)),
             )
             slot.task = _task
             self._background_tasks.add(_task)
@@ -5030,8 +5023,10 @@ class GatewayOrchestrator:
                                     info.id,
                                     _slot_name,
                                 )
-                                # Bounded by CHAT_TURN_TIMEOUT (~7200s): _run_chat's
-                                # finally block drains slot._queue on any exit path.
+                                # Bounded by the configured turn ceiling
+                                # (chat_turn_timeout_secs, 7200s default):
+                                # _run_chat's finally block drains slot._queue
+                                # on any exit path.
                                 # Carry the structured completion facts so the
                                 # drained row is a card without re-parsing the
                                 # prose (#1792); _start_next_queued_turn reads them.
@@ -5058,9 +5053,8 @@ class GatewayOrchestrator:
 
                         # Slot is idle — start _run_chat.
                         _task = asyncio.create_task(
-                            asyncio.wait_for(
-                                _run_chat(self.dashboard_state, _injection_slot, announce),
-                                timeout=CHAT_TURN_TIMEOUT,
+                            bounded_chat_turn(
+                                _run_chat(self.dashboard_state, _injection_slot, announce)
                             )
                         )
                         _injection_slot.task = _task

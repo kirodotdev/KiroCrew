@@ -696,6 +696,78 @@ _DRAIN_DURATION = 1.0  # hard cap on draining MCP server init notifications
 # fires first and the idle path becomes dead code.
 _DRAIN_IDLE_EXIT = 0.5
 _DEFAULT_PROMPT_TIMEOUT = 7200.0  # 2 hours — allow very long tool execution
+# Slack the transport leaves ABOVE the configured turn ceiling. The dashboard's
+# own deadline (turn_dispatch._bounded_turn) must always fire first so the user
+# sees the "turn hit the N-hour limit" card; a transport cut at the same instant
+# would race it and report a raw timeout instead.
+_PROMPT_TIMEOUT_MARGIN_SECS = 60.0
+
+
+def prompt_timeout_for_ceiling(configured: float) -> float:
+    """Pure transport-timeout math for an already-known turn ceiling.
+
+    Extracted from :func:`resolve_prompt_timeout` so callers that ALREADY hold
+    a loaded config (e.g. ``session_handle._load_watchdog_settings``) can bound
+    against the ceiling without a second synchronous ``KiroCrewConfig.load()``.
+    """
+    if configured <= 0:
+        return _DEFAULT_PROMPT_TIMEOUT
+    if configured <= _DEFAULT_PROMPT_TIMEOUT:
+        # At or below the default the transport keeps its historical wait —
+        # byte-identical behaviour for every existing install. The margin is
+        # only added ABOVE the default, where the transport must outlive the
+        # raised dashboard ceiling.
+        return _DEFAULT_PROMPT_TIMEOUT
+    return configured + _PROMPT_TIMEOUT_MARGIN_SECS
+
+
+def resolve_prompt_timeout() -> float:
+    """Per-prompt transport timeout, honouring the configured turn ceiling.
+
+    ``agent.chat_turn_timeout_secs`` may be raised above
+    :data:`_DEFAULT_PROMPT_TIMEOUT` (up to the loader's ``CHAT_TURN_TIMEOUT_MAX``)
+    for long unattended turns. The transport wait must then outlive the
+    dashboard's ceiling — otherwise the transport cuts the turn first and the
+    larger configured value is a limit the system does not honour (the exact
+    dishonesty ``turn_dispatch.chat_turn_timeout_secs`` clamps against).
+
+    Never returns less than :data:`_DEFAULT_PROMPT_TIMEOUT`: a LOWERED turn
+    ceiling is enforced by the dashboard's own deadline, and shrinking the
+    transport wait with it would also shrink the budget of non-dashboard
+    callers (subagents, review runs) that share this default.
+
+    Config is imported lazily: ``config.loader`` reaches this module through
+    ``acp.session_handle``, so a module-level import would be a cycle.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        configured = float(KiroCrewConfig.load().agent.chat_turn_timeout_secs)
+    except Exception:
+        logger.debug("turn-ceiling config unavailable; transport keeps default", exc_info=True)
+        return _DEFAULT_PROMPT_TIMEOUT
+    return prompt_timeout_for_ceiling(configured)
+
+
+def _effective_prompt_timeout(timeout: float | None) -> float:
+    """An explicit caller timeout wins; ``None`` resolves from config."""
+    return float(timeout) if timeout is not None else resolve_prompt_timeout()
+
+
+async def _effective_prompt_timeout_async(timeout: float | None) -> float:
+    """Async twin of :func:`_effective_prompt_timeout` for prompt dispatch.
+
+    The ``None`` path reads config from disk (:func:`resolve_prompt_timeout`
+    → ``KiroCrewConfig.load()``: stat, read, validate), so resolving it inline
+    in an ``async def`` would block the event loop for every session sharing
+    it. Offload to a thread, matching this module's convention for filesystem
+    work (see ``_resolve_kiro_bin_async``).
+    """
+    if timeout is not None:
+        return float(timeout)
+    return await asyncio.to_thread(resolve_prompt_timeout)
+
+
 _READ_TIMEOUT = 20.0
 # After a compaction `completed` status, kiro-cli emits a fresh
 # `_kiro.dev/metadata` with the real post-compaction contextUsagePercentage
@@ -3818,8 +3890,9 @@ class AcpClient:
 
     # ── Public API ──
 
-    async def send_message(self, message: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT) -> str:
+    async def send_message(self, message: str, timeout: float | None = None) -> str:
         """Send a prompt and return the full response text."""
+        timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
         self._turn_done.clear()
         await self.ensure_ready()
@@ -3828,9 +3901,10 @@ class AcpClient:
         return await self._read_prompt_response(req_id, timeout)
 
     async def send_message_stream(
-        self, message: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT
+        self, message: str, timeout: float | None = None
     ) -> AsyncIterator[str]:
         """Send a prompt and yield text chunks as they arrive."""
+        timeout = await _effective_prompt_timeout_async(timeout)
         # NOTE: PreToolUse/PostToolUse hooks are intentionally NOT fired on this
         # streaming path today. No audit_source (worker-pool) consumer uses
         # send_message_stream — hook instrumentation lives on the _read_prompt_response
@@ -3895,9 +3969,10 @@ class AcpClient:
     async def stream_events(
         self,
         message: str,
-        timeout: float = _DEFAULT_PROMPT_TIMEOUT,
+        timeout: float | None = None,
     ) -> AsyncIterator[AcpEvent]:
         """Send a prompt and yield AcpEvent objects (text, tool_call, permission, complete)."""
+        timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
         self._turn_done.clear()
         await self.ensure_ready()
@@ -4302,7 +4377,7 @@ class AcpClient:
             return ""
 
     async def stream_command(
-        self, command: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT
+        self, command: str, timeout: float | None = None
     ) -> AsyncIterator[AcpEvent]:
         """Execute a slash command and yield streaming AcpEvents.
 
@@ -4310,6 +4385,7 @@ class AcpClient:
         format (``{command, args}``) so kiro-cli executes the command
         natively and streams full output via ``session/update``.
         """
+        timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
         await self.ensure_ready()
 

@@ -1202,11 +1202,12 @@ class AgentConfig:
         metadata=_meta(
             "Chat Turn Timeout (secs)",
             "Wall-clock ceiling for one chat turn. This is a runaway backstop, "
-            "so it is clamped to 300s..7200s (2h) and can never be disabled. "
-            "Long babysit and monitoring turns approach the default, so hitting "
-            "it is no longer silent: the turn ends with a visible card naming "
-            "the limit. Values above the ACP transport's own prompt timeout are "
-            "clamped, because the transport bounds the turn first.",
+            "so it is clamped to 300s..86400s (24h) and can never be disabled. "
+            "Raise it above the 2h default for long unattended turns (full test "
+            "suites, long builds); the ACP transport's prompt wait follows it. "
+            "Hitting the ceiling is visible: the turn ends with a card naming "
+            "the limit. For work spanning days, prefer monitor/goal loops — "
+            "they end the turn between cycles and survive restarts.",
         ),
     )
     tool_approval_timeout_secs: int = field(
@@ -3119,22 +3120,31 @@ SUBAGENT_AUTO_MAX_CEILING = 64  # agent.subagent_auto_max — concurrent subagen
 SUBAGENT_MAX_TURNS_CEILING = 200  # agent.subagent_max_turns — per-subagent turn budget
 POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
 
-# agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The max
-# matches the ACP transport's own per-prompt timeout (acp/client.py
-# ``_DEFAULT_PROMPT_TIMEOUT``): above it the transport bounds the turn first, so
-# a larger value would advertise a limit the system does not honour. The floor
-# keeps a runaway backstop from being set so low it cuts ordinary work.
+# agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The ACP
+# transport's per-prompt wait follows this value (acp/client.py
+# ``resolve_prompt_timeout``, which adds a margin so the dashboard's visible
+# card fires before the transport cut), so the max is no longer pinned to the
+# transport's 2h default. It is bounded at 24h because the ceiling is a runaway
+# backstop, not a scheduler: a single prompt→response turn longer than a day is
+# pathological, and multi-day unattended operation belongs to the loop
+# mechanisms (monitor/goal loops, crons), which end the turn between cycles and
+# survive restarts — a marathon turn does not. The floor keeps the backstop
+# from being set so low it cuts ordinary work.
 CHAT_TURN_TIMEOUT_MIN = 300
-CHAT_TURN_TIMEOUT_MAX = 7200
+CHAT_TURN_TIMEOUT_MAX = 86400
 
 # agent.tool_approval_timeout_secs — how long a chat turn parks waiting for a
 # human to answer a tool-approval prompt. The floor keeps the window long enough
-# for a human who is actually present to reach the dashboard; the ceiling is the
-# turn ceiling, but the binding limit is the cross-field clamp in
+# for a human who is actually present to reach the dashboard. The max is pinned
+# at 7200 and deliberately DECOUPLED from CHAT_TURN_TIMEOUT_MAX (24h): the
+# approval suites hold their own flat 2h runtime window
+# (``DashboardState._APPROVAL_TIMEOUT``), so a larger configured window would
+# pass validation here and then silently never be honoured at runtime. The
+# binding limit below the static max is the cross-field clamp in
 # ``_clamp_security_bounds``, which pulls the window APPROVAL_TURN_MARGIN_SECS
 # under the configured turn ceiling.
 TOOL_APPROVAL_TIMEOUT_MIN = 30
-TOOL_APPROVAL_TIMEOUT_MAX = CHAT_TURN_TIMEOUT_MAX
+TOOL_APPROVAL_TIMEOUT_MAX = 7200
 
 # The turn ceiling assumed when config omits ``agent.chat_turn_timeout_secs``.
 # Read from the dataclass default so the two cannot drift apart.
