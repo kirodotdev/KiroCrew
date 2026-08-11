@@ -817,7 +817,11 @@ class NotificationsConfig:
             if not ch.id:
                 errors.append("notifications.channels: channel missing required field: id")
                 continue
-            if not KEBAB_RE.match(ch.id):
+            # fullmatch, not match: KEBAB_RE ends in `$`, which also matches
+            # just before a trailing newline, so `match` accepts an id with one
+            # trailing. The id is joined into a channel name ("<app>.<id>") and
+            # used as a subscription key, so the newline survives into both.
+            if not KEBAB_RE.fullmatch(ch.id):
                 errors.append(f"notifications.channels: channel id must be kebab-case: {ch.id!r}")
             if ch.id in seen:
                 errors.append(f"notifications.channels: duplicate channel id: {ch.id!r}")
