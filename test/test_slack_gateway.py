@@ -2100,6 +2100,7 @@ class TestCronFailurePaths:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.auto_paused = False
         job._acp_retried = False
 
         with patch(
@@ -2114,7 +2115,9 @@ class TestCronFailurePaths:
                         await callback(job)
 
         orch.slack.post_message.assert_awaited()
-        assert job.consecutive_failures == 1
+        # Failure accounting is single-owned by CronJob.record_failure() so the
+        # auto-pause threshold stays reachable from the delivery path.
+        job.record_failure.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_cron_callback_failure_dedup_suppresses(self):
@@ -2165,6 +2168,7 @@ class TestCronFailurePaths:
         job.last_failure_hash = _result_hash("RuntimeError: boom")
         job.last_failure_at = time.time()
         job.consecutive_failures = 1
+        job.auto_paused = False
         job._acp_retried = False
 
         with patch(
@@ -2180,7 +2184,9 @@ class TestCronFailurePaths:
 
         # Slack should NOT be called (suppressed)
         orch.slack.post_message.assert_not_awaited()
-        assert job.consecutive_failures == 2
+        # A suppressed duplicate still counts toward auto-pause via the
+        # counter's single owner.
+        job.record_failure.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_cron_multi_agent_sequence(self):

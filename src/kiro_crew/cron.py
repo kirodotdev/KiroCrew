@@ -248,6 +248,12 @@ class CronJob:
     # is indistinguishable from a run that produced nothing. Reset at the
     # start of every run by _run_job_isolated.
     result_produced: bool = False
+    # Runtime-only, reset by _execute_with_timeout at the start of every run:
+    # True once THIS run's failure has been counted via record_failure(). The
+    # timeout handler consults it so a run that already recorded its failure
+    # (e.g. a delivery-path exception) and then overran its deadline during
+    # cleanup is counted once, not twice.
+    failure_recorded: bool = False
     context_enabled: bool = False
     agent_id: str = ""
     approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
@@ -260,7 +266,7 @@ class CronJob:
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)
     last_failure_hash: str = ""  # hash of last failure notification (dedup crashes)
     last_failure_at: float = 0.0  # epoch of last failure Slack alert (dedup reminder)
-    consecutive_failures: int = 0  # count of consecutive identical failures (incl. first alert)
+    consecutive_failures: int = 0  # consecutive failed runs (any error); drives auto-pause
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["2026-04-06"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
@@ -331,6 +337,7 @@ class CronJob:
         is recorded — mirroring how the effective-enabled derivation reads it back.
         """
         self.consecutive_failures += 1
+        self.failure_recorded = True
         if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
             self.enabled = False
             self.auto_paused = True
@@ -2412,6 +2419,10 @@ class CronService:
     async def _execute_with_timeout(self, job: CronJob) -> None:
         """Execute a job with a timeout guard."""
         timeout = job.timeout_secs if 1 <= job.timeout_secs <= 86400 else _JOB_TIMEOUT_SECS
+        # Fresh run: no failure counted yet. The timeout handler below reads
+        # this to avoid double-counting a run that already recorded its
+        # failure and then overran the deadline during cleanup.
+        job.failure_recorded = False
         try:
             await asyncio.wait_for(self._execute(job), timeout=timeout)
         except asyncio.TimeoutError:
@@ -2429,7 +2440,12 @@ class CronService:
             job.last_run_ts = time.time()
             job.last_failure_hash = ""
             job.last_failure_at = 0.0
-            job.record_failure()
+            # Skip the count when this run already recorded its failure (a
+            # delivery-path exception followed by cleanup overrunning the
+            # deadline): one failed run is one failure, whichever handler
+            # observes it last.
+            if not job.failure_recorded:
+                job.record_failure()
             logger.error("Cron job '%s' timed out after %ds", job.name, timeout)
 
     async def _execute(self, job: CronJob) -> None:

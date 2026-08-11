@@ -11,7 +11,7 @@ import asyncio
 import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule
 from kiro_crew.slack.gateway import _result_hash
 
 
@@ -338,8 +338,10 @@ class TestCronFailureDedup:
         _run_callback_raising(gw, job, ValueError("different"))
         # Different exception → not a dup → fresh alert
         assert gw.slack.post_message.await_count == 2
-        # Counter reset on new alert
-        assert job.consecutive_failures == 1
+        # The counter tracks consecutive failed RUNS, not identical errors:
+        # a distinct new error continues the accumulation toward auto-pause
+        # instead of resetting it to 1.
+        assert job.consecutive_failures == 2
 
     def test_reminder_window_reexpired_realerts(self) -> None:
         gw = _make_gateway()
@@ -386,7 +388,10 @@ class TestCronFailureDedup:
         _run_callback_raising(gw, job, RuntimeError("boom"))
         # Slack delivery failed → dedup state NOT advanced → next run re-alerts
         assert job.last_failure_hash == ""
-        assert job.consecutive_failures == 0
+        # But the run still FAILED: auto-pause accounting is not gated on the
+        # alert being deliverable, or a job whose alerts also fail would never
+        # accumulate toward the threshold.
+        assert job.consecutive_failures == 1
 
     def test_no_channel_still_advances_dedup_state(self) -> None:
         """When Slack is configured but no channel can be resolved, dedup must
@@ -406,6 +411,85 @@ class TestCronFailureDedup:
         # Second identical failure → suppressed (dedup works)
         _run_callback_raising(gw, job, RuntimeError("boom"))
         assert job.consecutive_failures == 2
+
+
+class TestCronDeliveryFailureAutoPause:
+    """Delivery-path failures feed the single failure accountant.
+
+    The turn-level ``except`` in the gateway's cron delivery path must route
+    the counter through ``CronJob.record_failure()`` so a job that fails by
+    raising reaches the auto-pause threshold like every other failure path,
+    and so a count accumulated by another writer (gate verdict, timeout)
+    survives a later raise instead of being reset to 1.
+    """
+
+    def test_repeated_identical_delivery_exceptions_auto_pause(self) -> None:
+        """Auto-pause is reachable purely through repeated delivery exceptions."""
+        gw = _make_gateway()
+        gw.slack.post_message = AsyncMock()
+        job = _make_job()
+        exc = RuntimeError("boom")
+        for _ in range(_AUTO_PAUSE_THRESHOLD):
+            _run_callback_raising(gw, job, exc)
+        assert job.consecutive_failures == _AUTO_PAUSE_THRESHOLD
+        assert job.auto_paused is True
+        assert job.enabled is False
+
+    def test_repeated_distinct_delivery_exceptions_auto_pause(self) -> None:
+        """Distinct errors accumulate too — no reset-to-1 escape from the net."""
+        gw = _make_gateway()
+        gw.slack.post_message = AsyncMock()
+        job = _make_job()
+        for i in range(_AUTO_PAUSE_THRESHOLD):
+            _run_callback_raising(gw, job, RuntimeError(f"boom {i}"))
+        assert job.consecutive_failures == _AUTO_PAUSE_THRESHOLD
+        assert job.auto_paused is True
+        assert job.enabled is False
+
+    def test_accumulated_count_survives_delivery_raise(self) -> None:
+        """A count another writer built up is continued, not clobbered to 1."""
+        gw = _make_gateway()
+        gw.slack.post_message = AsyncMock()
+        job = _make_job()
+        # Prior failures recorded by another owner of the counter (e.g. the
+        # timeout path or the gate-verdict path).
+        for _ in range(3):
+            job.record_failure()
+        assert job.consecutive_failures == 3
+        _run_callback_raising(gw, job, RuntimeError("fresh delivery error"))
+        assert job.consecutive_failures == 4
+        assert job.auto_paused is False
+
+    def test_no_auto_pause_below_threshold(self) -> None:
+        gw = _make_gateway()
+        gw.slack.post_message = AsyncMock()
+        job = _make_job()
+        exc = RuntimeError("boom")
+        for _ in range(_AUTO_PAUSE_THRESHOLD - 1):
+            _run_callback_raising(gw, job, exc)
+        assert job.consecutive_failures == _AUTO_PAUSE_THRESHOLD - 1
+        assert job.auto_paused is False
+        assert job.enabled is True
+
+    def test_failure_recorded_after_alert_await(self) -> None:
+        """The counter moves only after the awaited Slack alert.
+
+        A run timeout cancelling the callback mid-alert must not leave the
+        run counted here AND again by the timeout handler's own
+        record_failure() — so at alert time the counter must still hold the
+        pre-run value.
+        """
+        gw = _make_gateway()
+        job = _make_job()
+        seen: list[int] = []
+
+        async def _capture(channel: str, msg: str) -> None:
+            seen.append(job.consecutive_failures)
+
+        gw.slack.post_message = AsyncMock(side_effect=_capture)
+        _run_callback_raising(gw, job, RuntimeError("boom"))
+        assert job.consecutive_failures == 1
+        assert seen == [0]
 
 
 class TestCronFailurePersistence:

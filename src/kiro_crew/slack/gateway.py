@@ -2874,7 +2874,16 @@ class GatewayOrchestrator:
                 fh = _result_hash(exc_summary)
                 is_dup = fh == job.last_failure_hash
                 if is_dup and time.time() - job.last_failure_at < _FAILURE_REMINDER_SECS:
-                    job.consecutive_failures += 1
+                    # record_failure() is the counter's sole owner: a suppressed
+                    # duplicate is still a failed run, so it must count toward
+                    # the auto-pause threshold like every other failure path.
+                    job.record_failure()
+                    if job.auto_paused:
+                        logger.warning(
+                            "Cron '%s' auto-paused after %d consecutive failures",
+                            job.name,
+                            job.consecutive_failures,
+                        )
                     logger.info(
                         "Cron '%s': duplicate failure #%d — suppressing Slack",
                         job.name,
@@ -2926,9 +2935,6 @@ class GatewayOrchestrator:
                     logger.debug(
                         "Dashboard notify failed in cron failure alert path", exc_info=True
                     )
-                # Compute the count this alert represents (including itself) so
-                # the re-alert message can call out persistence.
-                new_count = job.consecutive_failures + 1 if is_dup else 1
                 # Include the machine hostname so multi-gateway setups (e.g. a
                 # laptop + a cloud desktop both running KiroCrew) can tell which
                 # machine's session failed. This is framework-level: the ❌ DM
@@ -2937,9 +2943,12 @@ class GatewayOrchestrator:
                 # not from inside the cron prompt.
                 host = socket.gethostname().split(".")[0]
                 if is_dup:
+                    # +1: this run's failure is recorded below, after the
+                    # awaited Slack attempt, so the display count must include
+                    # it explicitly.
                     fail_msg = (
                         f"⏰ *Cron: {job.name}* ❌ _Job still failing on {host}"
-                        f" ({new_count} consecutive identical failures)"
+                        f" ({job.consecutive_failures + 1} consecutive failures)"
                         f" — check logs._"
                     )
                 else:
@@ -2950,9 +2959,9 @@ class GatewayOrchestrator:
                 fail_msg, _ = redact_exfiltration_urls(fail_msg)
                 fail_msg, _ = redact_credentials(fail_msg)
                 # Silent jobs still execute but suppress notifications (UI bells
-                # AND Slack DMs). We still log the failure at warning level above,
-                # and consecutive_failures still increments for the SEL event below
-                # — we just skip user-facing noise.
+                # AND Slack DMs). The failure is still logged at warning level
+                # and counted toward auto-pause above — we just skip
+                # user-facing noise.
                 slack_failed = False  # track real delivery exceptions only
                 if self.slack and not job.silent:
 
@@ -2977,14 +2986,31 @@ class GatewayOrchestrator:
                             job.name,
                             exc_info=True,
                         )
+                # record_failure() is the counter's sole owner: it continues an
+                # accumulation another writer (gate verdict, timeout) already
+                # built up instead of restarting at 1, and it is deliberately
+                # NOT gated on the alert's Slack delivery above — the run
+                # failed either way, and a job whose failure alerts also fail
+                # must still reach the auto-pause threshold. It runs AFTER the
+                # awaited Slack attempt so a timeout cancelling this handler
+                # mid-alert cannot leave the run counted here AND again by the
+                # timeout handler.
+                job.record_failure()
+                if job.auto_paused:
+                    logger.warning(
+                        "Cron '%s' auto-paused after %d consecutive failures",
+                        job.name,
+                        job.consecutive_failures,
+                    )
                 # Advance dedup state unless Slack delivery raised. "No channel
                 # available" is treated as a skip (not a failure), so dedup still
                 # advances — otherwise every identical failure re-notifies the
-                # dashboard, which is what dedup is supposed to prevent.
+                # dashboard, which is what dedup is supposed to prevent. Only the
+                # dedup fields are gated here; the failure count was already
+                # recorded above.
                 if not slack_failed:
                     job.last_failure_hash = fh
                     job.last_failure_at = time.time()
-                    job.consecutive_failures = new_count
                     # SEL logging is best-effort — never mask the original
                     # exception if audit logging itself fails.
                     try:
