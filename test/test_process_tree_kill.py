@@ -201,9 +201,9 @@ class TestSigkillSessionProcessTree:
     async def test_sigkill_uses_killpg(self):
         """_sigkill_session uses killpg to kill the process group.
 
-        Mesh-2801 promoted this helper to async; on POSIX
-        kill_process_tree_async dispatches inline to kill_process_tree ->
-        os.killpg, so the os.killpg patch still exercises the real path.
+        This helper is async; on POSIX kill_process_tree_async dispatches
+        inline to kill_process_tree -> os.killpg, so the os.killpg patch still
+        exercises the real path.
         """
         mgr = self._make_manager(pid=54321, child_pids={54322: 100})
 

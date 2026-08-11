@@ -1853,7 +1853,7 @@ class TestFindListeningPidsErrors:
 
 class TestKillAsyncVariants:
     """Regression guards for the async ``kill_pid_async`` / ``kill_process_tree_async``
-    variants (Mesh-2801).
+    variants.
 
     The async wrappers exist so async call sites can offload the blocking
     Windows ``taskkill`` spawn to :func:`kiro_crew.executors.subprocess_executor`

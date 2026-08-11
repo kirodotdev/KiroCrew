@@ -535,7 +535,7 @@ class TestCallToolWithLoggingRedaction:
         assert "slug" in captured.get("resources", "")
 
 
-# --- run_mcp_stdio_loop busy-queue behavior (Mesh-3020) ----------------------
+# --- run_mcp_stdio_loop busy-queue behavior ----------------------------------
 #
 # A tools/call arriving while a worker is busy used to be silently dropped:
 # no response was ever written, so the client waited forever. These tests

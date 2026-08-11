@@ -227,7 +227,7 @@ class TestKillPathIsPlatformCorrect:
        ``recycle_if_idle`` / ``shutdown`` instead of degrading, and in
        ``shutdown`` it also skipped the ``process.kill()`` fallback so the
        backend was never killed at all.
-    2. Per Mesh-2801 the ``_async`` variant is mandatory from a coroutine: the
+    2. The ``_async`` variant is mandatory from a coroutine: the
        Windows branch spawns ``taskkill`` with a 5s timeout, which stalls the
        loop. Patching only the async symbol would let a regression back to the
        sync helper pass silently, so both symbols are pinned and the sync one

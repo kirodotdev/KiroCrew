@@ -3964,7 +3964,7 @@ class TestKillProcess:
 
     @pytest.mark.asyncio
     async def test_kill_process_awaits_async_variant_not_sync(self):
-        """Mesh-2801: _kill_process MUST await platform_compat.kill_process_tree_async
+        """_kill_process MUST await platform_compat.kill_process_tree_async
         (the offloading variant) — never fall back to the sync
         kill_process_tree, whose whole reason for existing is the Windows
         event-loop offload. A test that patches only kill_process_tree would

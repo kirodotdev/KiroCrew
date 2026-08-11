@@ -667,7 +667,7 @@ class TestSubagentReaper:
         manager._agents["hang0001"] = info
         manager._running_count = 1
 
-        # _sigkill_session is async (Mesh-2801 offloaded the Windows taskkill
+        # _sigkill_session is async (offloaded the Windows taskkill
         # to subprocess_executor via kill_process_tree_async), so callers now
         # await it — the patch must be AsyncMock or asyncio complains.
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
@@ -700,7 +700,7 @@ class TestSubagentReaper:
         manager._agents["slow0001"] = info
         manager._running_count = 1
 
-        # _sigkill_session is async (Mesh-2801) — patch with AsyncMock.
+        # _sigkill_session is async — patch with AsyncMock.
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
             "kiro_crew.subagent._RESET_TIMEOUT", 0.1
         ), patch.object(manager, "_sigkill_session", new_callable=AsyncMock):

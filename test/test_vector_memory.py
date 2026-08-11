@@ -855,10 +855,10 @@ class TestStemWords:
 class TestEmbedFnLazyRebind:
     """Tests for lazy embed_fn rebinding via embed_fn_factory.
 
-    Regression: Mesh-XXXX. Before this fix, if Ollama was unavailable at gateway
-    boot, vector_memory.embed_fn stayed None for the entire gateway lifetime,
-    and every new memory wrote with embedding=NULL. Lazy rebind recovers from
-    this by retrying the factory on subsequent embed attempts (rate-limited).
+    Before this fix, if Ollama was unavailable at gateway boot,
+    vector_memory.embed_fn stayed None for the entire gateway lifetime, and
+    every new memory wrote with embedding=NULL. Lazy rebind recovers from this
+    by retrying the factory on subsequent embed attempts (rate-limited).
     """
 
     def test_no_factory_returns_none(self, tmp_path: Path) -> None:
