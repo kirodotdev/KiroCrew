@@ -40,7 +40,12 @@ workspace-scoped by default (fail-closed via `_caller_workspace`/`_ws_bucket`,
   cost. A new message advances the mtime and invalidates the cache. Because the
   session log is untouched, `list_sessions(summarize=true)` remains a true read of
   conversation history (`get_cached_summary` / `set_cached_summary` in
-  `ConversationLog`). The gateway-side one-liner
+  `ConversationLog`). The intent-level session summary shown in the chat panel
+  uses the same mtime-signature contract but a **separate** sidecar
+  (`sessions/.intents/`), because the two artifacts have independent writers and
+  sharing one file would reintroduce the read-modify-write race the sidecar design
+  avoids — see [session-summary.md](session-summary.md). The gateway-side
+  one-liner
   generation uses the shared `llm_helpers.run_bg_oneliner` helper (the same
   acquire→drive→destroy skeleton as title / link-label / folder-icon generation).
 

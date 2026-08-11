@@ -1733,6 +1733,93 @@ class ConversationLog:
             json.dumps({"sig": sig, "summary": summary}),
         )
 
+    def _intent_summary_cache_path(self, key: str) -> Path:
+        """Sidecar path for a session's cached intent-structured summary.
+
+        Deliberately a different file from :meth:`_summary_cache_path`: the
+        one-line summary and the intent summary have independent writers and
+        independent triggers, and sharing one file would reintroduce the
+        read-modify-write race the sidecar design exists to avoid.
+        """
+        return self._dir / ".intents" / f"{_safe_key(key)}.json"
+
+    def get_cached_intent_summary(self, key: str) -> dict | None:
+        """Return the cached intent summary payload for *key* if still valid.
+
+        Same mtime-signature contract as :meth:`get_cached_summary`: any real
+        append advances the session file's mtime and invalidates the cache,
+        while metadata-only rewrites preserve it. Returns the whole payload so
+        the caller can read ``generated_at`` for display.
+        """
+        try:
+            raw = self._intent_summary_cache_path(key).read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
+            return None
+        sig = self.session_mtime(key)
+        if sig is None or data.get("sig") != sig:
+            return None
+        return data
+
+    def read_intent_summary(self, key: str) -> tuple[dict | None, bool]:
+        """Return ``(payload, stale)`` for a session's intent summary.
+
+        Unlike :meth:`get_cached_intent_summary`, this does not discard a
+        payload whose signature no longer matches — it reports it as stale
+        instead. The panel prefers showing the last known summary marked as
+        out of date over showing nothing, because an empty panel reads as
+        "this feature is broken" while a stale one reads as "not regenerated
+        yet", which is the truth.
+        """
+        try:
+            raw = self._intent_summary_cache_path(key).read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return None, False
+        if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
+            return None, False
+        sig = self.session_mtime(key)
+        return data, not (sig is not None and data.get("sig") == sig)
+
+    def set_cached_intent_summary(self, key: str, payload: dict, sig: float) -> bool:
+        """Persist a derived intent summary *payload* to its sidecar cache.
+
+        Writes only the sidecar, never the session JSONL, so generating a
+        summary cannot clobber the transcript or advance its mtime (which would
+        both invalidate every other derived cache and reorder ``list_sessions``).
+
+        The write happens under ``_locked`` and only if the transcript still
+        exists with the *same* signature the generation started from. Generation
+        holds no lock while the model call is in flight (it can take tens of
+        seconds), so a permanent :meth:`delete_session` can complete in that
+        window -- removing the transcript AND this sidecar. An unconditional
+        write here would then recreate the sidecar, resurrecting deleted
+        conversation data after the user was told it was gone. The sig equality
+        check also drops a summary that a mid-generation append has already made
+        stale, rather than storing it as the latest word.
+
+        Returns True when the payload was written, False when it was refused
+        (transcript deleted or changed, or the lock could not be acquired).
+        Callers run this off the event loop (``asyncio.to_thread``) because
+        ``_locked`` blocks.
+        """
+        try:
+            with self._locked(key):
+                if _safe_mtime(self._path(key)) != sig:
+                    return False
+                atomic_write(
+                    self._intent_summary_cache_path(key),
+                    json.dumps({**payload, "sig": sig}),
+                )
+                return True
+        except HistoryLockTimeout:
+            logger.warning(
+                "set_cached_intent_summary: lock timeout, not writing key=%s", key
+            )
+            return False
+
     def append(
         self,
         key: str,
@@ -3091,6 +3178,10 @@ class ConversationLog:
                 # safe, and a failure here must not fail the primary delete.
                 try:
                     self._summary_cache_path(key).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                try:
+                    self._intent_summary_cache_path(key).unlink(missing_ok=True)
                 except OSError:
                     pass
         except HistoryLockTimeout:

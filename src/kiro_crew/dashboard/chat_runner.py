@@ -60,6 +60,7 @@ from kiro_crew.context_management import (
     validate_plan_format,
 )
 from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
+from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_title import (
     _extract_and_redact_plan_metadata,
     _maybe_auto_title,
@@ -3064,6 +3065,13 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
         state._background_tasks.add(refresh_task)
         refresh_task.add_done_callback(state._background_tasks.discard)
 
+    # Intent summary for the chat summary panel. Self-guarding: the common case
+    # (feature disabled) returns before any work, and an unchanged transcript is
+    # served from the sidecar cache without a model call.
+    summary_task = asyncio.create_task(generate_session_summary(state, slot))
+    state._background_tasks.add(summary_task)
+    summary_task.add_done_callback(state._background_tasks.discard)
+
 
 def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: bool) -> None:
     """Emit the user-message → first-visible-token latency histogram.
@@ -4181,6 +4189,12 @@ async def _run_chat(
             await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
 
         _stop_reason = ""
+        # Cleared at turn START so post-turn consumers never read the PREVIOUS
+        # turn's value: a turn that dies before EVENT_COMPLETE (ACP crash, auth
+        # expiry, transport drop) never reaches the assignment below, and a
+        # stale "end_turn" from the last successful turn would make the failed
+        # turn look cleanly finished (e.g. to the session-summary gate).
+        slot._last_stop_reason = ""
         # Tool-stall metadata forwarded by the ACP watchdog on its terminal
         # event (title / redacted command / evidence) — feeds the dedicated
         # tool-stall recovery nudge below.
@@ -5666,6 +5680,10 @@ async def _run_chat(
                     elapsed_ms=_turn_elapsed_ms,
                 )
                 _stop_reason = event.stop_reason
+                # Recorded on the slot so post-turn consumers reached later
+                # (which do not receive the event) can tell a turn that really
+                # finished from one cut short by a timeout, cancel or stall.
+                slot._last_stop_reason = _stop_reason or ""
                 if _stop_reason == STOP_REASON_TOOL_STALL:
                     _stall_tool_title = event.title
                     _stall_command = event.tool_input

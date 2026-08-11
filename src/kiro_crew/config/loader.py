@@ -163,6 +163,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "knowledge",
         "heartbeat",
         "skills",
+        "session_summary",
         "telemetry",
         "snapshot_dir",
         "timezone",
@@ -2738,6 +2739,97 @@ class SkillsConfig:
 
 
 @dataclass
+class SessionSummaryConfig:
+    """Intent-level session summaries shown in the chat right panel.
+
+    Summarizing spends tokens on a turn the user did not ask to pay for, so every
+    field defaults to off/conservative and the feature is inert until ``enabled``.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Session Summaries",
+            "When true, summarize each session by intent after a turn completes so "
+            "the chat right panel can show what the session is about, what has "
+            "happened, and what to do next. Costs tokens on turns that change the "
+            "session; an unchanged session is served from cache for free. Disabled "
+            "by default; enable in Settings.",
+        ),
+    )
+    min_user_turns: int = field(
+        default=2,
+        metadata=_meta(
+            "Minimum User Turns",
+            "Skip summarization until the session has at least this many user "
+            "messages (>=1). A one-exchange session has no intent structure worth "
+            "extracting, and the session title already covers it.",
+        ),
+    )
+    regenerate_after_turns: int = field(
+        default=1,
+        metadata=_meta(
+            "Regenerate Every N Turns",
+            "How many completed turns must pass before the summary is rebuilt "
+            "(>=1). 1 keeps the panel current at the cost of one pass per turn; "
+            "raise it to trade freshness for tokens. A cached summary whose "
+            "session has not changed is never rebuilt regardless of this value.",
+        ),
+    )
+    max_intents: int = field(
+        default=8,
+        metadata=_meta(
+            "Maximum Intents",
+            "Upper bound on intents kept per session (>=1). Beyond this the oldest "
+            "closed intents are dropped, since the panel collapses them anyway.",
+        ),
+    )
+    max_constraints: int = field(
+        default=5,
+        metadata=_meta(
+            "Maximum Project Notes",
+            "Upper bound on session-level operational notes -- the recurring facts "
+            "about how this project is run (>=0). Kept small on purpose: a long "
+            "list stops being read, and durable cross-session preferences belong "
+            "in lessons rather than here.",
+        ),
+    )
+    assistant_excerpt_chars: int = field(
+        default=400,
+        metadata=_meta(
+            "Assistant Excerpt Size",
+            "Characters kept from each end of an assistant message when building "
+            "the summarization input (>=80). User messages are always included in "
+            "full -- they carry intent and are small -- while assistant output is "
+            "excerpted because it holds the progress detail but dominates the "
+            "transcript.",
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        if self.min_user_turns < 1:
+            logger.warning("min_user_turns %d < 1, using 1", self.min_user_turns)
+            object.__setattr__(self, "min_user_turns", 1)
+        if self.regenerate_after_turns < 1:
+            logger.warning(
+                "regenerate_after_turns %d < 1, using 1", self.regenerate_after_turns
+            )
+            object.__setattr__(self, "regenerate_after_turns", 1)
+        if self.max_intents < 1:
+            logger.warning("max_intents %d < 1, using 1", self.max_intents)
+            object.__setattr__(self, "max_intents", 1)
+        if self.max_constraints < 0:
+            logger.warning("max_constraints %d < 0, using 0", self.max_constraints)
+            object.__setattr__(self, "max_constraints", 0)
+        if self.assistant_excerpt_chars < 80:
+            logger.warning(
+                "assistant_excerpt_chars %d < 80, using 80",
+                self.assistant_excerpt_chars,
+            )
+            object.__setattr__(self, "assistant_excerpt_chars", 80)
+
+
+@dataclass
 class TelemetryConfig:
     """Metrics telemetry settings (Wave 0 trunk).
 
@@ -4729,6 +4821,13 @@ class KiroCrewConfig:
         default_factory=SkillsConfig,
         metadata=_meta("Skills", "Skill loading and matching configuration."),
     )
+    session_summary: SessionSummaryConfig = field(
+        default_factory=SessionSummaryConfig,
+        metadata=_meta(
+            "Session Summary",
+            "Intent-level session summaries for the chat right panel. Off by default.",
+        ),
+    )
     telemetry: TelemetryConfig = field(
         default_factory=TelemetryConfig,
         metadata=_meta(
@@ -5078,6 +5177,9 @@ class KiroCrewConfig:
         skills_data = data.get("skills", {})
         if not isinstance(skills_data, dict):
             skills_data = {}
+        session_summary_data = data.get("session_summary", {})
+        if not isinstance(session_summary_data, dict):
+            session_summary_data = {}
         messaging_data = data.get("messaging", {})
         if not isinstance(messaging_data, dict):
             messaging_data = {}
@@ -5812,6 +5914,19 @@ class KiroCrewConfig:
                     p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)
                 ],
             ),
+            session_summary=SessionSummaryConfig(
+                enabled=bool(session_summary_data.get("enabled", False)),
+                min_user_turns=_safe_int(
+                    session_summary_data.get("min_user_turns", 2), 2),
+                regenerate_after_turns=_safe_int(
+                    session_summary_data.get("regenerate_after_turns", 1), 1),
+                max_intents=_safe_int(
+                    session_summary_data.get("max_intents", 8), 8),
+                max_constraints=_safe_int(
+                    session_summary_data.get("max_constraints", 5), 5),
+                assistant_excerpt_chars=_safe_int(
+                    session_summary_data.get("assistant_excerpt_chars", 400), 400),
+            ),
             slack_channels={
                 ch_id: ChannelConfig.from_dict(ch_data)
                 for ch_id, ch_data in (
@@ -5917,6 +6032,7 @@ class KiroCrewConfig:
             "knowledge": asdict(self.knowledge),
             "heartbeat": asdict(self.heartbeat),
             "skills": asdict(self.skills),
+            "session_summary": asdict(self.session_summary),
             "telemetry": asdict(self.telemetry),
             "snapshot_dir": self.snapshot_dir,
             "timezone": self.timezone,

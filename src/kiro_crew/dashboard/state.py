@@ -859,6 +859,9 @@ class _ChatSlot:
         "_auto_tagged",
         "_title_in_flight",
         "_title_retry_pending",
+        "_summary_in_flight",
+        "_summary_turn_mark",
+        "_last_stop_reason",
         "_artifact",
         "_channel_folder_filed",
         "_resumed_count",
@@ -1012,6 +1015,18 @@ class _ChatSlot:
         self._title_in_flight: bool = False
         # Records a chat_done retry that arrived during the on-send attempt.
         self._title_retry_pending: bool = False
+        # Excludes concurrent session-summary generations for this slot. A
+        # summary pass outlives the turn that triggered it, so a fast follow-up
+        # turn would otherwise start a second pass over the same transcript.
+        self._summary_in_flight: bool = False
+        # User-turn count at the last successful summary, so the configured
+        # regeneration cadence can be honored without re-reading the sidecar.
+        self._summary_turn_mark: int = 0
+        # Stop reason of the most recently completed turn. Recorded because a
+        # turn that ended on a timeout, cancel or tool stall did not really
+        # finish, and deriving anything from it would describe work that was
+        # interrupted mid-flight as if it had concluded.
+        self._last_stop_reason: str = ""
         # Artifact companion binding: set when this slot is a
         # companion chat session for an artifact (slug). At most one
         # non-archived slot per slug by convention — the frontend flow
@@ -4743,6 +4758,17 @@ class DashboardState:
         self._broadcast({"_type": "slot_title", "key": key, "title": title})
         if full:
             self.push_slots_update()
+
+    def push_session_summary(self, key: str) -> None:
+        """Broadcast that a session's intent summary was regenerated.
+
+        Lets the summary panel invalidate immediately instead of polling, which
+        matters because the summary is deliberately a pull-friendly artifact: a
+        panel that polled would reintroduce the checking loop the feature exists
+        to remove. Fire-and-forget — the client's own staleness window remains
+        the safety net if the event is missed.
+        """
+        self._broadcast({"_type": "session_summary", "key": key})
 
     def push_artifact_update(self, slug: str, version: int, *, deleted: bool = False) -> None:
         """Broadcast an artifact content change to all connected clients.

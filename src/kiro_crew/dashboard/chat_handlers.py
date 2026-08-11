@@ -765,6 +765,68 @@ async def _context_snapshot_fields_inner(
     )
 
 
+async def api_chat_slot_summary(request: web.Request) -> web.Response:
+    """GET /api/chat/slots/{slot}/summary — intent summary for the panel.
+
+    Read-only: it never triggers generation. Summaries are produced at turn end
+    by the background pass, deliberately, so that opening the panel cannot spend
+    tokens and repeated opening cannot turn into a refresh loop.
+
+    Responses:
+      - 200 with ``{enabled, generated_at, stale, intents, constraints, ...}``
+      - 200 with ``intents: []`` and ``enabled: false`` when the feature is off,
+        so the panel can render an explanatory empty state rather than an error
+      - 404 ``slot_not_found`` for an unknown slot, or for a slot an app caller
+        does not own (App Kit §5.2 isolation; 404 not 403 for anti-enumeration)
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # App ownership check (App Kit §5.2), mirroring api_chat_slot_delete: a
+    # summary is derived conversation content, so a slot merely existing must
+    # not make it readable. Dashboard users carry an explicit empty request_app
+    # and are unaffected; an app token may only read summaries for slots it
+    # created, never for unscoped slots.
+    request_app = request.get("app", "")
+    if request_app and (not slot._app or slot._app != request_app):
+        sel().log_api_access(
+            caller=request_app,
+            operation="slot_summary_read",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app does not own this slot",
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    enabled = bool(cfg.session_summary.enabled)
+
+    payload: dict | None = None
+    stale = False
+    log = state.conversation_log
+    # Gate the cache read on the flag as well: turning the feature off has to
+    # stop serving summaries, not just stop producing them, or a sidecar written
+    # during an earlier opt-in keeps being returned after opt-out.
+    if enabled and log is not None:
+        history_key = slot_history_key(slot)
+        payload, stale = await asyncio.to_thread(log.read_intent_summary, history_key)
+
+    body: dict = {
+        "enabled": enabled,
+        "stale": stale,
+        "intents": (payload or {}).get("intents", []),
+        "constraints": (payload or {}).get("constraints", []),
+        "generated_at": (payload or {}).get("generated_at"),
+        "user_turns": (payload or {}).get("user_turns"),
+        "last_activity": (payload or {}).get("last_activity"),
+    }
+    return web.json_response(body)
+
+
 async def api_chat_slot_detail(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot} — message history for a slot.
 
