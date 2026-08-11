@@ -96,9 +96,22 @@ survives logout; linger still matters for pods and for user-level installs.)
 
 ### "kiro login: not logged in"
 
-kiro-cli must be authenticated **on the box**. Run `kiro-cli login` there and
-complete the device-code flow. Chat errors like "not logged in" mean this step was
-skipped on the remote.
+kiro-cli must be authenticated **on the box**. Run `kirocrew cloud login` from
+your laptop and complete the device-code flow in the browser it opens. Chat errors
+like "not logged in" mean this step was skipped on the remote.
+
+### Signing in as a different Kiro account
+
+`kirocrew cloud login` short-circuits when the box already has a session ("already
+signed in"), so switching accounts is a sign-out first:
+
+```bash
+kirocrew cloud logout    # drops the kiro-cli session on the instance
+kirocrew cloud login     # device-code flow for the new account
+```
+
+`logout` also kills any background login still polling on the box — otherwise it
+would quietly re-authenticate the account you just dropped.
 
 ### Port/tunnel mismatch (the common one)
 

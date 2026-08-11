@@ -125,8 +125,14 @@ def parse_login_output(text: str) -> LoginPrompt:
     return LoginPrompt(url=url, code=code, raw=text, ports=ports)
 
 
-def is_logged_in(instance_id: str, profile: str = "", region: str = "") -> bool:
-    """Best-effort check whether kiro-cli is already authenticated on the box."""
+def _auth_probe(instance_id: str, profile: str = "", region: str = "") -> Optional[bool]:
+    """Probe the box's auth state: True/False, or None when it can't be determined.
+
+    An SSM timeout or transport error is NOT evidence of being signed out, so it
+    maps to None. Callers that act on "signed out" (logout verification) must
+    require a positive False; callers that only gate a sign-in may treat None as
+    logged-out, since a redundant login attempt is harmless.
+    """
     res = ssm.run_command(
         instance_id,
         _login_check_command(),
@@ -135,17 +141,57 @@ def is_logged_in(instance_id: str, profile: str = "", region: str = "") -> bool:
         total_wait=60,
     )
     out = (res.stdout or "").strip()
-    # Exit status is authoritative: the remote check propagates `kiro-cli
-    # whoami`'s exit code (non-zero = logged out). Never treat a non-zero result
-    # as logged in, even if stdout lacks a known failure marker.
-    if not res.ok:
-        return False
-    if not out:
-        return False
     if _TOKEN_PRESENT_SENTINEL in out:
         return True
+    if _NOAUTH_SENTINEL in out:
+        return False
+    # No sentinel: the remote script never reached its own echo (timeout, agent
+    # or transport failure), so the state is unknown — not "signed out".
+    if not res.ok:
+        return None
+    if not out:
+        return None
     low = out.lower()
     return not any(marker in low for marker in _AUTH_FAILURE_MARKERS)
+
+
+def is_logged_in(instance_id: str, profile: str = "", region: str = "") -> bool:
+    """Best-effort check whether kiro-cli is already authenticated on the box.
+
+    An undeterminable state answers False: this only gates whether to start a
+    sign-in, and a redundant one is harmless (``kiro-cli login`` itself
+    short-circuits when a session already exists).
+    """
+    return _auth_probe(instance_id, profile, region) is True
+
+
+def logout(instance_id: str, profile: str = "", region: str = "") -> bool:
+    """Sign ``kiro-cli`` out on the instance so another Kiro account can sign in.
+
+    Returns True only on a POSITIVE signed-out reading. The command's own exit
+    code can't be used — ``kiro-cli logout`` exits non-zero when there was no
+    session to drop, which is still the state the caller asked for — so the
+    outcome is re-probed. That probe must fail CLOSED: a timeout or transport
+    error leaves the session possibly still active, and reporting success there
+    would tell the user their account was dropped when it wasn't.
+    """
+    res = ssm.run_command(
+        instance_id,
+        _logout_command(),
+        profile,
+        region,
+        total_wait=60,
+    )
+    # If the cleanup script itself never completed (SSM timeout / transport
+    # error), the follow-up probe can't be trusted either: the background login
+    # or ACP runtime it was meant to kill may still be live and about to
+    # re-authenticate the old account. Fail closed rather than report a sign-out
+    # that a racing process is undoing. (The script ends in `exit 0`
+    # unconditionally, so `res.ok` only tells us the script ran end-to-end, not
+    # that the kills landed — hence the status check, not `res.ok`.)
+    if res.status != "Success":
+        return False
+    return _auth_probe(instance_id, profile, region) is False
 
 
 def start_device_login(
@@ -247,6 +293,35 @@ if [ "$rc" -eq 0 ]; then
 fi
 echo "{_NOAUTH_SENTINEL}"
 exit 1
+""".strip()
+
+
+def _logout_command() -> str:
+    """Build the remote sign-out: stop the box's kiro-cli processes, drop the session, wipe its log.
+
+    Two process shapes must die BEFORE the logout, not after:
+
+    - a background ``kiro-cli login`` still polling would re-authenticate the
+      old account right after the session is dropped;
+    - a live ``kiro-cli acp`` runtime holds the OLD account's credential in
+      memory and won't notice the on-disk logout until its next request 401s —
+      leaving it running means chats keep being served as the account the
+      operator just signed out. The gateway spawns a fresh runtime on the next
+      turn, which picks up the new login.
+
+    The log/PID/FIFO hold the previous device-code URL + code, so they are
+    removed too — a stale prompt must never be shown as if it were a fresh one.
+    """
+    return f"""
+set +e
+{_KIRO_BIN_RESOLVE}
+if command -v pkill >/dev/null 2>&1; then
+  pkill -u "$(id -u)" -f "kiro-cli login" 2>/dev/null || true
+  pkill -u "$(id -u)" -f "kiro-cli acp" 2>/dev/null || true
+fi
+"$KIRO" logout < /dev/null 2>&1
+rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
+exit 0
 """.strip()
 
 

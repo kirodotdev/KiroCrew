@@ -139,6 +139,96 @@ class TestIsLoggedIn:
         assert login.is_logged_in("i-0abc", "dev") is False
 
 
+class TestAuthProbe:
+    """The probe is tri-state: a failed probe is NOT evidence of being signed out."""
+
+    def test_none_when_command_times_out(self, monkeypatch):
+        monkeypatch.setattr(
+            ssm, "run_command", lambda *a, **k: ssm.CommandResult("TimedOut", "", "", -1)
+        )
+        assert login._auth_probe("i-0abc", "dev") is None
+
+    def test_none_when_output_has_no_sentinel(self, monkeypatch):
+        monkeypatch.setattr(
+            ssm, "run_command", lambda *a, **k: ssm.CommandResult("Failed", "", "boom", 255)
+        )
+        assert login._auth_probe("i-0abc", "dev") is None
+
+    def test_false_on_positive_noauth_sentinel(self, monkeypatch):
+        # The remote script echoes __NOAUTH__ and exits 1 — a non-ok result that
+        # is nonetheless a definitive "signed out".
+        monkeypatch.setattr(
+            ssm,
+            "run_command",
+            lambda *a, **k: ssm.CommandResult("Failed", login._NOAUTH_SENTINEL, "", 1),
+        )
+        assert login._auth_probe("i-0abc", "dev") is False
+
+
+class TestLogout:
+    def test_reports_signed_out_when_session_gone(self, monkeypatch):
+        commands: list[str] = []
+        monkeypatch.setattr(
+            ssm,
+            "run_command",
+            lambda _i, command, *a, **k: commands.append(command)
+            or ssm.CommandResult("Success", "", "", 0),
+        )
+        monkeypatch.setattr(login, "_auth_probe", lambda *a, **k: False)
+        assert login.logout("i-0abc", "dev") is True
+        cmd = commands[0]
+        # A background `kiro-cli login` still polling would re-authenticate the
+        # old account, so it must be killed BEFORE the logout runs.
+        assert cmd.index("pkill") < cmd.index("logout")
+        # Live `kiro-cli acp` runtimes hold the old account's credential in
+        # memory and must not survive the sign-out either.
+        assert "kiro-cli acp" in cmd
+        assert cmd.index("kiro-cli acp") < cmd.index('"$KIRO" logout')
+        # The stale device-code URL+code must not survive the sign-out.
+        assert login._LOGIN_LOG_PATH in cmd
+
+    def test_false_when_session_survives(self, monkeypatch):
+        monkeypatch.setattr(
+            ssm, "run_command", lambda *a, **k: ssm.CommandResult("Success", "", "", 0)
+        )
+        monkeypatch.setattr(login, "_auth_probe", lambda *a, **k: True)
+        assert login.logout("i-0abc", "dev") is False
+
+    def test_false_when_cleanup_command_never_completes(self, monkeypatch):
+        # If the cleanup SSM command times out / fails to deliver, the kills it
+        # was meant to do (background login, ACP runtimes) may not have landed —
+        # the follow-up probe then can't be trusted, so fail closed. The script
+        # ends in `exit 0`, so a "Success" status here means the script ran, not
+        # that the kills worked; a non-"Success" status is the untrusted case.
+        monkeypatch.setattr(
+            ssm, "run_command", lambda *a, **k: ssm.CommandResult("TimedOut", "", "", -1)
+        )
+        probe_called = []
+        monkeypatch.setattr(login, "_auth_probe", lambda *a, **k: probe_called.append(1) or False)
+        assert login.logout("i-0abc", "dev") is False
+        assert probe_called == []  # must not trust a probe after a failed cleanup
+
+    def test_false_when_verification_is_inconclusive(self, monkeypatch):
+        # An SSM timeout on the verify probe leaves the session possibly still
+        # active. Reporting success would tell the user their account was
+        # dropped when it may not have been, so logout must fail CLOSED.
+        monkeypatch.setattr(
+            ssm, "run_command", lambda *a, **k: ssm.CommandResult("Success", "", "", 0)
+        )
+        monkeypatch.setattr(login, "_auth_probe", lambda *a, **k: None)
+        assert login.logout("i-0abc", "dev") is False
+
+    def test_no_session_to_drop_still_signed_out(self, monkeypatch):
+        # `kiro-cli logout` exits non-zero when there was no session to drop, but
+        # the cleanup script swallows that and `exit 0`s, so SSM reports Success;
+        # the probe then positively confirms signed-out, and logout is a success.
+        monkeypatch.setattr(
+            ssm, "run_command", lambda *a, **k: ssm.CommandResult("Success", "", "", 0)
+        )
+        monkeypatch.setattr(login, "_auth_probe", lambda *a, **k: False)
+        assert login.logout("i-0abc", "dev") is True
+
+
 class TestStartDeviceLogin:
     def test_short_circuits_when_logged_in(self, monkeypatch):
         monkeypatch.setattr(login, "is_logged_in", lambda *a, **k: True)

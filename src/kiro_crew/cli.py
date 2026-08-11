@@ -1714,6 +1714,10 @@ Examples:
     _c_login.add_argument(
         "--no-browser", action="store_true", help="Print the device URL but don't open a browser"
     )
+    _c_logout = cloud_sub.add_parser(
+        "logout", help="Sign kiro-cli out on the instance (to switch Kiro account)"
+    )
+    _cloud_common(_c_logout)
     _c_stop = cloud_sub.add_parser("stop", help="Stop the instance (pause billing)")
     _cloud_common(_c_stop)
     _c_start = cloud_sub.add_parser("start", help="Start a stopped instance")

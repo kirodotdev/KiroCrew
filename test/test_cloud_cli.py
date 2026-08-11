@@ -376,6 +376,40 @@ class TestCloudLogin:
         assert rc == 1
         assert "not detected yet" in capsys.readouterr().out
 
+    def test_logout_signs_out_and_points_at_login(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
+        monkeypatch.setattr(cli_cloud, "_resolve_tag", lambda _a: "kc-1")
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(cli_cloud.login_mod, "logout", lambda *a, **k: True)
+        rc = cli_cloud._cloud_logout(_args(profile="", region="", tag="kc-1"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Signed out" in out
+        assert "kirocrew cloud login" in out
+
+    def test_logout_fails_when_session_survives(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
+        monkeypatch.setattr(cli_cloud, "_resolve_tag", lambda _a: "kc-1")
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(cli_cloud.login_mod, "logout", lambda *a, **k: False)
+        rc = cli_cloud._cloud_logout(_args(profile="", region="", tag="kc-1"))
+        assert rc == 1
+        assert "Could not confirm the instance is signed out" in capsys.readouterr().out
+
+    def test_logout_no_instance(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
+        monkeypatch.setattr(cli_cloud, "_resolve_tag", lambda _a: "kc-1")
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": False})
+        assert cli_cloud._cloud_logout(_args(profile="", region="", tag="kc-1")) == 1
+        assert "No running instance" in capsys.readouterr().out
+
+    def test_logout_is_dispatched(self):
+        assert cli_cloud._DISPATCH["logout"] is cli_cloud._cloud_logout
+
     def test_login_is_dispatched(self, monkeypatch):
         called = {}
 

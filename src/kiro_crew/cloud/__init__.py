@@ -18,9 +18,10 @@ version:
   (enforced by kiro-cli's ``execute_bash``/``shell`` tools): both the raw CLI
   verbs (``aws ec2 terminate-instances``, ``aws ec2 delete-*``,
   ``aws cloudformation delete-stack``) **and** the ``kirocrew cloud
-  destroy|stop|start|launch|connect|tunnel|login`` wrappers (so the agent can't
-  reach teardown/launch through the wrapper, nor mint+print a dashboard token
-  via ``connect``/``tunnel``/``login``). Only the read-only ``list``/``status``
+  destroy|stop|start|launch|connect|tunnel|login|logout`` wrappers (so the agent
+  can't reach teardown/launch through the wrapper, mint+print a dashboard token
+  via ``connect``/``tunnel``/``login``, nor sign its own box out via ``logout``).
+  Only the read-only ``list``/``status``
   verbs stay agent-accessible. (Note: ``security.py``'s ``BUILTIN_DENY_PATTERNS``
   use underscored MCP-tool-name shapes, e.g. ``*terminate_instance*``, and do
   NOT match these hyphenated CLI strings — the block lives in ``deniedCommands``.)
@@ -32,7 +33,7 @@ Module map:
 - ``iam`` — least-privilege policy generator + read-only reachability check.
 - ``ec2`` — deploy / status / stop / start / destroy via ``aws cloudformation``.
 - ``connect`` — SSM port-forward + dashboard token + open browser.
-- ``login`` — ``kiro-cli`` sign-in on the instance over SSM.
+- ``login`` — ``kiro-cli`` sign-in / sign-out on the instance over SSM.
 - ``wizard`` — the interactive launch flow.
 - ``templates/kirocrew-ec2.yaml`` — the CloudFormation template.
 """

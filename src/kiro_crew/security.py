@@ -1361,12 +1361,12 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="self-protection-cloud",
-        pattern=".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|login).*",
+        pattern=".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|log(in|out)).*",
         category="self-protection",
         description=(
             "Blocks 'kirocrew cloud' lifecycle subcommands "
-            "(destroy/stop/start/launch/connect/tunnel/login) so the agent cannot tear down, "
-            "provision, or re-authenticate its own cloud instance."
+            "(destroy/stop/start/launch/connect/tunnel/login/logout) so the agent cannot tear "
+            "down, provision, re-authenticate, or sign out its own cloud instance."
         ),
     ),
     DeniedCommandRule(
