@@ -30,22 +30,29 @@ with the theme CSS custom properties or Tailwind classes mapped to them,
 <div className="bg-[var(--card)] text-[var(--card-fg)]" />
 ```
 
-The 43 CSS variables are the single source of truth for color. They are the
+The 54 CSS variables are the single source of truth for color. They are the
 customization surface a theme (built-in, custom, or installed) can set.
+Theme blocks in `index.css` also set a few non-color properties that are
+deliberately NOT on the allowlist: the font tokens (`--font-body`, `--mono`)
+and radii are injected as fixed defaults by `buildCustomThemeCss` (fonts are a
+pack-level L1 surface, not per-color-mode data), and the `--search-highlight*`
+trio is an internal find-in-page surface not exposed to theme packs.
 
 ## Adding a new color role
 
 When you genuinely need a new color role, add the variable to **both** sides in
 parity (a parity test guards drift), then define it in **every** built-in theme:
 
-- Frontend: `ALLOWED_CSS_VARS` in `src/hooks/useTheme.tsx`
+- Frontend: `ALLOWED_CSS_VARS` in `src/hooks/themeCss.ts`
 - Backend: `_THEME_CSS_VARS_SET` (built from `_THEME_CSS_VARS`) in
   `src/kiro_crew/dashboard/theme_validate.py`
 
 Never introduce a one-off literal instead of a variable.
 
-Both sides are checked from Python: `test/test_theme_css_security.py`
-(`TestCssVarsSetSync`) asserts the required roles and the shadow roles are in the
+Both sides are checked from Python: in `test/test_theme_css_security.py`,
+`TestAllowlistParity` parses `ALLOWED_CSS_VARS` out of `themeCss.ts` and
+asserts set equality with the backend `_THEME_CSS_VARS_SET`;
+`TestCssVarsSetSync` asserts the required roles and the shadow roles are in the
 backend set and that an unknown name is not, and `TestThemeVarsFilter` asserts the
 filter keeps known keys, drops unknown ones, and drops unsafe values. The CSS
 parsers on the two sides are pinned against each other by a shared fixture,
@@ -65,7 +72,7 @@ otherwise always win and silently ignore the active theme.
 
 | Tier | Surface |
 |---|---|
-| **L0 Color** | the 43 CSS vars (dark + light) |
+| **L0 Color** | the 54 CSS vars (dark + light) |
 | **L1 Brand** | logo, favicon, wordmark, botName, fonts, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 

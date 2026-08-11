@@ -11,6 +11,9 @@ and documents the security model:
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from kiro_crew.dashboard.handlers import (
@@ -19,6 +22,23 @@ from kiro_crew.dashboard.handlers import (
     _sanitize_css_value,
     _strip_to_allowed_vars,
     _validate_theme_data,
+)
+
+# Variables the frontend already sets/consumes that the allowlists must accept:
+# the foreground pairs for accent/status/aim/muted roles and the JSON syntax
+# colors used by the chat tool-detail view.
+_NEWLY_ALLOWED_VARS = (
+    "--accent-fg",
+    "--muted-fg",
+    "--ok-fg",
+    "--warn-fg",
+    "--danger-fg",
+    "--info-fg",
+    "--aim-fg",
+    "--json-key",
+    "--json-str",
+    "--json-num",
+    "--json-bool",
 )
 
 
@@ -254,3 +274,97 @@ class TestCssVarsSetSync:
         assert "--evil" not in _THEME_CSS_VARS_SET
         assert "--background" not in _THEME_CSS_VARS_SET
         assert "background" not in _THEME_CSS_VARS_SET
+
+    def test_frontend_consumed_vars_in_allowed_set(self) -> None:
+        # These are set by the built-in themes in index.css and consumed by
+        # the SPA (Tailwind *-fg utilities, JSON syntax colors in ToolDetails),
+        # so a theme pack must be allowed to define them.
+        for v in _NEWLY_ALLOWED_VARS:
+            assert v in _THEME_CSS_VARS_SET
+
+    def test_validation_accepts_newly_allowed_vars(self) -> None:
+        theme: dict = {
+            "name": "Test",
+            "dark": {"--bg": "#000", "--text": "#fff", "--accent": "#00f"},
+            "light": {"--bg": "#fff", "--text": "#000", "--accent": "#00f"},
+        }
+        for v in _NEWLY_ALLOWED_VARS:
+            theme["dark"][v] = "#123456"
+            theme["light"][v] = "#654321"
+        assert _validate_theme_data(theme) is None
+        # Defense-in-depth filter must also keep them.
+        kept = _strip_to_allowed_vars(theme["dark"])
+        for v in _NEWLY_ALLOWED_VARS:
+            assert kept[v] == "#123456"
+
+
+class TestAllowlistParity:
+    """The backend and frontend allowlists must be the SAME set.
+
+    A variable present on only one side is a theme-pack key that one layer
+    accepts and the other silently drops or rejects, which is exactly the
+    drift that motivated adding this guard. Parses the frontend source as
+    text so the two lists cannot diverge with tests still green.
+    """
+
+    def test_backend_matches_frontend_allowlist(self) -> None:
+        ts_path = (
+            Path(__file__).resolve().parents[1] / "website" / "src" / "hooks" / "themeCss.ts"
+        )
+        source = ts_path.read_text(encoding="utf-8")
+        match = re.search(
+            r"ALLOWED_CSS_VARS = new Set\(\s*\[(.*?)\]\s*\)", source, flags=re.DOTALL
+        )
+        assert match, "ALLOWED_CSS_VARS set literal not found in themeCss.ts"
+        frontend_vars = frozenset(re.findall(r"['\"](--[A-Za-z0-9-]+)['\"]", match.group(1)))
+        assert frontend_vars, "no CSS vars parsed out of ALLOWED_CSS_VARS"
+        assert frontend_vars == _THEME_CSS_VARS_SET, (
+            f"allowlists drifted; frontend-only: {sorted(frontend_vars - _THEME_CSS_VARS_SET)}, "
+            f"backend-only: {sorted(_THEME_CSS_VARS_SET - frontend_vars)}"
+        )
+
+    # Non-color properties the built-in theme blocks set that are deliberately
+    # NOT theme-pack surface: font/radius tokens are injected as fixed defaults
+    # by buildCustomThemeCss, and the search-highlight trio is an internal
+    # find-in-page surface (see website/docs/theming-contract.md).
+    _EXCLUDED_THEME_BLOCK_VARS = frozenset(
+        {
+            "--font-body",
+            "--mono",
+            "--radius-sm",
+            "--radius-md",
+            "--radius-lg",
+            "--radius-xl",
+            "--search-highlight",
+            "--search-highlight-current",
+            "--search-highlight-current-border",
+        }
+    )
+
+    def test_builtin_theme_vars_are_allowlisted_or_excluded(self) -> None:
+        """Every variable a built-in theme block sets is allowlisted or excluded.
+
+        This is the drift axis that caused the original defect: the allowlists
+        fell behind the variables the built-in themes actually set, so theme
+        packs could not style surfaces the SPA already renders. A new variable
+        added to index.css must either join both allowlists or be added to the
+        documented exclusion set above.
+        """
+        css_path = Path(__file__).resolve().parents[1] / "website" / "src" / "index.css"
+        css = css_path.read_text(encoding="utf-8")
+        blocks = re.findall(r'\[data-theme="[^"]+"\]\s*\{(.*?)\}', css, flags=re.DOTALL)
+        assert blocks, "no [data-theme] blocks parsed out of index.css"
+        set_vars: set[str] = set()
+        for block in blocks:
+            set_vars.update(re.findall(r"(--[a-z0-9-]+)\s*:", block))
+        unaccounted = set_vars - _THEME_CSS_VARS_SET - self._EXCLUDED_THEME_BLOCK_VARS
+        assert not unaccounted, (
+            f"built-in themes set variables that are neither allowlisted nor in the "
+            f"documented exclusion set: {sorted(unaccounted)} -- add them to both "
+            f"allowlists (theme_validate.py + themeCss.ts) or to "
+            f"_EXCLUDED_THEME_BLOCK_VARS with a rationale in theming-contract.md"
+        )
+        # The exclusion set must not mask an allowlisted var (a var in both
+        # would make the exclusion list silently stale).
+        overlap = self._EXCLUDED_THEME_BLOCK_VARS & _THEME_CSS_VARS_SET
+        assert not overlap, f"exclusion set overlaps the allowlist: {sorted(overlap)}"
