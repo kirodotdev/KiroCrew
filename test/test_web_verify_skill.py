@@ -35,6 +35,64 @@ def test_web_verify_keeps_the_playwright_guard() -> None:
     assert "npm install -g agent-browser" in body
 
 
+def _flat(path: Path) -> str:
+    """Skill body with runs of whitespace collapsed to single spaces.
+
+    These files are hard-wrapped prose, so a multi-word phrase can legitimately
+    straddle a newline. Asserting raw substrings against wrapped text fails for
+    a formatting reason rather than a content one (it bit `kirocrew browse
+    setup` and `does not flip` during review), so phrase assertions normalize
+    whitespace first and stay robust to reflow.
+    """
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_browser_skills_name_the_settings_toggle_not_only_a_cli() -> None:
+    """A missing browser must route the USER to the one-click fix, not just a CLI.
+
+    The failure this locks: a skill that says only "run `kirocrew browse setup`"
+    (or nothing at all) leaves a user who has never heard of Browser Mode
+    believing the feature is broken. The Settings path is the one-click
+    remediation and must be named wherever a skill reports the browser missing.
+    """
+    for skill in (WEB_VERIFY, WEB_BROWSE):
+        assert "Settings → Browser" in _flat(skill), (
+            f"{skill.name} must name the Settings path"
+        )
+
+
+def test_browser_skills_do_not_sell_the_cli_as_the_enabler() -> None:
+    """`kirocrew browse setup` provisions Playwright; it does NOT enable Browser Mode.
+
+    ``set_browser_mode_enabled`` has exactly one caller — the dashboard Settings
+    handler — so the CLI cannot turn browsing on. A skill that offers it as the
+    way to enable browsing (or as the headless-host substitute for the toggle)
+    sends the user down a path that cannot work, which is worse than the silent
+    failure this PR set out to remove. Each skill must say so explicitly.
+    """
+    for skill in (WEB_VERIFY, WEB_BROWSE):
+        flat = _flat(skill).lower()
+        assert "does not flip" in flat, (
+            f"{skill.name} must state the CLI does not flip the Browser Mode switch"
+        )
+        assert "browse setup" in flat
+
+
+def test_browser_skills_do_not_assert_mode_off_as_fact() -> None:
+    """The agent cannot read the toggle, so "Browser Mode is off" is a guess.
+
+    Provisioning can fail with the toggle already on. Telling such a user to go
+    turn on a setting that is already on is the confusing dead end this locks
+    against: each skill must hedge ("usually means") rather than assert.
+    """
+    for skill in (WEB_VERIFY, WEB_BROWSE):
+        flat = _flat(skill)
+        if "Browser Mode is off" in flat:
+            assert "usually means" in flat or "cannot see the setting" in flat, (
+                f"{skill.name} asserts Browser Mode is off without hedging"
+            )
+
+
 def test_web_verify_names_all_three_capture_backends() -> None:
     """A missing Playwright MCP browser must not read as 'verification impossible'."""
     body = WEB_VERIFY.read_text(encoding="utf-8")

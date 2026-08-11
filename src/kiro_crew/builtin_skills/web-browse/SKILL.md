@@ -72,11 +72,15 @@ tools to exist at all.
 
 - If the `browser_*` tools are **not** in your tool list, do NOT attempt this.
   Fall back to `web_fetch` to read the page, and tell the user:
-  > "The built-in browser isn't set up. Run `kirocrew browse setup` — it writes
-  >  the config, registers the proxy, and tells you if `@playwright/mcp` needs
-  >  installing (`npm i -g @playwright/mcp`). Then restart the gateway
-  >  (`kirocrew stop && kirocrew gateway`). For now, here's what I read from the
-  >  page."
+  > "I can't open pages in the Browser panel — the browser tools aren't
+  >  available in this session. That usually means Browser Mode is off: enable
+  >  it at **Settings → Browser → toggle Browser Mode on** (that also downloads
+  >  Playwright and wires the proxy). For now, here's what I read from the page."
+  Say "the tools aren't available", not "Browser Mode is off" as a fact — you
+  cannot see the setting from here, and provisioning can also fail with the
+  toggle already on. Settings → Browser is the ONLY thing that enables Browser
+  Mode; `kirocrew browse setup` provisions Playwright but deliberately does not
+  flip the switch, so never offer it as the way to turn browsing on.
 - Only proceed with the steps below when the `browser_*` tools are present.
 
 ## Steps
@@ -96,8 +100,8 @@ tools to exist at all.
 - **Operate** (click, type, fill forms, multi-step navigation): drive the
   `browser_*` tools directly. They are present in your tool list whenever
   Browser Mode is on, and you decide when a task needs interaction versus a
-  plain read. If the tools are absent, view the page with `web_fetch` and, if
-  the user needs interaction, tell them to enable Browser Mode in Settings.
+  plain read. If the tools are absent, view the page with `web_fetch` and tell
+  the user to enable Browser Mode in **Settings → Browser** for interactive browsing.
 
 ## Not this skill
 
