@@ -620,6 +620,14 @@ name:
   them (idempotent), fixing installs polluted by older builds.
 - The dashboard model PATCH writes the sidecar, never the spec; agent DELETE
   prunes the sidecar entry.
+- `agent_state.lift_and_strip_bookkeeping()` is the single shared
+  implementation of the lift/strip/no-clobber rule above (with a type guard —
+  a non-`bool` `model_managed` or non-`str` `cc_model` is stripped but never
+  lifted, since coercing it could silently flip its meaning). All four spec
+  writers call it — the dashboard's whole-config `PUT /api/agent/config`
+  handler, the per-agent `PATCH /api/agent/<name>` handler,
+  `migrate_agent_specs()`, and `_refresh_dynamic_fields()` — so none of them
+  can drift from the other three.
 
 Note: KiroCrew is KiroACP (kiro-cli) only — the deleted `claude_code` provider
 was the sole reader of spec `cc_model`, so `cc_model` is now dead config. The

@@ -1920,14 +1920,7 @@ def _refresh_dynamic_fields(
     # builds on the next refresh; the one-time migrate_agent_specs() at startup
     # handles the rest of ~/.kiro/agents/.
     name = config.get("name") or _MAIN_AGENT_NAME
-    if "model_managed" in config:
-        if agent_state.get_model_managed(name) is None:
-            agent_state.set_model_managed(name, bool(config["model_managed"]))
-        del config["model_managed"]
-    if "cc_model" in config:
-        if agent_state.get_cc_model(name) is None and config["cc_model"]:
-            agent_state.set_cc_model(name, str(config["cc_model"]))
-        del config["cc_model"]
+    agent_state.lift_and_strip_bookkeeping(config, name)
 
     # Imported lazily: config.loader imports this module, so a top-level import
     # would close the cycle. Warm by the time this runs (importing agent pulls
@@ -2168,15 +2161,7 @@ def migrate_agent_specs() -> int:
         if "model_managed" not in data and "cc_model" not in data:
             continue
         name = data.get("name") or spec_path.stem
-        if "model_managed" in data:
-            # Don't clobber an authoritative sidecar value with a stale spec one.
-            if agent_state.get_model_managed(name) is None:
-                agent_state.set_model_managed(name, bool(data["model_managed"]))
-            del data["model_managed"]
-        if "cc_model" in data:
-            if agent_state.get_cc_model(name) is None and data["cc_model"]:
-                agent_state.set_cc_model(name, str(data["cc_model"]))
-            del data["cc_model"]
+        agent_state.lift_and_strip_bookkeeping(data, name)
         try:
             _atomic_json_write(spec_path, data)
             cleaned += 1
