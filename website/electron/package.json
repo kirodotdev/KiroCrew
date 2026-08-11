@@ -76,6 +76,7 @@
       "home-dir.js",
       "local-token.js",
       "window-state.js",
+      "global-hotkey.js",
       "gateway-liveness.js",
       "gateway-recovery.js",
       "pyspy-dump.js",

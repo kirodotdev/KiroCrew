@@ -5955,13 +5955,16 @@
     "shortcutsModal": {
       "always_works": "funktioniert immer",
       "close": "Schließen",
+      "desktop_app": "Desktop-App",
       "enable_shortcuts": "Tastenkürzel aktivieren",
+      "global_hotkey_hint": "Funktioniert systemweit, auch wenn die App im Hintergrund läuft. Zum Ändern oder Deaktivieren globalHotkey in der Konfigurationsdatei der Desktop-App bearbeiten (Connection > Open Config File); die Änderung wird nach einem Neustart der App wirksam.",
       "k": "K",
       "keyboard_shortcuts": "Tastenkürzel",
       "keyboard_shortcuts_2": "Tastenkürzel",
       "or": "oder",
       "search": "Suchen",
       "search_everywhere": "Überall suchen",
+      "show_or_focus_the_kiro_crew_window": "Kiro Crew-Fenster anzeigen oder fokussieren",
       "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden",
       "use_ctrl_not_option_for_chat_1_to_9": "Strg (nicht Option) für Chat 1 bis 9 verwenden"
     },

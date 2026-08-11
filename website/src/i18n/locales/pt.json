@@ -6041,13 +6041,16 @@
     "shortcutsModal": {
       "always_works": "sempre funciona",
       "close": "Fechar",
+      "desktop_app": "Aplicativo para desktop",
       "enable_shortcuts": "Ativar atalhos",
+      "global_hotkey_hint": "Funciona em todo o sistema, mesmo com o aplicativo em segundo plano. Para alterar ou desativar, edite globalHotkey no arquivo de configuração do aplicativo para desktop (Connection > Open Config File); a alteração entra em vigor após reiniciar o aplicativo.",
       "k": "K",
       "keyboard_shortcuts": "Atalhos de teclado",
       "keyboard_shortcuts_2": "Atalhos de teclado",
       "or": "ou",
       "search": "Pesquisar",
       "search_everywhere": "Pesquisar em tudo",
+      "show_or_focus_the_kiro_crew_window": "Mostrar ou focar a janela do Kiro Crew",
       "use_ctrl_not_option_for_chat_1_9": "Use ⌃ Ctrl (não ⌥ Option) para os chats 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Use Ctrl (não Option) para os chats 1 a 9"
     },

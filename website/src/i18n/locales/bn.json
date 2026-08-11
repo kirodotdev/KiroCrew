@@ -5955,13 +5955,16 @@
     "shortcutsModal": {
       "always_works": "সবসময় কাজ করে",
       "close": "বন্ধ করুন",
+      "desktop_app": "ডেস্কটপ অ্যাপ",
       "enable_shortcuts": "শর্টকাট সক্রিয় করুন",
+      "global_hotkey_hint": "সিস্টেম জুড়ে কাজ করে, অ্যাপ ব্যাকগ্রাউন্ডে থাকলেও। পরিবর্তন বা নিষ্ক্রিয় করতে, ডেস্কটপ কনফিগ ফাইলে globalHotkey সম্পাদনা করুন (Connection > Open Config File); অ্যাপ পুনরায় চালু হলে পরিবর্তন কার্যকর হয়।",
       "k": "K",
       "keyboard_shortcuts": "কীবোর্ড শর্টকাট",
       "keyboard_shortcuts_2": "কীবোর্ড শর্টকাট",
       "or": "বা",
       "search": "সার্চ",
       "search_everywhere": "সর্বত্র সার্চ",
+      "show_or_focus_the_kiro_crew_window": "Kiro Crew উইন্ডো দেখান বা ফোকাস করুন",
       "use_ctrl_not_option_for_chat_1_9": "চ্যাট 1–9 এর জন্য ⌃ Ctrl ব্যবহার করুন (⌥ Option নয়)",
       "use_ctrl_not_option_for_chat_1_to_9": "চ্যাট 1 থেকে 9 এর জন্য Ctrl ব্যবহার করুন (Option নয়)"
     },

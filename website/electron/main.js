@@ -30,6 +30,14 @@ const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPo
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
 const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
+const {
+  DEFAULT_GLOBAL_HOTKEY,
+  createSummonHandler,
+  bindGlobalHotkey,
+  unregisterGlobalHotkey,
+  currentGlobalHotkey,
+  setGlobalHotkeyLogger,
+} = require("./global-hotkey");
 const { createLivenessMonitor } = require("./gateway-liveness");
 const { chooseRecoveryStrategy, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
@@ -86,6 +94,7 @@ const store = new Store({
     remoteHosts: {},                       // { [port]: { host, binPath, remotePort?, remotePath? } }
     sshTimeoutMs: 20000,
     windowState: null,                     // persisted main-window geometry (see window-state.js)
+    globalHotkey: null,                    // system-wide summon accelerator: null = platform default, "" = disabled, string = custom (see global-hotkey.js)
     lastNudgedVersion: "",                 // last update version announced via native notification (nudge once per version)
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
     updateChannel: "",                     // "" = follow build stamp; "insider"|"stable" = user opt-in (Settings > About)
@@ -2804,6 +2813,39 @@ app.whenReady().then(async () => {
     if (item) item.visible = !!enabled;
   });
 
+  // System-wide summon hotkey: shows + focuses the dashboard from anywhere,
+  // launching a window when none exists. The handler and IPC surface are set
+  // up here; the actual registration happens after the boot path's
+  // createWindow() below, so a keypress cannot race window creation and
+  // produce two windows. Torn down on will-quit; the binding persists in the
+  // store (`globalHotkey`) so the user can rebind or disable it via the
+  // config file (Connection > Open Config File). A stored value that cannot be
+  // bound falls back to the default; a default that another app already owns
+  // degrades to no hotkey — logged, never fatal (see global-hotkey.js).
+  setGlobalHotkeyLogger(glog);
+  const summonDashboard = createSummonHandler({
+    // The focused dashboard window when there is one, else the main window,
+    // else ANY surviving dashboard window (`_mcView` marks the windows that
+    // host a dashboard — see focusedDashboardWindow above). The main window is
+    // hidden, not destroyed, on close, so createWindow() is a last resort.
+    getWindow: () =>
+      [BaseWindow.getFocusedWindow(), mainWindow, ...BaseWindow.getAllWindows()].find(
+        (w) => w && !w.isDestroyed() && w._mcView
+      ) || null,
+    createWindow: () => createWindow(),
+    // A global shortcut fires while ANOTHER app is frontmost; on macOS the
+    // window rises without keyboard focus unless the app steals activation.
+    focusApp: () => {
+      if (IS_MAC) app.focus({ steal: true });
+    },
+  });
+  // The shortcuts UI reads what is ACTUALLY bound (registration can degrade
+  // to the default or to nothing), so it never advertises a dead chord.
+  ipcMain.handle("global-hotkey:get", () => ({
+    accelerator: currentGlobalHotkey(),
+    default: DEFAULT_GLOBAL_HOTKEY,
+  }));
+
   // The renderer reports the user's resolved theme accent whenever it changes
   // (see useTheme.tsx). Persist a validated hex so the NEXT launch's boot splash
   // can paint in the user's colour. Anything not a plain hex is ignored.
@@ -3067,6 +3109,11 @@ app.whenReady().then(async () => {
 
   createTray();
   const win = createWindow();
+  // Bind the summon hotkey only now that the main window exists: registering
+  // earlier would let a keypress during boot race createWindow() and open a
+  // second window. Still within app ready — the OS-level chord works from the
+  // first frame the user can see.
+  bindGlobalHotkey(store.get("globalHotkey"), summonDashboard);
 
   // Wired BEFORE the awaited gateway boot ON PURPOSE. preload.js exposes
   // window.updateAPI unconditionally, so Settings > About renders a live Check
@@ -3223,6 +3270,12 @@ app.on("before-quit", () => {
   shutdownMochi();
   try { shutdownCrewCompanion(); } catch { /* best effort */ }
   stopGateway();
+});
+
+// Release ONLY our own summon accelerator (never unregisterAll — Mochi's
+// shortcuts are torn down by its own quit path above).
+app.on("will-quit", () => {
+  unregisterGlobalHotkey();
 });
 
 app.on("window-all-closed", () => {

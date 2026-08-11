@@ -4246,13 +4246,16 @@
     "shortcutsModal": {
       "always_works": "always works",
       "close": "Close",
+      "desktop_app": "Desktop App",
       "enable_shortcuts": "Enable shortcuts",
+      "global_hotkey_hint": "Works system-wide, even while the app is in the background. To change or disable it, edit globalHotkey in the desktop config file (Connection > Open Config File); the change takes effect after the app restarts.",
       "k": "K",
       "keyboard_shortcuts": "Keyboard shortcuts",
       "keyboard_shortcuts_2": "Keyboard Shortcuts",
       "or": "or",
       "search": "Search",
       "search_everywhere": "Search Everywhere",
+      "show_or_focus_the_kiro_crew_window": "Show or focus the Kiro Crew window",
       "use_ctrl_not_option_for_chat_1_9": "Use ⌃ Ctrl (not ⌥ Option) for chat 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Use Ctrl (not Option) for chat 1 to 9"
     },

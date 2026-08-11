@@ -1,7 +1,8 @@
 import { formatShortcut, IS_MAC, shortcutLabel } from '../../hooks/useKeyboardShortcuts'
-import { SHORTCUT_GROUPS, ShortcutRow, KeyCapSequence, groupShortcuts, shortcutGroupLabel, useShortcutPrefs } from '../../components/ShortcutsModal'
+import { SHORTCUT_GROUPS, ShortcutRow, KeyCapSequence, GlobalHotkeyRow, groupShortcuts, shortcutGroupLabel, useShortcutPrefs } from '../../components/ShortcutsModal'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsButtonGroup } from '../../components/settings'
 import { useQuickSearchShortcut } from '../../hooks/useQuickSearchShortcut'
+import { useGlobalHotkey } from '../../hooks/useGlobalHotkey'
 import { formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
 import { Btn } from '../../components/ui'
 
@@ -66,6 +67,7 @@ function SearchEverywhereConfig() {
  */
 export function ShortcutsPanel() {
   const { enabled, macCtrl, toggle, toggleMacCtrl } = useShortcutPrefs()
+  const globalHotkey = useGlobalHotkey()
 
   return (
     <div className="max-w-2xl">
@@ -108,6 +110,15 @@ export function ShortcutsPanel() {
       <SettingsCard index={SHORTCUT_GROUPS.length + 1}>
         <SearchEverywhereConfig />
       </SettingsCard>
+      {globalHotkey && (
+        <div>
+          <SettingsSection title={i18nT('components.shortcutsModal.desktop_app')} />
+          <SettingsCard>
+            <GlobalHotkeyRow />
+            <div className="text-[12px] text-muted px-2 pb-1">{i18nT('components.shortcutsModal.global_hotkey_hint')}</div>
+          </SettingsCard>
+        </div>
+      )}
     </div>
   )
 }

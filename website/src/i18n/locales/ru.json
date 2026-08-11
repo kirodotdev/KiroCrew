@@ -6127,13 +6127,16 @@
     "shortcutsModal": {
       "always_works": "работает всегда",
       "close": "Закрыть",
+      "desktop_app": "Настольное приложение",
       "enable_shortcuts": "Включить сочетания клавиш",
+      "global_hotkey_hint": "Работает во всей системе, даже когда приложение в фоне. Чтобы изменить или отключить сочетание, отредактируйте globalHotkey в файле конфигурации настольного приложения (Connection > Open Config File); изменение вступает в силу после перезапуска приложения.",
       "k": "K",
       "keyboard_shortcuts": "Сочетания клавиш",
       "keyboard_shortcuts_2": "Сочетания клавиш",
       "or": "или",
       "search": "Поиск",
       "search_everywhere": "Искать везде",
+      "show_or_focus_the_kiro_crew_window": "Показать окно Kiro Crew или переключиться на него",
       "use_ctrl_not_option_for_chat_1_9": "Используйте ⌃ Ctrl (не ⌥ Option) для чатов 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Используйте Ctrl (не Option) для чатов с 1 по 9"
     },

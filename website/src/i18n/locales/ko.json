@@ -5869,13 +5869,16 @@
     "shortcutsModal": {
       "always_works": "항상 작동",
       "close": "닫기",
+      "desktop_app": "데스크톱 앱",
       "enable_shortcuts": "단축키 사용",
+      "global_hotkey_hint": "앱이 백그라운드에 있어도 시스템 전체에서 작동합니다. 변경하거나 비활성화하려면 데스크톱 구성 파일에서 globalHotkey를 편집하세요 (Connection > Open Config File). 변경 사항은 앱을 다시 시작한 후 적용됩니다.",
       "k": "K",
       "keyboard_shortcuts": "키보드 단축키",
       "keyboard_shortcuts_2": "키보드 단축키",
       "or": "또는",
       "search": "검색",
       "search_everywhere": "전체 검색",
+      "show_or_focus_the_kiro_crew_window": "Kiro Crew 창 표시 또는 포커스",
       "use_ctrl_not_option_for_chat_1_9": "채팅 1–9에는 ⌥ Option이 아니라 ⌃ Ctrl을 사용하세요",
       "use_ctrl_not_option_for_chat_1_to_9": "채팅 1에서 9까지는 Option이 아니라 Ctrl을 사용하세요"
     },

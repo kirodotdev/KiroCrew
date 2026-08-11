@@ -5869,13 +5869,16 @@
     "shortcutsModal": {
       "always_works": "いつでも機能する",
       "close": "閉じる",
+      "desktop_app": "デスクトップアプリ",
       "enable_shortcuts": "ショートカットを有効にする",
+      "global_hotkey_hint": "アプリがバックグラウンドにあってもシステム全体で機能します。変更または無効化するには、デスクトップ設定ファイルの globalHotkey を編集してください（Connection > Open Config File）。変更はアプリの再起動後に反映されます。",
       "k": "K",
       "keyboard_shortcuts": "キーボードショートカット",
       "keyboard_shortcuts_2": "キーボードショートカット",
       "or": "または",
       "search": "検索",
       "search_everywhere": "すべてを検索",
+      "show_or_focus_the_kiro_crew_window": "Kiro Crew ウィンドウを表示・フォーカス",
       "use_ctrl_not_option_for_chat_1_9": "チャット 1–9 には ⌃ Ctrl を使用してください (⌥ Option ではなく)",
       "use_ctrl_not_option_for_chat_1_to_9": "チャット 1 から 9 には Ctrl を使用してください (Option ではなく)"
     },

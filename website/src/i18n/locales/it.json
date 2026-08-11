@@ -6041,13 +6041,16 @@
     "shortcutsModal": {
       "always_works": "funziona sempre",
       "close": "Chiudi",
+      "desktop_app": "App desktop",
       "enable_shortcuts": "Attiva le scorciatoie",
+      "global_hotkey_hint": "Funziona in tutto il sistema, anche quando l'app è in background. Per modificarla o disattivarla, modifica globalHotkey nel file di configurazione dell'app desktop (Connection > Open Config File); la modifica ha effetto al riavvio dell'app.",
       "k": "K",
       "keyboard_shortcuts": "Scorciatoie da tastiera",
       "keyboard_shortcuts_2": "Scorciatoie da tastiera",
       "or": "o",
       "search": "Cerca",
       "search_everywhere": "Cerca in tutto",
+      "show_or_focus_the_kiro_crew_window": "Mostra o metti in primo piano la finestra di Kiro Crew",
       "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Usa Ctrl (non Option) per le chat da 1 a 9"
     },

@@ -5869,13 +5869,16 @@
     "shortcutsModal": {
       "always_works": "始终可用",
       "close": "关闭",
+      "desktop_app": "桌面应用",
       "enable_shortcuts": "启用快捷键",
+      "global_hotkey_hint": "全局生效，即使应用在后台也可使用。如需修改或停用，请在桌面配置文件中编辑 globalHotkey（Connection > Open Config File），重启应用后生效。",
       "k": "K",
       "keyboard_shortcuts": "键盘快捷键",
       "keyboard_shortcuts_2": "键盘快捷键",
       "or": "或",
       "search": "搜索",
       "search_everywhere": "全局搜索",
+      "show_or_focus_the_kiro_crew_window": "显示或聚焦 Kiro Crew 窗口",
       "use_ctrl_not_option_for_chat_1_9": "聊天 1–9 请用 ⌃ Ctrl（而非 ⌥ Option）",
       "use_ctrl_not_option_for_chat_1_to_9": "聊天 1 至 9 请用 Ctrl（而非 Option）"
     },
