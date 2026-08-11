@@ -1406,6 +1406,16 @@ const CONTINUE_SCAN_SKIP = new Set(['queued', 'tool_call', 'tool_result', 'injec
  * An empty transcript returns false, which keeps a brand-new chat's send button
  * disabled exactly as it is today.
  */
+/** Project directory of the ACTIVE chat session's slot, or undefined when no
+ *  session is selected or the selected session has no project set. Used by the
+ *  bottom terminal panel so a freshly opened terminal starts in the selected
+ *  session's working tree instead of the server default. */
+export const selectActiveSlotProject = (state: RootState): string | undefined => {
+  const key = state.chat.activeSlot
+  if (!key) return undefined
+  return state.dashboard.slots.find((sl) => sl.key === key)?.project || undefined
+}
+
 export const selectContinuable = (state: RootState): boolean => {
   const c = state.chat
   if (c.slotRunning || c.slotStopping || c.pendingTurnSlot) return false

@@ -8,7 +8,7 @@ import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeAppro
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendMessage, setSlotRunning, switchSlot } from './store/chatSlice'
+import { createSlot, appendMessage, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
@@ -894,6 +894,9 @@ export default function App() {
   // every mousemove during a grip-drag, and a primitive snapshot lets
   // useSyncExternalStore's Object.is check skip those re-renders of App.
   const bottomTerminalOpen = useBottomTerminalOpen()
+  // Selected session's project directory: a terminal opened from the nav row
+  // starts there (server default when no session is selected or it has none).
+  const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const navigate = useNavigate()
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
@@ -2378,7 +2381,7 @@ export default function App() {
                   /* While popped out: focus only (a refused programmatic
                      focus is a harmless no-op). Explicit re-dock lives in the
                      TerminalDetachedBar below -- never a timing heuristic. */
-                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal() }}
+                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
                 />
               )}
               <div>{renderNavRow(cap)}</div>
