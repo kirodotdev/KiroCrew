@@ -358,7 +358,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
           onChange={e => setFilter(e.currentTarget.value)}
           className="w-[150px]"
         />
-        <div className="relative ml-auto">
+        <div className="relative ml-auto z-30">
           <Btn
             ref={pickerBtnRef}
             type="button"
