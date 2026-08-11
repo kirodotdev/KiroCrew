@@ -52,6 +52,26 @@ function renderPage() {
   return renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
 }
 
+// DevFleetPage's ToastHost schedules a 4s (7s for errors) window.setTimeout to
+// auto-dismiss each toast, and its effect cleanup only drops the listener -- it
+// never clears those timers. Every test here that raises a toast therefore
+// leaves a pending callback that calls setToasts long after the test ends; once
+// vitest tears the environment down, that callback hits a torn-down global and
+// throws "ReferenceError: window is not defined" as an UNHANDLED error. Vitest
+// reports every test as passing and still exits non-zero, so this fails CI
+// without failing a test.
+//
+// Fake timers keep those callbacks off the real clock and clearAllTimers drops
+// the pending ones at teardown. `shouldAdvanceTime` keeps the clock moving on
+// its own so waitFor and the polling effects behave as they do with real timers.
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+})
+afterEach(() => {
+  vi.clearAllTimers()
+  vi.useRealTimers()
+})
+
 /** Wait for the first paint of the fleet table. */
 async function waitForRow(name: string) {
   await waitFor(() => expect(screen.getByText(name)).toBeInTheDocument(), { timeout: 4000 })
