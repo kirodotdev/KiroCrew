@@ -687,7 +687,20 @@ async def handle_message_transport(
         # Guarantee renderer teardown even if TurnDriver.run() raised before
         # on_done: cancels the 30s tool-elapsed timer so it can't survive the
         # turn and keep hitting append_task against a dead stream.
+        #
+        # Teardown is best-effort and must NEVER prevent the release below: the
+        # semaphore is keyed by SESSION, so a close() that raises here would
+        # wedge every later message in that conversation (and its queue drain)
+        # until the gateway restarts, not merely lose this turn. Same guard as
+        # Discord's dispatcher and the shared pipeline.
         if renderer is not None:
-            await renderer.close()
+            try:
+                await renderer.close()
+            except Exception:
+                logger.warning(
+                    "Slack: renderer.close failed session=%s",
+                    session_key,
+                    exc_info=True,
+                )
         if _acquired:
             sessions.release(session_key)

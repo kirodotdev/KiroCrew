@@ -485,7 +485,24 @@ class TelegramDispatcher:
             # Always finalize the placeholder (no perma-"🤔 …"), even if
             # get_or_create raised before the semaphore was held. Only release
             # the semaphore if we actually acquired it.
-            await renderer.close(failure_reason=failure_reason)
+            #
+            # ``close()`` is best-effort and must NEVER prevent the three steps
+            # after it. A renderer that fails to finalize -- a malformed
+            # Telegram response, a socket dropped mid-edit -- would otherwise
+            # skip ALL of them: the session semaphore is never given back (and
+            # because it is keyed by SESSION, every later message in that
+            # conversation blocks forever and the queue never drains), the
+            # ``_active_renderers`` entry leaks, and the attachment temp files
+            # stay on disk. Discord and the shared pipeline both already guard
+            # this; Telegram was the remaining copy that did not.
+            try:
+                await renderer.close(failure_reason=failure_reason)
+            except Exception:
+                logger.warning(
+                    "Telegram: renderer.close failed session=%s",
+                    session_key,
+                    exc_info=True,
+                )
             self._active_renderers.pop(session_key, None)
             if _acquired:
                 self.sessions.release(session_key)

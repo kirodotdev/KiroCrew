@@ -200,6 +200,30 @@ class Renderer(ABC):
         """Called once before the provider stream begins. Default no-op."""
         return None
 
+    async def close(self) -> None:
+        """Release whatever the renderer opened for this turn. Default no-op.
+
+        Declared here because the shared pipeline's ``finally`` awaits it
+        (``messaging/dispatch.py``) — before this existed, that await reached
+        through an ``Any`` for a method the contract never mentioned, so a
+        channel could change its signature without anything noticing. Telegram
+        did: its override takes an extra optional ``failure_reason``, which is a
+        legal widening of this contract and stays a channel-local concern until
+        the pipeline has a reason to carry one.
+
+        Two rules for implementers:
+
+        * It runs in a ``finally`` and is BEST-EFFORT. A caller must never let a
+          failure here skip the session release — see the guard in
+          ``drive_turn``, and note that the semaphore is keyed by SESSION, so a
+          lost release wedges every later message in that conversation rather
+          than only this turn.
+        * It must tolerate being called when the turn never really started
+          (``get_or_create`` can raise before the semaphore is held), so
+          finalizing a placeholder that does not exist is not an error.
+        """
+        return None
+
     @abstractmethod
     async def on_text_chunk(self, text: str) -> None:
         """Render a streamed assistant text chunk."""
