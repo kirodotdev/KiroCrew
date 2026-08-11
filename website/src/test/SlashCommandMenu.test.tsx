@@ -88,3 +88,32 @@ describe('SlashCommandMenu (shared-hook migration)', () => {
     expect(onClose).toHaveBeenCalled()
   })
 })
+
+describe('SlashCommandMenu offline fallback (blocked commands hidden)', () => {
+  // The fallback list mirrors the backend GET /api/slash-commands payload,
+  // which excludes _BLOCKED_SLASH_COMMANDS. A blocked command in the fallback
+  // would advertise a gesture the dashboard rejects (/tangent regressed this
+  // way once), so pin its absence on the API-failure path where the fallback
+  // is what the user actually sees.
+  const BLOCKED = ['/tangent', '/quit', '/exit', '/q', '/chat', '/paste', '/reply', '/editor']
+
+  it('renders no blocked command when the API query fails', async () => {
+    mockApi.slashCommands.mockRejectedValue(new Error('offline'))
+    render(<Harness input="/" />)
+    // Fallback renders synchronously as the query default; anchor on a
+    // known-good fallback command before asserting absences.
+    expect(await screen.findByText('/compact')).toBeInTheDocument()
+    for (const cmd of BLOCKED) {
+      expect(screen.queryByText(cmd)).not.toBeInTheDocument()
+    }
+  })
+
+  it('filtering to /tan yields no rows (menu closes, no inert /tangent)', async () => {
+    mockApi.slashCommands.mockRejectedValue(new Error('offline'))
+    render(<Harness input="/tan" />)
+    // Nothing in the fallback matches the /tan prefix, so the menu renders
+    // nothing at all rather than an inert /tangent suggestion.
+    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument())
+    expect(screen.queryByText('/tangent')).not.toBeInTheDocument()
+  })
+})

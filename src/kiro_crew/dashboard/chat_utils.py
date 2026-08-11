@@ -184,8 +184,16 @@ _SLASH_COMMANDS = frozenset(
     }
 )
 
+# Commands that exist in kiro-cli's interactive TUI but cannot work in the
+# dashboard (they drive a local terminal: quitting it, pasting from its
+# clipboard, opening an editor, or toggling checkpoint modes the dashboard's
+# own session model already covers via tabs and /side). Blocked commands are
+# rejected before session acquisition AND excluded from the
+# GET /api/slash-commands suggestion payload, so every surface hides them at
+# once — advertising a command that only yields a warning teaches a gesture
+# that does not work.
 _BLOCKED_SLASH_COMMANDS = frozenset(
-    {"/quit", "/exit", "/q", "/chat", "/paste", "/reply", "/editor"}
+    {"/quit", "/exit", "/q", "/chat", "/paste", "/reply", "/editor", "/tangent"}
 )
 
 # Single source of truth for slash-command descriptions surfaced by the

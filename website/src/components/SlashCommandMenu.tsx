@@ -90,15 +90,18 @@ function commandDescription(cmd: SlashCommand): string {
 }
 
 // Offline fallback shown before the API query resolves (or if it fails).
-// Kept in sync with the backend SLASH_COMMAND_DESCRIPTIONS map so the same
-// commands appear whether they came from the live API or this fallback; the
-// descriptions themselves come from COMMAND_DESC_KEY either way. /kb is a
-// frontend-only command (also merged via FRONTEND_COMMANDS below).
+// Kept in sync with the backend's GET /api/slash-commands payload — the
+// _SLASH_COMMANDS set MINUS _BLOCKED_SLASH_COMMANDS — so the same commands
+// appear whether they came from the live API or this fallback. Blocked
+// commands (/quit, /exit, /q, /chat, /paste, /reply, /editor, /tangent) are
+// terminal-only kiro-cli gestures the dashboard rejects, so suggesting them
+// anywhere is an inert affordance; the descriptions themselves come from
+// COMMAND_DESC_KEY either way. /kb is a frontend-only command (also merged
+// via FRONTEND_COMMANDS below).
 const FALLBACK_COMMAND_NAMES = [
-  '/agent', '/changelog', '/chat', '/clear', '/code', '/compact', '/context',
-  '/editor', '/exit', '/experiment', '/help', '/hooks', '/issue', '/kb',
-  '/logdump', '/mcp', '/model', '/paste', '/prompts', '/q', '/quit', '/reply',
-  '/side', '/tangent', '/todos', '/tools', '/usage',
+  '/agent', '/changelog', '/clear', '/code', '/compact', '/context',
+  '/experiment', '/help', '/hooks', '/issue', '/kb', '/logdump',
+  '/mcp', '/model', '/prompts', '/side', '/todos', '/tools', '/usage',
 ] as const
 
 const FALLBACK_COMMANDS: SlashCommand[] = FALLBACK_COMMAND_NAMES.map(name => ({ name }))

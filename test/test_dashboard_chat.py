@@ -2686,6 +2686,13 @@ class TestBlockedSlashCommands:
 
         assert "/reply" in _BLOCKED_SLASH_COMMANDS
 
+    def test_tangent_is_blocked(self):
+        # kiro-cli's terminal checkpoint toggle (Ctrl+T); the dashboard's
+        # session model and /side cover its purpose, so it is inert here.
+        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
+
+        assert "/tangent" in _BLOCKED_SLASH_COMMANDS
+
     def test_compact_is_not_blocked(self):
         from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
 
