@@ -10281,7 +10281,7 @@ async def _live_slot_resume_response(
                     resources=f"slot={existing.key}",
                     error="app cannot access unscoped slots",
                 )
-                return web.json_response({"error": "not found"}, status=404)
+                return _slot_not_found()
             elif request_app != existing._app:
                 sel().log_api_access(
                     caller=request_app,
@@ -10291,7 +10291,7 @@ async def _live_slot_resume_response(
                     resources=f"slot={existing.key}",
                     error="app does not own this slot",
                 )
-                return web.json_response({"error": "not found"}, status=404)
+                return _slot_not_found()
         # Reconcile: if disk grew beyond what the in-memory window covers,
         # append the missing tail so a page refresh self-heals.
         await _reconcile_slot_window(state, existing)
@@ -10941,6 +10941,43 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # scopes) rather than claiming USER on a conversation we cannot attribute.
     meta = state.conversation_log.get_metadata(history_key)
 
+    # ── App Kit §5.2 on the CONVERSATION, EARLY refusal ─────────────────────
+    # `history_key` is `body["key"]`, caller-supplied and not required to match
+    # the slot name in the URL, so it names an arbitrary conversation until
+    # something says otherwise. The `existing` branch above can authorize
+    # against `existing._app` because that slot predates the request; here the
+    # only slot is the one this request is about to create with the caller's own
+    # identity, so checking it would let the claim stand as its own evidence.
+    # `meta["app"]` is the durable owner: the slot save is authoritative for it
+    # (`history.SLOT_OWNED_META_KEYS`) and both restore paths rebuild
+    # `slot._app` from it.
+    #
+    # Deny-by-default, and absence is a real answer rather than a gap: because
+    # `app` is a slot-owned key, an unscoped conversation's save OMITS it, which
+    # states "no app owns this" instead of "unknown". A transcript that does not
+    # exist also has no `app`, so a foreign conversation and a missing one take
+    # this same branch and are answered identically — no probing the history
+    # namespace for keys that exist. `_slot_not_found` is the same single-sourced
+    # 404 every other slot refusal returns, so these cannot drift into an oracle.
+    #
+    # Placed here for the same reason the member early refusal below is:
+    # ``_unhide_folder`` and ``clear_closed`` further down write durable state,
+    # and a resume that is going to be refused must not edit the very transcript
+    # the caller may not touch. Ahead of the member checks too, so a foreign
+    # member thread answers 404 rather than a 409 that would name it as one. The
+    # late twin before the slot is created re-validates the post-await snapshot.
+    request_app = request.get("app", "")
+    if request_app and meta.get("app") != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="slot_resume",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"history={history_key}",
+            error="app does not own this conversation",
+        )
+        return _slot_not_found()
+
     # ── Member-thread EARLY refusal, before any persistent mutation ────────
     # ``_unhide_folder`` and ``clear_closed`` below write durable state. A
     # resume the member guard is going to 409 anyway must not leave those
@@ -11259,13 +11296,34 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # put transcript-sized GIL regex on the loop for bytes that never change.
     # Bounded by the window, so a long transcript costs the same as a short one.
     all_messages = _redact_history_rows(all_messages, window_limit=500)
+    # ── App Kit §5.2 on the CONVERSATION, LATE barrier ──────────────────────
+    # The early twin ran on the PRE-await snapshot, which is what keeps a
+    # refusal free of the durable mutations above. This one is the authoritative
+    # one: it re-validates against the post-await `meta` the guards just rebound,
+    # and it is the last thing before `_materialise_slot_from_history` publishes
+    # anything. A delete/recreate landing inside the transcript read or the
+    # binding await replaces the metadata line, so ownership earned by the old
+    # snapshot says nothing about the transcript this request is about to
+    # adopt. Same deny-by-default rule and the same single-sourced 404 as the
+    # early twin.
+    if request_app and meta.get("app") != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="slot_resume",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"history={history_key}",
+            error="app does not own this conversation (late barrier)",
+        )
+        return _slot_not_found()
+
     slot = _materialise_slot_from_history(
         state,
         name=name,
         history_key=history_key,
         meta=meta,
         all_messages=all_messages,
-        app=request.get("app", ""),
+        app=request_app,
         request_title=body.get("title", ""),
         member_binding=_member_binding,
         folder_unhidden=folder_unhidden,
