@@ -140,41 +140,64 @@ from kiro_crew.validation import (
 )
 
 
-def _resolve_api_base() -> str:
-    """Resolve the gateway API base URL from ``dashboard.url`` config."""
+def _resolve_api_port() -> int:
+    """Resolve the gateway port, consulting run markers as a fallback.
+
+    Priority: ``KIROCREW_PORT`` env > ``dashboard.url`` config > run marker file.
+    The run-marker fallback covers the case where the gateway runs on a
+    non-default port and neither ``dashboard.url`` nor ``KIROCREW_PORT`` is set.
+    """
+    from kiro_crew.instances import run_marker  # deferred to avoid circular imports
+
     cfg = KiroCrewConfig.load()
     _host, port = parse_dashboard_url(cfg.dashboard.url)
-    return f"http://localhost:{port}"
+    # parse_dashboard_url already honours KIROCREW_PORT; if we still ended up
+    # with the hard-coded default AND there's no explicit config, check markers.
+    if (
+        not cfg.dashboard.url
+        and not os.environ.get("KIROCREW_PORT")
+    ):
+        ports = run_marker.marker_ports()
+        if ports:
+            port = ports[-1]  # highest (most recently started) gateway
+    return port
 
 
-_API = _resolve_api_base()
+def _resolve_api_base() -> str:
+    """Resolve the gateway API base URL (lazy, re-evaluated each call)."""
+    return f"http://localhost:{_resolve_api_port()}"
+
+
+# Lazy accessors — resolved per-call so a gateway that starts on a non-default
+# port after this module is imported is still reachable.
+_API: str = ""  # type placeholder; use _get_api() everywhere
+
+
+def _get_api() -> str:
+    """Return the current API base URL (lazy resolution)."""
+    return _resolve_api_base()
 
 
 def _resolve_api_unix_socket() -> str:
     """Path of the gateway's internal-API unix socket (may not exist yet).
 
-    Preferred transport for every ``_API`` request: connecting through it lets
-    the gateway kernel-verify (``SO_PEERCRED`` + /proc ancestry) that this
+    Preferred transport for every ``_get_api()`` request: connecting through it
+    lets the gateway kernel-verify (``SO_PEERCRED`` + /proc ancestry) that this
     process actually belongs to the session its ``X-Session-Key`` header
     declares, instead of taking the header on faith. ``loopback_urlopen``
     checks existence per call and falls back to TCP when the file is absent
-    (Windows, older gateway, bind failure) or nobody answers on it, so
-    resolving the path once at import — mirroring ``_API`` — is safe.
+    (Windows, older gateway, bind failure) or nobody answers on it.
     """
     try:
-        cfg = KiroCrewConfig.load()
-        _host, port = parse_dashboard_url(cfg.dashboard.url)
+        port = _resolve_api_port()
         return str(dashboard_socket_path(port))
     except Exception:
         return ""
 
 
-_API_UNIX_SOCKET = _resolve_api_unix_socket()
-
-
 def _api_urlopen(req: urllib.request.Request | str, timeout: float):
-    """``loopback_urlopen`` against ``_API`` with the unix-socket preference."""
-    return loopback_urlopen(req, timeout=timeout, unix_socket_path=_API_UNIX_SOCKET or None)
+    """``loopback_urlopen`` against the gateway with unix-socket preference."""
+    return loopback_urlopen(req, timeout=timeout, unix_socket_path=_resolve_api_unix_socket() or None)
 
 
 # How often a sleeping `wait` polls /api/session-keepalive.
@@ -3157,7 +3180,7 @@ def _post(path: str, body: dict | None = None, *, timeout: float = 30) -> dict:
     if sk:
         headers["X-Session-Key"] = sk
     req = urllib.request.Request(
-        f"{_API}{path}",
+        f"{_get_api()}{path}",
         data=data,
         headers=headers,
         method="POST",
@@ -3247,7 +3270,7 @@ def _get(path: str, session_key: str | None = None) -> dict:
     if sk:
         headers["X-Session-Key"] = sk
     req = urllib.request.Request(
-        f"{_API}{path}",
+        f"{_get_api()}{path}",
         headers=headers,
     )
     try:
@@ -3269,7 +3292,7 @@ def _patch(path: str, body: dict | None = None) -> dict:
     if sk:
         headers["X-Session-Key"] = sk
     req = urllib.request.Request(
-        f"{_API}{path}",
+        f"{_get_api()}{path}",
         data=data,
         headers=headers,
         method="PATCH",
@@ -3307,7 +3330,7 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
     if sk:
         headers["X-Session-Key"] = sk
     req = urllib.request.Request(
-        f"{_API}{path}",
+        f"{_get_api()}{path}",
         data=data,
         headers=headers,
         method="PUT",
@@ -3335,7 +3358,7 @@ def _delete(path: str, body: dict | None = None) -> dict:
     if data:
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(
-        f"{_API}{path}",
+        f"{_get_api()}{path}",
         data=data,
         headers=headers,
         method="DELETE",
@@ -5059,7 +5082,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     os.unlink(tmp)
                     raise
         # Resolve webhook URL
-        parsed = urlparse(_API)
+        parsed = urlparse(_get_api())
         base = f"{parsed.scheme}://{parsed.hostname}"
         if parsed.port:
             base += f":{parsed.port}"
@@ -5635,7 +5658,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if sk:
             headers["X-Session-Key"] = sk
         req = urllib.request.Request(
-            f"{_API}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
+            f"{_get_api()}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
         )
         try:
             with _api_urlopen(req, timeout=30) as http_resp:
@@ -5697,7 +5720,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if sk:
             headers["X-Session-Key"] = sk
         req = urllib.request.Request(
-            f"{_API}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
+            f"{_get_api()}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
         )
         try:
             with _api_urlopen(req, timeout=30) as http_resp:
