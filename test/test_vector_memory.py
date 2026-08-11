@@ -786,6 +786,9 @@ class TestMemoryStats:
         assert stats["semantic_active"] == 1
         assert stats["episodic_active"] == 1
         assert stats["faiss_index_size"] == 0  # no FAISS without numpy/faiss
+        # Availability of the optional accelerator is reported separately so
+        # callers can distinguish "not installed" from "nothing indexed".
+        assert isinstance(stats["faiss_available"], bool)
 
 
 class TestStemWords:

@@ -1768,6 +1768,10 @@ class VectorMemoryStore:
             "events_count": row[4],
             "faiss_index_size": faiss_size,
             "embedded_count": row[5],
+            # The FAISS index is an optional in-RAM accelerator (needs both
+            # faiss and numpy); without it, retrieval falls back to an exact
+            # stdlib cosine scan over the same stored embeddings.
+            "faiss_available": _HAS_FAISS and _HAS_NUMPY,
         }
 
     # ── Episodic Helpers ──

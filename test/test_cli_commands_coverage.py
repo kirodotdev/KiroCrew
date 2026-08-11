@@ -1341,10 +1341,35 @@ class TestMemoryCli:
                 "episodic_deleted": 2,
                 "faiss_index_size": 10,
                 "events_count": 4,
+                "embedded_count": 7,
+                "faiss_available": True,
             }
             cc._memory_cmd(_ns(mem_action="stats"))
         out = capsys.readouterr().out
-        assert "Semantic: 3 active, 1 deleted" in out and "FAISS index: 10 vectors" in out
+        assert "Semantic: 3 active, 1 deleted" in out
+        assert "Embedded: 7/7" in out
+        assert "FAISS accelerator: 10 vectors indexed" in out
+
+    def test_stats_without_faiss_reports_fallback_not_zero_vectors(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """No accelerator must not read as "nothing indexed" when embeddings exist."""
+        with _MemHarness() as h:
+            h.store.memory_stats.return_value = {
+                "semantic_active": 3,
+                "semantic_deleted": 1,
+                "episodic_active": 228,
+                "episodic_deleted": 2,
+                "faiss_index_size": 0,
+                "events_count": 4,
+                "embedded_count": 228,
+                "faiss_available": False,
+            }
+            cc._memory_cmd(_ns(mem_action="stats"))
+        out = capsys.readouterr().out
+        assert "Embedded: 228/228" in out
+        assert "FAISS accelerator: not installed — stdlib cosine fallback (exact)" in out
+        assert "0 vectors" not in out
 
     def test_audit_with_and_without_findings(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _MemHarness(), patch("kiro_crew.cli_commands.scan_memory", return_value=[]):

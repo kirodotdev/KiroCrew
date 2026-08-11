@@ -1418,7 +1418,11 @@ def _memory_cmd(args: argparse.Namespace) -> None:
             print(
                 f"  Episodic: {stats['episodic_active']} active, {stats['episodic_deleted']} deleted"
             )
-            print(f"  FAISS index: {stats['faiss_index_size']} vectors")
+            print(f"  Embedded: {stats['embedded_count']}/{stats['episodic_active']}")
+            if stats["faiss_available"]:
+                print(f"  FAISS accelerator: {stats['faiss_index_size']} vectors indexed")
+            else:
+                print("  FAISS accelerator: not installed — stdlib cosine fallback (exact)")
             print(f"  Audit events: {stats['events_count']}")
 
         elif action == "audit":
