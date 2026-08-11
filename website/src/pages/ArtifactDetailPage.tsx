@@ -3,7 +3,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, ArrowUp, Camera, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star, Folder as FolderIcon } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, ArrowUp, Camera, Check, Copy, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star, Folder as FolderIcon } from 'lucide-react'
+import { copyToClipboard } from '../utils/clipboard'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -1314,6 +1315,27 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     }
   }, [markThreadRead, usesIframe])
 
+  // ── Copy raw content ──────────────────────────────────────────────────────
+  // Copies the stored source (markdown/HTML/JSON/text as-is) of the version
+  // currently on screen — `artifact` already resolves to the selected
+  // snapshot, so a historical view copies that snapshot's content. The button
+  // swaps to a check for a moment as the success confirmation (the same
+  // pattern chat messages and diff blocks use).
+  const [copied, setCopied] = useState(false)
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
+  }, [])
+  const handleCopyContent = useCallback(() => {
+    copyToClipboard(artifact?.content ?? '')
+      .then(() => {
+        setCopied(true)
+        if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
+        copiedTimerRef.current = setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => {})
+  }, [artifact])
+
   const downloadAsHtml = () => {
     if (!artifact) return
     // Image artifacts carry no text content — their bytes live behind the asset
@@ -1779,6 +1801,25 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             nowhere to display. */}
         <div className="flex gap-4 items-start">
           <div className="flex-1 min-w-0">
+            {/* Copy raw source — its own right-aligned slot ABOVE the body (not
+                the header toolbar, which must not grow; not an overlay, which
+                could obscure a heading's trailing text or cover a top-right
+                control inside a widget artifact). Hidden for image (bytes, not
+                text) and webapp (deploy card has its own affordances), and
+                while the editor owns the surface. */}
+            {artifact.kind !== 'webapp' && artifact.kind !== 'image' && !editing && (
+              <div className="flex justify-end mb-1.5">
+                <Btn
+                  type="button"
+                  onClick={handleCopyContent}
+                  className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
+                  title={copied ? i18nT('pages.artifactDetailPage.copied') : i18nT('pages.artifactDetailPage.copy_content')}
+                  aria-label={copied ? i18nT('pages.artifactDetailPage.copied') : i18nT('pages.artifactDetailPage.copy_content')}
+                >
+                  {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
+                </Btn>
+              </div>
+            )}
             {artifact.kind === 'webapp' ? (
               <WebAppArtifactCard artifact={artifact} />
             ) : artifact.kind === 'image' ? (

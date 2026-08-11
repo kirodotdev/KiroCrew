@@ -7071,6 +7071,8 @@
       "comment_resolved": "Commentaire résolu",
       "comments": "Commentaires",
       "content_copied_from_v": "contenu copié depuis la v",
+      "copied": "Copié",
+      "copy_content": "Copier le contenu",
       "could_not_overwrite": "Impossible d’écraser.",
       "created": "Créé",
       "discard_unsaved_changes": "Abandonner les modifications non enregistrées ?",

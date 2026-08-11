@@ -4890,6 +4890,8 @@
       "cancel_esc": "Cancel (Esc)",
       "comments": "Comments",
       "content_copied_from_v": "content copied from v",
+      "copied": "Copied",
+      "copy_content": "Copy content",
       "created": "Created",
       "discard_unsaved_changes": "Discard unsaved changes?",
       "download": "Download",

@@ -6879,6 +6879,8 @@
       "comment_resolved": "コメントが解決されました",
       "comments": "コメント",
       "content_copied_from_v": "コンテンツは v からコピー",
+      "copied": "コピーしました",
+      "copy_content": "コンテンツをコピー",
       "could_not_overwrite": "上書きできませんでした。",
       "created": "作成",
       "discard_unsaved_changes": "保存されていない変更を破棄しますか？",

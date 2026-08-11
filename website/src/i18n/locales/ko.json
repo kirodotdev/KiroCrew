@@ -6879,6 +6879,8 @@
       "comment_resolved": "댓글이 해결되었습니다",
       "comments": "댓글",
       "content_copied_from_v": "콘텐츠를 다음 버전에서 복사함: v",
+      "copied": "복사됨",
+      "copy_content": "콘텐츠 복사",
       "could_not_overwrite": "덮어쓸 수 없습니다.",
       "created": "생성됨",
       "discard_unsaved_changes": "저장하지 않은 변경 내용을 버리시겠습니까?",

@@ -6975,6 +6975,8 @@
       "comment_resolved": "মন্তব্য নিষ্পত্তি হয়েছে",
       "comments": "মন্তব্য",
       "content_copied_from_v": "কনটেন্ট কপি করা হয়েছে এই ভার্সন থেকে: v",
+      "copied": "কপি হয়েছে",
+      "copy_content": "বিষয়বস্তু কপি করুন",
       "could_not_overwrite": "ওভাররাইট করা যায়নি।",
       "created": "তৈরি হয়েছে",
       "discard_unsaved_changes": "অসংরক্ষিত পরিবর্তনগুলি বাতিল করবেন?",

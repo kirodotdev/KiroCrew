@@ -7167,6 +7167,8 @@
       "comment_resolved": "Комментарий закрыт",
       "comments": "Комментарии",
       "content_copied_from_v": "содержимое скопировано из v",
+      "copied": "Скопировано",
+      "copy_content": "Скопировать содержимое",
       "could_not_overwrite": "Не удалось перезаписать.",
       "created": "Создано",
       "discard_unsaved_changes": "Отменить несохранённые изменения?",

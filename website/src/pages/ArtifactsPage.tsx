@@ -22,6 +22,7 @@ import { DndDraggable, DndDroppable } from '../components/dnd'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
 import { sanitize } from '../api/helpers'
+import { compareText } from '../i18n/format'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { framablePreviewUrl } from '../lib/safeUrl'
@@ -85,6 +86,47 @@ function isoToTs(iso: string): number {
   if (!iso) return 0
   const t = Date.parse(iso)
   return Number.isFinite(t) ? Math.floor(t / 1000) : 0
+}
+
+// ── Table column sorting ─────────────────────────────────────────────────
+// Clicking a header cycles asc → desc → default (the server's order). The
+// star and Actions columns are controls, not data, and stay unsortable.
+type SortKey = 'name' | 'slug' | 'kind' | 'source' | 'version' | 'tags' | 'updated'
+type SortState = { key: SortKey; dir: 'asc' | 'desc' } | null
+
+/** Type-aware comparator: numeric for version, chronological for updated,
+ * locale-collated natural string for the rest (compareText names the active
+ * UI locale — never the host's). Direction is applied by the caller. */
+function compareArtifacts(a: Artifact, b: Artifact, key: SortKey): number {
+  switch (key) {
+    case 'version':
+      return a.version - b.version
+    case 'updated': {
+      // Byte-order ISO-8601 compare (same backend format, +00:00 offset):
+      // chronological AND keeps the microsecond precision Date.parse drops,
+      // so two artifacts updated within the same second still order correctly.
+      const au = a.updated_at || ''
+      const bu = b.updated_at || ''
+      return au < bu ? -1 : au > bu ? 1 : 0
+    }
+    case 'source':
+      return compareText(a.session_title || a.source || '', b.session_title || b.source || '')
+    case 'tags':
+      return compareText((a.tags || []).join(', '), (b.tags || []).join(', '))
+    case 'slug':
+      return compareText(a.slug, b.slug)
+    case 'kind':
+      return compareText(a.kind, b.kind)
+    default:
+      return compareText(a.name, b.name)
+  }
+}
+
+function sortArtifacts(items: Artifact[], sort: SortState): Artifact[] {
+  if (!sort) return items
+  const mul = sort.dir === 'desc' ? -1 : 1
+  // Array.prototype.sort is stable, so equal rows keep the server's order.
+  return [...items].sort((a, b) => compareArtifacts(a, b, sort.key) * mul)
 }
 
 /** Infer an artifact `kind` for a session document from its extension.
@@ -924,20 +966,42 @@ function MasonryGridItem({ data, context, index }: { data: GridEntry; context: L
   )
 }
 
-/** Column headers shared by the flat table and the folder tree table. */
-function LibraryTableHead() {
+/** Column headers shared by the flat table and the folder tree table. Data
+ * columns sort on click (asc → desc → default); the star and Actions columns
+ * are control columns and stay plain. */
+function LibraryTableHead({ sort, onSort }: { sort: SortState; onSort: (key: SortKey) => void }) {
   const th = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium'
+  const sortable = (key: SortKey, label: string, extra: string) => {
+    const active = sort?.key === key
+    return (
+      <th
+        className={`${th} ${extra}`}
+        aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+      >
+        <Btn
+          type="button"
+          onClick={() => onSort(key)}
+          className={`bg-transparent border-none p-0 gap-1 rounded-none text-[12px] font-medium uppercase tracking-[.04em] hover:bg-transparent active:scale-100 ${active ? 'text-text hover:text-text' : 'text-muted hover:text-text'}`}
+        >
+          {label}
+          {active && (sort.dir === 'asc'
+            ? <ChevronUp size={12} className="shrink-0" aria-hidden="true" />
+            : <ChevronDown size={12} className="shrink-0" aria-hidden="true" />)}
+        </Btn>
+      </th>
+    )
+  }
   return (
     <thead>
       <tr>
         <th className={`${th} w-[40px] text-center`} aria-label={i18nT('pages.artifactsPage.starred')}></th>
-        <th className={`${th} min-w-[160px]`}>{i18nT('pages.artifactsPage.name')}</th>
-        <th className={`${th} w-[180px]`}>{i18nT('pages.artifactsPage.slug')}</th>
-        <th className={`${th} w-[100px]`}>{i18nT('pages.artifactsPage.kind')}</th>
-        <th className={`${th} w-[110px]`}>{i18nT('pages.artifactsPage.source')}</th>
-        <th className={`${th} w-[60px]`}>{i18nT('pages.artifactsPage.ver')}</th>
-        <th className={`${th} min-w-[160px]`}>{i18nT('pages.artifactsPage.tags')}</th>
-        <th className={`${th} w-[110px]`}>{i18nT('pages.artifactsPage.updated')}</th>
+        {sortable('name', i18nT('pages.artifactsPage.name'), 'min-w-[160px]')}
+        {sortable('slug', i18nT('pages.artifactsPage.slug'), 'w-[180px]')}
+        {sortable('kind', i18nT('pages.artifactsPage.kind'), 'w-[100px]')}
+        {sortable('source', i18nT('pages.artifactsPage.source'), 'w-[110px]')}
+        {sortable('version', i18nT('pages.artifactsPage.ver'), 'w-[60px]')}
+        {sortable('tags', i18nT('pages.artifactsPage.tags'), 'min-w-[160px]')}
+        {sortable('updated', i18nT('pages.artifactsPage.updated'), 'w-[110px]')}
         <th className={`${th} w-[120px]`}>{i18nT('pages.artifactsPage.actions')}</th>
       </tr>
     </thead>
@@ -1202,6 +1266,8 @@ function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }:
  * rendered while any filter is active, when folder scoping is bypassed). */
 function LibraryTable({
   items,
+  sort,
+  onSort,
   onOpen,
   onDelete,
   deletingSlug,
@@ -1212,6 +1278,8 @@ function LibraryTable({
   materializingPath = null,
 }: {
   items: Artifact[]
+  sort: SortState
+  onSort: (key: SortKey) => void
   onOpen: (slug: string) => void
   onDelete: (a: Artifact) => void
   deletingSlug: string | null
@@ -1224,7 +1292,7 @@ function LibraryTable({
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse table-striped">
-        <LibraryTableHead />
+        <LibraryTableHead sort={sort} onSort={onSort} />
         <tbody>
           {items.map((a) => (
             <ArtifactRow key={a.slug} a={a} onOpen={onOpen} onDelete={onDelete} deletingSlug={deletingSlug} onTogglePin={onTogglePin} pinningSlug={pinningSlug} />
@@ -1302,8 +1370,10 @@ function FolderRow({ folder, folders, depth, expanded, onToggle, actions, dropHi
 /** Nested, collapsible tree table (browse mode): folders in pre-order with
  * their artifacts indented beneath, Unfiled at the end. Collapsed by default —
  * expansion is client-local (localStorage), by design (§2.5). */
-function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug, overFolderId, dragActive, sessionDocs = [], onMaterialize, materializingPath = null }: {
+function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug, overFolderId, dragActive, sessionDocs = [], onMaterialize, materializingPath = null }: {
   items: Artifact[]
+  sort: SortState
+  onSort: (key: SortKey) => void
   folders: ArtifactFolder[]
   expandedIds: ReadonlySet<string>
   onToggleExpand: (id: string) => void
@@ -1375,7 +1445,7 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse table-striped">
-        <LibraryTableHead />
+        <LibraryTableHead sort={sort} onSort={onSort} />
         <tbody>
           {rows}
           {folders.length > 0 && (
@@ -1433,6 +1503,17 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [view, setView] = useState<'grid' | 'table'>(
     () => (localStorage.getItem('mc-artifacts-view') === 'table' ? 'table' : 'grid'),
   )
+  // Table column sort — session-local; null renders the server's order.
+  const [sort, setSort] = useState<SortState>(null)
+  const handleSort = useCallback((key: SortKey) => {
+    setSort((prev) =>
+      prev?.key !== key
+        ? { key, dir: 'asc' }
+        : prev.dir === 'asc'
+          ? { key, dir: 'desc' }
+          : null,
+    )
+  }, [])
 
   // ── Folder browse scope ──────────────────────────────────────
   // The open folder rides the URL (?folder=<id>) so gallery navigation is
@@ -1793,6 +1874,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     )
   }, [artifacts, filter, pinnedOnly])
 
+  // Column-sorted rows for the table views. The tree view buckets by folder
+  // after sorting, so rows sort within each folder. The gallery has no
+  // columns, so it keeps the server's order.
+  const sortedVisible = useMemo(() => sortArtifacts(visible, sort), [visible, sort])
+
   // Browse-mode gallery scoping: no filters → only artifacts filed in the open
   // folder (a dangling folder_id degrades to unfiled). Any filter active →
   // flat matches across all folders (§2.6). The tree table buckets for itself.
@@ -2147,7 +2233,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               />
             ) : filtersActive ? (
               <LibraryTable
-                items={visible}
+                items={sortedVisible}
+                sort={sort}
+                onSort={handleSort}
                 onOpen={handleOpen}
                 onDelete={handleDelete}
                 deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
@@ -2159,7 +2247,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               />
             ) : (
               <LibraryTree
-                items={visible}
+                items={sortedVisible}
+                sort={sort}
+                onSort={handleSort}
                 folders={folders}
                 expandedIds={expandedIds}
                 onToggleExpand={toggleExpanded}

@@ -6975,6 +6975,8 @@
       "comment_resolved": "Kommentar aufgelöst",
       "comments": "Kommentare",
       "content_copied_from_v": "Inhalt kopiert von v",
+      "copied": "Kopiert",
+      "copy_content": "Inhalt kopieren",
       "could_not_overwrite": "Überschreiben nicht möglich.",
       "created": "Erstellt",
       "discard_unsaved_changes": "Nicht gespeicherte Änderungen verwerfen?",

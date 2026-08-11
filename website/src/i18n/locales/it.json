@@ -7071,6 +7071,8 @@
       "comment_resolved": "Commento risolto",
       "comments": "Commenti",
       "content_copied_from_v": "contenuto copiato da v",
+      "copied": "Copiato",
+      "copy_content": "Copia contenuto",
       "could_not_overwrite": "Impossibile sovrascrivere.",
       "created": "Creato",
       "discard_unsaved_changes": "Scartare le modifiche non salvate?",

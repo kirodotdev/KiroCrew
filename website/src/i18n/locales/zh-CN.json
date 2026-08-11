@@ -6879,6 +6879,8 @@
       "comment_resolved": "评论已解决",
       "comments": "评论",
       "content_copied_from_v": "内容复制自 v",
+      "copied": "已复制",
+      "copy_content": "复制内容",
       "could_not_overwrite": "无法覆盖。",
       "created": "创建于",
       "discard_unsaved_changes": "放弃未保存的更改？",
