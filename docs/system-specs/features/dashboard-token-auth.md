@@ -132,7 +132,11 @@ def check_token_ip(token: str, ip: str) -> bool: ...
 def mark_consumed(token: str) -> None: ...
 def is_consumed(token: str) -> bool: ...
 def try_consume(token: str) -> bool: ...
-    # Atomically check-and-consume (prevents TOCTOU race)
+    # Atomically check-and-consume (prevents TOCTOU race).
+    # NOT WIRED INTO THE MIDDLEWARE LINK PATH — see "Link re-exchange is
+    # deliberately allowed" below. These are a working primitive with unit
+    # coverage and no production caller; do not assume presenting a link twice
+    # is refused because they exist.
 
 def revoke_all_sessions() -> None: ...
     # Clears all nonces, IP bindings, and consumed tokens AND bumps the
@@ -169,10 +173,38 @@ Request flow:
 3. Extract token from `?token=` query param or `mc_token_{port}` cookie
 4. Validate signature + expiry (link window for query param, session_exp for cookie)
 5. Check IP binding
-6. Check consumption state — if consumed token re-clicked and browser has valid cookie, redirect to strip token from URL
-7. On first query-param use: bind IP, mark consumed, set cookie with `max_age` derived from `session_exp`
-8. Log to SEL
-9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
+6. On query-param use: mint a SEPARATE session token, bind it to the peer key, add the link token's own nonce to the persisted denylist so the link string can never be presented as a cookie, and set `mc_token_{port}` with `max_age` derived from `session_exp`
+7. Log to SEL
+8. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
+
+#### Link re-exchange is deliberately allowed (the link is not single-use)
+
+Presenting the same `?token=` link more than once inside its 5-minute window
+**succeeds**, and each presentation re-exchanges for a fresh session cookie bound
+to the presenting peer. This is a deliberate design choice, not a missing control:
+remote-instance iframes re-derive `/?token=` on navigation, and self-nudge polling
+re-opens the same URL, so refusing the second presentation would break both.
+
+What the exchange *does* guarantee is that the link never becomes the long-lived
+credential. The cookie is a separate token with its own nonce, and the link's
+nonce is added to `RevokedNonceStore` at exchange, so a link captured from Slack,
+a log, or browser history cannot be replayed as `mc_token_{port}` on the cookie
+path (`use_session_exp=True`, which does consult the denylist). The link path
+(`use_session_exp=False`) does not consult it, which is what keeps re-navigation
+working.
+
+The residual exposure is therefore bounded by the 5-minute window: an observer who
+sees the URL inside that window can exchange it for their own session, pinned to
+their own peer. Two consequences follow, and both are accepted:
+
+- The window — not single-use — is the bound on link replay.
+- Deployments that need identity as a second factor must put one in front of the
+  origin (for example an alias-scoped tunnel allowlist), because the link alone is
+  a bearer credential for those 5 minutes.
+
+Making the link single-use is a live option, but it is a **behaviour change with
+known breakage** (iframe re-navigation, self-nudge polling) and needs an owner
+decision, not a silent tightening. `try_consume` is the primitive it would use.
 
 #### Liveness / readiness probes (rec #6)
 
@@ -530,7 +562,8 @@ Note: Loopback access (127.0.0.1) is always trusted for both token auth and CSRF
 | Expired token (link window or session) | 403 | JSON for `/api/*`, HTML for pages |
 | Invalid HMAC signature | 403 | JSON for `/api/*`, HTML for pages |
 | IP mismatch | 403 | JSON for `/api/*`, HTML + SEL log |
-| Consumed token re-click (browser has cookie) | 302 | Redirect to strip token from URL |
+| Link re-presented inside its 5-minute window | 200 | Allowed by design — re-exchanges for a fresh session cookie bound to the presenting peer (see *Link re-exchange is deliberately allowed*) |
+| Link string presented as the `mc_token_{port}` cookie | 403 | Rejected: its nonce is on the persisted denylist from the moment of exchange |
 | Consumed token from different client | 403 | JSON for `/api/*`, HTML for pages |
 | Malformed token (can't decode) | 403 | JSON for `/api/*`, HTML for pages |
 | Invalid duration in `!dashboard` | N/A | Slack usage message |
