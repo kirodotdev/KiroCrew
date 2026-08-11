@@ -197,6 +197,18 @@ class TestEnvFileAndPin:
         rt.pin_checkout(c, "x", Path("/abs/co"))
         assert rt.read_env_file(c, "x")["CHECKOUT"] == "/abs/co"
 
+    def test_write_env_file_reentrant_under_mutex(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """write_env_file acquires pod_name_mutex internally; calling it while
+        already holding the mutex must not deadlock (reentrancy)."""
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path))
+        c = PodConfig.load()
+        with rt.pod_name_mutex(c, "x"):
+            rt.write_env_file(c, "x", {"A": "1"})
+            rt.write_env_file(c, "x", {"B": "2"})
+        assert rt.read_env_file(c, "x") == {"A": "1", "B": "2"}
+
 
 class TestWorktreeResolution:
     """Git-native: a friendly name → checkout via pinned CHECKOUT, else git, else
