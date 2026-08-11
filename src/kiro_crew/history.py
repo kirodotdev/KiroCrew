@@ -21,7 +21,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Container, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -937,6 +937,13 @@ def monotonic_transcript_ts(previous: str | None, now: datetime) -> str:
 def _safe_key(key: str) -> str:
     """Convert a session key (e.g. Slack thread_ts) to a safe filename."""
     return re.sub(r"[^\w\-.]", "_", key)
+
+
+#: Session-key prefix whose transcripts the idle sweep discovers from DISK
+#: (see HistoryConsolidator.sweep_cron_memory_keys). Mirrors
+#: kiro_crew.cron_memory.CRON_MEMORY_KEY_PREFIX; duplicated as a literal
+#: because cron_memory imports from this module.
+_CRON_MEMORY_SWEEP_PREFIX = "cron-mem:"
 
 
 def transcript_stem(key: str) -> str:
@@ -2162,6 +2169,24 @@ class ConversationLog:
         except (TypeError, ValueError, OverflowError):
             offset = 0
         return len(messages), max(0, len(messages) - offset)
+
+    def keys_with_prefix(self, prefix: str) -> list[str]:
+        """Transcript keys (file stems) starting with *prefix*.
+
+        Disk-backed session discovery for the consolidator's cron-memory
+        sweep: the transcript FILE is the enrollment record, so discovery
+        survives restarts and needs no in-process registration. No freshness
+        filter — the per-key locks make the append pair atomic and
+        consolidation routinely reads transcripts that live sessions are
+        appending to, so a concurrent write is safe; an mtime gate would
+        permanently starve any cron whose interval is shorter than the gate.
+        Stems are ``_safe_key``-stable (a sanitized stem sanitizes to
+        itself), the same convention the ``kirocrew consolidate --all`` CLI
+        path relies on. Call from a worker thread — this scans a directory.
+        """
+        if not self._dir.exists():
+            return []
+        return [p.stem for p in self._dir.glob(f"{_safe_key(prefix)}*.jsonl")]
 
     def consolidation_retry_state(
         self, key: str, message_count: int | None = None
@@ -4122,6 +4147,9 @@ class HistoryConsolidator:
         self._tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         # Track last activity per session for idle-based history consolidation
         self._last_activity: dict[str, float] = {}
+        # Single-flight latch for the disk-backed cron-memory sweep: one scan
+        # task at a time regardless of heartbeat cadence.
+        self._cron_sweep_inflight = False
         self._history_consolidated: dict[str, float] = {}  # key → last history consolidation time
         # Separate offset for prefs-only consolidation (doesn't advance main offset)
         self._prefs_offset: dict[str, int] = {}
@@ -4269,6 +4297,46 @@ class HistoryConsolidator:
             max(0.0, retry_at - _time.time()),
         )
 
+    def sweep_cron_memory_keys(self) -> None:
+        """Discover cron-memory transcripts from DISK and gate-spawn each.
+
+        The transcript file itself is the durable enrollment record — no
+        in-process registration exists to lose. This makes the mechanism
+        restart-proof (a one-shot cron's transcript written seconds before a
+        gateway restart is discovered on the next boot's first sweep) and
+        shutdown-tolerant (a recording whose atomic write completed is never
+        orphaned; one that did not complete never existed).
+
+        Loop-safety: the directory scan stats files, so it runs in a worker
+        thread; only the in-memory gates and task spawns happen on the loop.
+        Cadence is owned by the existing per-key machinery — the
+        ``_history_consolidated`` once-per-idle-window throttle, the
+        ``_running`` reservation, and the off-loop ``unconsolidated < 1``
+        no-op — NOT by file mtime as an idle anchor: a frequent cron touches
+        its transcript every run, so an mtime-idleness rule would starve
+        exactly the jobs this feature exists for.
+        Concurrent appends are safe: the per-key locks make each exchange atomic.
+        """
+        if self._cron_sweep_inflight:
+            return
+        self._cron_sweep_inflight = True
+
+        async def _scan_and_spawn() -> None:
+            try:
+                keys = await asyncio.to_thread(
+                    self._log.keys_with_prefix,
+                    _CRON_MEMORY_SWEEP_PREFIX,
+                )
+                now = _time.time()
+                for key in keys:
+                    self._spawn_idle_consolidation(key, now)
+            finally:
+                self._cron_sweep_inflight = False
+
+        t = asyncio.create_task(_scan_and_spawn())
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+
     def maybe_consolidate(self, key: str) -> None:
         """Fire preferences/projects consolidation if message threshold exceeded."""
         self._last_activity[key] = _time.time()
@@ -4308,46 +4376,95 @@ class HistoryConsolidator:
         t.add_done_callback(_on_done)
 
     def check_idle_sessions(self) -> None:
-        """Check all tracked sessions for idle-based history consolidation."""
+        """Check all tracked sessions for idle-based history consolidation.
+
+        Loop-safety: this sweep runs on the gateway event loop every heartbeat
+        tick, so it touches ONLY in-memory state (timestamps, running set).
+        The transcript-sized eligibility reads happen inside the spawned task
+        via a worker thread (see ``_idle_consolidate_after_prechecks``) — a
+        large session transcript (e.g. an accumulated cron-memory log) never
+        stalls the loop.
+        """
         now = _time.time()
         for key, last in list(self._last_activity.items()):
             if now - last < self._history_idle_secs:
                 continue
-            total, unconsolidated = self._log.consolidation_counts(key)
+            self._spawn_idle_consolidation(key, now)
+
+    def _spawn_idle_consolidation(self, key: str, now: float) -> None:
+        """Gate and spawn one idle-consolidation task (loop-safe, shared).
+
+        Used by the idle sweep and by :meth:`note_activity`. The gates here
+        are purely in-memory (throttle timestamp + running set); ALL
+        transcript- and metadata-backed eligibility — including the durable
+        retry backoff — is evaluated off-loop inside the spawned task, where
+        the extent-aware ``retry_eligible(message_count=total)`` check can
+        release a capped span whose transcript has since grown. An on-loop
+        extent-blind backoff pre-gate would permanently starve exactly that
+        case.
+        """
+        if (
+            now - self._history_consolidated.get(key, 0) < self._history_idle_secs
+            or key in self._running
+        ):
+            return
+        self._running.add(key)
+        t = asyncio.create_task(self._idle_consolidate_after_prechecks(key, now))
+        self._tasks.add(t)
+
+        def _on_idle_done(
+            fut: asyncio.Task,  # type: ignore[type-arg]
+            k: str = key,
+            ts: float = now,
+        ) -> None:
+            self._tasks.discard(fut)
             if (
-                unconsolidated < 1
-                or now - self._history_consolidated.get(key, 0) < self._history_idle_secs
-                or key in self._running
-                # Durable backoff, checked last so it only costs a metadata read
-                # once the cheap conditions pass. The in-memory throttle above is
-                # set only when the task ends without an exception and is lost on
-                # restart, so it alone cannot stop a repeatedly failing span from
-                # re-billing an LLM turn every tick. *total* comes from the read
-                # above, so the check adds no transcript read on the loop.
-                or not self.retry_eligible(key, now, message_count=total)
+                not fut.cancelled()
+                and fut.exception() is None
+                # A refusal (or a precheck no-op, which reuses the marker)
+                # is not a completed pass; setting the throttle for it
+                # would delay the retry past the backoff deadline.
+                and fut.result() is not _CONSOLIDATION_REFUSED
             ):
-                continue
-            self._running.add(key)
-            captured_now = now
-            t = asyncio.create_task(self._consolidate(key, include_history=True))
-            self._tasks.add(t)
+                self._history_consolidated[k] = ts
 
-            def _on_idle_done(
-                fut: asyncio.Task,  # type: ignore[type-arg]
-                k: str = key,
-                ts: float = captured_now,
-            ) -> None:
-                self._tasks.discard(fut)
-                if (
-                    not fut.cancelled()
-                    and fut.exception() is None
-                    # A refusal is not a completed pass; setting the throttle
-                    # for it would delay the retry past the backoff deadline.
-                    and fut.result() is not _CONSOLIDATION_REFUSED
-                ):
-                    self._history_consolidated[k] = ts
+        t.add_done_callback(_on_idle_done)
 
-            t.add_done_callback(_on_idle_done)
+    async def _idle_consolidate_after_prechecks(self, key: str, now: float) -> Any:
+        """Off-loop eligibility prechecks, then the real consolidation.
+
+        ``consolidation_counts`` reads the whole transcript, so it runs in a
+        worker thread; the sweep that spawned this task never blocks on it.
+        The ``finally`` releases the ``_running`` reservation on EVERY exit —
+        including a precheck read failure — so a transient error cannot
+        strand the key and make later sweeps skip it forever. (The delegate
+        path's ``_consolidate`` also discards in its own finally; a second
+        discard is a no-op.) A precheck no-op returns
+        ``_CONSOLIDATION_REFUSED`` so the done callback leaves the idle
+        throttle unset.
+        """
+        try:
+            total, unconsolidated = await asyncio.to_thread(
+                self._log.consolidation_counts, key
+            )
+            if unconsolidated < 1:
+                # Fully consolidated for now — stay ENROLLED. Evicting here
+                # would race a concurrent append + note_activity landing
+                # after the zero-count read (setdefault keeps the old anchor,
+                # so no anchor comparison can detect it) and silently drop
+                # that content from memory. The steady-state cost of staying
+                # enrolled is one off-loop counts read per tick — the same
+                # read the pre-existing sweep did per tick, minus the loop
+                # stall.
+                return _CONSOLIDATION_REFUSED
+            if not self.retry_eligible(key, now, message_count=total):
+                # Backed-off span: refuse without touching enrollment. This
+                # extent-aware check is the ONLY backoff gate — it can
+                # release a capped span whose transcript has since grown.
+                return _CONSOLIDATION_REFUSED
+            return await self._consolidate(key, include_history=True)
+        finally:
+            self._running.discard(key)
 
     def consolidate_session(self, key: str) -> None:
         """Trigger history consolidation for *key* (fire-and-forget).
@@ -4521,7 +4638,10 @@ class HistoryConsolidator:
                 keys.append(
                     '"history_entry": A concise paragraph (2-5 sentences) summarizing '
                     "what happened. Use local time [YYYY-MM-DD HH:MM]. Focus on "
-                    "decisions, outcomes, facts. Use user's real name if known."
+                    "decisions, outcomes, facts. Use user's real name if known. "
+                    "If the conversation contains nothing worth remembering (a "
+                    "routine or trivial exchange with no decisions, outcomes, or "
+                    'new facts), return an empty string "" instead.'
                 )
 
             # Structured memory extraction (when vector store is available)

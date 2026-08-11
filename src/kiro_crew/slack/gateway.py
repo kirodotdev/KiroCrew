@@ -80,6 +80,7 @@ from kiro_crew.constants import CHAT_TURN_TIMEOUT, DATA_WARNING
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
+from kiro_crew.cron_memory import _detach_cron_memory_task, record_cron_run_to_memory
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
@@ -2546,6 +2547,20 @@ class GatewayOrchestrator:
                 if _seq_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
                 job.set_run_result(result_text)
+                # Record the run into agent memory (dedicated cron-mem:{id}
+                # key + fire-and-forget consolidation). Default-on for every
+                # agent-mode run; best-effort — never fails the run. DETACHED
+                # task: the transcript write must not spend the job's
+                # execution deadline — a run finishing near its timeout would
+                # otherwise be marked timed out by its own bookkeeping. See
+                # kiro_crew.cron_memory for the rationale.
+                _detach_cron_memory_task(
+                    record_cron_run_to_memory(
+                        getattr(self, "conv_log", None),
+                        job,
+                        result_text,
+                    )
+                )
                 return result_text
 
             # ── Single-agent path (existing behavior) ──
@@ -2608,6 +2623,25 @@ class GatewayOrchestrator:
                     result_text = _annotate_model_downgrade(result_text)
 
                 job.set_run_result(result_text)
+
+                # Record the run into agent memory (dedicated cron-mem:{id}
+                # key + fire-and-forget consolidation) BEFORE the finally
+                # block's session reset. Default-on for every agent-mode run
+                # — including silent, hidden, and persistent_session=False
+                # jobs, which all return early below without ever reaching
+                # the delivery sites. Best-effort — never fails the run.
+                # DETACHED task: must not spend the job's execution deadline
+                # (see the single-agent site). The task holds its own strong
+                # reference, so the finally block's session reset cannot
+                # cancel a write already dispatched. See kiro_crew.cron_memory
+                # for the rationale.
+                _detach_cron_memory_task(
+                    record_cron_run_to_memory(
+                        getattr(self, "conv_log", None),
+                        job,
+                        result_text,
+                    )
+                )
 
                 # Context-meter reading for the dashboard slot, captured NOW:
                 # the finally block below resets this session, so the open

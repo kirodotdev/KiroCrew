@@ -157,8 +157,12 @@ class TestFailureAfterTheBilledCall:
         assert KEY not in c._history_consolidated
 
         c._tasks.clear()
-        c.check_idle_sessions()
-        assert not c._tasks, "consolidation re-fired while inside the backoff window"
+        with patch.object(c, "_consolidate", AsyncMock()) as rebilled:
+            c.check_idle_sessions()
+            # Backoff is judged off-loop now: a precheck task may spawn, but
+            # it must refuse before dispatching a billed consolidation.
+            await asyncio.gather(*list(c._tasks), return_exceptions=True)
+            rebilled.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failure_before_the_llm_call_does_not_consume_budget(
@@ -239,8 +243,15 @@ class TestAttemptCap:
         assert log.consolidation_retry_state(KEY) == (0, 0.0)
         c._last_activity[KEY] = time.time() - 10
         c._tasks.clear()
-        c.check_idle_sessions()
-        assert not c._tasks
+        with patch.object(c, "_consolidate", AsyncMock()) as respawn:
+            c.check_idle_sessions()
+            # The sweep may spawn a precheck task (transcript reads run
+            # off-loop now), but the marked span has zero unconsolidated
+            # messages, so the precheck no-ops: no consolidation — and hence
+            # no billed turn — is ever dispatched for the abandoned span.
+            for t in list(c._tasks):
+                await t
+            respawn.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cap_without_a_marker_write_stays_ineligible(self, tmp_path):
@@ -300,8 +311,12 @@ class TestAccountingSurvivesARestart:
         assert not fresh._history_consolidated
 
         assert fresh.retry_eligible(KEY) is False
-        fresh.check_idle_sessions()
-        assert not fresh._tasks, "restart re-billed a turn for a backed-off span"
+        with patch.object(fresh, "_consolidate", AsyncMock()) as rebilled:
+            fresh.check_idle_sessions()
+            # The durable backoff is read off-loop inside the precheck task —
+            # a task may spawn, but no billed consolidation may dispatch.
+            await asyncio.gather(*list(fresh._tasks), return_exceptions=True)
+            rebilled.assert_not_awaited()
 
 
 class TestTheAccountingIsReadUncached:
@@ -375,7 +390,15 @@ class TestTheAccountingIsReadUncached:
             other.record_consolidation_failure(KEY, 900.0, 86400.0, _span(other))
 
         c.check_idle_sessions()
-        assert not c._tasks, (
+        # The sweep may spawn a precheck task (backoff is now judged off-loop,
+        # extent-aware); the invariant is that no LLM turn is billed.
+        with patch.object(c, "_consolidate", AsyncMock()) as billed:
+            for t in list(c._tasks):
+                await t
+            billed.assert_not_awaited()
+        assert not any(
+            not t.done() for t in c._tasks
+        ), (
             "the sweep billed an LLM turn for a span another process had just "
             "put into backoff"
         )

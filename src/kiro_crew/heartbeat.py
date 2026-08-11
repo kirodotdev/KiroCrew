@@ -192,6 +192,9 @@ class HeartbeatService:
         # Check for idle sessions needing history consolidation (every tick)
         if self._consolidator:
             self._consolidator.check_idle_sessions()
+            # Cron-memory transcripts are discovered from disk (the file is
+            # the durable enrollment record) — off-loop scan, same gates.
+            self._consolidator.sweep_cron_memory_keys()
 
     async def _run_one_task(self, task_text: str, deliver: str) -> str | None:
         """Execute a single heartbeat task (used by gather).

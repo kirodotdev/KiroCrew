@@ -752,6 +752,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/spine/push_policy.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
+        # cron_memory.py redacts a cron run's exchange before persisting it into
+        # ConversationLog for the memory consolidator — internal storage feeding
+        # consolidation, not an output to a human; the run's user-visible copies
+        # (Slack/bell notification, dashboard inject) are the registered sinks.
+        "cron_memory.py",
         "dashboard/chat_folders.py",
         "dashboard/chat_fork.py",
         "dashboard/chat_handlers.py",
