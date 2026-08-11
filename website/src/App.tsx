@@ -2452,7 +2452,7 @@ export default function App() {
                   alone names no target. Hidden while the rail is collapsed (folds
                   away via max-height so the collapse stays smooth). */}
               <div {...(effectiveCollapsed ? { inert: '' } : {})} className={`overflow-hidden transition-all duration-200 ${effectiveCollapsed ? 'max-h-0 opacity-0' : 'max-h-16 opacity-100 mt-1'}`}>
-                <div className="flex items-center border-t border-border-strong pl-3 pr-0.5 pt-2.5 pb-0.5 whitespace-nowrap">
+                <div className="flex items-center border-t border-border pl-3 pr-0.5 pt-2.5 pb-0.5 whitespace-nowrap">
                   {/* pl-3 puts the mark on the same 12px x-offset as the
                       nav-item icons above. No `gap` on this row ON PURPOSE: a row
                       gap applies between ALL THREE children (mark, links,
