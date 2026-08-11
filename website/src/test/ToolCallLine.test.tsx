@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ToolCallLine from '../pages/chat/ToolCallLine'
-import { resolveByApprovalId } from '../store/chatSlice'
+import { resolveByApprovalId, sseToolResult } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 
@@ -403,6 +403,92 @@ describe('ToolCallLine entrance reveal', () => {
     const inner = row.querySelector('button')!
 
     fireEvent.animationEnd(inner)
+    expect(row.className).toContain('ft-block-reveal')
+  })
+})
+
+/** The transcript is pinned to the bottom and the virtualizer's pin is instant,
+ *  so an un-animated mount/unmount moves everything above the row in a single
+ *  frame. Both the row's first appearance and its status line's removal
+ *  therefore ease their own HEIGHT — the pin then spreads over those frames and
+ *  reads as a slide. */
+describe('ToolCallLine row slide', () => {
+  it('keeps the shell status line mounted while it collapses, then drops it', async () => {
+    const msg = toolMsg({ meta: { tool_call_id: 'tc_slide_exit' } })
+    const store = createTestStore({
+      chat: {
+        activeSlot: 'S',
+        messages: [msg],
+        toolLog: [{ type: 'tool', text: 'echo hello', tool_call_id: 'tc_slide_exit', is_shell: true, ts: 1 }],
+        slotRunning: true,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running />, { store })
+    expect(screen.getByText(/Running ·/)).toBeTruthy()
+
+    // The tool result lands — the status line no longer applies.
+    act(() => {
+      store.dispatch(sseToolResult({ slot: 'S', output: 'hello', tool_call_id: 'tc_slide_exit' }))
+    })
+    // Still in the DOM on the commit that hid it: it is easing its height to
+    // zero, not vanishing in one frame (which is what jumped the rows above).
+    expect(screen.getByText(/Running ·/)).toBeTruthy()
+    // …and gone once the collapse finishes.
+    await waitFor(() => expect(screen.queryByText(/Running ·/)).toBeNull())
+  })
+
+  it('grows a first-appearance row from zero height and releases it afterwards', async () => {
+    const msg = toolMsg({ meta: { tool_call_id: 'tc_slide_enter' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{ type: 'tool', text: 'echo hello', tool_call_id: 'tc_slide_enter', output: 'hello', ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    const first = renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    const row = first.container.firstElementChild as HTMLElement
+    expect(row.style.height).toBe('0px')
+    expect(row.style.overflow).toBe('hidden')
+    // Released when the grow ends, so anything that grows later (details panel,
+    // MCP app iframe) is neither clipped nor pinned to the entrance height. Both
+    // values are polled together because they are cleared by different owners —
+    // framer's own final commit and the release effect — and can land a tick
+    // apart. The released height is asserted as "not a pixel height" rather than
+    // a literal: a real browser settles on `auto`, happy-dom on empty, and
+    // either is the row sizing itself again.
+    await waitFor(() => {
+      expect(row.style.height).not.toMatch(/px$/)
+      expect(row.style.overflow).not.toBe('hidden')
+    })
+    first.unmount()
+
+    // A remount is not a first appearance (turn promotion, virtualizer
+    // recycling): replaying the grow there would slide every previously-shown
+    // row again whenever the turn advances.
+    const second = renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    const again = second.container.firstElementChild as HTMLElement
+    expect(again.style.height).not.toMatch(/px$/)
+    expect(again.style.overflow).not.toBe('hidden')
+  })
+
+  it('never grows a row with no stable id, which the reveal set cannot remember', () => {
+    // Pre-persistence historical row: no tool_call_id on the meta and no
+    // toolLog entry to resolve one from. `revealedToolIds` has nothing to key
+    // on, so its one-shot guard is permanently open — and the virtualizer
+    // remounts a row every time it re-enters the mounted window, which would
+    // replay the grow and shift layout under a reader scrolling through
+    // history. The fade still replays there (opacity moves nothing); the height
+    // must not.
+    const msg = toolMsg({ meta: {} })
+    const store = createTestStore({
+      chat: { messages: [msg], toolLog: [], slotRunning: false } as unknown as ChatState,
+    })
+    const { container } = renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    const row = container.firstElementChild as HTMLElement
+    expect(row.style.height).not.toMatch(/px$/)
+    expect(row.style.overflow).not.toBe('hidden')
+    // The fade is unchanged — this test pins the height, not the entrance fade.
     expect(row.className).toContain('ft-block-reveal')
   })
 })
