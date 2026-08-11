@@ -11,11 +11,13 @@ gateway side:
    recover ``{server, session_key}``; a caller that cannot name a live spool
    id gets nothing. No server names or session keys are trusted from the
    HTTP layer.
-2. **Visibility enforcement** — the target tool must declare
-   ``_meta.ui.visibility`` including ``"app"`` in the backend's ``tools/list``
-   (fetched FRESH per call — an authorization input is never cached, so a
-   server-side visibility revocation takes effect immediately). Tools without an
-   explicit visibility are model-only per SEP-1865 and are refused.
+2. **Visibility enforcement** — the target tool's ``_meta.ui.visibility`` in the
+   backend's ``tools/list`` must admit the ``"app"`` audience (fetched FRESH per
+   call — an authorization input is never cached, so a server-side visibility
+   revocation takes effect immediately). Per SEP-1865 ``visibility`` defaults to
+   ``["model", "app"]``, so a tool that declares nothing IS app-callable; only an
+   explicit declaration excluding ``"app"``, or one this host cannot parse, is
+   refused.
 3. **Argument validation** — the iframe-controlled ``arguments`` are
    validated against the tool's declared ``inputSchema`` (fail-closed; see
    :func:`kiro_crew.validation.validate_mcp_tool_arguments`) before any
@@ -44,6 +46,7 @@ from typing import Any, Optional
 
 from kiro_crew.mcp_apps_render import load_spool
 from kiro_crew.mcp_caller import CallerContext
+from kiro_crew.mcp_gateway.apps import AUDIENCE_APP, visibility_allows
 from kiro_crew.sel import SecurityEventLog
 from kiro_crew.validation import ValidationError, validate_mcp_tool_arguments
 
@@ -157,15 +160,16 @@ async def _tools_by_name(
 
 
 def _tool_visible_to_app(tool: dict[str, Any]) -> bool:
-    """True iff the tool's ``_meta.ui.visibility`` explicitly includes "app".
+    """True iff an app from this server may call ``tool``.
 
-    Per SEP-1865 a tool with no declared visibility defaults to model-only,
-    so absence of ``_meta.ui.visibility`` is a DENY.
+    SEP-1865: ``visibility`` defaults to ``["model", "app"]`` when omitted, so a
+    tool that declares nothing IS app-callable. Only an explicit declaration
+    that excludes ``"app"`` — or one this host cannot parse — denies.
+
+    Delegates to :func:`visibility_allows`, the same parser the agent-listing
+    filter uses, so the two audiences cannot drift apart.
     """
-    meta = tool.get("_meta")
-    ui = meta.get("ui") if isinstance(meta, dict) else None
-    vis = ui.get("visibility") if isinstance(ui, dict) else None
-    return isinstance(vis, list) and "app" in vis
+    return visibility_allows(tool, AUDIENCE_APP).allowed
 
 
 def _governance_denial(
