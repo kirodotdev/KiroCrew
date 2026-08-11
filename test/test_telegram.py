@@ -2672,7 +2672,8 @@ class TestLinkCommand:
 def test_receipt_text_caps_displayed_items() -> None:
     # A large mid-turn burst must not grow the rendered receipt unbounded: only
     # the first _RECEIPT_MAX_ITEMS are listed verbatim; the count stays true.
-    from kiro_crew.telegram.transport_dispatch import _RECEIPT_MAX_ITEMS, _receipt_text
+    from kiro_crew.messaging.queue_receipt import RECEIPT_MAX_ITEMS as _RECEIPT_MAX_ITEMS
+    from kiro_crew.messaging.queue_receipt import receipt_text as _receipt_text
 
     texts = [f"msg number {i}" for i in range(_RECEIPT_MAX_ITEMS + 3)]
     out = _receipt_text(texts)

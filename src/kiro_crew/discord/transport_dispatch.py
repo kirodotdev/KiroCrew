@@ -25,8 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.discord.attachments import (
     append_attachment_context,
@@ -66,6 +65,12 @@ if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
 
+from kiro_crew.messaging.queue_receipt import STEER_ACK_EMOJI as _STEER_ACK_EMOJI
+from kiro_crew.messaging.queue_receipt import (
+    ReceiptQueue,
+    ReceiptSurface,
+)
+
 logger = logging.getLogger(__name__)
 
 # Canonical kiro-cli agent fallback so Discord sessions load kirocrew-core
@@ -103,44 +108,6 @@ Just send a message to chat. Replies stream in real-time.
 """
 
 
-def _short(text: str, limit: int = 40) -> str:
-    """Collapse whitespace and truncate for compact receipt display."""
-    collapsed = " ".join(text.split())
-    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
-
-
-_RECEIPT_MAX_ITEMS = 5  # verbatim items in a receipt before "…and N more"
-# Instant, no-extra-bubble acknowledgement that a mid-turn steer was accepted
-# and folded into the running turn.
-_STEER_ACK_EMOJI = "🫡"
-
-
-def _receipt_text(
-    texts: list[str],
-    *,
-    answering: bool = False,
-    cancelled: bool = False,
-) -> str:
-    """Render the single collapsing receipt for ``texts`` (order preserved)."""
-    count = len(texts)
-    items = " · ".join(f"“{_short(t)}”" for t in texts[:_RECEIPT_MAX_ITEMS])
-    if count > _RECEIPT_MAX_ITEMS:
-        items += f" · …and {count - _RECEIPT_MAX_ITEMS} more"
-    if cancelled:
-        return f"🛑 Cancelled ({count}): {items}"
-    if answering:
-        return f"▶️ Now answering ({count}): {items}"
-    return f"⏳ Queued ({count}): {items}"
-
-
-@dataclass
-class _QueueReceipt:
-    """The single, in-place receipt bubble tracking messages queued mid-turn."""
-
-    msg_id: str
-    texts: list[str]
-
-
 class DiscordDispatcher:
     """Coordinates Discord turns onto the shared ``TurnDriver``.
 
@@ -173,10 +140,9 @@ class DiscordDispatcher:
         self.approval_mode = approval_mode
         self.client: "DiscordClient | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
-        # session_key -> the single in-place "queued" receipt bubble.
-        self._queue_receipts: dict[str, _QueueReceipt] = {}
-        # Serializes receipt bookkeeping against the end-of-turn drain.
-        self._receipt_lock = asyncio.Lock()
+        # The mid-turn queue receipt + the lock serializing it against the
+        # end-of-turn drain, shared with Telegram via messaging/queue_receipt.py.
+        self._queue = ReceiptQueue()
         # session_key -> the running turn's renderer (for steer chips).
         self._active_renderers: dict[str, DiscordRenderer] = {}
         self._session_resume = DiscordSessionResume(
@@ -560,7 +526,7 @@ class DiscordDispatcher:
                         logger.debug("discord: steer ack reaction failed", exc_info=True)
                 return
         # queue mode (or !queue override, or steer unavailable). Atomic
-        # enqueue + receipt under _receipt_lock — see the Telegram dispatcher.
+        # enqueue + receipt under self._queue.lock — see the Telegram dispatcher.
         if not await self._enqueue_with_receipt(
             session_key,
             channel_id,
@@ -583,7 +549,7 @@ class DiscordDispatcher:
             attachments: list[Any] = []
             remainder: list[tuple[str, str, dict]] = []
             defer_rest = False
-            async with self._receipt_lock:
+            async with self._queue.lock:
                 while True:
                     item = self.sessions.dequeue(session_key)
                     if item is None:
@@ -656,10 +622,10 @@ class DiscordDispatcher:
         attachments: list[Any] | None = None,
     ) -> bool:
         """Atomically enqueue a mid-turn message and create/grow its collapsing
-        receipt, under ``_receipt_lock``. Returns True if queued; False if the
+        receipt, under ``self._queue.lock``. Returns True if queued; False if the
         turn finished in the window (caller runs the message as a fresh turn)."""
         assert self.client is not None
-        async with self._receipt_lock:
+        async with self._queue.lock:
             if not self.sessions.enqueue(
                 session_key,
                 str(time.time()),
@@ -668,25 +634,11 @@ class DiscordDispatcher:
                 attachments=list(attachments or []),
             ):
                 return False
-            receipt_text = text or "[attachment]"
-            receipt = self._queue_receipts.get(session_key)
-            if receipt is None:
-                msg_id = await self.client.send_message(
-                    channel_id, _receipt_text([receipt_text])
-                )
-                if msg_id is not None:
-                    self._queue_receipts[session_key] = _QueueReceipt(
-                        msg_id=msg_id,
-                        texts=[receipt_text],
-                    )
-                return True
-            receipt.texts.append(receipt_text)
-            try:
-                await self.client.edit_message(
-                    channel_id, receipt.msg_id, _receipt_text(receipt.texts)
-                )
-            except Exception:
-                logger.debug("discord: queue receipt grow failed", exc_info=True)
+            # An attachment-only message has no text; show a placeholder rather
+            # than a blank entry in the receipt.
+            await self._queue.create_or_grow_locked(
+                session_key, self._receipt_surface(channel_id), text or "[attachment]"
+            )
             return True
 
     async def _receipt_flip_locked(
@@ -697,32 +649,37 @@ class DiscordDispatcher:
         deferred: int = 0,
     ) -> None:
         """Flip the receipt to a durable "▶️ Now answering" record. Caller MUST
-        hold ``_receipt_lock``."""
+        hold ``self._queue.lock``."""
         assert self.client is not None
-        receipt = self._queue_receipts.pop(session_key, None)
-        if receipt is None:
-            return
-        body = _receipt_text(answered, answering=True)
-        if deferred:
-            body += f" · +{deferred} deferred"
-        try:
-            await self.client.edit_message(channel_id, receipt.msg_id, body)
-        except Exception:
-            logger.debug("discord: queue receipt flip failed", exc_info=True)
+        await self._queue.flip_answering_locked(
+            session_key, self._receipt_surface(channel_id), answered, deferred
+        )
 
     async def _receipt_finish_cancelled_locked(self, session_key: str, channel_id: str) -> None:
         """Finalize the receipt to a "🛑 Cancelled" record, if present. Caller
-        MUST hold ``_receipt_lock``."""
+        MUST hold ``self._queue.lock``."""
         assert self.client is not None
-        receipt = self._queue_receipts.pop(session_key, None)
-        if receipt is None:
-            return
-        try:
-            await self.client.edit_message(
-                channel_id, receipt.msg_id, _receipt_text(receipt.texts, cancelled=True)
-            )
-        except Exception:
-            logger.debug("discord: queue receipt cancel-finalize failed", exc_info=True)
+        await self._queue.finish_cancelled_locked(
+            session_key, self._receipt_surface(channel_id)
+        )
+
+    def _receipt_surface(self, channel_id: str) -> ReceiptSurface:
+        """A receipt surface with this channel's address already bound."""
+        # cast, not assert: mypy does not carry an assert-narrowed local
+        # into the nested class body below, so the closure would still see
+        # ``DiscordClient | None``. The caller path always has a live client.
+        client = cast("DiscordClient", self.client)
+
+        class _Surface:
+            label = "discord"
+
+            async def send_receipt(self, body: str) -> Any | None:
+                return await client.send_message(channel_id, body)
+
+            async def edit_receipt(self, msg_id: Any, body: str) -> None:
+                await client.edit_message(channel_id, msg_id, body)
+
+        return _Surface()
 
     async def _handle_stop(self, user_id: str, channel_id: str, thread_id: str = "") -> None:
         """Hard cancel: abort the in-flight turn and clear everything."""
@@ -742,7 +699,7 @@ class DiscordDispatcher:
                         session_key,
                         exc_info=True,
                     )
-        async with self._receipt_lock:
+        async with self._queue.lock:
             self.sessions.clear_queue(session_key)
             await self._receipt_finish_cancelled_locked(session_key, channel_id)
         await self.client.send_message(

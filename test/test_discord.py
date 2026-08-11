@@ -54,10 +54,10 @@ from kiro_crew.discord.transport import (
 from kiro_crew.discord.transport_dispatch import (
     _STEER_ACK_EMOJI,
     DiscordDispatcher,
-    _receipt_text,
 )
 from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
+from kiro_crew.messaging.queue_receipt import receipt_text as _receipt_text
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session_map import ConversationOwnershipConflict
 

@@ -189,8 +189,16 @@ steer/queue/drain machinery, `telegram/transport_dispatch.py` and
 `discord/transport_dispatch.py`; both read the same
 `messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
 else normalized to `steer`) and both implement the same three primitives
-(`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`) with
-only the platform call names differing.
+(`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`).
+
+The **channel-neutral half of the queue receipt is shared**, not duplicated:
+`messaging/queue_receipt.py` owns the receipt registry, the lock, the three
+lifecycle transitions and the receipt body formatting. Each channel reaches it
+through a `ReceiptSurface` whose address is bound at construction, which is why
+the shared module never sees a `chat_id` / `channel_id` / forum thread and
+Telegram's forum routing stays entirely channel-local. `_handle_busy` and
+`_drain_queue` deliberately stay per-channel: they re-enter their own
+`handle_message` and own the per-channel `_active_renderers`.
 
 The remaining channels (Webex, WeCom, Teams, Weixin) implement `_handle_busy`
 as **steer-only**: they fold the message into the running turn and reply with a
@@ -240,7 +248,7 @@ in place:
 ⏳ Queued (2): "what time is it" · "and the weather?"
 ```
 
-The first five items are listed verbatim (`_RECEIPT_MAX_ITEMS`), the rest
+The first five items are listed verbatim (`RECEIPT_MAX_ITEMS`), the rest
 collapse into `…and N more` so a large burst cannot blow the message cap.
 
 **The receipt is EDITED, never deleted.** At the end of the turn it flips to
@@ -249,8 +257,11 @@ Neither dispatcher calls a delete API on it. This is deliberate: the receipt is
 the durable record of what the user asked and how it was routed, so deleting it
 would erase the only evidence that a message was accepted at all.
 
-The enqueue and the receipt create/grow happen together under `_receipt_lock`,
-which the end-of-turn drain also takes across its dequeue plus flip. That is
+The enqueue and the receipt create/grow happen together under
+`ReceiptQueue.lock`, which the end-of-turn drain also takes across its dequeue
+plus flip. The lock is deliberately **caller-held** rather than acquired inside
+each transition (hence the `_locked` suffixes): moving the acquire inside would
+read tidier and silently reintroduce the orphaned-bubble race. That is
 what makes the two race-free: the drain sees either the message queued **with**
 its receipt or neither yet, never a half state that would orphan a bubble.
 `enqueue(..., force=False)` is a no-op once the semaphore is free, so if the
@@ -266,7 +277,7 @@ behind it** are re-enqueued so FIFO order stays exact, the receipt notes
 `+N deferred`, and the drain loops to pump the remainder. Messages arriving
 during the combined turn open a fresh receipt and drain after it.
 
-The combined turn itself runs outside `_receipt_lock`, and the drain replays via
+The combined turn itself runs outside `ReceiptQueue.lock`, and the drain replays via
 `handle_message(..., interpret_commands=False)`. Drained payloads therefore
 bypass both the command intercept and override parsing, so a queued `/new`
 reaches the model as literal text instead of executing on drain.
@@ -296,7 +307,7 @@ ported.
 
 `/stop` (alias `/cancel`; `!stop` / `!cancel` on Discord) aborts the running
 turn, drops every queued message, and finalizes the receipt to `🛑 Cancelled`.
-`clear_queue` and the receipt finalize run together under `_receipt_lock`.
+`clear_queue` and the receipt finalize run together under `ReceiptQueue.lock`.
 
 **Cancel is cooperative before it is fatal.** The dispatchers call
 `provider.cancel(wait_ack_timeout=0)`, which writes an ACP `session/cancel`
