@@ -384,6 +384,11 @@ interface Slot {
   // Derived (not a payload field), like `unread`: true when the slot's last
   // activity falls inside `RECENT_WINDOW_MS`. Computed in `enrichedSlots`.
   recent?: boolean
+  // Derived: the RAW per-turn flag, preserved before `running` is widened to
+  // the "in progress" notion (live workflow run / active goal loop) for the
+  // session filter. Subtitle logic reads this to tell mid-turn from idle —
+  // an idle-between-cycles loop must show its last message, not "Thinking…".
+  midTurn?: boolean
   tags?: string[]
   forked_from?: string | null
   source_links?: Array<{
@@ -1053,11 +1058,18 @@ function ChatSidebar({
       // A slot with a live dynamic-workflow run counts as running so the
       // "In progress" filter (and its count) surfaces it, even though the
       // parent turn has ended while the run executes in the background.
-      return { ...s, running: s.running || !!workflowActive[s.key], unread: unreadSet.has(s.key), recent }
+      // An active goal loop (auto-nudge) counts too: a looping session idles
+      // between cycles with running=false, but it is still mid-mission — its
+      // row shows "Loop N/M", so dropping it from "In progress" undercounts.
+      // Own-property read, matching the row renderer: the store normalizes
+      // writes through `safeKey`, so a bare index read could resolve a
+      // `__proto__`-like key to a truthy `Object.prototype`.
+      const looping = Object.prototype.hasOwnProperty.call(goalLoops ?? {}, s.key)
+      return { ...s, running: s.running || !!workflowActive[s.key] || looping, midTurn: s.running, unread: unreadSet.has(s.key), recent }
     })
     // `recentTick` is an intentional dep: it forces recency to re-evaluate on
     // the heartbeat above so idle sessions age out of the Recent filter.
-  }, [slots, unreadSet, recentWindowMs, recentTick, workflowActive]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [slots, unreadSet, recentWindowMs, recentTick, workflowActive, goalLoops]) // eslint-disable-line react-hooks/exhaustive-deps
   const filterCounts = useMemo(() => {
     const counts = {} as Record<SessionFilterKey, number>
     for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = enrichedSlots.filter(slot => slot[filterDef.key]).length
@@ -2161,11 +2173,14 @@ function ChatSidebar({
     // loop line's trailing detail. This is why the loop branch can outrank the
     // working signals below without swallowing them: live workflow/subagent/tool
     // status still shows, and between cycles it falls back to the last message.
+    // Reads `midTurn` (the raw turn flag), NOT `running`: enrichment widens
+    // `running` to include this very loop, and an idle-between-cycles row must
+    // say "Loop 7/24 · <last message>", not "Loop 7/24 · Thinking…".
     const goalLoopDetail = wfActive
       ? wfActive.label
       : subagentCount > 0
         ? subagentLabel
-        : s.running
+        : s.midTurn
           ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
