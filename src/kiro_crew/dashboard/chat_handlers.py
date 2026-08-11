@@ -769,8 +769,14 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot} — message history for a slot.
 
     Query params:
-      - ``limit``: max messages to return (optional; if omitted, returns ALL messages from disk)
-      - ``before``: return messages before this index (legacy pagination, still supported)
+      - ``limit``: max messages to return (optional; if omitted, returns ALL messages from disk).
+        Clamped to 1..500. A value below 1 is rejected rather than clamped up, because
+        no caller asking for 0 wanted exactly one message.
+      - ``before``: return messages before this index (legacy pagination, still supported).
+        ``before=0`` is valid and yields an empty page.
+
+    Either param being a non-integer is a 400; both used to raise out of the
+    handler and surface as a 500.
 
     By default (no limit), reads the full chained history from disk across
     gateway restarts. Pagination params are retained for backwards compatibility.
@@ -782,23 +788,46 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
 
     limit_raw = request.query.get("limit")
-    before = request.query.get("before")
+    before_raw = request.query.get("before")
+
+    # Both params arrive as strings and were converted at their point of use, so a
+    # non-integer escaped as a ValueError and the client saw a 500 for what is
+    # plainly a bad request. The branch below still keys off the RAW values, so
+    # routing is unchanged.
+    try:
+        limit = min(int(limit_raw or "200"), 500)
+        before = int(before_raw) if before_raw is not None else None
+    except ValueError:
+        return web.json_response(
+            {"error": "limit and before must be integers", "code": "invalid_query_params"},
+            status=400,
+        )
+    # Clamped above but not below, limit=0 made `start == end`: an empty page
+    # reporting has_more true, which paginates forever.
+    if limit < 1:
+        return web.json_response(
+            {"error": "limit must be >= 1", "code": "limit_out_of_range"}, status=400
+        )
 
     # No limit → load ALL messages (chained across gateway restarts).
     # In-memory slot.messages is authoritative for the current session.
     # _disk_older_count gates whether to read disk AND provides the stable
     # slice boundary (set at restore/resume, never drifts with new messages).
-    if limit_raw is None and before is None:
+    if limit_raw is None and before_raw is None:
         mem_msgs = list(slot.messages)
         if slot._disk_older_count > 0 and state.conversation_log:
             history_key = slot_history_key(slot)
             try:
-                disk_msgs = state.conversation_log.read_messages_chained(history_key)
+                disk_msgs = await asyncio.to_thread(
+                    state.conversation_log.read_messages_chained, history_key
+                )
             except Exception:
                 logger.warning("read_messages_chained failed for %s", history_key, exc_info=True)
                 disk_msgs = []
             older = disk_msgs[: slot._disk_older_count] if disk_msgs else []
-            messages = older + mem_msgs
+            # Re-read the tail after the await: that suspension point lets a message
+            # land mid-read, and the client replaces its list with this response.
+            messages = older + list(slot.messages)
         else:
             messages = mem_msgs
         total = len(messages)
@@ -806,11 +835,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     else:
         # Legacy pagination path (retained for programmatic callers).
         # Always reads from chained disk history; no in-memory offset math.
-        limit = min(int(limit_raw or "200"), 500)
         history_key = slot_history_key(slot)
         try:
             all_msgs = (
-                state.conversation_log.read_messages_chained(history_key)
+                await asyncio.to_thread(
+                    state.conversation_log.read_messages_chained, history_key
+                )
                 if state.conversation_log
                 else []
             )
@@ -828,7 +858,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             all_msgs = list(all_msgs) + list(slot.messages[-unflushed:])
         total = len(all_msgs)
         if before is not None:
-            end = max(0, min(int(before), total))
+            end = max(0, min(before, total))
         else:
             end = total
         start = max(0, end - limit)
