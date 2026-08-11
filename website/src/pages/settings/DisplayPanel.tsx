@@ -29,6 +29,7 @@ import {
 } from '../../hooks/useTerminalFont'
 
 import { i18nT } from '../../i18n/t'
+import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import ErrorNotice from '../../components/ErrorNotice'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
@@ -68,7 +69,7 @@ export function DisplayPanel() {
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
-  const { preference, setTheme, colorTheme, setColorTheme, allThemes, loadCustomThemes, themeSwitching } = useTheme()
+  const { preference, setTheme, colorTheme, setColorTheme, allThemes, loadCustomThemes, themeSwitching, overridesDropReport } = useTheme()
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
   const termFont = useTerminalFont()
@@ -319,6 +320,13 @@ export function DisplayPanel() {
             </div>
             {themeSwitching && <StatusIndicator label={i18nT('pages.settings.displayPanel.applying')} />}
           </div>
+          {/* Surface scoper-dropped overrides.css rules for the ACTIVE
+              theme. The slug guard is belt-and-braces for the switch race — the
+              provider clears the report on theme change, but a stale report must
+              never be attributed to the wrong pack. */}
+          {overridesDropReport && colorTheme === `custom-${overridesDropReport.slug}` && (
+            <ThemeDroppedRulesNotice report={overridesDropReport} />
+          )}
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.mode')} description={i18nT('pages.settings.displayPanel.light_or_dark_appearance_for_the_dashboard')} value={preference}
             options={[
               { value: 'system', label: 'Auto', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> },

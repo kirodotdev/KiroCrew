@@ -326,3 +326,55 @@ describe('DisplayPanel – zoom setting', () => {
     expect(screen.queryByText('Font Size')).not.toBeInTheDocument()
   })
 })
+
+describe('DisplayPanel – dropped overrides notice', () => {
+  // The runtime scoper silently removes overrides.css rules the theming
+  // contract disallows; the ONLY other signal is a console warning no dashboard
+  // user has open. These pin the Settings-side surface: shown for the active
+  // pack with the rule names an author needs, absent otherwise.
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const REPORT = { slug: 'manrope', rules: ['body { --font-body }', '.session-card'] }
+
+  it('names the dropped rules when the active theme had rules removed', () => {
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      colorTheme: 'custom-manrope',
+      overridesDropReport: REPORT,
+    }))
+    renderWithProviders(<DisplayPanel />)
+    expect(screen.getByText("Some of this theme's styles were ignored")).toBeInTheDocument()
+    // The rule names are the actionable part — a bare count tells an author
+    // nothing to edit.
+    expect(screen.getByText(/body \{ --font-body \}/)).toBeInTheDocument()
+    expect(screen.getByText(/\.session-card/)).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: 'Theming guide' })
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'))
+  })
+
+  it('renders nothing when no rules were dropped', () => {
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      colorTheme: 'custom-manrope',
+      overridesDropReport: null,
+    }))
+    renderWithProviders(<DisplayPanel />)
+    expect(screen.queryByText("Some of this theme's styles were ignored")).not.toBeInTheDocument()
+  })
+
+  it('ignores a report that belongs to a theme other than the active one', () => {
+    // Belt-and-braces for the switch race: the provider clears the report on
+    // theme change, but a stale report must still never be attributed to the
+    // wrong pack in the UI.
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      colorTheme: 'custom-other',
+      overridesDropReport: REPORT,
+    }))
+    renderWithProviders(<DisplayPanel />)
+    expect(screen.queryByText("Some of this theme's styles were ignored")).not.toBeInTheDocument()
+  })
+})
