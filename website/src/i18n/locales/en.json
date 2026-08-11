@@ -6513,6 +6513,7 @@
       "select_an_archive_to_view_its_contents": "Select an archive to view its contents.",
       "no_archives_with_compaction_hint": "No archives. Archives are created when session files are rotated (>2MB) or compacted. Auto-compaction is controlled by <settingRef/>."
     },
+    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_one": "Older than {{days}} days — {{count}} session · {{size}}",
       "age_option_other": "Older than {{days}} days — {{count}} sessions · {{size}}",
@@ -6928,17 +6929,6 @@
         "use_an_absolute_path_no": ").\n            Use an absolute path (no",
         "enable_via_setting": "Alternatively, set <settingRef/>, then run <restartCmd/>."
       },
-      "mcpPoolableServers": {
-        "blocked": "blocked",
-        "could_not_load_mcp_servers": "Could not load MCP servers.",
-        "loading_mcp_servers": "Loading MCP servers…",
-        "no_mcp_servers_configured": "No MCP servers configured.",
-        "poolable_mcp_servers": "Poolable MCP servers",
-        "poolable_true": "poolable:true",
-        "pooling_takes_effect_when_the_shared_mcp_gateway": "Pooling takes effect when the shared MCP gateway is enabled. You can pre-configure which\n            servers are poolable here either way.",
-        "shared": "· shared",
-        "used_by": "used by"
-      },
       "notificationsPanel": {
         "app": "app",
         "mute_notification_sources_or_override_their_prio": "Mute notification sources or override their priority. Muted notifications stay in history but never badge, sound, or banner.",
@@ -7020,27 +7010,6 @@
         "the_strictest_boundary_in_effect_for_each_govern": "The strictest boundary in effect for each governed scope on the",
         "tool_approval": "Tool Approval",
         "your_custom_denies": "Your custom denies"
-      },
-      "sharedMcpGatewayToggle": {
-        "cancel": "Cancel",
-        "close": "Close",
-        "continue": "Continue",
-        "mcp_apps": "MCP Apps",
-        "mcp_apps_applies_to_new": "Saved. Applies to new MCP connections; ones already running pick it up when they recycle.",
-        "mcp_apps_gateway_started": "Shared MCP gateway started. Active sessions were restarted with MCP Apps on.",
-        "mcp_apps_no_poolable_servers": "No MCP servers are poolable yet, so nothing can render. Enable at least one under Poolable MCP servers below.",
-        "mcp_apps_saved_unsupported": "Saved. MCP Apps needs the shared MCP gateway, which is not available on this platform.",
-        "mcp_apps_retry_gateway": "Retry starting the gateway",
-        "mcp_apps_capability": "Render interactive UI from MCP servers in chat.",
-        "mcp_apps_failed": "Could not apply. The setting was not changed.",
-        "mcp_apps_needs_gateway": "Takes effect once the shared MCP gateway above is on.",
-        "mcp_apps_will_start_gateway": "Turning this on also starts the shared MCP gateway, which restarts active sessions.",
-        "mcp_apps_starting_gateway": "Starting the shared MCP gateway — active sessions will restart…",
-        "mcp_apps_gateway_follow_failed": "MCP Apps is saved, but the shared MCP gateway did not come up. Toggle the shared MCP gateway off and on above to retry.",
-        "not_available_on_windows": "Not available on Windows — the shared gateway needs Unix-domain sockets. Supported on macOS and Linux.",
-        "roll_back_disable": "Roll back (disable)",
-        "shared_mcp_gateway": "Shared MCP gateway",
-        "this_restarts_all_active_sessions_onto_the_new_m": "This restarts all active sessions onto the new MCP routing — in-flight work will be interrupted. Your dashboard stays signed in. Continue?"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Bind chat-tab switching to Ctrl+digit instead of Option+digit",
@@ -7745,8 +7714,7 @@
       "present": "present,",
       "slot_one": "{{count}} slot",
       "slot_other": "{{count}} slots"
-    },
-    "sessionMemoryCard": {}
+    }
   },
   "settings": {
     "tabs": {

@@ -147,3 +147,33 @@ unrelated session.
   per-session by construction; giving them stubs is a separate change.
 - HTTP/SSE MCP entries. They need no stub and stay raw in the settings overlay.
 - Per-server MCP Apps control. Orthogonal to stub emission.
+
+## Superseded: the stub is opt-in per server, not unconditional
+
+Making the stub unconditional separated two questions that had been fused — *does
+a stub exist* and *is the backend shared* — and that separation is what this note
+still describes correctly. Its **default** did not survive.
+
+Emitting a stub for every stdio server made an upgrade add a daemon plus one proxy
+process per (server, session) to installs that had asked for neither. On one
+developer machine that was 166 stub processes at ~15.3 MB PSS each. The cost is the
+symptom; the mistake is that a topology change shipped as a default rather than as
+a choice.
+
+What replaced it:
+
+- **`mcp_gateway.stub_servers`** — the per-server opt-in, empty by default.
+  Routing is what interposes a stub, so it is the single per-server decision and the
+  only thing that can grant MCP Apps for that server.
+- **`mcp_gateway.enabled`** — unchanged meaning (share backends), now global over the
+  stub set. There is no per-server sharing switch.
+- **`mcp_gateway.poolable_servers`** — deprecated alias, read only when
+  `stub_servers` is absent. A pooled server already ran behind a stub, so
+  migrating it to the stub set preserves behaviour rather than granting anything.
+- **`mcp_gateway.apps_enabled`** — deprecated and ignored. Capability follows the
+  stub; a preference could not grant it and could not honestly withdraw it.
+- **The broker starts iff something is stubbed.** An empty stub set means no stub,
+  no daemon, and no gateway in the path at all.
+
+The exclusive-backend machinery this note introduced is unchanged and now carries
+the common case: a stubbed server with sharing off gets a connection-private backend.

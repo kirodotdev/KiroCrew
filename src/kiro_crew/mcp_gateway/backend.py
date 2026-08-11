@@ -303,35 +303,42 @@ def mcp_apps_env_override() -> bool | None:
 def _mcp_apps_enabled() -> bool:
     """Feature gate for MCP Apps. **Tightest-wins**: any explicit off disables.
 
-    1. ``KIROCREW_MCP_APPS`` off -> disabled. Absolute kill switch.
-    2. ``mcp_gateway.apps_enabled = false`` -> disabled, EVEN with the env flag
-       on. This is what makes the dashboard opt-out trustworthy across process
-       boundaries: a daemon that outlives its gateway keeps its own environment,
-       so an env-first precedence let an *adopted* daemon carry on rendering
-       after the user had switched the feature off. Deciding it here, in the
-       process that actually renders, needs no cross-process probe of anyone's
-       environment.
-    3. ``KIROCREW_MCP_APPS`` on -> enabled (explicit override for tests and the
-       e2e harness), having cleared the opt-out above.
-    4. Otherwise ``apps_enabled`` alone is enough. Deliberately NOT gated on
-       ``mcp_gateway.enabled``: that switch decides whether a backend may be
-       SHARED, not whether a stub exists, and the stub carries the app-call
-       relay either way. With pooling off each connection gets a private backend
-       that is still addressable by ``storage_digest``, so both the render and
-       the callback resolve -- see ``test_apps_enabled_alone_is_enough``.
+    Capability follows the STUB, not a new preference. This function only ever
+    runs inside a backend, and a backend only exists because a stub reached the
+    broker for a server the operator stubbed, so the opt-in has already happened
+    by the time control is here. That is why there is no *forward-facing* apps
+    switch any more: a preference could not grant the feature (with no stub there
+    is no render or callback path to grant).
 
-    ``apps_enabled`` defaults True when absent, so step 2 fires only on a value
-    an operator actually wrote: "not configured" is not an opt-out.
+    What survives is the two ways an operator can still say **no**:
+
+    1. ``KIROCREW_MCP_APPS`` off -> disabled. Absolute kill switch, for tests,
+       the e2e harness, and an operator who wants a stubbed server's backend
+       shared without its server-authored UI.
+    2. A stored ``mcp_gateway.apps_enabled = false`` -> disabled, EVEN with the
+       env flag on. This key is retired going forward — nothing writes it, the
+       MCP Management page does not surface it, and the docs no longer teach it —
+       but a released version honoured it as a trustworthy opt-out, so a config
+       that already carries ``false`` keeps its opt-out. Dropping it here would
+       silently start executing server-authored UI for the one operator who took
+       the trouble to turn it off. It defaults True when absent, so this fires
+       only on a value someone actually wrote: "not configured" is not an opt-out.
+
+    The released gate had a third leg — it also required ``mcp_gateway.enabled``,
+    because back then the broker existed only when sharing was on. That leg is
+    deliberately gone, and it costs no released behaviour: under the current
+    migration ``enabled: false`` resolves to an EMPTY stub set, so no stub, no
+    backend, and this gate never runs for such an install.
 
     Fails CLOSED: if config cannot be read, the feature is disabled. An
-    unreadable config in gatewayd is an abnormal state, and silently disabling
-    an optional rendering feature is the low-harm outcome versus rendering
-    against an operator preference we could not confirm.
+    unreadable config in gatewayd is an abnormal state, and silently disabling an
+    optional rendering feature is the low-harm outcome versus rendering against
+    an operator preference we could not confirm.
 
     Read per-call (``KiroCrewConfig.load`` is fingerprint-cached, so this is a
     dict lookup in the common case) so the gateway reflects a config change
-    without a daemon restart — including a daemon this gateway merely adopted
-    and therefore cannot restart.
+    without a daemon restart — including a daemon this gateway merely adopted and
+    therefore cannot restart.
     """
     override = mcp_apps_env_override()
     if override is False:
@@ -343,12 +350,7 @@ def _mcp_apps_enabled() -> bool:
     except Exception:  # pragma: no cover - defensive; fail closed
         logger.debug("mcp-apps: config unreadable; treating feature as disabled", exc_info=True)
         return False
-    if not gw.apps_enabled:
-        return False
-    # Deliberately NOT gated on ``gw.enabled``: pooling decides whether backends
-    # are shared, not whether the stub exists. The stub carries the app-call
-    # relay either way.
-    return True
+    return bool(gw.apps_enabled)
 
 
 def _inject_client_extensions(msg: dict[str, Any]) -> dict[str, Any]:

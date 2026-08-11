@@ -388,6 +388,33 @@ def _safe_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
+    """Which MCP servers are given a stub.
+
+    ``poolable_servers`` is the deprecated spelling and is consulted ONLY when
+    ``stub_servers`` is absent from the file. Key presence, not truthiness, is
+    the test: an operator who wrote ``stub_servers: []`` chose to stub nothing,
+    and silently falling back to a stale ``poolable_servers`` would re-stub
+    servers they had just cleared.
+
+    The migration reproduces the stub set the operator was ALREADY RUNNING, which
+    is why it is also conditional on ``enabled``. Before the stub became its own
+    per-server decision, the broker was gated on ``enabled`` alone, so a config
+    with ``enabled: false`` produced no broker, no overlay and no stub no matter
+    what ``poolable_servers`` held. Migrating that list unconditionally would
+    hand such an install a daemon and a stub process per server on upgrade —
+    inventing the very topology change this design exists to make optional. An
+    operator whose gateway was off keeps nothing running and opts in per server.
+    """
+    if "stub_servers" in mcp_gateway_data:
+        source = mcp_gateway_data.get("stub_servers")
+    elif _safe_bool(mcp_gateway_data.get("enabled", False), False):
+        source = mcp_gateway_data.get("poolable_servers")
+    else:
+        source = None
+    return [s for s in _safe_list(source) if isinstance(s, str) and s]
+
+
 def _safe_float(
     value: object,
     default: float,
@@ -3783,15 +3810,20 @@ class McpGatewayConfig:
     apps_enabled: bool = field(
         default=True,
         metadata=_meta(
-            "MCP Apps",
-            "Render interactive HTML returned by an MCP server (the MCP Apps "
-            "extension) in chat, and accept callbacks from it. Independent of "
-            "backend sharing: the broker starts for either, and callbacks are "
-            "routed by a stub that is interposed on every stdio server whether or "
-            "not its backend is shared. Either this or backend sharing starts the "
-            "broker; see docs/architecture/design-notes/mcp-stub-decoupling.md. "
-            "Default True — turning it off suppresses "
-            "server-authored UI and leaves sharing untouched.",
+            "MCP Apps (retired, opt-out still honoured)",
+            "RETIRED GOING FORWARD, but a stored `false` KEEPS ITS OPT-OUT. Nothing "
+            "writes this key any more and MCP Management does not surface it: MCP "
+            "Apps capability follows whether a server gets a stub, because the stub "
+            "is what carries the render and callback path, so a preference cannot "
+            "grant it. It can still WITHHOLD it — a released version treated "
+            "`false` here as a trustworthy opt-out, so an operator who turned MCP "
+            "Apps off stays off (tightest-wins: it beats KIROCREW_MCP_APPS=1, and an "
+            "unreadable config fails closed). Absent defaults True, so 'not "
+            "configured' is not an opt-out. To GET server-authored UI, turn on the "
+            "server's stub in MCP Management — and clear a stored `false` here if "
+            "you have one. The only other MCP Apps preference is where it renders "
+            "(dashboard.mcp_app_panel). "
+            "See docs/architecture/design-notes/mcp-stub-decoupling.md.",
         ),
     )
     forward_declared_env: bool = field(
@@ -3839,14 +3871,30 @@ class McpGatewayConfig:
             "concurrency, not this ceiling.",
         ),
     )
+    stub_servers: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Routed Servers",
+            "MCP server names given a stub. The stub interposes a "
+            "stub, which is what makes server-authored UI (MCP Apps) and backend "
+            "sharing possible for that server — so it is the one per-server "
+            "decision. Empty by default: an unstubbed server is launched by the "
+            "session itself, the same process topology as running without the "
+            "broker, and an empty list means no broker runs at all. Whether "
+            "stubbed servers SHARE one backend is the separate global switch "
+            "(mcp_gateway.enabled). Managed from MCP Management.",
+        ),
+    )
     poolable_servers: list[str] = field(
         default_factory=list,
         metadata=_meta(
-            "Poolable Servers",
-            "MCP server names allowed to share a pooled backend across sessions. "
-            "A stdio server is pooled when its name appears here OR its agent-JSON "
-            "entry sets poolable:true. Safe by default — non-listed servers run "
-            "per-session. Managed from Settings -> Shared MCP gateway.",
+            "Poolable Servers (deprecated)",
+            "DEPRECATED alias for stub_servers. Read only when stub_servers "
+            "is absent, so a config written before the stub became the per-server "
+            "decision keeps working: a server that was pooled already had a stub, "
+            "so migrating it to the stub set preserves its behaviour. There is no "
+            "per-server sharing switch any more — sharing is global over the "
+            "stub set.",
         ),
     )
     prewarm_count: int = field(
@@ -5973,6 +6021,7 @@ class KiroCrewConfig:
                 poolable_servers=[
                     s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
                 ],
+                stub_servers=_resolve_stub_servers(mcp_gateway_data),
                 prewarm_count=max(0, _safe_int(mcp_gateway_data.get("prewarm_count", 0), 0)),
                 read_buffer_limit_bytes=max(
                     1024,
@@ -6341,14 +6390,15 @@ class KiroCrewConfig:
         # configured default instead of the provider/model default.
         default_effort = self.agent.reasoning_effort
 
-        # MCP gateway: resolve overlay + socket once when the stub layer is
-        # needed. The stub is the addressing layer MCP Apps routes callbacks
-        # through, so it is required whenever EITHER pooling or MCP Apps is on —
-        # with pooling off the stubs are still emitted, each connection just
-        # gets its own backend. None only when neither is on -> AcpClient falls
-        # through to per-session MCP with no gateway in the path at all.
+        # MCP gateway: resolve overlay + socket once, iff some server is stubbed
+        # through the gateway. Routing is what puts a stub in the path, and the
+        # stub is what carries both the render/callback path and any sharing —
+        # so an empty stub set means no stub, no daemon, and no gateway in the
+        # path at all (AcpClient falls through to per-session MCP). Sharing
+        # (``enabled``) is not consulted here: it decides how a stubbed server's
+        # backend is ACQUIRED, and on its own routes nothing.
         _gw = self.mcp_gateway
-        if _gw.enabled or _gw.apps_enabled:
+        if _gw.stub_servers:
             _gw_overlay = _gw.overlay_dir or str(default_overlay_dir())
             _gw_socket = _gw.socket_path or str(default_socket_path())
             _gw_settings = str(Path(_gw_overlay).parent / "settings" / "mcp.json")

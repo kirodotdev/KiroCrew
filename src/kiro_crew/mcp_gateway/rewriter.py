@@ -32,7 +32,7 @@ from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
 
-# Reserved for MCP servers that explicitly opt out of broker routing even
+# Reserved for MCP servers that explicitly opt out of the broker even
 # when they could support it (e.g. dev/diagnostic servers that want the
 # operator to see one process per session). The preferred signalling path is
 # a backend NOT advertising ``kirocrew.caller-identity`` in its initialize
@@ -320,7 +320,7 @@ def _rewrite_single_spec(
     work_dir: Path,
     sandbox_mode: str,
     approval_mode: str,
-    poolable_servers: frozenset[str],
+    stub_servers: frozenset[str],
     pooling_enabled: bool = True,
     inject_servers: dict[str, Any] | None = None,
     target_env: dict[str, str] | None = None,
@@ -386,9 +386,23 @@ def _rewrite_single_spec(
             # in _injectable_settings_servers.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        is_poolable = pooling_enabled and (
-            entry.get("poolable") is True or name in poolable_servers
-        )
+        # The stub is opt-in per server, and ``mcp_gateway.stub_servers`` is the
+        # ONLY thing that opts one in. An unstubbed server passes through
+        # untouched, so the session launches it directly — the same process
+        # topology as running with no broker at all, and no stub process to pay
+        # for. Strip only the internal ``poolable`` hint, which is ours and not
+        # kiro-cli's.
+        #
+        # A spec-level ``poolable: true`` deliberately does NOT opt a server in
+        # any more. It cannot: the broker and the session's overlay are both
+        # gated on the config list, and teaching those gates to read agent specs
+        # would put filesystem IO behind every ``KiroCrewConfig.load()`` (244
+        # call sites, uncached). Honouring it only in this function produced a
+        # stub nothing pointed at, and a dashboard row that read "stub" for a
+        # server that had none. One source of truth instead.
+        if name not in stub_servers:
+            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
         new_servers[name] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=name,
@@ -399,7 +413,9 @@ def _rewrite_single_spec(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
-            poolable=is_poolable,
+            # Sharing is global over the stub set: being stubbed is the only
+            # per-server decision, so there is nothing further to consult here.
+            poolable=pooling_enabled,
         )
         wrapped += 1
 
@@ -426,6 +442,12 @@ def _rewrite_single_spec(
         if name in new_servers or alias in new_servers:
             continue
         if not isinstance(entry, dict) or "command" not in entry:
+            continue
+        # The stub is opt-in here too, from the same single source. A settings
+        # level server nobody listed is left for the session to launch itself, so
+        # this path cannot reintroduce the stub-per-server default through the
+        # back door — and a spec-level ``poolable: true`` cannot either.
+        if not (name in stub_servers or alias in stub_servers):
             continue
         inject_sig = (entry["command"], _hashable_args(entry.get("args")))
         if inject_sig in seen_targets:
@@ -469,11 +491,7 @@ def _rewrite_single_spec(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
-            poolable=pooling_enabled and (
-                entry.get("poolable") is True
-                or name in poolable_servers
-                or alias in poolable_servers
-            ),
+            poolable=pooling_enabled,
         )
         wrapped += 1
         seen_targets.add(inject_sig)
@@ -485,10 +503,18 @@ def _rewrite_single_spec(
 
 def _injectable_settings_servers(
     settings_spec: dict[str, Any],
+    stub_servers: frozenset[str],
 ) -> dict[str, Any]:
-    """Return ``{name: raw_entry}`` of stdio servers in the global
-    ``settings/mcp.json`` that must be injected per-agent instead of left in
-    the settings overlay.
+    """Return ``{raw_name: raw_entry}`` of stdio servers in the global
+    ``settings/mcp.json`` that must be RELOCATED out of the settings overlay
+    into a per-agent one.
+
+    The returned set does double duty: every name in it is injected per-agent
+    AND dropped from the settings overlay. Those two must be the SAME set — a
+    server dropped from settings but not injected anywhere simply disappears,
+    taking its MCP tools with it, which is strictly worse than either stubbing
+    it or leaving it alone. So the stub opt-in is applied HERE, once, rather
+    than at the injection loop, where filtering would silently desync the two.
 
     These are exactly the servers that, if wrapped in BOTH the settings
     overlay and a per-agent overlay, collide on name inside kiro-cli (two
@@ -498,6 +524,10 @@ def _injectable_settings_servers(
     the settings overlay, the duplicate disappears. HTTP/SSE settings servers
     are NOT returned — they need no stub and stay raw in the settings overlay,
     merging globally.
+
+    Keys are the RAW settings names, because the caller filters ``src_servers``
+    (raw-keyed) with this set. Stub membership is tested under both the raw name
+    and the slash-free alias, since the config may carry either spelling.
     """
     servers = settings_spec.get("mcpServers") or {}
     out: dict[str, Any] = {}
@@ -519,6 +549,11 @@ def _injectable_settings_servers(
         if "command" not in entry:
             # HTTP/SSE — shareable, no stub needed; leave in settings overlay.
             continue
+        if not (name in stub_servers or mcp_server_alias(name) in stub_servers):
+            # Not stubbed: leave it RAW in the settings overlay so the session
+            # launches it directly. Relocating it here would delete it from the
+            # only overlay that still lists it.
+            continue
         out[name] = entry
     return out
 
@@ -531,7 +566,7 @@ def rewrite_agents(
     work_dir: Path,
     sandbox_mode: str = "auto",
     approval_mode: str = "interactive",
-    poolable_servers: frozenset[str] | None = None,
+    stub_servers: frozenset[str] | None = None,
     pooling_enabled: bool = True,
 ) -> tuple[dict[str, int], dict[str, str]]:
     """Populate ``overlay_dir`` with rewritten copies of ``source_dir/*.json``.
@@ -550,16 +585,21 @@ def rewrite_agents(
         sandbox_mode: Value from ``config.agent.sandbox`` — fed through
             so the stub's PoolKey matches KiroCrew's sandbox policy.
         approval_mode: Value from ``config.agent.approval_mode`` — same.
-        poolable_servers: Server names from ``config.mcp_gateway.poolable_servers``.
-            A stdio server's backend is SHARED across connections when its name
-            is in this set OR its entry sets ``poolable: true``. Every stdio
-            server gets a stub either way — the stub is the addressing layer, and
-            this set only decides whether the backend behind it is shared.
-            ``None`` is treated as an empty set.
-        pooling_enabled: ``config.mcp_gateway.enabled``. When ``False`` no stub
-            is marked shareable, so every connection gets its own backend while
-            stubs stay in place — the state that lets MCP Apps work with pooling
-            entirely off.
+        stub_servers: Server names from ``config.mcp_gateway.stub_servers``.
+            A stdio server gets a stub when its name is in this set — that list is
+            the ONLY trigger. A per-agent-spec ``poolable: true`` is retired and
+            deliberately ignored here: both real gates (the broker start gate and
+            the session overlay) read the config list, so honouring the spec key
+            produced a stub nothing pointed at. It is still stripped before the
+            entry reaches kiro-cli, and still reported as ``entry_poolable`` for
+            information only. An unstubbed server is left untouched for the
+            session to launch itself, which is what keeps the default free of both
+            a daemon and a stub process. ``None`` is treated as an empty set,
+            meaning nothing is rewritten at all.
+        pooling_enabled: ``config.mcp_gateway.enabled``. Sharing is global over
+            the stub set: when ``False`` no stub is marked shareable, so each
+            connection gets its own backend while the stubs stay in place — the
+            state that lets a stubbed server render UI without co-tenancy.
 
     Returns:
         A ``(results, target_env)`` tuple:
@@ -571,7 +611,7 @@ def rewrite_agents(
           these when a stub registers, to find the real backend command
           to spawn for a new pool key.
     """
-    pool_set = poolable_servers or frozenset()
+    stub_set = stub_servers or frozenset()
     if not source_dir.is_dir():
         logger.warning("agent source dir missing: %s", source_dir)
         return {}, {}
@@ -617,7 +657,7 @@ def rewrite_agents(
             loaded = json.loads(kiro_settings_json.read_text())
             if isinstance(loaded, dict):
                 settings_src_spec = loaded
-                settings_poolable = _injectable_settings_servers(loaded)
+                settings_poolable = _injectable_settings_servers(loaded, stub_set)
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("failed to read global mcp.json: %s", exc)
 
@@ -646,7 +686,7 @@ def rewrite_agents(
             work_dir=work_dir,
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
-            poolable_servers=pool_set,
+            stub_servers=stub_set,
             pooling_enabled=pooling_enabled,
             inject_servers=settings_poolable,
             target_env=target_env,

@@ -78,14 +78,25 @@ class TestFlagOff:
         ext = out["params"]["capabilities"]["extensions"]
         assert ext[MCP_APPS_EXTENSION_KEY] == {"mimeTypes": [MCP_APPS_MIME_TYPE]}
 
-    def test_unset_respects_apps_opt_out(self, monkeypatch):
-        """Apps switched off => no capability, even with the env var unset.
+    def test_env_kill_switch_withholds_the_capability(self, monkeypatch):
+        """The one remaining way to serve a stubbed server without its UI.
 
-        This is the adopted-daemon case: ``_shutdown_locked`` refuses to
-        terminate a daemon it did not spawn, so a survivor keeps serving stubs
-        after the operator switches the feature off. Keying the gate on "am I
-        running" would keep intercepting results and spooling payloads (which
-        carry a callback_secret) after an explicit opt-out.
+        This is also the adopted-daemon case: ``_shutdown_locked`` refuses to
+        terminate a daemon it did not spawn, so a survivor keeps serving stubs.
+        The kill switch is read in the process that renders, so it takes effect
+        there without any cross-process probe of anyone's environment.
+        """
+        monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
+        msg = _init_frame(capabilities={})
+        assert _inject_client_extensions(msg) is msg
+
+    def test_stored_config_opt_out_still_withholds(self, monkeypatch):
+        """A stored ``apps_enabled=false`` is a RELEASED opt-out and must hold.
+
+        The key is retired going forward — nothing writes it and no UI surfaces
+        it — but a released version honoured it, so an operator who already
+        turned the feature off must not silently start executing server-authored
+        UI just because their pooled server migrated to a stub.
         """
         monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
         _patch_pooling(monkeypatch, enabled=True, apps_enabled=False)
@@ -118,7 +129,12 @@ class TestFlagOff:
         assert MCP_APPS_EXTENSION_KEY in out["params"]["capabilities"]["extensions"]
 
     def test_unreadable_config_fails_closed(self, monkeypatch):
-        """A config we cannot read must not enable the feature."""
+        """An unreadable config withholds UI rather than rendering on a guess.
+
+        gatewayd cannot read the stored opt-out here, so it cannot confirm the
+        operator wants server-authored UI. Disabling an optional rendering
+        feature is the low-harm outcome.
+        """
         monkeypatch.delenv(MCP_APPS_ENV_FLAG, raising=False)
         import kiro_crew.config.loader as loader
 

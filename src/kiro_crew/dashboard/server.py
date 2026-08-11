@@ -2591,10 +2591,9 @@ async def start_dashboard(
     # Shared MCP gateway (pool)
     app.router.add_get("/api/mcp-gateway/status", handlers.api_mcp_gateway_status)
     app.router.add_post("/api/mcp-gateway/enable", handlers.api_mcp_gateway_enable)
-    app.router.add_post("/api/mcp-gateway/apps-enable", handlers.api_mcp_gateway_apps_enable)
     app.router.add_get("/api/mcp-gateway/metrics", handlers.api_mcp_gateway_metrics)
     app.router.add_get("/api/mcp-gateway/servers", handlers.api_mcp_gateway_servers)
-    app.router.add_post("/api/mcp-gateway/servers/poolable", handlers.api_mcp_gateway_set_poolable)
+    app.router.add_post("/api/mcp-gateway/servers/stub", handlers.api_mcp_gateway_set_stub)
     # AIM integration
     app.router.add_get("/api/capability/mcp", handlers.api_capability_mcp_list)
     app.router.add_post("/api/capability/mcp/install", handlers.api_capability_mcp_install)

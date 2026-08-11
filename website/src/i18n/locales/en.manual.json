@@ -2161,78 +2161,30 @@
     "webhooks": "Webhooks"
   },
   "pages": {
-    "capabilitiesPage": {
-      "crews_label": "Agents",
-      "crews_description": "Agents you chat with, each with its own workspace",
-      "templates_label": "Agent Templates",
-      "templates_description": "Manage what each agent starts from: its model, skills, tools, MCP servers, and guardrails",
-      "connections_label": "Connections",
-      "connections_description": "Connect official services and manage custom MCP servers",
-      "skills_label": "Skills",
-      "skills_description": "Specialized knowledge files your agent loads on demand for specific tasks",
-      "steering_label": "Steering",
-      "steering_description": "Always-on markdown conventions from ~/.kiro/steering and your project’s .kiro/steering",
-      "hooks_label": "Hooks",
-      "hooks_description": "Shell commands that run automatically on agent events like prompts, tool calls, and session start/stop",
-      "prompts_label": "Prompts",
-      "prompts_description": "Reusable prompt templates from {{registry}}"
-    },
-    "connectionsPage": {
-      "access": "Access",
-      "account": "Account",
-      "action_failed": "Action failed: {{error}}",
-      "authorized_account": "Authorized account",
-      "cancel": "Cancel",
-      "complete_connection": "Complete",
-      "connect": "Connect",
-      "connected": "Connected",
-      "connected_since": "Connected since",
-      "connecting": "Connecting…",
-      "connection_healthy": "Connection is healthy.",
-      "connection_invalid": "{{provider}} says this connection is no longer valid.",
-      "connection_views": "Connection views",
-      "connections": "Connections",
-      "could_not_load_status": "Connection status could not be loaded. Cards may be out of date.",
-      "disconnect": "Disconnect",
-      "disconnect_help": "Disconnecting removes the local connection. Revoking the provider grant is a separate step.",
-      "disconnected_locally": "Disconnected locally. Revoke access at the provider to cancel the grant completely.",
-      "documentation": "Documentation",
-      "finish_approving_in_browser": "Finish approving in your browser…",
-      "invalid_return_address": "Paste the full http://127.0.0.1:PORT/?code=… address from your browser.",
-      "managed_by_connections": "Managed by Connections",
-      "mcp_servers": "MCP Servers",
-      "needs_attention": "Needs attention",
-      "no_matching_services": "No services match this search.",
-      "not_connected": "Not connected",
-      "official_mcp_server": "Official MCP server",
-      "open_managed_connection": "Open the {{provider}} connection card",
-      "reconnect": "Reconnect",
-      "reconnecting": "Reconnecting…",
-      "recommended_access": "Recommended scopes: {{scopes}}",
-      "relaying": "Sending…",
-      "remote_gateway_help": "If the final browser page could not connect, that is expected when your gateway is on another machine. Copy the full address from the browser and paste it here.",
-      "reopen_approval": "Re-open approval",
-      "return_address": "Return address",
-      "return_address_placeholder": "http://127.0.0.1:PORT/?code=…",
-      "return_address_delivered": "Return address delivered. Checking the connection…",
-      "revoke_at_provider": "Revoke at {{provider}}",
-      "search_services": "Search services",
-      "service_value_prop": "Let agents use {{provider}} through its official MCP server.",
-      "services": "Services",
-      "services_available": "{{value}} available",
-      "test_connection": "Test",
-      "test_failed": "The provider did not pass the connection test.",
-      "testing": "Testing…",
-      "tool_controlled_access": "Access is controlled by enabled tools.",
-      "unknown_error": "Unknown error",
-      "waiting_for_approval": "Waiting for approval",
-      "waiting_for_approval_address": "Waiting for the approval address… it appears here when the agent next connects — send any chat message to start authorization now."
-    },
     "agentsPage": {
       "consumption_for_current_billing_period": "{{provider}} consumption for the current billing period. Cached 10 min.",
       "context_window_usage_tip": "Live context window utilization per active {{label}} session. Custom agents show their configured model. Compaction triggers at 90%.",
       "default": "Default",
       "delete_subagent": "Delete subagent {{id}}"
+    },
+    "aidlc": {
+      "taskDetailPanel": {
+        "depend_on_task": "Depend on Task {{n}}: {{title}}",
+        "requires_approval_before_execution_2": "Requires approval before execution.",
+        "save_failed_try_again": "Save failed — try again",
+        "task_with_title": "Task {{n}} ({{title}})",
+        "this_gate_blocks_force_approval_true": "This gate blocks. force_approval=true."
+      },
+      "dagView": {
+        "cancelling": "Cancelling",
+        "done": "Done",
+        "needs_approval": "Needs Approval",
+        "paused": "Paused",
+        "pausing": "Pausing",
+        "pending": "Pending",
+        "reviewing": "Reviewing",
+        "running": "Running"
+      }
     },
     "appDetailPage": {
       "app_not_found_2": "App \"{{name}}\" not found",
@@ -2403,6 +2355,22 @@
       "table": "Table",
       "this_folder_is_empty_drag_artifacts_onto_it_to_f": "This folder is empty. Drag artifacts onto it to file them here.",
       "untitled_artifact_name": "Untitled"
+    },
+    "capabilitiesPage": {
+      "crews_label": "Agents",
+      "crews_description": "Agents you chat with, each with its own workspace",
+      "templates_label": "Agent Templates",
+      "templates_description": "Manage what each agent starts from: its model, skills, tools, MCP servers, and guardrails",
+      "connections_label": "Connections",
+      "connections_description": "Connect official services and manage custom MCP servers",
+      "skills_label": "Skills",
+      "skills_description": "Specialized knowledge files your agent loads on demand for specific tasks",
+      "steering_label": "Steering",
+      "steering_description": "Always-on markdown conventions from ~/.kiro/steering and your project’s .kiro/steering",
+      "hooks_label": "Hooks",
+      "hooks_description": "Shell commands that run automatically on agent events like prompts, tool calls, and session start/stop",
+      "prompts_label": "Prompts",
+      "prompts_description": "Reusable prompt templates from {{registry}}"
     },
     "channelPage": {
       "failed_to_add_agent": "Failed to add agent",
@@ -2731,6 +2699,57 @@
       "sort_name_desc": "Z → A",
       "clear_named_filter": "Clear {{filter}} filter"
     },
+    "connectionsPage": {
+      "access": "Access",
+      "account": "Account",
+      "action_failed": "Action failed: {{error}}",
+      "authorized_account": "Authorized account",
+      "cancel": "Cancel",
+      "complete_connection": "Complete",
+      "connect": "Connect",
+      "connected": "Connected",
+      "connected_since": "Connected since",
+      "connecting": "Connecting…",
+      "connection_healthy": "Connection is healthy.",
+      "connection_invalid": "{{provider}} says this connection is no longer valid.",
+      "connection_views": "Connection views",
+      "connections": "Connections",
+      "could_not_load_status": "Connection status could not be loaded. Cards may be out of date.",
+      "disconnect": "Disconnect",
+      "disconnect_help": "Disconnecting removes the local connection. Revoking the provider grant is a separate step.",
+      "disconnected_locally": "Disconnected locally. Revoke access at the provider to cancel the grant completely.",
+      "documentation": "Documentation",
+      "finish_approving_in_browser": "Finish approving in your browser…",
+      "invalid_return_address": "Paste the full http://127.0.0.1:PORT/?code=… address from your browser.",
+      "managed_by_connections": "Managed by Connections",
+      "mcp_servers": "MCP Servers",
+      "needs_attention": "Needs attention",
+      "no_matching_services": "No services match this search.",
+      "not_connected": "Not connected",
+      "official_mcp_server": "Official MCP server",
+      "open_managed_connection": "Open the {{provider}} connection card",
+      "reconnect": "Reconnect",
+      "reconnecting": "Reconnecting…",
+      "recommended_access": "Recommended scopes: {{scopes}}",
+      "relaying": "Sending…",
+      "remote_gateway_help": "If the final browser page could not connect, that is expected when your gateway is on another machine. Copy the full address from the browser and paste it here.",
+      "reopen_approval": "Re-open approval",
+      "return_address": "Return address",
+      "return_address_placeholder": "http://127.0.0.1:PORT/?code=…",
+      "return_address_delivered": "Return address delivered. Checking the connection…",
+      "revoke_at_provider": "Revoke at {{provider}}",
+      "search_services": "Search services",
+      "service_value_prop": "Let agents use {{provider}} through its official MCP server.",
+      "services": "Services",
+      "services_available": "{{value}} available",
+      "test_connection": "Test",
+      "test_failed": "The provider did not pass the connection test.",
+      "testing": "Testing…",
+      "tool_controlled_access": "Access is controlled by enabled tools.",
+      "unknown_error": "Unknown error",
+      "waiting_for_approval": "Waiting for approval",
+      "waiting_for_approval_address": "Waiting for the approval address… it appears here when the agent next connects — send any chat message to start authorization now."
+    },
     "devFleetPage": {
       "applies_the_last_pull_build_the_dashboard_will_b": "Applies the last Pull+Build. The dashboard will briefly disconnect and reconnect on its own.",
       "building": "Building…",
@@ -2844,6 +2863,42 @@
       "restart_pending": "Restart pending",
       "cutover_staged_run_the_restart_command_to_finish": "Cutover staged: this worktree becomes live when the gateway next starts. Run `{{cmd}}` to finish it — the gateway is still running the previous checkout until then.",
       "stages_the_code_behind_the_live_dashboard_manual": "Stages this worktree as the live target (same port, same data). Dev Fleet cannot restart this gateway, so the swap takes effect when you run `{{cmd}}` yourself — this page will NOT reconnect on its own. Refused unless the worktree is provisioned and built."
+    },
+    "developerPage": {
+      "tabs": {
+        "archive": {
+          "description": "Rotated/compacted session history (7-day retention)",
+          "label": "Archive"
+        },
+        "config": {
+          "description": "Preview-page opt-ins, plus Kiro Crew and agent configuration viewers (read-only)",
+          "label": "Config"
+        },
+        "logs": {
+          "description": "Live log viewer with level filtering and search",
+          "label": "Logs"
+        },
+        "mcpPool": {
+          "description": "Stub MCP servers and share their backends across sessions",
+          "label": "MCP Management"
+        },
+        "memory": {
+          "description": "Memory graph, embedding provider, and vector store internals",
+          "label": "Memory"
+        },
+        "storage": {
+          "description": "localStorage usage, quotas, and garbage collection",
+          "label": "Storage"
+        },
+        "system": {
+          "description": "CPU, memory, network, and process metrics",
+          "label": "System"
+        },
+        "telemetry": {
+          "description": "Credit spend, context cost, and session startup latency",
+          "label": "Telemetry"
+        }
+      }
     },
     "hooksPage": {
       "config": "config",
@@ -2968,6 +3023,41 @@
       "tail_on": "Tail: on",
       "wrap_off": "Wrap: off",
       "wrap_on": "Wrap: on"
+    },
+    "mcpManagement": {
+      "cancel": "Cancel",
+      "col_server": "Server",
+      "col_state": "State",
+      "col_stub": "Stub",
+      "col_used_by": "Used by",
+      "confirm_lede": "Every server you have stubbed will route to one shared backend process instead of its own — right now that is {{count}}.",
+      "confirm_restart": "Chats you already have open keep the setup they started with — reopen one to pick this up.",
+      "confirm_reversible": "Turning this back off gives each session its own backend again and keeps your stub choices.",
+      "confirm_stateful": "A server that holds per-session state should stay stub-only, or expect co-tenants.",
+      "confirm_title": "Share backends across sessions?",
+      "confirm_turn_on": "Turn on sharing",
+      "learn_more": "Learn more",
+      "learn_more_docs": "Learn more in the docs",
+      "lede": "Kiro Crew can put its own stub in front of an MCP server instead of letting every session launch that server itself. The stub is what makes server-authored UI (MCP Apps) possible, and it is the only thing a shared backend can be routed through — so it is opt-in, per server. {{link}}",
+      "legend": "direct — the session launches the server itself, exactly as without Kiro Crew. stub — Kiro Crew's stub is in the path, so the server can render its own UI; the backend is still this session's own. shared — the stub routes to one backend shared with other sessions. A server without a stdio pipe cannot be stubbed.",
+      "no_servers": "No MCP servers are configured yet.",
+      "open_sessions_note": "Changes here apply to new chats. A chat that is already open keeps the servers it started with until you reopen it.",
+      "servers_failed": "Could not load the server list. This is not the same as having none configured.",
+      "sharing_description": "Sessions with an identical server configuration route to one shared backend process. Applies to every stubbed server below — there is no per-server sharing switch.",
+      "sharing_failed": "Could not apply backend sharing. It may already be saved without being live — the switch above now shows the stored state.",
+      "sharing_label": "Share backends across sessions",
+      "sharing_needs_a_stub": "Stub at least one server below to enable sharing.",
+      "sharing_not_live": "Sharing is saved, but the shared backend is not reachable yet.",
+      "sharing_on_but_nothing_stubbed": "Sharing is on, but nothing is stubbed — it takes effect once you stub a server below.",
+      "state_direct": "direct",
+      "state_no_stub": "no stdio",
+      "state_shared": "shared",
+      "state_stub": "stub",
+      "stub_aria": "Put a stub in front of {{name}}",
+      "stub_failed": "Could not apply the change. It may already be saved without being live — the switches below now show the stored state.",
+      "stub_not_live": "Saved, but the change is not live yet — the gateway could not start. The switch shows what is stored, not what is running.",
+      "stubbed_of_total": "{{stubbed}} of {{total}} stubbed",
+      "unsupported_platform": "Backend sharing needs Unix-domain sockets, so it is unavailable on this platform."
     },
     "migrationPage": {
       "clean_up_old_entry": "Clean up old entry",
@@ -3384,14 +3474,6 @@
         "the_app_lists_in_computer_use_json_could_not_be": "The app lists in computer_use.json could not be read, so they are shown empty here. The agent still refuses every action that depends on them until the file is valid JSON.",
         "your_chat_sessions_were_restarted_so_this_takes": "Your chat sessions were restarted so this takes effect right away — Kiro reads its tool list once per session, so an open chat would not have picked it up otherwise. Your messages are still there; the agent re-reads its context on your next message."
       },
-      "mcpPoolableServers": {
-        "could_not_update_all_try_again": "Could not update servers. No changes were made. Try again.",
-        "could_not_update_try_again": "Could not update {{name}}. Try again.",
-        "n_of_m_pooled": "{{on}} of {{total}} poolable servers pooled",
-        "n_of_m_pooled_plus_agent": "{{on}} of {{total}} poolable servers pooled, +{{extra}} via agent config",
-        "pool": "Pool {{name}}",
-        "toggle_all": "Toggle all"
-      },
       "postureDisclosure": {
         "filter": "Filter {{label}}",
         "filter_items": "Filter {{n}} {{unit}}…",
@@ -3753,23 +3835,6 @@
           "ineffective_description": "These names were saved as trusted, but Kiro Crew does not accept them, so the apps are still blocked. Remove them to tidy the list."
         }
       },
-      "sharedMcpGatewayToggle": {
-        "active_sessions_share_pooled_mcp_backends_see_th": "Active — sessions share pooled MCP backends. See the live pool under Developer > System.",
-        "could_not_apply": "Could not apply",
-        "disable_shared_mcp_gateway": "Disable shared MCP gateway?",
-        "disabled_each_session_spawns_its_own_mcp_backend": "Disabled — each session spawns its own MCP backends.",
-        "disabling_shared_mcp_gateway": "Disabling shared MCP gateway",
-        "done": "Done",
-        "enable_shared_mcp_gateway": "Enable shared MCP gateway?",
-        "enabled_broker_not_reachable_toggle_off_and_on_t": "Enabled — broker not reachable; toggle off and on to re-apply.",
-        "enabling_shared_mcp_gateway": "Enabling shared MCP gateway",
-        "gateway_stuck_retry": "The gateway did not reach the expected state. Try again.",
-        "gateway_stuck_roll_back": "The gateway did not reach the expected state. Roll back to the safe (disabled) state, or try again.",
-        "shared_mcp_gateway_is_active": "Shared MCP gateway is active.",
-        "shared_mcp_gateway_is_disabled": "Shared MCP gateway is disabled.",
-        "starting_broker_restarting_sessions_verifying_co": "Starting broker, restarting sessions, verifying connectivity…",
-        "stopping_broker_and_restarting_sessions": "Stopping broker and restarting sessions…"
-      },
       "skillsPanel": {
         "failed_to_save_skills_setting": "Failed to save skills setting"
       },
@@ -3918,61 +3983,6 @@
     "worldsPopout": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
-    },
-    "aidlc": {
-      "taskDetailPanel": {
-        "depend_on_task": "Depend on Task {{n}}: {{title}}",
-        "requires_approval_before_execution_2": "Requires approval before execution.",
-        "save_failed_try_again": "Save failed — try again",
-        "task_with_title": "Task {{n}} ({{title}})",
-        "this_gate_blocks_force_approval_true": "This gate blocks. force_approval=true."
-      },
-      "dagView": {
-        "cancelling": "Cancelling",
-        "done": "Done",
-        "needs_approval": "Needs Approval",
-        "paused": "Paused",
-        "pausing": "Pausing",
-        "pending": "Pending",
-        "reviewing": "Reviewing",
-        "running": "Running"
-      }
-    },
-    "developerPage": {
-      "tabs": {
-        "archive": {
-          "description": "Rotated/compacted session history (7-day retention)",
-          "label": "Archive"
-        },
-        "config": {
-          "description": "Preview-page opt-ins, plus Kiro Crew and agent configuration viewers (read-only)",
-          "label": "Config"
-        },
-        "logs": {
-          "description": "Live log viewer with level filtering and search",
-          "label": "Logs"
-        },
-        "mcpPool": {
-          "description": "Shared MCP gateway and poolable server configuration",
-          "label": "MCP Pool"
-        },
-        "memory": {
-          "description": "Memory graph, embedding provider, and vector store internals",
-          "label": "Memory"
-        },
-        "storage": {
-          "description": "localStorage usage, quotas, and garbage collection",
-          "label": "Storage"
-        },
-        "system": {
-          "description": "CPU, memory, network, and process metrics",
-          "label": "System"
-        },
-        "telemetry": {
-          "description": "Credit spend, context cost, and session startup latency",
-          "label": "Telemetry"
-        }
-      }
     }
   },
   "privacyDisclosure": {

@@ -8240,8 +8240,8 @@
           "label": "लॉग"
         },
         "mcpPool": {
-          "description": "साझा MCP गेटवे और पूल किए जा सकने वाले सर्वर का कॉन्फ़िगरेशन",
-          "label": "MCP पूल"
+          "description": "MCP सर्वरों पर स्टब लगाएँ और उनके बैकएंड सेशनों के बीच साझा करें",
+          "label": "MCP प्रबंधन"
         },
         "memory": {
           "description": "मेमोरी ग्राफ़, एम्बेडिंग प्रोवाइडर और वेक्टर स्टोर की अंदरूनी जानकारी",
@@ -8651,6 +8651,41 @@
       "shared_mcp_gateway": "साझा MCP गेटवे",
       "with_shared_gateway_pooled": "साझा गेटवे के साथ (पूल किया गया)",
       "without_gateway_per_session_copies": "गेटवे के बिना (हर सत्र की अलग कॉपी)"
+    },
+    "mcpManagement": {
+      "cancel": "रद्द करें",
+      "col_server": "सर्वर",
+      "col_state": "स्थिति",
+      "col_stub": "स्टब",
+      "col_used_by": "किसके द्वारा उपयोग",
+      "confirm_lede": "स्टब वाला हर सर्वर अपने अलग बैकएंड के बजाय एक साझा बैकएंड प्रोसेस पर रूट होगा — अभी यह {{count}} है।",
+      "confirm_restart": "जो चैट पहले से खुली हैं वे अपनी शुरुआती कॉन्फ़िगरेशन बनाए रखती हैं — इसे लागू करने के लिए चैट फिर से खोलें।",
+      "confirm_reversible": "इसे बंद करने पर हर सेशन को अपना बैकएंड वापस मिल जाता है और आपके स्टब विकल्प बने रहते हैं।",
+      "confirm_stateful": "प्रति-सेशन स्थिति रखने वाले सर्वर पर केवल स्टब रहने दें, या सह-किरायेदारों की अपेक्षा रखें।",
+      "confirm_title": "सेशनों के बीच बैकएंड साझा करें?",
+      "confirm_turn_on": "साझा करना चालू करें",
+      "learn_more": "और जानें",
+      "learn_more_docs": "दस्तावेज़ में और जानें",
+      "lede": "Kiro Crew हर सेशन को MCP सर्वर खुद शुरू करने देने के बजाय उसके आगे अपना स्टब रख सकता है। स्टब ही सर्वर को अपना UI बनाने (MCP Apps) देता है, और साझा बैकएंड को केवल उसी के ज़रिये रूट किया जा सकता है — इसलिए यह हर सर्वर के लिए अलग से चुना जाता है। {{link}}",
+      "legend": "direct — सेशन सर्वर को खुद शुरू करता है, ठीक वैसे ही जैसे Kiro Crew के बिना। stub — Kiro Crew का स्टब रास्ते में है, इसलिए सर्वर अपना UI बना सकता है; बैकएंड अभी भी इसी सेशन का है। shared — स्टब दूसरे सेशनों के साथ साझा एक बैकएंड पर रूट होता है। stdio पाइप के बिना सर्वर पर स्टब नहीं रखा जा सकता।",
+      "no_servers": "अभी कोई MCP सर्वर कॉन्फ़िगर नहीं है।",
+      "open_sessions_note": "यहाँ किए बदलाव नई चैट पर लागू होते हैं। पहले से खुली चैट अपने शुरुआती सर्वर बनाए रखती है, जब तक आप उसे फिर से न खोलें।",
+      "servers_failed": "सर्वर सूची लोड नहीं हो सकी। इसका अर्थ यह नहीं है कि कोई सर्वर कॉन्फ़िगर नहीं है।",
+      "sharing_description": "एक जैसी सर्वर कॉन्फ़िगरेशन वाले सेशन एक ही बैकएंड प्रोसेस पर रूट होते हैं। नीचे स्टब वाले हर सर्वर पर लागू — प्रति-सर्वर साझा स्विच नहीं है।",
+      "sharing_failed": "बैकएंड साझाकरण लागू नहीं हो सका। यह सहेजा जा चुका हो सकता है पर लागू नहीं — ऊपर का स्विच अब सहेजी गई स्थिति दिखाता है।",
+      "sharing_label": "सेशनों के बीच बैकएंड साझा करें",
+      "sharing_needs_a_stub": "साझाकरण चालू करने के लिए नीचे कम से कम एक सर्वर के लिए स्टब बनाएँ।",
+      "sharing_not_live": "साझाकरण सहेज लिया गया, लेकिन साझा बैकएंड अभी उपलब्ध नहीं है।",
+      "sharing_on_but_nothing_stubbed": "साझाकरण चालू है, लेकिन कोई स्टब नहीं है — नीचे किसी सर्वर का स्टब बनाने पर यह लागू होगा।",
+      "state_direct": "सीधा",
+      "state_no_stub": "stdio नहीं",
+      "state_shared": "साझा",
+      "state_stub": "स्टब",
+      "stub_aria": "{{name}} के आगे स्टब रखें",
+      "stub_failed": "बदलाव लागू नहीं हो सका। यह सहेजा जा चुका हो सकता है पर लागू नहीं — नीचे के स्विच अब सहेजी गई स्थिति दिखाते हैं।",
+      "stub_not_live": "सहेज लिया गया, लेकिन यह अभी लागू नहीं है — गेटवे शुरू नहीं हो सका। स्विच सहेजा गया मान दिखाता है, चल रही स्थिति नहीं।",
+      "stubbed_of_total": "{{total}} में से {{stubbed}} पर स्टब",
+      "unsupported_platform": "बैकएंड साझा करने के लिए Unix डोमेन सॉकेट चाहिए, इसलिए यह इस प्लैटफ़ॉर्म पर उपलब्ध नहीं है।"
     },
     "migrationPage": {
       "app_migration": "ऐप माइग्रेशन",
@@ -9575,6 +9610,7 @@
       "truncated_showing_first_200kb": "… छोटा किया गया (पहले 200KB दिखाए जा रहे हैं) …",
       "no_archives_with_compaction_hint": "कोई आर्काइव नहीं। सत्र फ़ाइलें रोटेट (>2MB) या कॉम्पैक्ट होने पर आर्काइव बनाए जाते हैं। स्वतः-संघनन <settingRef/> द्वारा नियंत्रित होता है।"
     },
+    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_one": "{{days}} दिन से पुराने — {{count}} सत्र · {{size}}",
       "age_option_other": "{{days}} दिन से पुराने — {{count}} सत्र · {{size}}",
@@ -10199,23 +10235,6 @@
         "use_an_absolute_path_no": ")।\n            पूर्ण पथ उपयोग करें (बिना",
         "enable_via_setting": "वैकल्पिक रूप से, <settingRef/> सेट करें, फिर <restartCmd/> चलाएँ।"
       },
-      "mcpPoolableServers": {
-        "blocked": "अवरोधित",
-        "could_not_load_mcp_servers": "MCP सर्वर लोड नहीं हो सके।",
-        "could_not_update_all_try_again": "सर्वर अपडेट नहीं हो सके। कोई बदलाव नहीं हुआ। फिर कोशिश करो।",
-        "could_not_update_try_again": "{{name}} अपडेट नहीं हो सका। फिर कोशिश करो।",
-        "loading_mcp_servers": "MCP सर्वर लोड हो रहे हैं…",
-        "n_of_m_pooled": "{{total}} पूल करने योग्य सर्वर में से {{on}} पूल में",
-        "n_of_m_pooled_plus_agent": "{{total}} पूल करने योग्य सर्वर में से {{on}} पूल में, agent कॉन्फ़िग से {{extra}} और",
-        "no_mcp_servers_configured": "कोई MCP सर्वर कॉन्फ़िगर नहीं है।",
-        "pool": "{{name}} को पूल करो",
-        "poolable_mcp_servers": "पूल करने योग्य MCP सर्वर",
-        "poolable_true": "poolable:true",
-        "pooling_takes_effect_when_the_shared_mcp_gateway": "पूलिंग तब प्रभावी होती है जब साझा MCP गेटवे सक्षम हो। किसी भी स्थिति में आप यहाँ पहले से तय कर सकते हैं कि कौन-से\n            सर्वर पूल करने योग्य हैं।",
-        "shared": "· साझा",
-        "toggle_all": "सभी टॉगल करो",
-        "used_by": "इनके द्वारा उपयोग में:"
-      },
       "notificationsPanel": {
         "always_interrupts_cannot_be_muted_or_lowered": "हमेशा टोकता है — इसे म्यूट या कम नहीं किया जा सकता",
         "app": "app",
@@ -10506,42 +10525,6 @@
           "ineffective_label": "सहेजा गया पर काम नहीं कर रहा",
           "ineffective_description": "ये नाम भरोसेमंद के रूप में सहेजे गए थे, पर Kiro Crew इन्हें स्वीकार नहीं करता, इसलिए ये ऐप अब भी ब्लॉक हैं। सूची साफ़ करने के लिए इन्हें हटा दें।"
         }
-      },
-      "sharedMcpGatewayToggle": {
-        "active_sessions_share_pooled_mcp_backends_see_th": "सक्रिय — सेशन पूल किए गए MCP बैकएंड साझा करते हैं। लाइव पूल डेवलपर > सिस्टम में देखें।",
-        "cancel": "रद्द करें",
-        "close": "बंद करें",
-        "continue": "जारी रखें",
-        "could_not_apply": "लागू नहीं कर सके",
-        "disable_shared_mcp_gateway": "साझा MCP गेटवे बंद करें?",
-        "disabled_each_session_spawns_its_own_mcp_backend": "बंद — हर सेशन अपने MCP बैकएंड खुद शुरू करता है।",
-        "disabling_shared_mcp_gateway": "साझा MCP गेटवे बंद किया जा रहा है",
-        "done": "हो गया",
-        "enable_shared_mcp_gateway": "साझा MCP गेटवे चालू करें?",
-        "enabled_broker_not_reachable_toggle_off_and_on_t": "चालू — ब्रोकर तक नहीं पहुँच सके; फिर से लागू करने के लिए इसे बंद कर के चालू करें।",
-        "enabling_shared_mcp_gateway": "साझा MCP गेटवे चालू किया जा रहा है",
-        "gateway_stuck_retry": "गेटवे अपेक्षित स्थिति तक नहीं पहुँचा। फिर कोशिश करें।",
-        "gateway_stuck_roll_back": "गेटवे अपेक्षित स्थिति तक नहीं पहुँचा। सुरक्षित (बंद) स्थिति पर वापस जाएँ, या फिर कोशिश करें।",
-        "mcp_apps": "MCP ऐप्स",
-        "mcp_apps_applies_to_new": "सहेजा गया। नए MCP कनेक्शन पर लागू होगा; पहले से चल रहे कनेक्शन रीसायकल होने पर इसे अपनाएंगे।",
-        "mcp_apps_gateway_started": "साझा MCP गेटवे शुरू हो गया। सक्रिय सत्र MCP ऐप्स चालू रहते हुए पुनः आरंभ किए गए।",
-        "mcp_apps_no_poolable_servers": "अभी कोई MCP सर्वर पूल-योग्य नहीं है, इसलिए कुछ भी रेंडर नहीं होगा। नीचे पूल-योग्य MCP सर्वर में कम से कम एक चालू करें।",
-        "mcp_apps_saved_unsupported": "सहेजा गया। MCP ऐप्स को साझा MCP गेटवे की आवश्यकता है, जो इस प्लेटफ़ॉर्म पर उपलब्ध नहीं है।",
-        "mcp_apps_retry_gateway": "गेटवे शुरू करने का पुनः प्रयास करें",
-        "mcp_apps_capability": "MCP सर्वर का इंटरैक्टिव UI चैट में रेंडर करें।",
-        "mcp_apps_failed": "लागू नहीं हो सका। सेटिंग नहीं बदली गई।",
-        "mcp_apps_needs_gateway": "ऊपर साझा MCP गेटवे चालू होने पर लागू होता है।",
-        "mcp_apps_will_start_gateway": "इसे चालू करने पर साझा MCP गेटवे भी शुरू होगा, जिससे सक्रिय सत्र पुनः आरंभ होंगे।",
-        "mcp_apps_starting_gateway": "साझा MCP गेटवे शुरू हो रहा है — सक्रिय सत्र पुनः आरंभ होंगे…",
-        "mcp_apps_gateway_follow_failed": "MCP ऐप्स सहेजे गए, लेकिन साझा MCP गेटवे शुरू नहीं हुआ। पुनः प्रयास के लिए ऊपर साझा MCP गेटवे को बंद करके फिर चालू करें।",
-        "not_available_on_windows": "Windows पर उपलब्ध नहीं — साझा गेटवे को Unix-डोमेन सॉकेट की आवश्यकता होती है। macOS और Linux पर समर्थित।",
-        "roll_back_disable": "रोल बैक करें (अक्षम करें)",
-        "shared_mcp_gateway": "साझा MCP गेटवे",
-        "shared_mcp_gateway_is_active": "साझा MCP गेटवे सक्रिय है।",
-        "shared_mcp_gateway_is_disabled": "साझा MCP गेटवे बंद है।",
-        "starting_broker_restarting_sessions_verifying_co": "ब्रोकर शुरू किया जा रहा है, सेशन रीस्टार्ट हो रहे हैं, कनेक्टिविटी जाँची जा रही है…",
-        "stopping_broker_and_restarting_sessions": "ब्रोकर रोका जा रहा है और सेशन रीस्टार्ट हो रहे हैं…",
-        "this_restarts_all_active_sessions_onto_the_new_m": "इससे सभी सक्रिय सेशन नए MCP रूटिंग पर पुनः आरंभ होंगे — चल रहा काम बाधित होगा। आपका डैशबोर्ड साइन इन रहेगा। जारी रखें?"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "चैट-टैब स्विचिंग को Option+अंक के बजाय Ctrl+अंक से बाइंड करें",
@@ -11372,8 +11355,7 @@
     "worldsPopout": {
       "hide_controls": "नियंत्रण छिपाएँ",
       "show_controls": "नियंत्रण दिखाएँ"
-    },
-    "sessionMemoryCard": {}
+    }
   },
   "privacyDisclosure": {
     "anonymousHeartbeatBody": "दिन में अधिकतम एक बार। यह एक इंस्टॉल की गई कॉपी को दर्शाता है, किसी व्यक्ति को नहीं।",

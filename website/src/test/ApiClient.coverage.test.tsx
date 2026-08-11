@@ -880,11 +880,11 @@ describe('request bodies with conditionally-omitted keys', () => {
     expect(call(2).body).toEqual({ color_index: 0 })
   })
 
-  it('mcpGatewaySetPoolable has a single and a batch form', async () => {
-    await api.mcpGatewaySetPoolable('fs', true)
-    expect(call().body).toEqual({ name: 'fs', poolable: true })
-    await api.mcpGatewaySetPoolableMany(['fs', 'git'], false)
-    expect(call(1).body).toEqual({ names: ['fs', 'git'], poolable: false })
+  it('mcpGatewaySetStub has a single and a batch form', async () => {
+    await api.mcpGatewaySetStub('fs', true)
+    expect(call().body).toEqual({ name: 'fs', stub: true })
+    await api.mcpGatewaySetStubMany(['fs', 'git'], false)
+    expect(call(1).body).toEqual({ names: ['fs', 'git'], stub: false })
   })
 
   it('createTagColumn/updateTagColumn pass the filter mode straight through', async () => {

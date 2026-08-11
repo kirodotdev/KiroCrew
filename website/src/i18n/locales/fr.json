@@ -8348,8 +8348,8 @@
           "label": "Journaux"
         },
         "mcpPool": {
-          "description": "Passerelle MCP partagée et configuration des serveurs mutualisables",
-          "label": "Pool MCP"
+          "description": "Placer un stub devant les serveurs MCP et partager leurs backends entre sessions",
+          "label": "Gestion MCP"
         },
         "memory": {
           "description": "Graphe de mémoire, fournisseur d’embeddings et rouages du magasin vectoriel",
@@ -8761,6 +8761,41 @@
       "shared_mcp_gateway": "Passerelle MCP partagée",
       "with_shared_gateway_pooled": "Avec passerelle partagée (mutualisée)",
       "without_gateway_per_session_copies": "Sans passerelle (copies par session)"
+    },
+    "mcpManagement": {
+      "cancel": "Annuler",
+      "col_server": "Serveur",
+      "col_state": "État",
+      "col_stub": "Stub",
+      "col_used_by": "Utilisé par",
+      "confirm_lede": "Chaque serveur avec stub sera routé vers un seul processus backend partagé au lieu du sien — pour l'instant cela concerne {{count}} serveurs.",
+      "confirm_restart": "Les conversations déjà ouvertes gardent la configuration avec laquelle elles ont démarré — rouvre-en une pour appliquer ce changement.",
+      "confirm_reversible": "En le désactivant, chaque session retrouve son propre backend et vos choix de stub sont conservés.",
+      "confirm_stateful": "Un serveur qui conserve un état par session devrait garder seulement le stub, ou s'attendre à des colocataires.",
+      "confirm_title": "Partager les backends entre les sessions ?",
+      "confirm_turn_on": "Activer le partage",
+      "learn_more": "En savoir plus",
+      "learn_more_docs": "En savoir plus dans la documentation",
+      "lede": "Kiro Crew peut placer son propre stub devant un serveur MCP au lieu de laisser chaque session lancer ce serveur elle-même. Le stub est ce qui permet au serveur de dessiner sa propre interface (MCP Apps) et la seule chose vers laquelle un backend partagé peut être routé — il s'active donc serveur par serveur. {{link}}",
+      "legend": "direct — la session lance le serveur elle-même, exactement comme sans Kiro Crew. stub — le stub de Kiro Crew est dans le chemin, le serveur peut donc dessiner sa propre interface ; le backend reste propre à cette session. shared — le stub est routé vers un backend partagé avec d'autres sessions. Un serveur sans tube stdio ne peut pas recevoir de stub.",
+      "no_servers": "Aucun serveur MCP n'est encore configuré.",
+      "open_sessions_note": "Les changements ici s'appliquent aux nouvelles conversations. Une conversation déjà ouverte garde les serveurs avec lesquels elle a démarré jusqu'à ce que tu la rouvres.",
+      "servers_failed": "Impossible de charger la liste des serveurs. Ce n'est pas la même chose que n'en avoir aucun configuré.",
+      "sharing_description": "Les sessions dont la configuration de serveur est identique sont routées vers un même processus backend. S'applique à tous les serveurs avec stub ci-dessous : il n'y a pas d'interrupteur par serveur.",
+      "sharing_failed": "Impossible d'appliquer le partage de backend. Il est peut-être déjà enregistré sans être actif : l'interrupteur ci-dessus montre désormais l'état enregistré.",
+      "sharing_label": "Partager les backends entre les sessions",
+      "sharing_needs_a_stub": "Crée un stub pour au moins un serveur ci-dessous afin d'activer le partage.",
+      "sharing_not_live": "Le partage est enregistré, mais le backend partagé n'est pas encore joignable.",
+      "sharing_on_but_nothing_stubbed": "Le partage est activé, mais aucun stub n'existe : il prendra effet dès que tu créeras un stub ci-dessous.",
+      "state_direct": "direct",
+      "state_no_stub": "pas de stdio",
+      "state_shared": "partagé",
+      "state_stub": "stub",
+      "stub_aria": "Placer un stub devant {{name}}",
+      "stub_failed": "Impossible d'appliquer le changement. Il est peut-être déjà enregistré sans être actif : les interrupteurs ci-dessous montrent désormais l'état enregistré.",
+      "stub_not_live": "Enregistré, mais pas encore actif : la passerelle n'a pas pu démarrer. L'interrupteur montre ce qui est enregistré, pas ce qui tourne.",
+      "stubbed_of_total": "{{stubbed}} sur {{total}} avec stub",
+      "unsupported_platform": "Le partage de backend nécessite des sockets de domaine Unix et n'est pas disponible sur cette plateforme."
     },
     "migrationPage": {
       "app_migration": "Migration de l'app",
@@ -9692,6 +9727,7 @@
       "truncated_showing_first_200kb": "… tronqué (affichage des premiers 200KB) …",
       "no_archives_with_compaction_hint": "Aucune archive. Les archives sont créées lorsque les fichiers de session sont rotés (>2MB) ou compactés. La compaction automatique est contrôlée par <settingRef/>."
     },
+    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_many": "Plus de {{days}} jours — {{count}} sessions · {{size}}",
       "age_option_one": "Plus de {{days}} jours — {{count}} session · {{size}}",
@@ -10318,23 +10354,6 @@
         "use_an_absolute_path_no": ").\n            Utilisez un chemin absolu (pas de",
         "enable_via_setting": "Alternativement, définissez <settingRef/>, puis exécutez <restartCmd/>."
       },
-      "mcpPoolableServers": {
-        "blocked": "bloqué",
-        "could_not_load_mcp_servers": "Impossible de charger les serveurs MCP.",
-        "could_not_update_all_try_again": "Impossible de mettre à jour les serveurs. Aucune modification n'a été appliquée. Réessaie.",
-        "could_not_update_try_again": "Impossible de mettre à jour {{name}}. Réessaie.",
-        "loading_mcp_servers": "Chargement des serveurs MCP…",
-        "n_of_m_pooled": "{{on}} serveurs mutualisés sur {{total}} mutualisables",
-        "n_of_m_pooled_plus_agent": "{{on}} serveurs mutualisés sur {{total}} mutualisables, +{{extra}} via la configuration de l'agent",
-        "no_mcp_servers_configured": "Aucun serveur MCP configuré.",
-        "pool": "Mutualiser {{name}}",
-        "poolable_mcp_servers": "Serveurs MCP mutualisables",
-        "poolable_true": "poolable:true",
-        "pooling_takes_effect_when_the_shared_mcp_gateway": "La mutualisation prend effet lorsque la passerelle MCP partagée est activée. Dans tous les cas, vous pouvez préconfigurer ici quels\n            serveurs sont mutualisables.",
-        "shared": "· partagé",
-        "toggle_all": "Tout basculer",
-        "used_by": "utilisé par"
-      },
       "notificationsPanel": {
         "always_interrupts_cannot_be_muted_or_lowered": "Interrompt toujours — impossible de mettre en sourdine ou d’abaisser la priorité",
         "app": "app",
@@ -10625,42 +10644,6 @@
           "ineffective_label": "Enregistré mais sans effet",
           "ineffective_description": "Ces noms ont été enregistrés comme de confiance, mais Kiro Crew ne les accepte pas, donc les applications restent bloquées. Retire-les pour nettoyer la liste."
         }
-      },
-      "sharedMcpGatewayToggle": {
-        "active_sessions_share_pooled_mcp_backends_see_th": "Actif — les sessions partagent des backends MCP mutualisés. Voir le pool en direct sous Développeur > Système.",
-        "cancel": "Annuler",
-        "close": "Fermer",
-        "continue": "Continuer",
-        "could_not_apply": "Impossible d’appliquer",
-        "disable_shared_mcp_gateway": "Désactiver la passerelle MCP partagée ?",
-        "disabled_each_session_spawns_its_own_mcp_backend": "Désactivé — chaque session lance ses propres backends MCP.",
-        "disabling_shared_mcp_gateway": "Désactivation de la passerelle MCP partagée",
-        "done": "Terminé",
-        "enable_shared_mcp_gateway": "Activer la passerelle MCP partagée ?",
-        "enabled_broker_not_reachable_toggle_off_and_on_t": "Activé — le broker est inaccessible ; désactive puis réactive pour appliquer de nouveau.",
-        "enabling_shared_mcp_gateway": "Activation de la passerelle MCP partagée",
-        "gateway_stuck_retry": "La passerelle n'a pas atteint l'état attendu. Réessaie.",
-        "gateway_stuck_roll_back": "La passerelle n'a pas atteint l'état attendu. Reviens à l’état sûr (désactivé), ou réessaie.",
-        "mcp_apps": "Applications MCP",
-        "mcp_apps_applies_to_new": "Enregistré. S'applique aux nouvelles connexions MCP ; celles en cours le prendront en compte à leur recyclage.",
-        "mcp_apps_gateway_started": "Passerelle MCP partagée démarrée. Les sessions actives ont été redémarrées avec les apps MCP activées.",
-        "mcp_apps_no_poolable_servers": "Aucun serveur MCP n'est encore regroupable, donc rien ne s'affichera. Activez-en au moins un dans Serveurs MCP regroupables ci-dessous.",
-        "mcp_apps_saved_unsupported": "Enregistré. Les apps MCP nécessitent la passerelle MCP partagée, qui n'est pas disponible sur cette plateforme.",
-        "mcp_apps_retry_gateway": "Réessayer de démarrer la passerelle",
-        "mcp_apps_capability": "Afficher les interfaces interactives des serveurs MCP dans le chat.",
-        "mcp_apps_failed": "Impossible d'appliquer. Le paramètre n'a pas été modifié.",
-        "mcp_apps_needs_gateway": "S'applique dès que la passerelle MCP partagée ci-dessus est activée.",
-        "mcp_apps_will_start_gateway": "Activer cette option démarre aussi la passerelle MCP partagée, ce qui redémarre les sessions actives.",
-        "mcp_apps_starting_gateway": "Démarrage de la passerelle MCP partagée — les sessions actives vont redémarrer…",
-        "mcp_apps_gateway_follow_failed": "Les apps MCP sont enregistrées, mais la passerelle MCP partagée n'a pas démarré. Désactivez puis réactivez la passerelle MCP partagée ci-dessus pour réessayer.",
-        "not_available_on_windows": "Non disponible sous Windows — la passerelle partagée nécessite des sockets de domaine Unix. Prise en charge sous macOS et Linux.",
-        "roll_back_disable": "Revenir en arrière (désactiver)",
-        "shared_mcp_gateway": "Passerelle MCP partagée",
-        "shared_mcp_gateway_is_active": "La passerelle MCP partagée est active.",
-        "shared_mcp_gateway_is_disabled": "La passerelle MCP partagée est désactivée.",
-        "starting_broker_restarting_sessions_verifying_co": "Démarrage du broker, redémarrage des sessions, vérification de la connectivité…",
-        "stopping_broker_and_restarting_sessions": "Arrêt du broker et redémarrage des sessions…",
-        "this_restarts_all_active_sessions_onto_the_new_m": "Cela redémarre toutes les sessions actives sur le nouveau routage MCP — le travail en cours sera interrompu. Votre tableau de bord reste connecté. Continuer ?"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Associer le changement d'onglet de chat à Ctrl+chiffre au lieu de Option+chiffre",
@@ -11499,8 +11482,7 @@
     "worldsPopout": {
       "hide_controls": "Masquer les commandes",
       "show_controls": "Afficher les commandes"
-    },
-    "sessionMemoryCard": {}
+    }
   },
   "privacyDisclosure": {
     "anonymousHeartbeatBody": "Au maximum un par jour. Il identifie une copie installée, pas une personne.",

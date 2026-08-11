@@ -2,7 +2,7 @@
 
 These guard the exact seam a handler-only unit test missed: the dashboard
 handlers read ``_mcp_gateway_manager`` / ``_mcp_gateway_apply`` /
-``_mcp_gateway_apply_poolable`` off ``DashboardState``, and
+``_mcp_gateway_apply_stub`` off ``DashboardState``, and
 ``GatewayOrchestrator`` must publish them there after dashboard init (the
 broker starts earlier, before ``dashboard_state`` exists). If the wiring
 regresses, ``/api/mcp-gateway/enable`` 503s and status always reports down.
@@ -37,12 +37,12 @@ def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:
         dashboard_state=ds,
         _mcp_gateway_manager="MGR",
         _apply_mcp_gateway_enabled="ENABLE_CB",
-        _apply_mcp_poolable="POOLABLE_CB",
+        _apply_mcp_stub="POOLABLE_CB",
     )
     GatewayOrchestrator._wire_mcp_gateway_dashboard(orch)  # type: ignore[arg-type]
     assert ds._mcp_gateway_manager == "MGR"
     assert ds._mcp_gateway_apply == "ENABLE_CB"
-    assert ds._mcp_gateway_apply_poolable == "POOLABLE_CB"
+    assert ds._mcp_gateway_apply_stub == "POOLABLE_CB"
 
 
 def test_wire_is_noop_when_dashboard_absent() -> None:
