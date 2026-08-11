@@ -138,6 +138,8 @@ export function useWebSocket() {
   const reconnectingRef = useRef(false)  // suppress markSlotUnread during reconnect catch-up
   const lastVersionRef = useRef<string | null>(null)
   const lastGitlabHostsGenRef = useRef<number | null>(null)
+  const lastSlotsRawRef = useRef<string | null>(null)
+  const lastSlotsArrayRef = useRef<ChatSlot[] | null>(null)
   const voiceQueueRef = useRef<string[]>([])
   const voicePlayingRef = useRef(false)
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -414,6 +416,9 @@ export function useWebSocket() {
       // gateway, so after a restart an equal number can mean a different
       // allowlist. Clearing it makes the next generation frame refetch.
       lastGitlabHostsGenRef.current = null
+      // Forget the last raw slots frame too, so a reconnect whose first frame
+      // repeats the last one before it cannot swallow that first frame.
+      lastSlotsRawRef.current = null
       // Cache auto-speak preference
       api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
       if (wasConnectedRef.current) {
@@ -508,7 +513,14 @@ export function useWebSocket() {
             break
           }
           case 'slots': {
+            // An identical repeat carries identical values for every arm below, but
+            // only while no other writer (fetchSlots) has since replaced the list.
+            const raw = e.data as string
+            if (raw === lastSlotsRawRef.current
+                && store.getState().dashboard.slots === lastSlotsArrayRef.current) break
+            lastSlotsRawRef.current = raw
             dispatch(sseSlots(data as ChatSlot[]))
+            lastSlotsArrayRef.current = store.getState().dashboard.slots
             if (msg.yolo !== undefined) {
               dispatch(sseStatus({ yolo: msg.yolo } as StatusData))
             }
