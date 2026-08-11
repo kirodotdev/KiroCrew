@@ -10,8 +10,8 @@
  * per-render counter. A `<Profiler>` counts subtree commits instead, which a child that
  * legitimately subscribes would be indistinguishable from.
  *
- * A slots frame is deliberately not asserted: `useKeyboardShortcuts`, called from the
- * root's own body, selects `dashboard.slots` independently, so it re-renders either way.
+ * A slots frame is asserted too, and is the high-frequency case: `sseSlots` assigns a new
+ * array on every websocket frame, so a reference-equality subscription re-renders forever.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, cleanup, screen, waitFor } from '@testing-library/react'
@@ -196,5 +196,20 @@ describe('App root store subscription scope', () => {
 
     expect(delta).toBeGreaterThan(0)
     expect(store.getState().dashboard.updateProgress).toEqual({ step: 'download', detail: 'fetching' })
+  })
+
+  it('does not re-render the root on a slots frame', async () => {
+    const { store } = await mountSettled()
+
+    // Control: nothing is dispatched, so a non-zero count here is background work.
+    expect(await rendersDuring(() => {})).toBe(0)
+
+    // `sseSlots` assigns a new array and rebuilds `slotHistory`, so both go reference-unequal.
+    const delta = await rendersDuring(() => {
+      store.dispatch(sseSlots([slot('chat-1-1', 2), slot('chat-1-2', 0)]))
+    })
+
+    expect(store.getState().dashboard.slots).toHaveLength(2)
+    expect(delta).toBe(0)
   })
 })
