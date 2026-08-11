@@ -3714,22 +3714,36 @@ function ChatSidebar({
         tabIndex={0}
         onClick={() => { setHistoryOpen(!historyOpen); if (!historyOpen) dispatch(fetchHistory(false)) }}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setHistoryOpen(!historyOpen); if (!historyOpen) dispatch(fetchHistory(false)) } }}
-        className="flex justify-between items-center px-3 py-3 cursor-pointer select-none"
+        /* pt/pb are 14px, not py-3, so this row's top border lands on the same
+           baseline as the nav rail's community row ("Star us · Report issue"):
+           both cards sit 8px off the shell floor, the rail spends 8+2+24+10 =
+           44px below its own hairline, and 14+16+14 matches that exactly. The
+           symmetric padding is what keeps the clock and label optically centred
+           in the band. */
+        className="flex justify-between items-center px-3 pt-[14px] pb-[14px] cursor-pointer select-none"
         aria-expanded={historyOpen}
         aria-controls="history-pane"
         aria-label={i18nT('pages.chatSidebar.older_sessions')}
       >
         <span className="flex items-center gap-1.5 text-[13px] font-semibold text-text-strong leading-none">
-          <ChevronRight size={16} className={`shrink-0 transition-transform duration-200 ${historyOpen ? 'rotate-90' : '-rotate-90'}`} />
           <Clock size={14} className="shrink-0" />
           <span className="leading-none">{i18nT('pages.chatSidebar.older_sessions_2')}</span>
         </span>
-        {historyOpen && history.length > 0 && (
-          <button
-            className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all"
-            onClick={async e => { e.stopPropagation(); if (confirm(i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses'))) { await api.clearSessions(); dispatch(fetchHistory(false)) } }}
-          >{i18nT('pages.chatSidebar.clear')}</button>
-        )}
+        {/* Chevron trails the Clear button so the disclosure glyph is the
+            rightmost control, and Clear shifts left by the gap rather than
+            being pushed off the row's 12px right inset. The gap is 12px, wider
+            than the row's other spacing: Clear is destructive (it wipes closed
+            sessions behind a single confirm), so a pointer aimed at the collapse
+            glyph must not land on it. */}
+        <span className="flex items-center gap-3 shrink-0">
+          {historyOpen && history.length > 0 && (
+            <button
+              className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all"
+              onClick={async e => { e.stopPropagation(); if (confirm(i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses'))) { await api.clearSessions(); dispatch(fetchHistory(false)) } }}
+            >{i18nT('pages.chatSidebar.clear')}</button>
+          )}
+          <ChevronRight size={16} className={`shrink-0 text-text-strong transition-transform duration-200 ${historyOpen ? 'rotate-90' : ''}`} />
+        </span>
       </div>
       <AnimatePresence initial={false}>
         {historyOpen && (
