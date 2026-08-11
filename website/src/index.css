@@ -1270,8 +1270,13 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 
 /* ── Streaming highlight (shimmer sweep on trailing words) ── */
 .streaming-glow{background:linear-gradient(90deg,transparent 0%,var(--accent-glow) 40%,var(--accent-glow) 100%);border-radius:2px;padding:0 8px 0 2px;margin:0 -2px;position:relative;overflow:hidden}
-.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);background-size:250% 100%;animation:stream-sweep 2.5s ease-in-out infinite;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
-@keyframes stream-sweep{0%{background-position:150% 0}100%{background-position:-50% 0}}
+/* Animates transform (compositable) rather than background-position, which repaints every
+   frame. The layer stays the size of the box: the gradient is transparent across its outer
+   quarters, so a 25% translate never carries anything visible past the box edge and no
+   clipping is needed -- which matters because this is an inline span that can wrap.
+   `alternate` reverses each cycle so the loop has no restart jump. */
+.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);will-change:transform;animation:stream-sweep 2.5s ease-in-out infinite alternate;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
+@keyframes stream-sweep{0%{transform:translateX(-25%)}100%{transform:translateX(25%)}}
 
 /* ── Streaming caret ──
    Blinking cursor appended after a streaming assistant message. Rendered
