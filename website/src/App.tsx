@@ -825,7 +825,10 @@ export default function App() {
   // in-window navigation back to this frame instead of escaping to '/'.
   const initialPopoutPath = useRef(window.location.pathname + window.location.search).current
   const dispatch = useAppDispatch()
-  const { connected, updateProgress } = useAppSelector(s => s.dashboard)
+  // The slice also carries the slot list and the subagent maps, so selecting all of
+  // it would re-render the root on dashboard traffic neither of these fields reads.
+  const connected = useAppSelector(s => s.dashboard.connected)
+  const updateProgress = useAppSelector(s => s.dashboard.updateProgress)
   // Gateway (web) update flag OR desktop updater availability (mirrored from
   // Electron update-state by useUpdateSubscription) -- both light the same
   // Settings nav dot below.
