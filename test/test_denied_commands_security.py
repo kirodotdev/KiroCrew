@@ -1082,13 +1082,13 @@ class TestSelfProtectionFloorIsAdditive:
         from kiro_crew.security import normalize_shell_command
 
         monkeypatch.setattr(_os.path, "expanduser", lambda _p: r"C:\Users\runneradmin")
-        # The guard is that this RETURNS rather than raising.  (POSIX ``shlex``
-        # then eats the backslashes, which is pre-existing behaviour for Windows
-        # paths and not what this test is about.)
+        # The guard is that this RETURNS rather than raising.
         assert normalize_shell_command(f"{_PK} {_NAME}") == [_PK, _NAME]
+        # $HOME expansion now happens AFTER shlex tokenization, so the Windows
+        # home path backslashes are preserved (not eaten by shlex).
         expanded = normalize_shell_command("ls $HOME/x")
         assert expanded[0] == "ls"
-        assert "usersrunneradmin" in expanded[1].lower().replace("\\", "")
+        assert r"C:\Users\runneradmin" in expanded[1] or "C:\\Users\\runneradmin" in expanded[1]
 
 
 class TestInterpreterArgvLiteralMint:

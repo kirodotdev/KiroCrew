@@ -9,7 +9,6 @@ files are on the sensitive-path floor (read + write blocked at every surface via
 from __future__ import annotations
 
 import os
-import sys
 
 import pytest
 
@@ -131,22 +130,10 @@ def test_benign_write_verbs_not_overblocked():
 # therefore turned the keystone fence off for every write verb on a default
 # install. These pin the two spellings to the SAME verdict.
 #
-# The ``$HOME`` spelling is POSIX-only here, and NOT because the gate is
-# POSIX-only: ``normalize_shell_command`` substitutes ``$HOME`` BEFORE
-# ``shlex.split(posix=True)``, so on Windows the expansion inserts
-# ``C:\Users\<name>`` and shlex then consumes those backslashes as escapes
-# (``C:Usersrunneradmin/.kiro/crew/…``). The token no longer names any real
-# path, so the normalizer resolves nothing. That is a separate defect in the
-# tokenizer, on the pre-existing read path as much as this one; asserting it
-# here would pin a guarantee this change does not make.
-_HOME_VAR_SPELLING = pytest.param(
-    "$HOME/.kiro/crew/./live_target.json",
-    marks=pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="normalize_shell_command expands $HOME before shlex, which eats the "
-        "backslashes of a Windows home",
-    ),
-)
+# The ``$HOME`` spelling works on all platforms: normalize_shell_command()
+# expands ``$HOME`` per-token AFTER shlex.split(), so Windows backslashes in
+# the expanded path are never reinterpreted as escape characters.
+_HOME_VAR_SPELLING = "$HOME/.kiro/crew/./live_target.json"
 
 _KEYSTONE_SPELLINGS = (
     "~/.kiro/crew/live_target.json",
@@ -240,6 +227,26 @@ def test_attached_redirections_benign_not_overblocked():
         "cat <<EOF",  # heredoc delimiter, not a path
     ):
         assert security.is_sensitive_bash_command(cmd) is None, cmd
+
+
+def test_home_var_expansion_survives_windows_backslashes(monkeypatch):
+    """$HOME expansion must not be defeated by Windows backslash home paths.
+
+    The fix: $HOME is expanded per-token AFTER shlex.split, so backslashes in
+    the expanded path are never reinterpreted as escape characters by shlex."""
+    import os as _os
+
+    from kiro_crew.security import normalize_shell_command
+
+    win_home = r"C:\Users\runneradmin"
+    monkeypatch.setattr(_os.path, "expanduser", lambda _p: win_home)
+
+    tokens = normalize_shell_command("cat $HOME/.kiro/crew/live_target.json")
+    assert tokens[0] == "cat"
+    # The path must contain the FULL Windows home (backslashes intact),
+    # not the mangled 'C:Usersrunneradmin' that shlex would produce.
+    assert win_home in tokens[1], f"Expected {win_home!r} in {tokens[1]!r}"
+    assert ".kiro/crew/live_target.json" in tokens[1]
 
 
 @pytest.mark.parametrize(

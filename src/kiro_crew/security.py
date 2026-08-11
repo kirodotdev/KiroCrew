@@ -7493,28 +7493,34 @@ def normalize_shell_command(cmd: str) -> list[str]:
     if not cmd or not cmd.strip():
         return []
 
-    # Pre-process: expand $HOME/${HOME} BEFORE shlex splitting so that
-    # expansion happens even inside quoted strings that shlex won't expand.
-    home = os.path.expanduser("~")
-    # Replace via a FUNCTION, not a string template: on Windows the home path
-    # is ``C:\Users\<name>``, and ``re.sub`` parses a str replacement as a
-    # template eagerly -- ``\U`` is an invalid escape, so a string replacement
-    # raises ``re.error`` for EVERY input on that platform, not just ones
-    # containing ``$HOME``.  A callable is substituted literally.
-    preprocessed = _HOME_VAR_RE.sub(lambda _m: home, cmd)
+    # NOTE: $HOME expansion happens AFTER tokenization (in the per-token loop
+    # below), NOT here.  The previous pre-shlex expansion inserted the raw home
+    # path (e.g. ``C:\Users\name`` on Windows) into the command string before
+    # shlex.split(posix=True), which then consumed the backslashes as escape
+    # characters — mangling the path so is_sensitive_path() could not match it.
+    # Moving expansion to per-token mirrors how tilde (``~``) is already
+    # handled: shlex strips quotes and produces a literal ``$HOME/...`` token,
+    # which the loop then expands safely without backslash reinterpretation.
 
     # Tokenize using POSIX shlex — handles quoting, escaping, etc.
     try:
-        tokens = shlex.split(preprocessed, posix=True)
+        tokens = shlex.split(cmd, posix=True)
     except ValueError:
         # Unbalanced quotes or other parse errors — fall back to basic split.
-        tokens = preprocessed.split()
+        tokens = cmd.split()
         tokens = [t.strip("\"'\\") for t in tokens]
 
+    home = os.path.expanduser("~")
     resolved: list[str] = []
     for token in tokens:
         # Strip empty-string concatenation artifacts: ca""t -> cat, g''it -> git
         token = _EMPTY_QUOTE_RE.sub("", token)
+
+        # Expand $HOME/${HOME} per-token (after shlex, so Windows backslashes
+        # in the expanded path are never reinterpreted as escape characters).
+        # Uses a callable replacement to avoid re.error on Windows where the
+        # home path contains ``\U`` which re.sub parses as a template escape.
+        token = _HOME_VAR_RE.sub(lambda _m: home, token)
 
         # Expand tilde (shlex doesn't do tilde expansion)
         if token.startswith("~"):
