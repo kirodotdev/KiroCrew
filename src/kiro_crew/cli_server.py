@@ -30,12 +30,14 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.constants import DATA_WARNING
 from kiro_crew.context import ContextBuilder
+from kiro_crew.dashboard import tailnet_serve
 from kiro_crew.dashboard.handlers.core import DASHBOARD_HTML_NOT_FOUND_MARKER
 from kiro_crew.dashboard.origin import (
     dashboard_origin,
     parse_dashboard_url,
     resolve_dashboard_host,
 )
+from kiro_crew.dashboard.tailnet import is_governance_pinned_off, tailnet_origin
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.embeddings import (
     make_sync_embed_fn,
@@ -333,6 +335,16 @@ def _token(args: argparse.Namespace) -> None:
         sys.exit(1)
     _probe_dashboard_health(port)
 
+    _emit_session_urls(port, token)
+
+
+def _emit_session_urls(port: int, token: str) -> None:
+    """Print every origin the operator can open this session on.
+
+    Extracted from ``_token`` so the URL set is testable without standing up a
+    gateway and minting a real session: the interesting behaviour is which origins
+    get a line, and that is pure given the config and the Tailscale lookup.
+    """
     # Print the SAME canonical loopback host the gateway uses for its auto-open
     # and !dashboard links. resolve_dashboard_host() returns "localhost" for the
     # loopback case — it resolves in every browser and through SSH tunnels (unlike
@@ -342,10 +354,86 @@ def _token(args: argparse.Namespace) -> None:
     # settings appear reset. Keeping the host consistent avoids that.
     host = resolve_dashboard_host(local_only=True)
     print(f"http://{host}:{port}?token={token}")
-    origin = dashboard_origin(KiroCrewConfig.load().dashboard.url)
+    cfg = KiroCrewConfig.load()
+    origin = dashboard_origin(cfg.dashboard.url)
     if origin and "localhost" not in origin:
         print()
         print(f"{origin}/?token={token}")
+
+    # The tailnet origin, when one is trusted. Without this the flow dead-ends: the
+    # gateway derives `https://<MagicDNS name>` itself precisely so the operator does
+    # NOT have to hand-write dashboard.url, but that means the loop above has nothing
+    # to print for it -- and the URL `tailnet up` shows carries no session, so a phone
+    # opening it lands on a login it cannot complete. The operator was left splicing a
+    # query string onto a hostname by hand, or setting the very config key the feature
+    # exists to avoid.
+    #
+    # Gated on the setting, not attempted unconditionally: `tailnet_origin()` shells out
+    # to the Tailscale CLI with a multi-second timeout, and `kirocrew to`+`ken` is a
+    # foreground command an operator runs constantly.
+    if cfg.dashboard.tailscale.enabled:
+        # The stored flag is not the last word: an enterprise ceiling can pin
+        # `capabilities.tailnet_origin` off, and then the gateway derives no tailnet
+        # origin at startup no matter what the config says -- so a URL printed here
+        # would answer 403. Checking the pin also avoids executing the Tailscale CLI on
+        # a host where policy has already settled the question.
+        #
+        # Called WITHOUT `audit_tool` on purpose. That argument routes the decision
+        # through the audited seam, which appends an HMAC-chained SEL record; the
+        # helper's own contract reserves it for ENFORCEMENT call sites, and this is a
+        # read-shaped question ("would such a URL work?") on a foreground command an
+        # operator runs constantly. `tailnet status` reads it the same way.
+        if is_governance_pinned_off():
+            print()
+            print(
+                "⚠️  dashboard.tailscale.enabled is on, but your administrator has "
+                "pinned tailnet access off (capabilities.tailnet_origin), so the "
+                "gateway will not trust a tailnet origin and no tailnet URL is "
+                "printed.",
+                file=sys.stderr,
+            )
+            return
+        tailnet_url = tailnet_origin()
+        if tailnet_url and tailnet_url != origin:
+            # Ownership of the 443/ mount, not just "a tailnet name exists". The URL
+            # carries a bearer session, so printing it when something ELSE is serving
+            # that name hands the operator a link that delivers their token to a
+            # foreign service, which can then replay it against the dashboard.
+            #
+            # That state is reachable, not theoretical: `tailnet up` deliberately
+            # REFUSES to overwrite a foreign 443/ handler, so a host can sit with the
+            # trust flag on and a resolvable name while the mount belongs to something
+            # unrelated. The flag and the name were never evidence of ownership.
+            #
+            # `published` is tri-state and only True is safe: False means nothing is
+            # serving, None means the serve config could not be read -- and unknown
+            # ownership is exactly the risk, so it fails closed.
+            state = tailnet_serve.serve_state(port)
+            if state.published is True:
+                print()
+                print(f"{tailnet_url}/?token={token}")
+            else:
+                print()
+                print(
+                    "⚠️  Not printing a tailnet URL: this dashboard is not verified to "
+                    f"be the service published at {tailnet_url} "
+                    f"({state.detail}). The URL carries a session, so handing it out "
+                    "while another service holds that name would leak it. Run "
+                    "`kirocrew tailnet up` to publish this dashboard, then re-run.",
+                    file=sys.stderr,
+                )
+        elif not tailnet_url:
+            # Say why rather than printing nothing: from the operator's side "the
+            # tailnet line is missing" and "my tailnet name does not resolve" look
+            # identical, and the second one also means the gateway trusted no tailnet
+            # origin at startup -- so the dashboard would answer 403 there anyway.
+            print()
+            print(
+                "⚠️  dashboard.tailscale.enabled is on, but no tailnet name resolves "
+                "right now, so there is no tailnet URL to hand out (and the gateway "
+                "will not trust one either). Check `tailscale status`.",
+                file=sys.stderr,
+            )
 
 
 def _logout(port: int) -> None:

@@ -3119,9 +3119,13 @@ class TestCliLoopbackAddress:
 
         from kiro_crew import cli_server
 
-        body = inspect.getsource(cli_server._token)
+        # The URL printing lives in _emit_session_urls, which _token calls. Inspect the
+        # function that actually owns the invariant, and assert the call still happens,
+        # so this stays a real check rather than passing on an empty search.
+        body = inspect.getsource(cli_server._emit_session_urls)
         assert "resolve_dashboard_host(local_only=True)" in body
         assert 'print(f"http://{host}:{port}?token={token}")' in body
+        assert "_emit_session_urls(" in inspect.getsource(cli_server._token)
 
 
 class TestEnsurePrerequisites:

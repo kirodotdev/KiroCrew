@@ -285,10 +285,24 @@ the same and the difference is the whole security story:
   kirocrew config set dashboard.tailscale.enabled true   # once per machine
   kirocrew tailnet up
   kirocrew restart
+  kirocrew token                                         # the link to open on the phone
   ```
   `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on 443 in front of
   the dashboard's loopback port — and prints the URL to open on your phone. That is
   the half that used to be an undocumented command you had to know and type.
+
+  The URL `tailnet up` prints carries **no session**, so opening it alone lands on a
+  login you cannot complete from the phone. `kirocrew token` is the step that hands you
+  one: with the setting on it prints a `https://<your-tailnet-name>/?token=…` line
+  alongside the loopback one. Run it after the restart, since the gateway resolves the
+  trusted origin at startup.
+
+  It prints that line only when **this** dashboard is the verified service behind that
+  name — `tailscale serve` must be proxying 443 to this gateway's port. That URL carries
+  a session, so handing it out while some other service holds the name would deliver your
+  session to it. Since `tailnet up` refuses to overwrite a foreign `443/` handler, a host
+  can legitimately have the setting on and a resolvable name while the mount belongs to
+  something else; in that case `token` says so instead of printing the line.
 
   It **checks** `dashboard.tailscale.enabled` rather than setting it, and refuses
   when the flag is off. Two reasons. Publishing a dashboard the gateway will not
