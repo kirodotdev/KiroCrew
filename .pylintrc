@@ -1,0 +1,115 @@
+[MAIN]
+
+# Files or directories to be skipped (base names, not paths).
+ignore=CVS
+
+# Regex patterns (base names) to skip.
+ignore-patterns=.*_poc.py
+
+# Cache collected data for later comparisons.
+persistent=yes
+
+# Extra checkers.
+load-plugins=
+    pylint.extensions.check_elif,
+    pylint.extensions.bad_builtin,
+    pylint.extensions.docparams,
+    pylint.extensions.for_any_all,
+    pylint.extensions.set_membership,
+    pylint.extensions.code_style,
+    pylint.extensions.overlapping_exceptions,
+    pylint.extensions.typing,
+    pylint.extensions.redefined_variable_type,
+    pylint.extensions.comparison_placement,
+    pylint.extensions.mccabe,
+
+# Run as parallel as possible.
+jobs=0
+
+# Minimum supported python version.
+py-version = 3.10
+
+# C-extension modules pylint can't introspect without importing (avoids
+# spurious c-extension-no-member on lxml.etree, etc.).
+extension-pkg-allow-list=lxml
+
+[MESSAGES CONTROL]
+
+# Enable error + warning checkers; convention/refactor are off (handled by
+# black/isort/flake8 and left to author judgement).
+enable=
+    E,
+    W,
+
+# Disable set. Two groups:
+#   1) Categories/checks intentionally not enforced here.
+#   2) Baseline suppressions: every message that currently fires across the
+#      existing src/mesh_claw tree, so pylint lands GREEN as a build gate and
+#      catches only NEW classes of defect. Re-enable these incrementally as the
+#      codebase is cleaned up (counts captured in the enabling CR).
+disable=
+    # --- categories not enforced ---
+    C,
+    R,
+    # handled by black
+    format,
+    # handled by flake8 F401 as well
+    unused-import,
+    missing-docstring,
+    too-few-public-methods,
+    fixme,
+    cyclic-import,
+    import-error,
+    # imported class does not have used member (dynamic attrs)
+    no-member,
+    # catching too general exception is intentional in many handlers
+    broad-exception-caught,
+    # --- baseline: warnings currently present in the tree ---
+    protected-access,
+    unused-argument,
+    overlapping-except,
+    subprocess-run-check,
+    deprecated-typing-alias,
+    reimported,
+    redefined-outer-name,
+    global-statement,
+    unspecified-encoding,
+    attribute-defined-outside-init,
+    try-except-raise,
+    unused-variable,
+    raise-missing-from,
+    unnecessary-ellipsis,
+    implicit-str-concat,
+    unnecessary-lambda,
+    redefined-builtin,
+    missing-param-doc,
+    missing-type-doc,
+    bad-builtin,
+    pointless-string-statement,
+    f-string-without-interpolation,
+    arguments-differ,
+    arguments-renamed,
+    using-constant-test,
+    exec-used,
+    # --- baseline: errors currently present (mostly flow-analysis false
+    #     positives in conditional/try patterns); revisit individually ---
+    used-before-assignment,
+    not-callable,
+    unsupported-membership-test,
+    unsubscriptable-object,
+    # --- baseline: KiroCrew-specific pre-existing findings (65 total, 9.99/10) ---
+    cell-var-from-loop,
+    no-value-for-parameter,
+    isinstance-second-argument-not-valid-type,
+    possibly-used-before-assignment,
+    subprocess-popen-preexec-fn,
+    global-variable-not-assigned,
+    assignment-from-none,
+    unnecessary-pass,
+    unpacking-non-sequence,
+    pointless-statement,
+    nested-min-max,
+    expression-not-assigned,
+    deprecated-class,
+    deprecated-argument,
+    bad-except-order,
