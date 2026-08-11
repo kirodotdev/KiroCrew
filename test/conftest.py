@@ -591,6 +591,38 @@ def _isolate_kiro_window_cache():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_message_entry_cache():
+    """Give every test an EMPTY ``chat_persistence`` persisted-entry cache.
+
+    The memoised message-entry builder keeps a process-global cache keyed on a
+    content hash of the whole message, so two tests using the same message
+    content share an entry. That is harmless while the builder is pure, and a
+    silent trap the moment a test makes it impure: a test that monkeypatches
+    ``chat_persistence.redact_credentials`` (or the uncached builder) and reuses
+    content another test already cached is served the earlier, pre-patch entry.
+    The assertion then passes against a value the patched code never produced —
+    worst of all for a redaction test, which would go green having seen the
+    redacted entry it was written to prove absent.
+
+    Lives here rather than in the memoisation test module because the hazard runs
+    the other way: the module that pollutes the cache is not the one that
+    misreads it.
+
+    The byte counter is part of the same state, so resetting only the dict would
+    leave the memory ceiling mis-accounted and evict a healthy cache.
+    """
+    from kiro_crew.dashboard import chat_persistence as _cp
+
+    _cp._entry_cache.clear()
+    _cp._entry_cache_bytes = 0
+    try:
+        yield
+    finally:
+        _cp._entry_cache.clear()
+        _cp._entry_cache_bytes = 0
+
+
+@pytest.fixture(autouse=True)
 def _reset_options_control_state():
     """Clear the per-message OPTIONS registries between tests.
 
