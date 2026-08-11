@@ -69,6 +69,7 @@ import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstanceTabBar from './components/InstanceTabBar'
 import InstancesViewport from './components/InstancesViewport'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
+import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
 import DeveloperPage from './pages/DeveloperPage'
 import SchedulePage from './pages/SchedulePage'
@@ -1705,6 +1706,10 @@ export default function App() {
       {/* Embedded remote panes receive their switcher model from the parent via
           this bridge (option B) — no-op in the top-level dashboard. */}
       <EmbeddedHostBridge />
+      {/* Embedded remote panes report their header's control-free gaps up to the
+          Electron host so it can make the pane title bar draggable — no-op in
+          the top-level dashboard and under a browser host. */}
+      <EmbeddedDragRegionReporter />
       <div className="flex-1 min-h-0 relative">
       {/* Local pane: the native dashboard. Hidden (not unmounted) while a remote
           instance tab is active, so local state/websocket survive the switch. */}

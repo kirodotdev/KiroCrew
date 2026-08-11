@@ -1575,6 +1575,16 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    chips are clickable, hoverable, and drag-reorderable. Ignored in browsers. */
 .side-panel-strip,.side-panel-strip *{-webkit-app-region:no-drag}
 
+/* Draggable title-bar strips laid over a remote-instance pane. The pane is a
+   cross-origin iframe, so the host's injected #electron-drag-bar can't reach
+   into it and the blanket marks the whole iframe no-drag — the pane's header
+   can't move the window. InstancesViewport renders these strips (positioned by
+   the gaps the pane reports) AFTER the iframe, so they re-add a drag region in
+   the pane header's control-free gaps. pointer-events:none so the strip never
+   intercepts a click; app-region drag is honored regardless. Ignored in
+   browsers (no native window). */
+.host-drag-strip{position:absolute;top:0;height:42px;-webkit-app-region:drag;pointer-events:none;z-index:2}
+
 /* Scrollbar-free scroll container (used by the side panel tab strip — the
    strip scrolls horizontally but a visible scrollbar under the chips reads
    as clutter). Referenced before Tailwind ever defined it; real rules here. */

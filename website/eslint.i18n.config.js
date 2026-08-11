@@ -341,17 +341,26 @@ export default [
               //      flagged, so it lands in the baseline. Accepted: a false positive
               //      costs one baseline entry, a false negative hides copy forever.
               '^(?![a-z]+(?: [a-z]+)+$)[\\s\\-a-z0-9:/\\[\\]().%#]+$',
-              // CSS ATTRIBUTE SELECTORS, e.g. `[role="dialog"],[data-x]` — a
-              // comma-joined list of bracketed attribute selectors, as passed to
-              // querySelector. The Tailwind/class shape above cannot cover these:
-              // its char class forbids `=`, `"` and `,`, which is exactly what an
-              // attribute selector is made of. Such constants live at module level
-              // under an ALL-CAPS name, so `i18n-strict` looks inside them.
+              // CSS SELECTOR LISTS, e.g. `[role="dialog"],[data-x]` or
+              // `a,button,[tabindex]` — a comma-joined list of type selectors and
+              // bracketed attribute selectors, as passed to querySelector. The
+              // Tailwind/class shape above cannot cover these: its char class forbids
+              // `=`, `"` and `,`, which is exactly what an attribute selector is made
+              // of. Such constants live at module level under an ALL-CAPS name, so
+              // `i18n-strict` looks inside them.
               //
-              // Deliberately anchored and total: the WHOLE string must be
-              // bracketed selectors, so prose cannot match (prose has no square
-              // brackets), and a sentence merely containing one is still flagged.
-              '^\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\](?:\\s*,\\s*\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\])*$',
+              // A bare type selector is admitted only alongside a bracketed one: the
+              // leading lookahead requires at least one `[` in the WHOLE string, and
+              // that is what keeps this entry from becoming a general "lowercase words
+              // joined by commas" exemption. Without it `'save,delete'` would match,
+              // and `\s*,\s*` permits a space, so `'save, delete'` would too. A
+              // sentence merely containing a bracket still fails, because every member
+              // must match end to end and a prose member carries spaces.
+              //
+              // Known false negative, stated: a comma-joined list of lowercase words
+              // that also holds a bracketed term is exempt. Copy does not take that
+              // shape — a bracket in copy sits inside a phrase, not as a list member.
+              '^(?=[^\\[]*\\[)(?:[a-z][a-z0-9]*|\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\])(?:\\s*,\\s*(?:[a-z][a-z0-9]*|\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\]))*$',
               // Identifiers, paths, URLs, mime types, storage keys.
               // camelCase identifiers only. A plain lowercase word must NOT be excluded
               // here: `saved`, `active` and `done` are all real UI copy, and a pattern of
