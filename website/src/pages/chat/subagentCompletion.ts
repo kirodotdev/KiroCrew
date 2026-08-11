@@ -9,6 +9,15 @@
  * the batch digest that replaces N per-agent turns once a wave exceeds the
  * digest chunk size.
  *
+ * The header facts a card needs — outcome, tallies, chunk index, agent id — are
+ * stamped as structured fields on the message's `meta.subagentCompletion` at
+ * composition time (gateway._subagent_done, subagent.py). This module reads
+ * those first (`fromMeta`); the header regexes below are a LEGACY-SCROLLBACK
+ * fallback for rows persisted before the meta was stamped. That inversion is
+ * the point of #1792: a reword of the gateway's prose can no longer silently
+ * break card rendering, because no live consumer parses the prose — the regexes
+ * only run when the structured meta is absent.
+ *
  * Kept separate from SubagentCompletionCard so the transcript grouping pass can
  * ask "does this render as a card?" without pulling a React component (and its
  * markdown renderer) into a pure module.
@@ -17,6 +26,11 @@ import type { ChatMessage } from '../../types'
 
 const SINGLE_PREFIX = '[Subagent completion event]'
 const BATCH_PREFIX = '[Subagent batch completion event]'
+
+/** Key under `message.meta` where the gateway stamps the structured header
+ *  facts. Mirrors `SUBAGENT_COMPLETION_META_KEY` in src/kiro_crew/constants.py —
+ *  the two names are one wire contract and must stay in lockstep. */
+const META_KEY = 'subagentCompletion'
 
 /** True when `content` opens with either sub-agent completion marker. Prefix-only:
  *  callers here classify a QUEUED entry, where nothing is being rendered yet and
@@ -142,9 +156,99 @@ function splitAgentHeadBody(content: string): { head: string; body: string } {
   return { head: lines.slice(0, end).join('\n'), body: lines.slice(end).join('\n').trim() }
 }
 
-/** Parse a completion event, or null when the header does not match the
- *  expected shape (the caller then falls back to normal rendering). */
-export function parseSubagentCompletion(content: string): ParsedSubagentCompletion | null {
+const OUTCOMES: ReadonlySet<string> = new Set<SubagentOutcome>(['ok', 'failed', 'stopped', 'interrupted'])
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+const isStr = (v: unknown): v is string => typeof v === 'string'
+
+/**
+ * Reconstruct a parsed completion from the structured `meta.subagentCompletion`
+ * the gateway stamps at composition time, or null when the meta is absent or
+ * malformed (the caller then falls back to the header regexes).
+ *
+ * Only the fragile part — the header FACTS (outcome, tallies, indices, ids) —
+ * comes from meta. The `body` still comes from the same structural blank-line
+ * split the regex path uses, because that boundary is not prose: it is where
+ * the gateway joins its machine-facing header block to the payload, and reusing
+ * it keeps orphan/timeout result-path lines intact without re-parsing them.
+ *
+ * Every field is type-checked; a single wrong type collapses the whole parse to
+ * null rather than rendering a card with a NaN tally or an undefined outcome. A
+ * tampered or version-skewed meta therefore degrades to the legacy prose path,
+ * never to a broken card.
+ */
+function fromMeta(content: string, meta: Record<string, unknown> | undefined): ParsedSubagentCompletion | null {
+  const raw = meta?.[META_KEY]
+  if (!raw || typeof raw !== 'object') return null
+  const d = raw as Record<string, unknown>
+
+  if (d.kind === 'single' && content.startsWith(SINGLE_PREFIX)) {
+    if (!isStr(d.agentId) || !d.agentId) return null
+    if (!isStr(d.outcome) || !OUTCOMES.has(d.outcome)) return null
+    const { body } = splitAgentHeadBody(content)
+    // Words beside the glyph (orphan/timeout explanation) live in meta.note; on
+    // the ordinary path it is empty. Same redundant-status guard as the regex
+    // path so a status word the chip already renders is not repeated in-body.
+    const note = isStr(d.note) ? d.note.trim() : ''
+    const keptNote = note && !REDUNDANT_STATUS_RE.test(note) ? note : ''
+    return {
+      kind: 'single',
+      agentId: d.agentId,
+      agentName: isStr(d.agentName) ? d.agentName : '',
+      outcome: d.outcome as SubagentOutcome,
+      task: isStr(d.task) ? d.task.trim() : '',
+      body: keptNote ? [keptNote, body].filter(Boolean).join('\n\n') : body,
+    }
+  }
+
+  if (d.kind === 'batch' && content.startsWith(BATCH_PREFIX)) {
+    if (!isInt(d.chunk) || !isInt(d.chunks) || !isInt(d.total)) return null
+    if (typeof d.final !== 'boolean') return null
+    const { body } = splitHeadBody(content)
+    if (d.final) {
+      if (!isInt(d.ok) || !isInt(d.failed) || !isInt(d.stopped)) return null
+      return {
+        kind: 'batch',
+        chunk: d.chunk,
+        chunks: d.chunks,
+        final: true,
+        ok: d.ok,
+        failed: d.failed,
+        stopped: d.stopped,
+        total: d.total,
+        delivered: d.total,
+        running: 0,
+        body,
+      }
+    }
+    if (!isInt(d.delivered) || !isInt(d.running)) return null
+    return {
+      kind: 'batch',
+      chunk: d.chunk,
+      chunks: d.chunks,
+      final: false,
+      ok: 0,
+      failed: 0,
+      stopped: 0,
+      total: d.total,
+      delivered: d.delivered,
+      running: d.running,
+      body,
+    }
+  }
+
+  return null
+}
+
+/** Parse a completion event, or null when neither the structured meta nor the
+ *  header matches the expected shape (the caller then falls back to normal
+ *  rendering). `meta` is read FIRST; the regexes below are a legacy fallback for
+ *  rows persisted before the gateway stamped the structured fields. */
+export function parseSubagentCompletion(
+  content: string,
+  meta?: Record<string, unknown>,
+): ParsedSubagentCompletion | null {
+  const viaMeta = fromMeta(content, meta)
+  if (viaMeta) return viaMeta
   if (content.startsWith(BATCH_PREFIX)) {
     const { head, body } = splitHeadBody(content)
     const wave = WAVE_RE.exec(head)
@@ -217,12 +321,15 @@ const parseCache = new WeakMap<
   { content: string; parsed: ParsedSubagentCompletion | null }
 >()
 
-/** Cached `parseSubagentCompletion` for a message. */
+/** Cached `parseSubagentCompletion` for a message. Reads the structured
+ *  `message.meta` first (see `fromMeta`) and falls back to the header regexes.
+ *  Cache identity is the content string: a message's `meta` is set once at
+ *  append and never mutated in place, so it does not need to key the cache. */
 export function parseSubagentCompletionMessage(message: ChatMessage): ParsedSubagentCompletion | null {
   const content = message.content || ''
   const cached = parseCache.get(message)
   if (cached && cached.content === content) return cached.parsed
-  const parsed = parseSubagentCompletion(content)
+  const parsed = parseSubagentCompletion(content, message.meta)
   parseCache.set(message, { content, parsed })
   return parsed
 }

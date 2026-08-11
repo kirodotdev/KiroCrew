@@ -196,6 +196,15 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
 SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
 SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
 
+# Key under a completion message's ``meta`` where the gateway stamps the
+# structured header facts (outcome, tallies, chunk index, agent id) the
+# dashboard card reads. Mirrors ``META_KEY`` in
+# website/src/pages/chat/subagentCompletion.ts — the two are one wire contract.
+# Stamping the facts here means a reword of the header PROSE below can no longer
+# silently break card rendering: the card reads this meta and the prose regexes
+# demote to a legacy-scrollback fallback (issue #1792).
+SUBAGENT_COMPLETION_META_KEY = "subagentCompletion"
+
 
 # The product wordmark, figlet `small`. ONE definition on purpose: copy-pasting
 # it into cli.py and cli_chat.py risks a rename leaving a stale product name in

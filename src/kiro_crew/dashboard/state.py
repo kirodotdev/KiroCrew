@@ -1580,7 +1580,7 @@ class _ChatSlot:
 
     # ── Queue helpers (dict-based queue items) ──
 
-    def queue_append(self, content: str, kind: str = "") -> str:
+    def queue_append(self, content: str, kind: str = "", meta: dict | None = None) -> str:
         """Append a message to the queue. Returns the generated queue ID.
 
         ``kind`` is a structural origin tag (e.g. ``"synthetic_recovery"`` for
@@ -1588,9 +1588,19 @@ class _ChatSlot:
         not by content equality — survives queue transformations and cannot
         collide with user-typed text that happens to match an internal string.
         Empty string = plain user/system content (default).
+
+        ``meta`` rides through to :meth:`append` when this entry is drained, so a
+        row whose facts were computed at enqueue time (a sub-agent completion's
+        structured header — see gateway ``_subagent_done``) keeps them instead of
+        forcing the drain to re-derive them from the prose.
         """
         qid = uuid.uuid4().hex[:12]
-        self._queue.append({"id": qid, "content": content, "kind": kind})
+        # dict[str, Any]: the base entry is all strings, but ``meta`` adds a dict
+        # value, so the homogeneous str inference would reject the assignment.
+        item: dict[str, Any] = {"id": qid, "content": content, "kind": kind}
+        if meta:
+            item["meta"] = meta
+        self._queue.append(item)
         return qid
 
     def queue_insert(self, index: int, content: str, kind: str = "", payload: str = "") -> str:

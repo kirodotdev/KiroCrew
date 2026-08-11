@@ -76,7 +76,11 @@ from kiro_crew.config.loader import (
     data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.constants import CHAT_TURN_TIMEOUT, DATA_WARNING
+from kiro_crew.constants import (
+    CHAT_TURN_TIMEOUT,
+    DATA_WARNING,
+    SUBAGENT_COMPLETION_META_KEY,
+)
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
@@ -215,6 +219,14 @@ from kiro_crew.subagent import (
     SubagentManager,
     ToolApprovalCallback,
     resolve_max_subagents,
+)
+from kiro_crew.subagent_completion_meta import (
+    OUTCOME_FAILED,
+    OUTCOME_OK,
+    OUTCOME_STOPPED,
+    single_completion_meta,
+    wave_chunk_meta,
+    wave_final_meta,
 )
 from kiro_crew.taskrunner import TaskRunner
 
@@ -4160,11 +4172,11 @@ class GatewayOrchestrator:
             # every consumer below must branch on ``user_stopped`` explicitly
             # rather than inferring success from an empty error.
             if info.user_stopped:
-                status, emoji = "stopped by user", "⏹"
+                status, emoji, single_outcome = "stopped by user", "⏹", OUTCOME_STOPPED
             elif info.error:
-                status, emoji = "failed", "❌"
+                status, emoji, single_outcome = "failed", "❌", OUTCOME_FAILED
             else:
-                status, emoji = "completed", "✅"
+                status, emoji, single_outcome = "completed", "✅", OUTCOME_OK
             title = f"Subagent `{info.id}` {emoji}"
 
             # ── Orchestration guard: track failures (only in orchestrator mode) ──
@@ -4277,6 +4289,17 @@ class GatewayOrchestrator:
                 f"Task: {task_text}\n\n"
                 f"{detail}"
                 f"{guard_msg}"
+            )
+            # Structured header facts for the dashboard card, stamped on the row
+            # so a reword of the prose above cannot silently break rendering
+            # (#1792). The card reads this; the frontend regexes are a fallback.
+            # Reassigned for the wave-digest shapes below when this member's
+            # completion is folded into a batch chunk instead of injected alone.
+            sub_meta = single_completion_meta(
+                agent_id=info.id,
+                outcome=single_outcome,
+                agent_name=info.agent or "",
+                task=task_text,
             )
 
             parent_key = info.parent_session_key
@@ -4515,6 +4538,18 @@ class GatewayOrchestrator:
                             f"sub-agents.\n"
                             f"{_footer}\n\n{_digest_body}{_guards}"
                         )
+                        # This member's completion is delivered as the wave-close
+                        # digest, not a per-agent row — stamp the digest's facts
+                        # (tallies + chunk index) in place of the single-agent
+                        # meta built above.
+                        sub_meta = wave_final_meta(
+                            chunk=_chunk_k,
+                            chunks=_chunk_j,
+                            ok=bp["ok"],
+                            failed=bp["err"],
+                            stopped=bp["stopped"],
+                            total=bp["total"],
+                        )
                     else:
                         # Non-final chunk: spawn-discipline guidance — the
                         # parent wakes mid-wave, so it must not start new
@@ -4547,6 +4582,15 @@ class GatewayOrchestrator:
                             f"run are still arriving, and spawning now will "
                             f"interleave with them.\n"
                             f"{_footer}\n\n{_digest_body}{_guards}"
+                        )
+                        # Mid-wave chunk: progress facts (delivered/running), no
+                        # tallies — mirrors the CHUNK regex the frontend demotes.
+                        sub_meta = wave_chunk_meta(
+                            chunk=_chunk_k,
+                            chunks=_chunk_j,
+                            delivered=bp["done"],
+                            total=bp["total"],
+                            running=_remaining,
                         )
                         # Reset per-chunk buffers for the next chunk. (On the
                         # final chunk bp was already popped from
@@ -4672,7 +4716,12 @@ class GatewayOrchestrator:
                                 )
                                 # Bounded by CHAT_TURN_TIMEOUT (~7200s): _run_chat's
                                 # finally block drains slot._queue on any exit path.
-                                _injection_slot.queue_append(announce)
+                                # Carry the structured completion facts so the
+                                # drained row is a card without re-parsing the
+                                # prose (#1792); _start_next_queued_turn reads them.
+                                _injection_slot.queue_append(
+                                    announce, meta={SUBAGENT_COMPLETION_META_KEY: sub_meta}
+                                )
                                 self.dashboard_state.push_slots_update()
                                 logger.info("Subagent %s → queued in %s", info.id, _slot_name)
                                 return
@@ -5187,6 +5236,14 @@ class GatewayOrchestrator:
                         f"⚠️ Result delivery timed out — the subagent finished but "
                         f"its result could not be injected into this session.",
                         "msg msg-a",
+                        meta={
+                            SUBAGENT_COMPLETION_META_KEY: single_completion_meta(
+                                agent_id=info.id,
+                                outcome=OUTCOME_FAILED,
+                                agent_name=info.agent or "",
+                                task=task_preview,
+                            )
+                        },
                     )
                     # Queue failure for LLM context drain
                     failure_msg = extra.get("failure_msg", "")
@@ -5219,7 +5276,7 @@ class GatewayOrchestrator:
                 if etype in ("subagent_spawn", "subagent_done"):
                     _schedule_slots_push()
 
-        async def _orphan_notify(parent_session: str, msg: str) -> bool:
+        async def _orphan_notify(parent_session: str, msg: str, meta: dict | None = None) -> bool:
             """Inject an orphan notification into the parent dashboard slot.
 
             Mirrors the subagent_injection_failed delivery: visible transcript
@@ -5228,6 +5285,9 @@ class GatewayOrchestrator:
             turn. Returns False when the slot no longer exists so the manager
             falls through to the owner-DM path. ``msg`` is redacted by the
             manager before delivery; re-redact defensively anyway.
+
+            ``meta`` carries the structured completion facts (#1792) so the
+            orphan row renders as a card without re-parsing its prose header.
             """
             # Deliver to whichever tab shows the parent conversation, including a
             # channel-born one; only a parent with no tab wants the owner DM.
@@ -5239,7 +5299,12 @@ class GatewayOrchestrator:
                 return False
             safe_msg, _ = redact_exfiltration_urls(msg)
             safe_msg, _ = redact_credentials(safe_msg)
-            slot.append("assistant", safe_msg, "msg msg-a")
+            slot.append(
+                "assistant",
+                safe_msg,
+                "msg msg-a",
+                meta={SUBAGENT_COMPLETION_META_KEY: meta} if meta else None,
+            )
             slot._pending_subagent_failures.append(safe_msg)
             self.dashboard_state.push_slots_update()
             logger.info("Orphan notification injected into slot %s", slot_name)

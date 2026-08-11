@@ -420,7 +420,9 @@ async def test_orphan_injection_delegates_to_callback():
     with patch("kiro_crew.subagent.sel"):
         ok = await mgr._try_inject_orphan_notification("dashboard:main", "msg")
     assert ok is True
-    notify.assert_awaited_once_with("dashboard:main", "msg")
+    # The structured completion facts (#1792) are forwarded as a third arg;
+    # a direct call with no meta passes None through unchanged.
+    notify.assert_awaited_once_with("dashboard:main", "msg", None)
 
 
 @pytest.mark.asyncio

@@ -73,6 +73,11 @@ from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.session_workspace import result_path as _ws_result_path
 from kiro_crew.slack.format import extract_options
 from kiro_crew.stats import Stats
+from kiro_crew.subagent_completion_meta import (
+    OUTCOME_FAILED,
+    OUTCOME_INTERRUPTED,
+    single_completion_meta,
+)
 from kiro_crew.subagent_cost import (
     append_cost_sample,
     compact_cost_log,
@@ -1186,7 +1191,7 @@ class SubagentManager:
         on_spawn_approval: SpawnApprovalCallback | None = None,
         is_yolo: Callable[[], bool] | None = None,
         on_event: SubagentEventCallback | None = None,
-        on_orphan_notify: Callable[[str, str], Awaitable[bool]] | None = None,
+        on_orphan_notify: Callable[..., Awaitable[bool]] | None = None,
         on_orphan_dm: Callable[[str], Awaitable[bool]] | None = None,
         completion_keep: str = "head",
         completion_keep_chars: int = COMPLETION_KEEP_DEFAULT_CHARS,
@@ -1528,12 +1533,26 @@ class SubagentManager:
                 f"Result saved at: `{result_path}`\n"
                 f"Use the read tool to retrieve it."
             )
+            # A restart orphan whose result survived on disk: interrupted, not a
+            # plain failure. The note is the only explanation the header carries.
+            row_meta = single_completion_meta(
+                agent_id=agent_id,
+                outcome=OUTCOME_INTERRUPTED,
+                task=task_preview,
+                note="orphaned by gateway restart",
+            )
         else:
             msg = (
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{agent_id}` ❌ lost to gateway restart\n"
                 f"Task: {task_preview}\n"
                 f"No result was captured before the restart."
+            )
+            row_meta = single_completion_meta(
+                agent_id=agent_id,
+                outcome=OUTCOME_FAILED,
+                task=task_preview,
+                note="lost to gateway restart",
             )
 
         # Redact before any delivery path (injection or Slack DM)
@@ -1545,7 +1564,7 @@ class SubagentManager:
         # tab the digest DM below is the only surface.
         if has_dashboard_surface(parent_session):
             try:
-                injected = await self._try_inject_orphan_notification(parent_session, msg)
+                injected = await self._try_inject_orphan_notification(parent_session, msg, row_meta)
                 if injected:
                     # Update tombstone recovery_action
                     try:
@@ -1566,18 +1585,23 @@ class SubagentManager:
         # Undelivered: hand back for the caller's single digest DM.
         return msg
 
-    async def _try_inject_orphan_notification(self, parent_session: str, msg: str) -> bool:
+    async def _try_inject_orphan_notification(
+        self, parent_session: str, msg: str, meta: dict | None = None
+    ) -> bool:
         """Try to inject a message into the parent dashboard session.
 
         Delegates to the gateway-wired ``on_orphan_notify`` callback, which
         appends the (already-redacted) message to the parent slot's transcript
         and queues it into ``slot._pending_subagent_failures`` so the LLM
         learns about the orphan on its next turn. Returns True if delivered.
+
+        ``meta`` carries the structured completion facts for the dashboard card
+        (#1792) so the orphan row renders without re-parsing its prose header.
         """
         if self._on_orphan_notify is None:
             return False
         try:
-            delivered = bool(await self._on_orphan_notify(parent_session, msg))
+            delivered = bool(await self._on_orphan_notify(parent_session, msg, meta))
         except Exception:
             logger.debug("on_orphan_notify raised for %s", parent_session, exc_info=True)
             return False

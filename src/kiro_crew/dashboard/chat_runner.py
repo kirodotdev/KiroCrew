@@ -2772,6 +2772,14 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     cron_label = match.group(1) if match else "cron"
     cron_label, _ = redact_exfiltration_urls(cron_label)
     cron_label, _ = redact_credentials(cron_label)
+    # Structured completion facts stamped at enqueue time (gateway _subagent_done)
+    # ride through to the row so the card reads them instead of re-parsing the
+    # header prose (#1792). Only a single, un-merged system injection carries
+    # them: a merge concatenates several entries under one synthetic header, for
+    # which per-entry facts are meaningless — subagent completions never merge
+    # (they drain one at a time and break any user-message merge), so this only
+    # fires on the shape it was computed for.
+    _row_meta = consumed[0].get("meta") if (is_subagent and len(consumed) == 1) else None
     slot.append(
         "subagent" if is_subagent else "inject" if (is_cron or is_recovery) else "user",
         next_msg,
@@ -2780,6 +2788,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             if is_cron
             else "msg msg-inject" if is_recovery else "msg msg-u"
         ),
+        meta=_row_meta if isinstance(_row_meta, dict) else None,
     )
 
     task = spawn_guarded_turn(
