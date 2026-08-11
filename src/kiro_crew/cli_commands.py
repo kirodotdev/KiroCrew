@@ -27,6 +27,7 @@ from kiro_crew.apps.bridges import (
     deregister_app,
     deregister_app_crons_from_service,
     register_app,
+    register_app_crons_with_service,
 )
 from kiro_crew.apps.manager import (
     disable_app,
@@ -527,6 +528,48 @@ def _cleanup_app_crons_from_scheduler(app_name: str) -> int:
     return removed
 
 
+def _register_app_crons_to_scheduler(app_name: str) -> list[str]:
+    """Promote the enabled app's cron definitions into the shared scheduler store.
+
+    Mirrors ``_cleanup_app_crons_from_scheduler`` for the enable direction: the
+    HTTP enable route promotes app crons into the running CronService via
+    ``hooks_integration.on_app_enable``, but the CLI runs in a separate process
+    with no handle on the gateway's service — so without a store write here, an
+    app enabled from the CLI has its crons lie dormant until the next gateway
+    restart. Writing through a store-backed CronService closes that gap: the
+    running gateway's timer tick re-syncs ``crons.json`` by content digest at
+    least every ``_TIMER_POLL_SECS``, picking up externally-added jobs by
+    design. ``register_app_crons_with_service`` applies the same trust gate and
+    command/script vetting as the gateway paths and is idempotent (jobs already
+    present by name are skipped). Returns the newly registered job names.
+    """
+    svc = CronService(base_dir=config_dir())
+    svc._load()
+    try:
+        # register_app_crons_with_service is async (routes through the async
+        # CronSDK mutators). The CLI is a loop-less process, so drive it with a
+        # one-shot event loop. No scheduler is running here, so nothing is armed.
+        registered = asyncio.run(register_app_crons_with_service(app_name, svc))
+        sel().log_api_access(
+            caller="cli",
+            operation="app_crons_register",
+            outcome="completed",
+            resources=f"app={app_name} crons={registered}",
+        )
+    except Exception as exc:
+        sel().log_api_access(
+            caller="cli",
+            operation="app_crons_register",
+            outcome="failed",
+            resources=app_name,
+            error=str(exc),
+        )
+        raise
+    if registered:
+        print(f"  registered {len(registered)} cron job(s) with scheduler")
+    return registered
+
+
 def _run_app_mcp_server(app_name: str) -> None:
     """Run the named app's stdio MCP server in this process.
 
@@ -603,6 +646,7 @@ def _handle_app(args: argparse.Namespace) -> None:
                 print(f"   Agents registered: {len(reg.agents)}")
             if reg.skills:
                 print(f"   Skills registered: {len(reg.skills)}")
+            _register_app_crons_to_scheduler(args.name)
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)

@@ -536,13 +536,13 @@ class TestCronRegistration:
         try:
             loop_thread = threading.get_ident()
             persist_threads: list[int] = []
-            orig_persist = svc._persist_add_locked
+            orig_persist = svc._persist_add_if_absent_locked
 
-            def _track(job):  # type: ignore[no-untyped-def]
+            def _track(predicate, job):  # type: ignore[no-untyped-def]
                 persist_threads.append(threading.get_ident())
-                return orig_persist(job)
+                return orig_persist(predicate, job)
 
-            svc._persist_add_locked = _track  # type: ignore[method-assign, assignment]
+            svc._persist_add_if_absent_locked = _track  # type: ignore[method-assign, assignment]
 
             registered = await register_app_crons_with_service("test-app", svc)
             assert "test-app/refresh" in registered
@@ -1248,7 +1248,7 @@ class TestCronServiceBridge:
             result = _run(register_app_crons_with_service("test-app", MagicMock()))
 
         assert result == []
-        mock_sdk.add_job_async.assert_not_called()
+        mock_sdk.add_job_if_absent_async.assert_not_called()
 
     def test_boot_explicit_allow_registers_third_party_crons(self, tmp_path, app_env, monkeypatch):
         from unittest.mock import MagicMock, patch
@@ -1267,13 +1267,13 @@ class TestCronServiceBridge:
         )
         mock_sdk = MagicMock()
         mock_sdk.list_jobs.return_value = []
-        mock_sdk.add_job_async = AsyncMock(return_value=MagicMock(id="job-id"))
+        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="job-id"))
 
         with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = _run(register_app_crons_with_service("test-app", MagicMock()))
 
         assert result == ["test-app/refresh"]
-        mock_sdk.add_job_async.assert_awaited_once()
+        mock_sdk.add_job_if_absent_async.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_boot_disarms_persisted_denied_app_crons_before_timer_start(
@@ -1461,13 +1461,13 @@ class TestCronServiceBridge:
         mock_cron_service = MagicMock()
         mock_sdk = MagicMock()
         mock_sdk.list_jobs.return_value = []
-        mock_sdk.add_job_async = AsyncMock(return_value=MagicMock(id="abc123"))
+        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="abc123"))
 
         with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
 
         assert result == ["test-app/refresh"]
-        mock_sdk.add_job_async.assert_called_once_with(
+        mock_sdk.add_job_if_absent_async.assert_called_once_with(
             name="test-app/refresh",
             message="do stuff",
             every_secs=600,
@@ -1504,13 +1504,13 @@ class TestCronServiceBridge:
         mock_cron_service = MagicMock()
         mock_sdk = MagicMock()
         mock_sdk.list_jobs.return_value = []
-        mock_sdk.add_job_async = AsyncMock(return_value=MagicMock(id="abc123"))
+        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="abc123"))
 
         with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
 
         assert result == ["test-app/nightly-run"]
-        assert mock_sdk.add_job_async.call_args.kwargs["enabled"] is False
+        assert mock_sdk.add_job_if_absent_async.call_args.kwargs["enabled"] is False
 
     def test_legacy_defs_without_enabled_default_active(self, tmp_path, app_env, monkeypatch):
         """Pre-existing app-crons.json without the enabled key registers active."""
@@ -1532,12 +1532,12 @@ class TestCronServiceBridge:
         mock_cron_service = MagicMock()
         mock_sdk = MagicMock()
         mock_sdk.list_jobs.return_value = []
-        mock_sdk.add_job_async = AsyncMock(return_value=MagicMock(id="abc123"))
+        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="abc123"))
 
         with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             _run(register_app_crons_with_service("test-app", mock_cron_service))
 
-        assert mock_sdk.add_job_async.call_args.kwargs["enabled"] is True
+        assert mock_sdk.add_job_if_absent_async.call_args.kwargs["enabled"] is True
 
     def test_startup_skips_existing_disabled_job(self, tmp_path, app_env, monkeypatch):
         """Gateway-startup re-registration must not re-add (and thus re-pause)
@@ -1576,7 +1576,7 @@ class TestCronServiceBridge:
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
 
         assert result == []
-        mock_sdk.add_job_async.assert_not_called()
+        mock_sdk.add_job_if_absent_async.assert_not_called()
         # The existing job's state is untouched — no duplicate, no re-pause.
         assert existing.enabled is False
         assert existing.user_paused is True
@@ -1608,13 +1608,13 @@ class TestCronServiceBridge:
         mock_cron_service = MagicMock()
         mock_sdk = MagicMock()
         mock_sdk.list_jobs.return_value = []
-        mock_sdk.add_job_async = AsyncMock(return_value=MagicMock(id="cmd123"))
+        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="cmd123"))
 
         with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
 
         assert result == ["test-app/collect"]
-        mock_sdk.add_job_async.assert_called_once_with(
+        mock_sdk.add_job_if_absent_async.assert_called_once_with(
             name="test-app/collect",
             message="",
             every_secs=60,
@@ -1652,7 +1652,7 @@ class TestCronServiceBridge:
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
 
         assert result == []
-        mock_sdk.add_job_async.assert_not_called()
+        mock_sdk.add_job_if_absent_async.assert_not_called()
 
     def test_rejects_invalid_script_path(self, tmp_path, app_env, monkeypatch):
         """Scripts outside ~/.kirocrew/crons/ are rejected at registration."""
@@ -1677,7 +1677,7 @@ class TestCronServiceBridge:
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
 
         assert result == []
-        mock_sdk.add_job_async.assert_not_called()
+        mock_sdk.add_job_if_absent_async.assert_not_called()
 
     def test_idempotent_skips_existing(self, tmp_path, app_env, monkeypatch):
         from unittest.mock import MagicMock, patch
@@ -1697,7 +1697,7 @@ class TestCronServiceBridge:
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
 
         assert result == []
-        mock_sdk.add_job_async.assert_not_called()
+        mock_sdk.add_job_if_absent_async.assert_not_called()
 
     def test_returns_empty_when_no_cron_service(self, tmp_path, app_env):
         from kiro_crew.apps.bridges import register_app_crons_with_service
@@ -1727,7 +1727,7 @@ class TestCronServiceBridge:
         mock_cron_service = MagicMock()
         mock_sdk = MagicMock()
         mock_sdk.list_jobs.return_value = []
-        mock_sdk.add_job_async = AsyncMock(return_value=MagicMock(id="x"))
+        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="x"))
 
         with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
@@ -1787,14 +1787,14 @@ class TestCronServiceBridge:
         mock_sdk = MagicMock()
         mock_sdk.list_jobs.return_value = []
         # First call raises, second succeeds
-        mock_sdk.add_job_async = AsyncMock(side_effect=[RuntimeError("boom"), MagicMock(id="ok")])
+        mock_sdk.add_job_if_absent_async = AsyncMock(side_effect=[RuntimeError("boom"), MagicMock(id="ok")])
 
         with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
             result = _run(register_app_crons_with_service("test-app", mock_cron_service))
 
         # Failed entry skipped, good entry registered
         assert result == ["test-app/good"]
-        assert mock_sdk.add_job_async.call_count == 2
+        assert mock_sdk.add_job_if_absent_async.call_count == 2
 
 
 class TestCronServiceDeregister:

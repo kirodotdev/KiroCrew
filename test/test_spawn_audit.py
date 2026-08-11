@@ -562,6 +562,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``asyncio.run`` sites below (cli_doctor.py::_doctor, workflows
         # server.py::handle_run).
         "cli_commands.py::_cleanup_app_crons_from_scheduler",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``), used to drive the async
+        # ``register_app_crons_with_service`` coroutine from the loop-less CLI
+        # enable path — the exact enable-direction mirror of
+        # ``_cleanup_app_crons_from_scheduler`` above. No child process is
+        # created; the sole input is the operator-typed app name.
+        "cli_commands.py::_register_app_crons_to_scheduler",
         "cli_doctor.py::_doctor",
         "cli_doctor.py::_doctor_mcp_tools",
         # Read-only diagnostic: `loginctl show-user <user> -p Linger --value`,

@@ -1231,14 +1231,57 @@ class CronService:
     ) -> CronJob | None:
         """Build and persist a job only when no current store entry matches."""
         job = self._build_job(**kwargs)
+        if not self._persist_add_if_absent_locked(predicate, job):
+            return None
+        self._arm_timer()
+        return job
+
+    async def add_job_if_absent_async(
+        self,
+        predicate: Callable[[CronJob], bool],
+        **kwargs: Any,
+    ) -> CronJob | None:
+        """Event-loop-native :meth:`add_job_if_absent`.
+
+        Mirrors :meth:`add_job_async`: the job is built on-loop, the
+        lock/sync/check/append/save core runs in a worker thread so the
+        bounded ``_file_lock`` spin never parks the gateway loop, and timer
+        arming stays on-loop. The absence check and the append happen under
+        ONE store lock after a fresh ``_sync()``, so two concurrent
+        registrars (e.g. a CLI enable racing gateway boot) cannot both
+        observe the name as absent and persist duplicates. Returns None when
+        a matching job already exists.
+        """
+        job = self._build_job(**kwargs)
+        persisted = await asyncio.to_thread(
+            self._persist_add_if_absent_locked, predicate, job
+        )
+        if not persisted:
+            return None
+        self._arm_timer()
+        logger.info("Added cron job '%s' (%s) [if-absent]", job.name, job.id)
+        return job
+
+    def _persist_add_if_absent_locked(
+        self,
+        predicate: Callable[[CronJob], bool],
+        job: CronJob,
+    ) -> bool:
+        """Lock/reload/check/append/save — the atomic add-if-absent disk core.
+
+        Like :meth:`_persist_add_locked` (no timer work, thread-safe, raises
+        :class:`CronStoreBusy` on sustained contention) but the existence
+        check happens INSIDE the same lock, after ``_sync()`` refreshed the
+        in-memory view — closing the snapshot-then-append TOCTOU. Returns
+        False when an existing job matches ``predicate``.
+        """
         with self._file_lock():
             self._sync()
             if any(predicate(existing) for existing in self._jobs):
-                return None
+                return False
             self._jobs.append(job)
             self._save()
-        self._arm_timer()
-        return job
+        return True
 
     def _build_job(
         self,
