@@ -26,6 +26,8 @@ function buildMenuTemplate(deps) {
     zoomActualSize,
     zoomIn,
     zoomOut,
+    alwaysOnTop, // initial checked state for Keep on Top (restored preference)
+    toggleAlwaysOnTop,
     openNewConnectionWindow,
     renameCurrentWindow,
     promptRemoteHost,
@@ -80,6 +82,17 @@ function buildMenuTemplate(deps) {
         { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: zoomOut },
         { type: "separator" },
         { role: "togglefullscreen" },
+        // Checkable, no accelerator: there is no cross-platform convention for
+        // always-on-top, and inventing one risks colliding with an existing
+        // binding. `checked` seeds from the restored preference; main.js
+        // reconciles it with the window's ACTUAL state after every toggle.
+        {
+          label: "Keep on Top",
+          type: "checkbox",
+          id: "keep-on-top",
+          checked: !!alwaysOnTop,
+          click: toggleAlwaysOnTop,
+        },
         { type: "separator" },
         {
           label: "Toggle Developer Tools",

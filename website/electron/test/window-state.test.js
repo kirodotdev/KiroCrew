@@ -92,6 +92,38 @@ test("fullScreen is coerced to a boolean", () => {
   assert.strictEqual(sanitizeWindowState({ width: 1000, height: 700 }, OPTS).fullScreen, false);
 });
 
+// ── sanitizeWindowState: Keep on Top carry-through ──
+
+test("alwaysOnTop flag round-trips with bounds intact", () => {
+  const s = sanitizeWindowState({ x: 10, y: 10, width: 1000, height: 700, alwaysOnTop: true }, OPTS);
+  assert.strictEqual(s.alwaysOnTop, true);
+  assert.strictEqual(s.width, 1000);
+});
+
+test("legacy saved state without the alwaysOnTop key -> false", () => {
+  assert.strictEqual(sanitizeWindowState({ width: 1000, height: 700 }, OPTS).alwaysOnTop, false);
+  assert.strictEqual(sanitizeWindowState(undefined, OPTS).alwaysOnTop, false);
+  // Coerced to a boolean, like fullScreen.
+  assert.strictEqual(sanitizeWindowState({ width: 1000, height: 700, alwaysOnTop: 1 }, OPTS).alwaysOnTop, true);
+});
+
+test("captureWindowState reads isAlwaysOnTop; absent method -> false", () => {
+  const s = captureWindowState(fakeWin({ normal: { x: 1, y: 2, width: 900, height: 700 }, alwaysOnTop: true }));
+  assert.strictEqual(s.alwaysOnTop, true);
+  const bare = {
+    isDestroyed: () => false,
+    isFullScreen: () => false,
+    getNormalBounds: () => ({ x: 0, y: 0, width: 900, height: 700 }),
+  };
+  assert.strictEqual(captureWindowState(bare).alwaysOnTop, false);
+});
+
+test("round-trip: a pinned window restores pinned", () => {
+  const win = fakeWin({ normal: { x: 100, y: 80, width: 1100, height: 760 }, alwaysOnTop: true });
+  const restored = sanitizeWindowState(captureWindowState(win), OPTS);
+  assert.strictEqual(restored.alwaysOnTop, true);
+});
+
 // ── isVisibleOn ──
 
 test("isVisibleOn: window mostly on a second display is visible", () => {
@@ -106,10 +138,11 @@ test("isVisibleOn: only a sliver on-screen is NOT visible", () => {
 
 // ── captureWindowState ──
 
-function fakeWin({ normal, fullScreen = false, destroyed = false }) {
+function fakeWin({ normal, fullScreen = false, alwaysOnTop = false, destroyed = false }) {
   return {
     isDestroyed: () => destroyed,
     isFullScreen: () => fullScreen,
+    isAlwaysOnTop: () => alwaysOnTop,
     getNormalBounds: () => normal,
     // getBounds intentionally returns a different (fullscreen) frame to prove
     // captureWindowState prefers getNormalBounds.
@@ -120,7 +153,7 @@ function fakeWin({ normal, fullScreen = false, destroyed = false }) {
 test("captureWindowState uses getNormalBounds, not the fullscreen frame", () => {
   const win = fakeWin({ normal: { x: 12, y: 34, width: 1000, height: 700 }, fullScreen: true });
   const s = captureWindowState(win);
-  assert.deepStrictEqual(s, { x: 12, y: 34, width: 1000, height: 700, fullScreen: true });
+  assert.deepStrictEqual(s, { x: 12, y: 34, width: 1000, height: 700, fullScreen: true, alwaysOnTop: false });
 });
 
 test("captureWindowState returns null for a destroyed window", () => {
