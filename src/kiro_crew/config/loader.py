@@ -6064,13 +6064,20 @@ class KiroCrewConfig:
         # EXCEPTION: when the Docker entrypoint has deliberately scrubbed
         # credentials from the process environ (setting _KIROCREW_CREDS_SCRUBBED=1),
         # re-injecting them here would leak into /proc/<pid>/environ — the exact
-        # attack surface the entrypoint closed. In that case, children that need
-        # credentials get them via their own .env read or via an explicit env=
-        # kwarg on Popen (the sandbox and ACP spawners already do this).
-        if not os.environ.get("_KIROCREW_CREDS_SCRUBBED"):
-            for k, v in creds.items():
-                if v:
-                    os.environ.setdefault(k, v)
+        # attack surface the entrypoint closed. The scrub covers only credential
+        # keys, so the skip is scoped to _CREDENTIAL_KEYS: every other .env entry
+        # (operator-added settings such as proxy or feature variables) still
+        # propagates so children behave identically in and out of Docker.
+        # Children that need the withheld credentials get them via their own
+        # .env read or via an explicit env= kwarg on Popen (the sandbox and ACP
+        # spawners already do this).
+        scrubbed = bool(os.environ.get("_KIROCREW_CREDS_SCRUBBED"))
+        for k, v in creds.items():
+            if not v:
+                continue
+            if scrubbed and k in _CREDENTIAL_KEYS:
+                continue
+            os.environ.setdefault(k, v)
 
         return creds
 

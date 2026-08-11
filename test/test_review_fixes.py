@@ -366,6 +366,91 @@ class TestLoadCredentialsEnvPropagation:
         assert creds["SLACK_BOT_TOKEN"] == "xoxb-from-parent"
         assert os.environ["SLACK_BOT_TOKEN"] == "xoxb-from-parent"
 
+    def test_scrubbed_marker_withholds_only_credential_keys(
+        self, tmp_path: object, monkeypatch
+    ) -> None:
+        """With _KIROCREW_CREDS_SCRUBBED set (Docker entrypoint), credential
+        keys stay out of os.environ while non-credential .env entries still
+        propagate to spawned children."""
+        import os
+        from pathlib import Path
+
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setenv("_KIROCREW_CREDS_SCRUBBED", "1")
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("KC_TEST_PROXY_SETTING", raising=False)
+
+        tmp = Path(str(tmp_path))
+        env_file = tmp / ".env"
+        env_file.write_text(
+            "SLACK_BOT_TOKEN=xoxb-placeholder\n" "KC_TEST_PROXY_SETTING=proxy-value\n"
+        )
+        env_file.chmod(0o600)
+
+        try:
+            with patch("kiro_crew.config.loader.env_path", return_value=env_file):
+                cfg = KiroCrewConfig.__new__(KiroCrewConfig)
+                creds = cfg.load_credentials()
+
+            # The returned creds dict still carries both entries…
+            assert creds["SLACK_BOT_TOKEN"] == "xoxb-placeholder"
+            assert creds["KC_TEST_PROXY_SETTING"] == "proxy-value"
+            # …but only the non-credential key reaches the process environ:
+            # re-injecting a scrubbed credential would leak it back into
+            # /proc/<pid>/environ.
+            assert "SLACK_BOT_TOKEN" not in os.environ
+            assert os.environ.get("KC_TEST_PROXY_SETTING") == "proxy-value"
+        finally:
+            os.environ.pop("KC_TEST_PROXY_SETTING", None)
+
+    def test_scrubbed_marker_withholds_every_credential_key(
+        self, tmp_path: object, monkeypatch
+    ) -> None:
+        """The skip covers the full _CREDENTIAL_KEYS tuple, not just the subset
+        the entrypoint scrubs today — withholding is the safe direction."""
+        import os
+        from pathlib import Path
+
+        from kiro_crew.config.loader import _CREDENTIAL_KEYS, KiroCrewConfig
+
+        monkeypatch.setenv("_KIROCREW_CREDS_SCRUBBED", "1")
+        for key in _CREDENTIAL_KEYS:
+            monkeypatch.delenv(key, raising=False)
+
+        # Hardcoded literal so no expression derived from the credential-key
+        # tuple flows into a file write; the assertion below keeps the fixture
+        # from drifting out of sync with _CREDENTIAL_KEYS.
+        fixture_keys = (
+            "SLACK_APP_TOKEN",
+            "SLACK_BOT_TOKEN",
+            "KIROCREW_OWNER_ID",
+            "WECOM_BOT_ID",
+            "WECOM_SECRET",
+            "TELEGRAM_BOT_TOKEN",
+            "DISCORD_BOT_TOKEN",
+            "WEBEX_BOT_TOKEN",
+            "MICROSOFT_APP_ID",
+            "MICROSOFT_APP_PASSWORD",
+            "MICROSOFT_APP_TENANT_ID",
+            "WEIXIN_TOKEN",
+        )
+        assert set(fixture_keys) == set(_CREDENTIAL_KEYS)
+
+        tmp = Path(str(tmp_path))
+        env_file = tmp / ".env"
+        env_file.write_text(
+            "".join(f"{key}=placeholder-value\n" for key in fixture_keys)
+        )
+        env_file.chmod(0o600)
+
+        with patch("kiro_crew.config.loader.env_path", return_value=env_file):
+            cfg = KiroCrewConfig.__new__(KiroCrewConfig)
+            cfg.load_credentials()
+
+        for key in _CREDENTIAL_KEYS:
+            assert key not in os.environ
+
 
 class TestYoloFromConfigGuard:
     """Tests for config-sourced safety override.
