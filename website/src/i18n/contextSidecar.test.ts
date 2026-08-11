@@ -129,6 +129,17 @@ const FRAGMENTS = SHORT.filter(([, v]) => isFragment(v)).map(([k]) => k)
 const UNDESCRIBED_OPAQUE_BASELINE = 0
 
 describe('en.context.json shape', () => {
+  it('holds every description inside `entries`, where the readers look', () => {
+    // Every consumer reads `.entries` and nothing else: this file's ENTRIES
+    // above, and `scripts/i18n-shard.mjs`, which is what actually carries
+    // context out to a translator. A description written as a TOP-LEVEL key is
+    // therefore silently inert — it reaches no translator, and the orphan and
+    // coverage checks below cannot see it either. Four had accumulated that way
+    // before this guard existed, two of them describing keys nothing else
+    // described. Keep the top level to exactly the two structural keys.
+    expect(Object.keys(contextSidecar).sort()).toEqual(['_comment', 'entries'])
+  })
+
   it('is a sidecar, so no description can orphan a translation', () => {
     // The point of the whole mechanism: descriptions live outside the catalogs
     // the runtime loads, so editing one can never change a translation key.
