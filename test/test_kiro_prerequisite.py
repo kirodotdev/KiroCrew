@@ -3939,6 +3939,129 @@ class TestKiroCrewNeverSetsUpKiroCli:
             assert not hasattr(KiroPrerequisiteService, method), method
 
     @pytest.mark.asyncio
+    async def test_identity_probe_gets_idp_budget_and_version_stays_short(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # whoami may refresh an OIDC token against an organization IdP (IAM
+        # Identity Center), a 12-20s round trip, so it carries its own budget.
+        # --version is the FIRST execution of an unknown candidate and must
+        # keep the short leash, or a missing/hung binary blocks the gate for
+        # the full identity budget.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.authenticated = True
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+        )
+        await service.snapshot(force=True)
+
+        budgets = {
+            tuple(args): kwargs["timeout_secs"]
+            for (_, args), kwargs in zip(runtime.calls, runtime.kwargs)
+        }
+        assert budgets[("--version",)] == prerequisite_module._PROBE_TIMEOUT_SECS
+        assert budgets[("whoami",)] == prerequisite_module._IDENTITY_PROBE_TIMEOUT_SECS
+        assert (
+            prerequisite_module._IDENTITY_PROBE_TIMEOUT_SECS
+            > prerequisite_module._PROBE_TIMEOUT_SECS
+        )
+
+    @pytest.mark.asyncio
+    async def test_slow_idp_whoami_inside_new_budget_resolves_authenticated(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A whoami that needs longer than the old shared ceiling but fits the
+        # identity budget must resolve as authenticated. The runner times out
+        # iff the granted budget cannot cover an Identity Center token refresh
+        # (measured at 12-20s), which is exactly what the real subprocess does.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        idp_refresh_secs = 20.0
+
+        async def run(command: str, args: list[str], **kwargs: Any) -> ProcessResult:
+            del command
+            if args == ["--version"]:
+                return ProcessResult(ok=True)
+            if args == ["whoami"]:
+                if kwargs["timeout_secs"] <= idp_refresh_secs:
+                    return ProcessResult(ok=False, timed_out=True, error="process timed out")
+                return ProcessResult(ok=True)
+            return ProcessResult(ok=False)
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+        status = await service.snapshot(force=True)
+        assert status["authenticated"] is True
+        assert status["ready"] is True
+
+    @pytest.mark.asyncio
+    async def test_auto_poll_serves_latched_state_while_slow_probe_runs(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The identity probe can legitimately run for the full IdP budget. A
+        # machine poll arriving mid-probe must answer immediately from the
+        # latched state — queueing behind _probe_lock would freeze the gate's
+        # pane for the probe's remaining duration, in every open tab.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        probe_entered = asyncio.Event()
+        release_probe = asyncio.Event()
+        slow = {"active": False}
+        calls: list[list[str]] = []
+        clock = {"now": 1_000.0}
+
+        async def run(command: str, args: list[str], **kwargs: Any) -> ProcessResult:
+            del command, kwargs
+            calls.append(args)
+            if slow["active"] and args == ["whoami"]:
+                probe_entered.set()
+                await release_probe.wait()
+            return ProcessResult(ok=True)
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            process_runner=run,
+            audit_writer=_no_audit,
+            clock=lambda: clock["now"],
+        )
+        # Latch a fast, healthy answer first.
+        first = await service.snapshot(force=True)
+        assert first["ready"] is True
+
+        # Past the floor, a slow probe starts and hangs inside whoami.
+        clock["now"] += prerequisite_module._FORCED_PROBE_FLOOR_SECS + 1
+        slow["active"] = True
+        in_flight = asyncio.create_task(service.snapshot(force=True, coalesce=True))
+        await asyncio.wait_for(probe_entered.wait(), timeout=2)
+
+        # Machine polls answer promptly from the latch, spawning nothing.
+        spawns_before = len(calls)
+        polled = await asyncio.wait_for(
+            service.snapshot(force=True, coalesce=True), timeout=1
+        )
+        assert polled["ready"] is True
+        assert len(calls) == spawns_before
+
+        release_probe.set()
+        await asyncio.wait_for(in_flight, timeout=2)
+
+    @pytest.mark.asyncio
     async def test_auto_poll_is_coalesced_but_check_again_always_probes(
         self,
         tmp_path: Path,

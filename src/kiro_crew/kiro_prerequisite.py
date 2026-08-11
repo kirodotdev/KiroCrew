@@ -111,6 +111,20 @@ def legacy_idle_operation() -> dict[str, str]:
 _MAX_CAPTURED_OUTPUT = 64 * 1024
 _MAX_VISIBLE_DETAIL = 4_000
 _PROBE_TIMEOUT_SECS = 10
+# The identity probe's own budget, deliberately separate from
+# _PROBE_TIMEOUT_SECS. ``whoami`` is not a local read: when the cached token has
+# expired, Kiro CLI refreshes an OIDC token against the organization's IdP —
+# for IAM Identity Center users that network round trip measures 12–20 seconds,
+# so a probe killed at the shared 10-second ceiling reports a fully signed-in
+# CLI as ``authenticated=False`` and wedges the first-run gate. The budget is
+# NOT applied to ``--version``: that probe is the FIRST execution of an unknown
+# candidate and must stay on a short leash, so a genuinely missing or hung
+# binary is still reported quickly rather than blocking the gate for the full
+# identity budget. Sized to cover the observed refresh with headroom, while the
+# in-flight latch in :meth:`KiroPrerequisiteService.snapshot` keeps the gate's
+# machine polls answering from cached state instead of queueing behind a probe
+# this long.
+_IDENTITY_PROBE_TIMEOUT_SECS = 30
 _PROBE_CACHE_SECS = 2.0
 # Floor between HOST probes driven by the status endpoint, however many callers
 # ask. The first-run gate polls with ``refresh=1`` every 5s while it blocks the
@@ -1681,7 +1695,9 @@ class KiroPrerequisiteService:
         supported way to re-probe on demand.
 
         ``coalesce=True`` additionally floors the probe at
-        :data:`_FORCED_PROBE_FLOOR_SECS`. It is for the MACHINE-driven force — the
+        :data:`_FORCED_PROBE_FLOOR_SECS`, and serves the latched answer without
+        waiting when a probe is already in flight. It is for the MACHINE-driven
+        force — the
         blocking gate's auto-poll, which every open tab runs independently — so N
         tabs collapse onto one probe per interval instead of multiplying the
         spawns. A human-driven force (Check again) passes ``coalesce=False`` and
@@ -1692,6 +1708,18 @@ class KiroPrerequisiteService:
         """
 
         if force and coalesce and self._clock() - self._last_probe_at < _FORCED_PROBE_FLOOR_SECS:
+            force = False
+        if force and coalesce and self._has_probed and self._probe_lock.locked():
+            # A probe is already in flight and a latched answer exists. The
+            # machine poll must not queue behind ``_probe_lock`` here: the
+            # identity probe can legitimately run for
+            # _IDENTITY_PROBE_TIMEOUT_SECS (an IdP token refresh), and every
+            # open tab polls every few seconds, so queueing would hang each
+            # poll for the probe's whole remaining duration — a frozen gate,
+            # exactly what the floor exists to prevent. Serving the latched
+            # answer keeps the pane live; the in-flight probe refreshes it for
+            # the next poll. A human Check again keeps queueing: it promised a
+            # fresh answer, and it runs its own probe after the winner.
             force = False
         if force:
             # ``force=not coalesce`` is what actually coalesces a BURST. The floor
@@ -2077,7 +2105,13 @@ class KiroPrerequisiteService:
                 executable,
                 ["whoami"],
                 base_env=_identity_probe_env(self._environ, self._probe_environment),
-                timeout_secs=_PROBE_TIMEOUT_SECS,
+                # The identity budget, not the shared probe ceiling: ``whoami``
+                # may refresh an OIDC token against an organization IdP (see
+                # _IDENTITY_PROBE_TIMEOUT_SECS). By the time this runs, the same
+                # binary already answered ``--version`` inside the short budget,
+                # so the extra headroom is never spent on a missing or hung
+                # candidate.
+                timeout_secs=_IDENTITY_PROBE_TIMEOUT_SECS,
                 isolate_home=isolate_home,
             )
         except asyncio.CancelledError:
