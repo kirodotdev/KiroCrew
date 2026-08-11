@@ -783,8 +783,13 @@ class AcpRuntime:
             init_resp = await self._send_and_await(
                 "initialize",
                 {
-                    "clientName": CLIENT_NAME,
-                    "clientVersion": CLIENT_VERSION,
+                    # kiro-cli reads the driving client name from `clientInfo.name`
+                    # (agent/acp/acp_agent.rs: `if let Some(info) = request.client_info`),
+                    # NOT from a flat `clientName` key. Sending it flat left every
+                    # AcpRuntime-driven session (the primary kiro-cli path) unnamed in
+                    # telemetry — bucketed as "(none)" instead of "kirocrew". Nest it to
+                    # match AcpClient and be picked up for acpClientName attribution.
+                    "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
                     "protocolVersion": PROTOCOL_VERSION,
                     "clientCapabilities": ACP_CLIENT_CAPABILITIES,
                 },
