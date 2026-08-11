@@ -5,17 +5,14 @@ from __future__ import annotations
 import json
 import os
 import platform
-import re
 import shutil
 import socket
 import subprocess
 import sys
-from importlib.resources import files as _pkg_files
 from pathlib import Path
-from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.browser.setup import (
     browser_mode_enabled,
@@ -68,26 +65,21 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
     """Render slack-manifest.yaml with the user's alias substituted."""
 
     alias = alias or _get_alias()
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+", alias):
+    if not slack_manifest.valid_alias(alias):
         print(
-            "❌ Invalid alias — must be alphanumeric, hyphens, or underscores only.",
+            "❌ Invalid alias — must be alphanumeric, hyphens, or underscores only, "
+            f"at most {slack_manifest.ALIAS_MAX} characters.",
             file=sys.stderr,
         )
         sys.exit(1)
     try:
-        template_text = (
-            _pkg_files("kiro_crew").joinpath("slack-manifest.yaml").read_text(encoding="utf-8")
-        )
+        rendered = slack_manifest.render(alias)
     except FileNotFoundError:
         print("❌ Cannot find slack-manifest.yaml", file=sys.stderr)
         sys.exit(1)
-    rendered = template_text.replace("{{ALIAS}}", alias)
     if url:
-        # Strip comment lines to shorten the URL
-        lines = [ln for ln in rendered.splitlines() if not ln.lstrip().startswith("#")]
-        encoded = quote("\n".join(lines).strip() + "\n", safe="")
         print("\n🔗 Click to create your Slack app:\n")
-        print(f"https://api.slack.com/apps?new_app=1&manifest_yaml={encoded}\n")
+        print(f"{slack_manifest.deep_link(alias)}\n")
     elif output:
         out = Path(output)
         out.parent.mkdir(parents=True, exist_ok=True)

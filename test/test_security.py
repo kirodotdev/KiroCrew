@@ -4232,3 +4232,243 @@ class TestApplyResourceLimits:
         monkeypatch.setattr(sec, "_resource", None)
         fn = sec.apply_resource_limits({"resource_limits": {"max_processes": 1}})
         assert fn() is None
+
+
+class TestKiroCrewSlackAppCreateLink:
+    """Kiro Crew's OWN Slack app-create deep link survives the exfil redactor.
+
+    ``kirocrew manifest --url`` and ``GET /api/slack/manifest`` emit
+    ``https://api.slack.com/apps?new_app=1&manifest_yaml=<encoded manifest>``.
+    The encoded manifest is ~1.9 KB, so the aggregate query-length heuristic
+    classified the whole link as exfiltration and the user was shown
+    ``[REDACTED: suspicious URL to api.slack.com]`` instead of the link the
+    setup guide tells them to click.
+
+    The exemption is granted by VALIDATION, not by destination: the payload must
+    reproduce the bundled template rendered with one alias. Every test below that
+    perturbs the link asserts it goes back to being redacted, because the value
+    of this carve-out is precisely that it cannot be used to carry anything else.
+    """
+
+    def _payload(self, alias: str = "someone") -> str:
+        """The deep-link payload as the REAL emitters build it."""
+        from kiro_crew import slack_manifest
+
+        return slack_manifest.render(alias, strip_comments=True)
+
+    def _link(self, alias: str = "someone", **over: str) -> str:
+        from urllib.parse import quote
+
+        from kiro_crew import slack_manifest
+
+        if not over:
+            # Default case goes through the actual emitter, so a change to its
+            # render/strip/encode procedure fails HERE rather than silently
+            # reintroducing the redaction bug for users.
+            return slack_manifest.deep_link(alias)
+        payload = over.get("payload", self._payload(alias))
+        scheme = over.get("scheme", "https")
+        host = over.get("host", "api.slack.com")
+        path = over.get("path", "/apps")
+        new_app = over.get("new_app", "1")
+        extra = over.get("extra", "")
+        return (
+            f"{scheme}://{host}{path}?new_app={new_app}"
+            f"&manifest_yaml={quote(payload, safe='')}{extra}"
+        )
+
+    def test_the_real_emitters_produce_an_unredacted_link(self) -> None:
+        """Both emitted links pass — driven through the emitters, not a rebuild.
+
+        The Design Review on #2725 called this out: rebuilding the payload inside
+        the test would let an emitter drift away from the validator with the tests
+        still green, which is the same "no test exercised the real URL" failure
+        that hid the original bug.
+        """
+        from kiro_crew import slack_manifest
+        from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
+
+        url = slack_manifest.deep_link("someone")
+        assert len(url.split("?", 1)[1]) >= 200  # premise: over the threshold
+        assert scan_exfiltration_urls(url) == []
+        assert redact_exfiltration_urls(url)[0] == url
+
+    def test_manifest_link_is_not_redacted(self) -> None:
+        """The real emitted link passes the general text scanner untouched."""
+        from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
+
+        url = self._link()
+        assert len(url.split("?", 1)[1]) >= 200
+        assert scan_exfiltration_urls(url) == []
+        cleaned, warnings = redact_exfiltration_urls(url)
+        assert cleaned == url
+        assert warnings == []
+
+    def test_alias_shapes_accepted(self) -> None:
+        """Any alias the emitters permit (alnum, hyphen, underscore) is accepted."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        for alias in ("a", "user99", "first-last", "with_underscore", "A1_b-2"):
+            assert scan_exfiltration_urls(self._link(alias)) == [], alias
+
+    def test_secret_shaped_alias_is_still_redacted(self) -> None:
+        """A credential parked in the alias slot does NOT ride through.
+
+        Regression for the blocking finding on #2725: the exemption used to zero
+        the heuristic payload, and the alias slot accepted 64 chars of
+        `[A-Za-z0-9_-]` — wide enough for a 40-char alphanumeric secret, which is
+        exactly the run length `_EXFIL_PATTERNS` needs to fire. Two independent
+        guards now cover it: `ALIAS_MAX` makes a 40-char run impossible, and the
+        alias that does fit stays under the heuristics.
+        """
+        from urllib.parse import quote
+
+        from kiro_crew import slack_manifest
+        from kiro_crew.security import scan_exfiltration_urls
+
+        # Over ALIAS_MAX — the derived pattern refuses it, so no exemption.
+        secret40 = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEYXY"
+        assert len(secret40) == 40 > slack_manifest.ALIAS_MAX
+        payload = slack_manifest.stripped_template().replace(
+            slack_manifest.ALIAS_PLACEHOLDER, secret40
+        )
+        url = (
+            "https://api.slack.com/apps?new_app=1&manifest_yaml="
+            + quote(payload, safe="")
+        )
+        assert scan_exfiltration_urls(url) != []
+
+        # Within ALIAS_MAX but a recognised credential shape — caught on the
+        # alias itself, because the alias is what the heuristics still see.
+        for hostile in ("AKIAIOSFODNN7EXAMPLE", "xoxb-123456789012-abcdef"):
+            assert len(hostile) <= slack_manifest.ALIAS_MAX, hostile
+            assert scan_exfiltration_urls(self._link(hostile)) != [], hostile
+
+    def test_mismatched_aliases_redacted(self) -> None:
+        """The manifest names the alias twice; they must be the SAME alias."""
+        from kiro_crew import slack_manifest
+        from kiro_crew.security import scan_exfiltration_urls
+
+        tampered = slack_manifest.stripped_template().replace(
+            slack_manifest.ALIAS_PLACEHOLDER, "real", 1
+        ).replace(slack_manifest.ALIAS_PLACEHOLDER, "other")
+        assert scan_exfiltration_urls(self._link(payload=tampered)) != []
+
+    def test_arbitrary_payload_redacted(self) -> None:
+        """A long payload that is not the template stays redacted."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(self._link(payload="x" * 900)) != []
+
+    def test_credential_in_payload_still_redacted(self) -> None:
+        """A secret appended to an otherwise-valid manifest is still caught.
+
+        The unconditional hard-credential scan runs BEFORE the heuristic-query
+        selection, so the carve-out cannot shield a credential even at the
+        approved endpoint.
+        """
+        from kiro_crew.security import scan_exfiltration_urls
+
+        payload = self._payload("someone") + "\nAKIAIOSFODNN7EXAMPLE\n"
+        warnings = scan_exfiltration_urls(self._link(payload=payload))
+        assert warnings != []
+        assert "credential" in warnings[0]
+
+    def test_extra_parameter_redacted(self) -> None:
+        """An extra query parameter refuses the exemption (exact param set)."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(self._link(extra="&exfil=" + "z" * 300)) != []
+
+    def test_tampered_new_app_redacted(self) -> None:
+        """``new_app`` must be exactly ``1``."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(self._link(new_app="2")) != []
+
+    def test_neighbouring_endpoints_redacted(self) -> None:
+        """Only the exact https host+path is eligible — no scheme/host/path drift."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(self._link(scheme="http")) != []
+        assert scan_exfiltration_urls(self._link(path="/apps2")) != []
+        assert scan_exfiltration_urls(self._link(host="api.slack.com.evil.example")) != []
+        assert scan_exfiltration_urls(self._link(host="api.slack.com:8443")) != []
+
+    def test_unrelated_slack_url_unaffected(self) -> None:
+        """A long-query URL at the same host but another path stays redacted.
+
+        Guards the documented invariant that query-length detection has no host
+        allowlist: this carve-out keys on a validated payload, not on Slack.
+        """
+        from kiro_crew.security import scan_exfiltration_urls
+
+        url = "https://api.slack.com/api/chat.postMessage?blob=" + "A" * 250
+        assert scan_exfiltration_urls(url) != []
+
+    def test_unreadable_template_fails_closed(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """If the packaged template cannot be read, the link is redacted again.
+
+        Failing closed matters more than the convenience: an install that cannot
+        prove what its own manifest looks like must not exempt a 1.9 KB payload.
+        """
+        import kiro_crew.security as sec
+
+        url = self._link()
+        monkeypatch.setattr(sec, "_slack_manifest_re_slot", [None])
+        assert sec.scan_exfiltration_urls(url) != []
+
+
+class TestDashboardLinkTokenAcrossHostForms:
+    """A dashboard access token is redacted whatever host form carries it.
+
+    This pins the OUTCOME, not the mechanism, because the mechanism today is an
+    accident worth insulating against. `_URL_RE` requires a dot plus a letter
+    TLD, so a bare `localhost` URL is never matched by the URL scanner at all,
+    while `127.0.0.1` (raw IPv4) and a dotted host (a dev desktop, a tailnet
+    name) ARE. Nobody chose that split for dashboard links — it falls out of the
+    host pattern — so `redact_credentials` is what must catch the token on every
+    form, and that is what these assertions hold to.
+
+    Two ways this could regress silently: `_URL_RE` grows to match `localhost`
+    (the exfil path starts firing on loopback URLs), or the credential patterns
+    narrow (the token stops being caught where the URL scanner never looked).
+    The token shape mirrors `dashboard.token_auth.generate_token` —
+    `base64url(payload).base64url(hmac)`, i.e. TWO segments, which is the case
+    that previously fell through to the bare-secret heuristic and survived ~74%
+    of the time (see the link-token alternative in `_CREDENTIAL_PATTERNS`).
+    """
+
+    # 43 chars is exactly HMAC-SHA256 base64url-unpadded, per token_auth._sign.
+    _TOKEN = "eyJ" + "a" * 180 + "." + "b" * 43
+
+    HOST_FORMS = (
+        "localhost:7778",
+        "127.0.0.1:7778",
+        "dev-dsk-someone.example.com:7778",
+        "host.tail1234.ts.net",
+    )
+
+    def test_token_is_redacted_on_every_host_form(self) -> None:
+        from kiro_crew.security import redact_credentials
+
+        for host in self.HOST_FORMS:
+            cleaned, _ = redact_credentials(f"http://{host}/?token={self._TOKEN}")
+            assert self._TOKEN not in cleaned, host
+            # The signature must not survive on its own either — a URL that still
+            # looks complete but no longer authenticates is the failure mode the
+            # two-segment alternative was added for.
+            assert "b" * 43 not in cleaned, host
+
+    def test_localhost_is_invisible_to_the_url_scanner(self) -> None:
+        """Documents the dot-TLD accident so a change to it is a loud diff.
+
+        Not an endorsement: if `_URL_RE` later matches `localhost`, this test
+        fails and whoever changed it gets to confirm the credential path still
+        covers loopback links (the test above) rather than discovering later that
+        redaction depended on the host pattern.
+        """
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(f"http://localhost:7778/?token={self._TOKEN}") == []
+        assert scan_exfiltration_urls(f"http://127.0.0.1:7778/?token={self._TOKEN}") != []

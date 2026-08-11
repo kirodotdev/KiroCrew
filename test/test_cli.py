@@ -1406,10 +1406,14 @@ class TestManifest:
     def _patch_template(
         self, content="name: KiroCrew-{{ALIAS}}\ndisplay_name: KiroCrew-{{ALIAS}}\n"
     ):
-        """Patch importlib.resources.files to return a fake template."""
+        """Patch importlib.resources.files to return a fake template.
+
+        Patched on ``slack_manifest`` — the single module that reads the packaged
+        template for the CLI, the dashboard handler, and the exfil validator.
+        """
         mock_resource = MagicMock()
         mock_resource.joinpath.return_value.read_text.return_value = content
-        return patch("kiro_crew.cli_setup._pkg_files", return_value=mock_resource)
+        return patch("kiro_crew.slack_manifest._pkg_files", return_value=mock_resource)
 
     def test_renders_alias_to_stdout(self, capsys):
         with self._patch_template():
@@ -1440,7 +1444,7 @@ class TestManifest:
     def test_exits_when_template_missing(self):
         mock_resource = MagicMock()
         mock_resource.joinpath.return_value.read_text.side_effect = FileNotFoundError
-        with patch("kiro_crew.cli_setup._pkg_files", return_value=mock_resource):
+        with patch("kiro_crew.slack_manifest._pkg_files", return_value=mock_resource):
             from kiro_crew.cli_setup import _manifest
 
             try:

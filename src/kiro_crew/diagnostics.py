@@ -352,7 +352,7 @@ def _versions_text(note: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _issue_url(result: BundleResult, note: str) -> str:
+def _issue_url(result: BundleResult, note: str, *, prefill: bool = True) -> str:
     """Build the pre-filled new-issue URL the modal's primary button opens.
 
     Routes through the ``bug_report.yml`` ISSUE FORM rather than posting a
@@ -404,10 +404,36 @@ def _issue_url(result: BundleResult, note: str) -> str:
     install = _INSTALL_OPTIONS.get(beacon.distribution())
     if install:
         params["install"] = install
+    if not prefill:
+        # Terminal emission: drop the two free-form fields. `context` alone is
+        # ~430 chars and `what-happened` carries the user's note, so with them
+        # the query is both over the exfil query-length threshold (200) and
+        # UNBOUNDED — a long note pushes any fixed budget back over. What
+        # remains comes from fixed option maps and the version stamp, so the
+        # query is bounded by construction (~140 chars) and the printed link
+        # survives `redact_exfiltration_urls` on any surface that scans it.
+        # Nothing is lost: `kirocrew doctor` already prints the bundle path and
+        # redaction count, and reports the kiro-cli/host versions in its own
+        # output, which is everything `context` restates.
+        params.pop("context", None)
+        params.pop("what-happened", None)
     # quote (not quote_plus): a literal `+` in a version stamp or path would
     # decode back as a space under form-encoding, and `%20` is unambiguous
     # everywhere GitHub parses this.
     return f"{_ISSUE_NEW_URL}?" + urlencode(params, quote_via=quote)
+
+
+def terminal_issue_url(result: BundleResult, note: str = "") -> str:
+    """Issue link shaped for printing to a terminal rather than for a browser.
+
+    The dashboard renders `BundleResult.github_issue_url` out of a JSON response
+    that no redactor scans, so it keeps the full pre-filled body. A link PRINTED
+    to stdout has no such guarantee — it gets selected into chat, captured from a
+    shell tool, or relayed by an agent, and on those paths the pre-filled variant
+    is replaced wholesale by ``[REDACTED: suspicious URL to github.com]``. This
+    variant trades the pre-filled body for a link that arrives intact.
+    """
+    return _issue_url(result, note, prefill=False)
 
 
 def _prune_old_bundles(out_dir: Path, keep: int) -> None:

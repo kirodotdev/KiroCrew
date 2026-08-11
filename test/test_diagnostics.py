@@ -352,6 +352,74 @@ def test_issue_url_is_well_formed(tmp_path, monkeypatch):
     assert "body=" not in r.github_issue_url
 
 
+class TestTerminalIssueUrlSurvivesRedaction:
+    """The link `kirocrew doctor` PRINTS must reach the user intact.
+
+    The dashboard renders `github_issue_url` from a JSON response no redactor
+    scans, so it keeps the full pre-filled body. A link printed to stdout has no
+    such guarantee — selected into chat, captured from a shell tool, or relayed
+    by an agent, it crosses `redact_exfiltration_urls`, and the pre-filled
+    variant's ~600-char query trips the query-length heuristic and is replaced
+    wholesale by `[REDACTED: suspicious URL to github.com]`.
+    """
+
+    def _result(self, tmp_path):  # type: ignore[no-untyped-def]
+        from kiro_crew import diagnostics
+
+        name = "kirocrew-diagnostics-20260811.zip"
+        return diagnostics.BundleResult(
+            zip_path=tmp_path / name,
+            filename=name,
+            redaction_summary={"config.json": 3},
+        )
+
+    def test_prefilled_variant_is_the_one_that_gets_eaten(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Guard the premise — if this stops being redacted the fix is moot."""
+        from kiro_crew import diagnostics
+        from kiro_crew.security import scan_exfiltration_urls
+
+        rich = diagnostics._issue_url(self._result(tmp_path), "something broke")
+        assert len(rich.split("?", 1)[1]) >= 200
+        assert scan_exfiltration_urls(rich) != []
+
+    def test_terminal_variant_is_not_redacted(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from kiro_crew import diagnostics
+        from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
+
+        url = diagnostics.terminal_issue_url(self._result(tmp_path), "something broke")
+        assert scan_exfiltration_urls(url) == []
+        assert redact_exfiltration_urls(url)[0] == url
+
+    def test_terminal_variant_query_is_bounded(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A long note must not push the query back over the threshold.
+
+        Dropping only `context` would leave the length at the mercy of the user's
+        note, so a budget that merely fits today's fields is not enough — the
+        free-form fields are dropped so the query is bounded by construction.
+        """
+        from kiro_crew import diagnostics
+        from kiro_crew.security import scan_exfiltration_urls
+
+        result = self._result(tmp_path)
+        for note in ("", "short note", "x" * 5000, "multi\nline\nnote " * 200):
+            url = diagnostics.terminal_issue_url(result, note)
+            assert len(url.split("?", 1)[1]) < 200
+            assert scan_exfiltration_urls(url) == []
+
+    def test_terminal_variant_keeps_the_triage_form_fields(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Shortening must not cost the answers automatic triage reads."""
+        from urllib.parse import parse_qs, urlsplit
+
+        from kiro_crew import diagnostics
+
+        params = parse_qs(urlsplit(diagnostics.terminal_issue_url(self._result(tmp_path))).query)
+        assert params["template"] == ["bug_report.yml"]
+        for field_name in ("labels", "title", "version", "channel"):
+            assert params.get(field_name), field_name
+        assert "context" not in params
+        assert "what-happened" not in params
+
+
 # ── Release channel -> label, the automatic-triage contract ──────────────────
 
 

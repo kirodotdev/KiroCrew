@@ -2660,28 +2660,23 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     alias substituted, and the comment-stripped YAML is URL-encoded into
     Slack's new-app deep link. Serves only the public template — no secrets.
     """
-    import re  # noqa: F811
-    from importlib.resources import files as _pkg_files
-    from urllib.parse import quote
+    from kiro_crew import slack_manifest
 
     # Default to a non-identifying alias: $USER is a host account name and
     # should not be volunteered to every authenticated client.
     alias = request.query.get("alias", "").strip() or "kirocrew"
-    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", alias):
+    if not slack_manifest.valid_alias(alias):
         return web.json_response({"error": "invalid alias"}, status=400)
     try:
-        template = _pkg_files("kiro_crew").joinpath("slack-manifest.yaml").read_text("utf-8")
+        rendered = slack_manifest.render(alias)
+        create_url = slack_manifest.deep_link(alias)
     except FileNotFoundError:
         return web.json_response({"error": "manifest template missing"}, status=500)
-    rendered = template.replace("{{ALIAS}}", alias)
-    # Strip comment lines to keep the deep link short (same as the CLI).
-    lines = [ln for ln in rendered.splitlines() if not ln.lstrip().startswith("#")]
-    encoded = quote("\n".join(lines).strip() + "\n", safe="")
     return web.json_response(
         {
             "alias": alias,
             "manifest": rendered,
-            "create_url": f"https://api.slack.com/apps?new_app=1&manifest_yaml={encoded}",
+            "create_url": create_url,
         }
     )
 

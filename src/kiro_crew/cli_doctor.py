@@ -512,8 +512,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Diagnostics bundle (--bundle) ──
     # Short-circuit: collect logs + crash reports into a redacted zip and print
-    # the local path plus a pre-filled GitHub issue URL, then exit. Shares the
-    # exact collector the dashboard "Report a Problem" button uses.
+    # the local path plus a GitHub issue URL, then exit. Shares the exact
+    # collector the dashboard "Report a Problem" button uses, but prints the
+    # short link variant: the dashboard's pre-filled URL carries a ~600-char
+    # query that the exfil query-length heuristic redacts on any surface that
+    # scans printed output.
     if bundle:
         print("Collecting diagnostics bundle (secrets are redacted)...\n")
         # The collector touches the filesystem in several places that can fail for
@@ -534,8 +537,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         )
         if result.skipped:
             print(f"     skipped (not found): {', '.join(result.skipped)}")
-        print("\n  Open a pre-filled GitHub issue (then drag the zip in):")
-        print(f"  {result.github_issue_url}")
+        print("\n  Open a GitHub issue (then drag the zip in):")
+        print(f"  {diagnostics.terminal_issue_url(result)}")
         return
 
     # ── Platform edition ──
