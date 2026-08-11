@@ -408,6 +408,47 @@ example by a local crew you also run on this host — there is one
 `kirocrew.service` unit, so re-running `service install` updates it in place
 rather than creating a second service).
 
+**The `EnvironmentFile=` directive only exists in units written by v0.2.0 or
+later.** Upgrading the package never rewrites an already-installed unit, so a
+unit installed by an older release (v0.1.3 and earlier) silently ignores
+`/etc/kirocrew/kirocrew.env` — editing it changes nothing. Check which kind you
+have:
+
+```bash
+grep EnvironmentFile /etc/systemd/system/kirocrew.service
+```
+
+No output means the directive is missing. Either re-run `kirocrew service
+install` (it rewrites the unit in place, keeping the same service), or set
+variables with a [systemd drop-in](#setting-other-environment-variables-systemd-drop-in),
+which works on any unit version.
+
+### Setting other environment variables (systemd drop-in)
+
+For variables the seeded overrides file does not cover — proxy settings are the
+common case — use a systemd drop-in. Drop-ins are systemd's own override
+mechanism: they apply to the unit no matter which release wrote it, and they
+survive reinstalls, `service install` re-runs, and even
+`kirocrew service uninstall` (which removes the unit but never touches
+`/etc/systemd/system/kirocrew.service.d/`).
+
+```bash
+sudo mkdir -p /etc/systemd/system/kirocrew.service.d
+sudo tee /etc/systemd/system/kirocrew.service.d/proxy.conf > /dev/null <<'EOF'
+[Service]
+Environment="HTTPS_PROXY=http://proxy.example.com:3128"
+Environment="HTTP_PROXY=http://proxy.example.com:3128"
+Environment="NO_PROXY=localhost,127.0.0.1"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart kirocrew
+```
+
+A new or edited drop-in is not picked up until `systemctl daemon-reload` runs —
+restarting alone is not enough. Verify what the unit resolved to with
+`systemctl cat kirocrew` (drop-ins are printed below the unit) or
+`systemctl show kirocrew --property=Environment`.
+
 For remote hosts, see [remote-and-mobile.md](remote-and-mobile.md).
 
 ## Linux: the agent sandbox and unprivileged user namespaces
@@ -581,7 +622,7 @@ Always start with `kirocrew doctor`.
 
 ### `AcpTimeoutError: ACP prompt timed out`
 
-The `kiro-cli` backend did not answer in time. Four common causes:
+The `kiro-cli` backend did not answer in time. Five common causes:
 
 1. **`kiro-cli` is not installed.** The gateway raises
    `kiro-cli not found in PATH`. Install it, or use the dashboard's
@@ -598,6 +639,18 @@ The `kiro-cli` backend did not answer in time. Four common causes:
    seconds is treated as finished, and a dispatched tool that returns nothing at
    all for 10 minutes is treated as a dead stall and the agent is killed to
    recover the slot.
+5. **The host needs a proxy and the service does not have one.** On a
+   corporate network, `kiro-cli` must reach its backend through your proxy. A
+   systemd service inherits none of your shell's `HTTPS_PROXY`/`HTTP_PROXY`
+   exports, so a gateway that works when run from your terminal can still time
+   out as a service. Set the proxy variables on the unit with a
+   [systemd drop-in](#setting-other-environment-variables-systemd-drop-in),
+   then `sudo systemctl daemon-reload && sudo systemctl restart kirocrew`.
+   Agent sessions inherit the service environment, so this fixes them. One
+   known gap: the first-run setup gate's login probe currently filters proxy
+   variables out even when the unit carries them, so it can stay stuck on
+   "Sign in to Kiro CLI" on a proxied host — that is
+   [issue #2648](https://github.com/kirodotdev/KiroCrew/issues/2648).
 
 ### Memory or knowledge search returns nothing
 
