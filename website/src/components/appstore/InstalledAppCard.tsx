@@ -74,7 +74,7 @@ export default function InstalledAppCard({
                 so one app looks like itself on both tabs. */}
             <HeroCapsule
               name={app.name}
-              art={{ heroImage: m?.heroImage, heroImageDark: m?.heroImageDark, screenshots: m?.screenshots }}
+              art={{ heroImage: m?.heroImage, heroImageDark: m?.heroImageDark, screenshots: m?.screenshots, repo: m?.repo }}
               icon={pageIcon}
               iconUrl={iconUrl}
               className="w-24 h-[54px] mt-0.5"
