@@ -167,6 +167,39 @@ def _emit_pending_staged(payload: dict) -> None:
         logger.debug("pending-staged hook failed", exc_info=True)
 
 
+# Counterpart observer for candidates LEAVING the queue (approved, dismissed,
+# or TTL-pruned). Module-level for the same reason as the staged hook: any
+# loader instance can consume a candidate. The gateway registers a hook that
+# retires the candidate's bell-feed notification — without it, the "awaiting
+# review" row stays unread forever and its deep link lands on the
+# no-longer-awaiting-review banner.
+_PENDING_CONSUMED_HOOK: "Callable[[dict], None] | None" = None
+
+
+def set_pending_consumed_hook(fn: "Callable[[dict], None] | None") -> None:
+    """Register (or clear, with ``None``) the pending-candidate consumed observer.
+
+    Called once at gateway boot. Idempotent — a later call replaces the hook.
+    """
+    global _PENDING_CONSUMED_HOOK
+    _PENDING_CONSUMED_HOOK = fn
+
+
+def _emit_pending_consumed(payload: dict) -> None:
+    """Invoke the pending-consumed hook, swallowing every failure.
+
+    Consumption has already succeeded on disk by the time this runs; a broken
+    observer must never turn a successful approve/dismiss into a failure.
+    """
+    fn = _PENDING_CONSUMED_HOOK
+    if fn is None:
+        return
+    try:
+        fn(payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("pending-consumed hook failed", exc_info=True)
+
+
 # Derived lifecycle states for auto-skills (not persisted — computed from
 # usage recency at lifecycle-run time).
 SKILL_STATE_ACTIVE = "active"
@@ -2526,6 +2559,9 @@ class SkillsLoader:
         # (h) Prune version history to the cap.
         self._prune_versions(versions_dir)
         # (i) Remove the pending candidate.
+        # Captured BEFORE the removal so a same-slug replacement staged after
+        # this instant keeps its notification (see approve_pending_skill).
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         shutil.rmtree(src, ignore_errors=True)
         # (j) Audit the approved update.
         sel().log_tool_invocation(
@@ -2546,6 +2582,20 @@ class SkillsLoader:
         logger.info(
             "Approved pending update: %s (v%d -> v%d)", target_name, current_version, new_version
         )
+        # The candidate cleanup above ignores rmtree errors (e.g. a Windows
+        # file lock), so the candidate can survive in the pending queue even
+        # though the update went live. Only report it consumed when the
+        # directory is really gone — otherwise the queue still shows an
+        # actionable review and its notification must stay unread.
+        if not src.exists():
+            _emit_pending_consumed(
+                {
+                    "slug": slug,
+                    "outcome": "approved",
+                    "name": target_name,
+                    "consumed_at": consumed_at,
+                }
+            )
         return target_name
 
     def approve_pending_skill(self, slug: str) -> str | None:
@@ -2621,6 +2671,12 @@ class SkillsLoader:
             )
             return None
         dest.parent.mkdir(parents=True, exist_ok=True)
+        # Cutoff for notification resolution, captured BEFORE the candidate
+        # leaves the pending queue: staging refuses to overwrite an existing
+        # candidate, so a same-slug replacement can only be staged after this
+        # instant — its notification carries a strictly later ``ts`` and must
+        # survive the resolve.
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         try:
             shutil.move(str(src), str(dest))
         except OSError:
@@ -2648,6 +2704,9 @@ class SkillsLoader:
                             pass
         self._invalidate_iter_cache()
         logger.info("Approved pending skill: %s", name)
+        _emit_pending_consumed(
+            {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
+        )
         return name
 
     def dismiss_pending_skill(self, slug: str) -> bool:
@@ -2657,8 +2716,14 @@ class SkillsLoader:
         pdir = self._pending_root() / slug
         if not pdir.is_dir():
             return False
+        # Captured BEFORE the removal so a same-slug replacement staged after
+        # this instant keeps its notification (see approve_pending_skill).
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         shutil.rmtree(pdir)
         logger.info("Dismissed pending skill: %s", slug)
+        _emit_pending_consumed(
+            {"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at}
+        )
         return True
 
     def prune_pending(self, ttl_days: int, *, now: float | None = None) -> int:

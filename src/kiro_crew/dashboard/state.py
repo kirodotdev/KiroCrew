@@ -3383,6 +3383,52 @@ class DashboardState:
                 return True
         return False
 
+    async def resolve_skill_review_notifications(self, slug: str, consumed_at: str) -> int:
+        """Ack every skill-review notification for a candidate that left the queue.
+
+        Approving, dismissing, or TTL-pruning a pending skill candidate retires
+        the review request the notification exists to surface. Left unread, the
+        row keeps the bell badge lit for something that can no longer be acted
+        on — its deep link lands on the "no longer awaiting review" banner.
+
+        ``consumed_at`` scopes the ack to the candidate GENERATION that was
+        actually consumed: it is stamped by the consumption site BEFORE the
+        pending directory is removed, and staging refuses to overwrite an
+        existing candidate — so a same-slug replacement staged afterwards
+        carries a strictly later ``ts`` and is never touched. Both timestamps
+        come from ``datetime.now(tz=timezone.utc).isoformat()``, so string
+        comparison is chronological. Rows with a missing/foreign ``ts`` and a
+        falsy cutoff are left alone (fail-safe: a stale unread row beats a
+        wrongly-acked actionable one). Matching is on ``channel ==
+        "system.skills"`` — the bus-validated field only the gateway's own
+        skill-review producer can carry (``system`` is a reserved app name) —
+        never on the derived legacy ``kind``, which an app channel named
+        ``<app>.skills`` would collide with. Acks — never deletes — so the feed
+        keeps its history, and broadcasts ``notification_ack`` per row so an
+        open feed updates live. Returns the number of rows acked.
+        """
+        if not slug or not consumed_at:
+            return 0
+        acked_ts: list[str] = []
+        for n in self._notification_log:
+            ts = n.get("ts")
+            if (
+                n.get("channel") == "system.skills"
+                and n.get("slug") == slug
+                and not n.get("acked")
+                and isinstance(ts, str)
+                and ts
+                and ts <= consumed_at
+            ):
+                n["acked"] = True
+                acked_ts.append(ts)
+        if not acked_ts:
+            return 0
+        await self._rewrite_notifications_async()
+        for ts in acked_ts:
+            self.broadcast_ws("notification_ack", {"ts": ts})
+        return len(acked_ts)
+
     async def clear_notifications(self) -> None:
         """Remove all notifications from memory and disk.
 

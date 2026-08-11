@@ -196,7 +196,7 @@ from kiro_crew.safety_override import (
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.skill_usage import register_skill_read_observer
-from kiro_crew.skills import SkillsLoader, set_pending_staged_hook
+from kiro_crew.skills import SkillsLoader, set_pending_consumed_hook, set_pending_staged_hook
 from kiro_crew.suggestions import api_suggestions
 from kiro_crew.tips import api_tips_feedback, api_tips_next, api_tips_status
 from kiro_crew.tunnel.setup import setup_tunnel
@@ -2119,6 +2119,44 @@ async def start_dashboard(
                 logger.debug("pending-skill notification failed", exc_info=True)
 
         set_pending_staged_hook(_on_pending_skill_staged)
+
+        def _on_pending_skill_consumed(info: dict) -> None:
+            # Counterpart of the staged hook above: when a candidate leaves the
+            # queue (approved, dismissed, or TTL-pruned — by ANY loader
+            # instance), retire its bell notification instead of leaving an
+            # unread row whose deep link now lands on the "no longer awaiting
+            # review" banner. Same thread contract as staging: the hook fires
+            # from whatever thread consumed the candidate (dashboard handlers
+            # run it on an executor), so marshal onto the gateway loop before
+            # touching the notification log or the WS fanout.
+            try:
+                slug = str(info.get("slug") or "")
+                consumed_at = str(info.get("consumed_at") or "")
+                if not slug or not consumed_at:
+                    return
+
+                def _resolve() -> None:
+                    try:
+                        task = asyncio.ensure_future(
+                            state.resolve_skill_review_notifications(slug, consumed_at)
+                        )
+                        state._background_tasks.add(task)
+                        task.add_done_callback(state._background_tasks.discard)
+                    except Exception:
+                        logger.debug("pending-skill notification resolve failed", exc_info=True)
+
+                if _gw_loop is not None and not _gw_loop.is_closed():
+                    try:
+                        _gw_loop.call_soon_threadsafe(_resolve)
+                    except RuntimeError:  # pragma: no cover - loop closing
+                        pass
+                # Without a loop there is no serving dashboard (sync/embedded
+                # launch): no SSE/WS clients to update and no executor to
+                # persist through, so the row is left as-is.
+            except Exception:
+                logger.debug("pending-skill notification resolve failed", exc_info=True)
+
+        set_pending_consumed_hook(_on_pending_skill_consumed)
     except Exception:
         logger.debug("Could not register pending-skill staged hook", exc_info=True)
 
