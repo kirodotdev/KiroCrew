@@ -252,6 +252,9 @@ jobs:
       - name: Lint (flake8)
         run: flake8 src/kiro_crew test
 
+      - name: Lint (pylint)
+        run: pylint --rcfile=.pylintrc src/kiro_crew
+
       - name: Type check (mypy)
         run: mypy src/kiro_crew/
 
