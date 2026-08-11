@@ -200,6 +200,16 @@ def _build_field_schema(
                 }
             else:
                 schema["additionalProperties"] = True
+            # A plain-dict field may DECLARE known sub-keys via
+            # ``_meta(..., properties={...})`` (JSON-Schema property nodes with
+            # their own x-meta). They flatten into first-class ConfigEntry
+            # paths — which is what lets a Settings control carry a configKey
+            # for a key inside a dict field — while additionalProperties above
+            # keeps every undeclared key valid, so declaring some keys never
+            # invalidates the rest of the dict.
+            declared_props = meta.get("properties")
+            if isinstance(declared_props, dict) and declared_props:
+                schema["properties"] = declared_props
 
     default = _default_for_field(f)
     if default is not None:

@@ -3623,7 +3623,11 @@
         "terminal_font_family": "Font",
         "terminal_font_family_desc": "Font for the built-in terminal. Enter a monospace font installed on your computer — use a Nerd Font to render Powerline and prompt-theme glyphs.",
         "terminal_font_size": "Font size",
-        "terminal_font_size_desc": "Text size in the built-in terminal, measured in pixels."
+        "terminal_font_size_desc": "Text size in the built-in terminal, measured in pixels.",
+        "terminal_shell": "Default shell",
+        "terminal_shell_desc": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
+        "terminal_shell_not_executable": "Not an executable shell — enter an absolute path or a command on PATH, or leave empty for the system default.",
+        "terminal_shell_save_failed": "Could not save the shell setting"
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

@@ -16,7 +16,8 @@ import { useSessionPalette } from '../../hooks/useSessionPalette'
 import { PALETTE_NAMES, INTENSITY_NAMES } from '../../utils/sessionColors'
 import type { DefaultColorSetting, PaletteName, IntensityName, SessionColorMode } from '../../utils/sessionColors'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
+import { parseErrorCode } from '../../utils/errorReport'
 import { clampTintCount, RECENT_TINT_COUNT } from '../../utils/recencyTint'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { AUTO_LANGUAGE, PICKABLE_LANGUAGES, languageLabel } from '../../i18n/languages'
@@ -80,7 +81,7 @@ export function DisplayPanel() {
   // kirocrewConfig query, so the choice follows the user across browsers/restarts. Optimistic
   // cache write makes the sidebar tint (which reads the same query) re-rank instantly.
   const qc = useQueryClient()
-  const mcQ = useQuery<{ dashboard?: { recent_tint_count?: number } }>({
+  const mcQ = useQuery<{ dashboard?: { recent_tint_count?: number; terminal?: { shell?: string } } }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
@@ -99,6 +100,60 @@ export function DisplayPanel() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
   })
   const setTintCount = (n: number) => tintMut.mutate(clampTintCount(n))
+
+  // Default shell for the built-in terminal — persisted server-side
+  // (dashboard.terminal.shell) because the SHELL is spawned by the gateway
+  // host, unlike the terminal font above, which is a per-client rendering
+  // choice and stays in localStorage. Drafted locally and committed on blur so
+  // a half-typed path is never persisted. The write mirrors tintMut above:
+  // optimistic cache write + rollback, because onSuccess clears the draft and
+  // React Query serves the stale cache while refetching — without the
+  // optimistic write the just-saved value blinks back to the previous one for
+  // a round-trip, which reads as a failed save. Errors are mapped from the
+  // response's machine-readable `code` to catalog keys: the backend's English
+  // sentence must never render verbatim in a 12-language dashboard.
+  type KirocrewCfg = { dashboard?: { recent_tint_count?: number; terminal?: { shell?: string } } }
+  const serverShell = mcQ.data?.dashboard?.terminal?.shell ?? ''
+  const [shellDraft, setShellDraft] = useState<string | null>(null)
+  const [shellError, setShellError] = useState<string | null>(null)
+  const shellMut = useMutation({
+    mutationFn: (value: string) => api.patchConfig('dashboard.terminal.shell', value),
+    onMutate: async (value: string) => {
+      await qc.cancelQueries({ queryKey: ['kirocrewConfig'] })
+      const prev = qc.getQueryData<KirocrewCfg>(['kirocrewConfig'])
+      const next = structuredClone(prev ?? {})
+      next.dashboard = {
+        ...(next.dashboard ?? {}),
+        terminal: { ...(next.dashboard?.terminal ?? {}), shell: value },
+      }
+      qc.setQueryData(['kirocrewConfig'], next)
+      return { prev }
+    },
+    onSuccess: () => {
+      setShellDraft(null)
+      setShellError(null)
+    },
+    onError: (e, _value, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['kirocrewConfig'], ctx.prev)
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      setShellError(i18nT(
+        code === 'shell_not_executable'
+          ? 'pages.settings.displayPanel.terminal_shell_not_executable'
+          : 'pages.settings.displayPanel.terminal_shell_save_failed',
+      ))
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+  const commitShell = () => {
+    if (shellDraft === null) return
+    const value = shellDraft.trim()
+    if (value === serverShell) {
+      setShellDraft(null)
+      setShellError(null)
+      return
+    }
+    shellMut.mutate(value)
+  }
 
   // ── Install theme (Level 0) from a local folder or a GitHub repo ──
   const [installType, setInstallType] = useState<'github' | 'local'>('github')
@@ -229,6 +284,28 @@ export function DisplayPanel() {
             onDecrement={() => setTerminalFontSize(termFont.fontSize - 1)}
             onReset={() => setTerminalFontSize(DEFAULT_TERMINAL_FONT_SIZE)}
           />
+          {/* Free text with commit-on-blur, mirroring the font field above: the
+              gateway host's installed shells cannot be enumerated from the
+              browser (reading /etc/shells is host-side and absent on some
+              systems), so the user names the shell and the backend validates
+              it is an executable before persisting. No placeholder: a raw
+              path is Latin the en-XA render gate flags, and it is not
+              translatable copy — the description carries the guidance. */}
+          {/* Disabled while the save is in flight: a slow PATCH's onSuccess
+              clears the draft, and text typed in the meantime would vanish
+              with it. Locking the field for the round-trip makes that
+              interleaving unrepresentable (same pattern as SttSettings). */}
+          <SettingsInput
+            label={i18nT('pages.settings.displayPanel.terminal_shell')}
+            description={i18nT('pages.settings.displayPanel.terminal_shell_desc')}
+            value={shellDraft ?? serverShell}
+            onChange={setShellDraft}
+            onBlur={commitShell}
+            disabled={shellMut.isPending}
+            configKey="dashboard.terminal.shell"
+            aria-label={i18nT('pages.settings.displayPanel.terminal_shell')}
+          />
+          <ErrorNotice message={shellError} variant="inline" />
         </SettingsCard>
       </SettingsSection>
 

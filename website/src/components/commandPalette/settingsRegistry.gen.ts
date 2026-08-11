@@ -486,6 +486,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.default-shell",
+    "label": "Default shell",
+    "description": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "dashboard.terminal.shell"
+  },
+  {
     "id": "display.display-mode",
     "label": "Display Mode",
     "description": "How the session color is applied to the row.",

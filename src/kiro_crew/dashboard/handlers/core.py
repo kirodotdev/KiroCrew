@@ -1430,6 +1430,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    # Default shell for the built-in terminal panel (Settings → Display →
+    # Terminal). "" = unset, use $SHELL / the platform default. The executable
+    # check lives as an off-loop special case in the PATCH handler (a PATH
+    # scan must not run inline on the event loop, and validate_fn is called
+    # synchronously); the spawn path re-validates at open time and falls back
+    # rather than failing, so a stale value can never cost the user their
+    # terminal — the save-time check exists to surface a typo immediately in
+    # the Settings field.
+    "dashboard.terminal.shell": {"type": "str", "max_len": 512},
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
@@ -1670,6 +1679,30 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 return _deny(reason, f"{path_key}={value}")
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
+
+    # The terminal's default shell must name a program that exists — "" clears
+    # the setting (restores the $SHELL / platform default). shutil.which stats
+    # every PATH entry, so the probe runs off-loop (same rationale as the
+    # governance reads below); the spawn path re-validates at open time and
+    # falls back regardless, so this gate is a UX surface, not the safety
+    # boundary — it exists to refuse a typo visibly at save time instead of
+    # letting it be discovered as a silently different shell on the next
+    # terminal open. The body carries a machine-readable `code` (the AGENTS
+    # contract for new non-2xx JSON): the Settings field maps it to a catalog
+    # key, since rendering this English sentence verbatim would ship an
+    # untranslated string into a 12-language dashboard.
+    if path_key == "dashboard.terminal.shell" and value.strip():
+        resolved = await asyncio.to_thread(shutil.which, value.strip())
+        if not resolved:
+            _log_sel("denied", f"{path_key}={value}")
+            return web.json_response(
+                {
+                    "error": "must be an executable shell (an absolute path or a "
+                    "command on PATH); leave empty to use the system default",
+                    "code": "shell_not_executable",
+                },
+                status=400,
+            )
 
     # ── Governance: refuse a write an enterprise ceiling has pinned ──
     # Only re-ENABLING is refused. Writing `false` is always allowed even under a

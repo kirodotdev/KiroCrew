@@ -254,6 +254,14 @@ class TestConfigSchemaProperties:
             origin = typing.get_origin(tp)
             if origin is list or origin is dict:
                 reachable_paths.add(f"{path}.*")
+            # A dict field may declare known sub-keys via _meta(...,
+            # properties={...}); those flatten into first-class entries
+            # (see TestDeclaredDictProperties) and are reachable by
+            # construction from the field's own metadata.
+            declared = (f.metadata or {}).get("properties")
+            if isinstance(declared, dict):
+                for key in declared:
+                    reachable_paths.add(f"{path}.{key}")
 
         assert len(SCHEMA_REGISTRY) > 0, "Registry should not be empty"
 
@@ -443,6 +451,40 @@ class TestConfigSchemaProperties:
 # ---------------------------------------------------------------------------
 # Phase 2: Agent-Workspace Bindings Schema Registry Tests
 # ---------------------------------------------------------------------------
+
+
+class TestDeclaredDictProperties:
+    """A plain-dict field may declare known sub-keys via ``_meta(...,
+    properties={...})``; they must flatten into first-class entries while the
+    dict stays open (additionalProperties) so undeclared keys remain valid."""
+
+    def test_terminal_shell_is_first_class_entry(self) -> None:
+        index = {e.path: e for e in SCHEMA_REGISTRY}
+        entry = index.get("dashboard.terminal.shell")
+        assert entry is not None, "declared sub-key did not flatten into the registry"
+        assert entry.type == "string"
+        assert entry.label == "Default shell"
+
+    def test_terminal_dict_stays_open_for_undeclared_keys(self) -> None:
+        # Declaring `shell` must not close the dict: max_sessions,
+        # completion.commands and cwd are documented keys with no declaration
+        # and must still validate (and round-trip) as before.
+        node = JSON_SCHEMA["properties"]["dashboard"]["properties"]["terminal"]
+        assert node.get("additionalProperties") is True
+        assert "shell" in node.get("properties", {})
+
+    def test_declared_key_type_violation_keeps_value_and_dict(self) -> None:
+        # _apply_field_default is deliberately depth-capped (deeper paths
+        # reach dict-field values the loader tolerates — see its docstring),
+        # so a violating declared 3-level sub-key is retained: the warning
+        # says "value kept", the surrounding dict survives untouched, and the
+        # value is re-validated by its consumer (_resolve_shell coerces and
+        # rejects at spawn time).
+        from kiro_crew.config.validation import validate_config_data
+
+        data = {"dashboard": {"terminal": {"enabled": True, "shell": 123}}}
+        validate_config_data(data)
+        assert data["dashboard"]["terminal"] == {"enabled": True, "shell": 123}
 
 
 class TestAgentWorkspaceBindingsSchema:
