@@ -1043,6 +1043,228 @@ class TestCharClassHelperMatchesTheThreeScanDefinition:
             ), f"disagreement on {text!r}"
 
 
+class TestSecretGateOrderIsCostOrdered:
+    """The gate ORDER is the point of the cost ordering, so pin it directly.
+
+    ``TestSecretGateOrderIsVerdictNeutral`` cannot pin it: a conjunction of pure
+    predicates is order-independent by construction, so no corpus can witness a
+    reordering. Reverting the gates to entropy-first therefore passes every
+    verdict test while silently undoing the optimisation. These tests count which
+    gates get EVALUATED, which is the only observable that distinguishes one
+    order from another.
+    """
+
+    @staticmethod
+    def _counting_classify(token: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        """Classify *token*, counting calls to each expensive gate."""
+        counts = {"entropy": 0, "decode": 0}
+        real_entropy = security._shannon_entropy
+        real_decode = security._decodes_to_printable_text
+
+        def entropy(t: str) -> float:
+            counts["entropy"] += 1
+            return real_entropy(t)
+
+        def decode(t: str) -> bool:
+            counts["decode"] += 1
+            return real_decode(t)
+
+        monkeypatch.setattr(security, "_shannon_entropy", entropy)
+        monkeypatch.setattr(security, "_decodes_to_printable_text", decode)
+        security._looks_like_secret_key(token)
+        return counts
+
+    def test_a_structural_rejection_never_pays_for_entropy_or_decode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # "aB3/" * 10 is 40 chars, holds all three classes, is not all-hex, and
+        # has a vowel ratio of 0.5 -- so a structural gate rejects it. With the
+        # structural gates first, neither expensive gate is ever called. Revert
+        # to entropy-first and entropy is called, failing this test. That revert
+        # is exactly the mutation no verdict-based test can catch.
+        token = "aB3/" * 10
+        assert len(token) == _SECRET_KEY_LEN
+        assert security._has_all_three_char_classes(token)
+        assert not security._HEX_ONLY_RE.match(token)
+        counts = self._counting_classify(token, monkeypatch)
+        assert counts == {"entropy": 0, "decode": 0}, (
+            "a token rejected by a structural gate must not pay for entropy or "
+            f"decode; got {counts}"
+        )
+
+    def test_decode_is_last_so_an_entropy_rejection_never_pays_for_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # "Zz9" * 20 clears both structural gates but fails the entropy floor
+        # (1.58 < 4.3). With decode last it is never called; move decode ahead of
+        # entropy and this fails.
+        token = ("Zz9" * 20)[:_SECRET_KEY_LEN]
+        assert not security._lowercase_run_exceeds(token, security._SECRET_MAX_LOWER_RUN)
+        assert security._vowel_ratio(token) <= security._SECRET_MAX_VOWEL_RATIO
+        assert security._shannon_entropy(token) < security._SECRET_ENTROPY_MIN
+        counts = self._counting_classify(token, monkeypatch)
+        assert counts["entropy"] == 1, f"entropy should be reached: {counts}"
+        assert counts["decode"] == 0, f"decode must run after entropy: {counts}"
+
+    def test_a_real_key_still_pays_for_every_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The pass-through case: a genuine key clears all gates, so every gate
+        # runs exactly once. This is what proves the cheap gates are not
+        # short-circuiting a real secret away from the expensive checks.
+        counts = self._counting_classify(
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", monkeypatch
+        )
+        assert counts == {"entropy": 1, "decode": 1}
+
+
+class TestSecretGateOrderIsVerdictNeutral:
+    """Gates 4-7 are ordered by measured cost, so the order must not change verdicts.
+
+    Every one of those gates is a pure predicate whose failure returns False, so
+    reordering them can only change WHICH gate reports a rejection -- never
+    whether the token is rejected. That is the property this class pins, because
+    a reorder that silently changed one verdict in the redaction path would mean
+    either a leaked credential or a corrupted benign output.
+    """
+
+    # Shapes chosen to exercise each gate as the deciding one: real keys, base64
+    # blobs, JWT segments, file paths, camelCase identifiers, hex digests, prose.
+    SOURCES = (
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ",
+        "src/kiro_crew/security/redaction/Handler2/Manager3/Factory4/Builder5x",
+        "getUserAccountManagerFactory2BuilderHelperImpl3ServiceProvider4x",
+        "0123456789abcdefABCDEF0123456789abcdefAB",
+        "TheGatewayRestoredTheSessionAndReplayed12ToolCallsSeeSecurityPy",
+        "aB3/" * 24,
+        "Zz9" * 20,
+        # base64 of printable ASCII: the encoded-text-blob shape gate 7 exists to
+        # exclude. This token clears gates 1-6 (vowel 0.079, no long lowercase
+        # run, entropy 4.48) and is rejected ONLY by the decode gate, which is
+        # what lets this corpus detect that gate being dropped or bypassed.
+        "dFlnal9tVWgsQmVsMzFpRWwyaHBDaFlnQ2ZyTDFz",
+    )
+
+    @staticmethod
+    def _reference(token: str) -> bool:
+        """The classifier with gates 4-7 in every order, evaluated exhaustively.
+
+        Rather than hard-code one alternative ordering, evaluate all four gates
+        independently and AND them. Any ordering of short-circuiting checks must
+        agree with the unordered conjunction.
+        """
+        if len(token) != _SECRET_KEY_LEN:
+            return False
+        if not security._has_all_three_char_classes(token):
+            return False
+        if security._HEX_ONLY_RE.match(token):
+            return False
+        return (
+            security._vowel_ratio(token) <= security._SECRET_MAX_VOWEL_RATIO
+            and not security._lowercase_run_exceeds(
+                token, security._SECRET_MAX_LOWER_RUN
+            )
+            and security._shannon_entropy(token) >= security._SECRET_ENTROPY_MIN
+            and not security._decodes_to_printable_text(token)
+        )
+
+    def _windows(self) -> list[str]:
+        out = []
+        for src in self.SOURCES:
+            for i in range(max(1, len(src) - _SECRET_KEY_LEN + 1)):
+                out.append(src[i : i + _SECRET_KEY_LEN])
+        rng = random.Random(20260811)
+        b64 = string.ascii_letters + string.digits + "+/"
+        out += ["".join(rng.choice(b64) for _ in range(40)) for _ in range(500)]
+        return out
+
+    def test_ordered_classifier_matches_the_unordered_conjunction(self) -> None:
+        windows = self._windows()
+        assert len(windows) > 500
+        for w in windows:
+            assert security._looks_like_secret_key(w) is self._reference(
+                w
+            ), f"gate order changed the verdict for {w!r}"
+
+    def test_the_corpus_actually_exercises_every_gate(self) -> None:
+        # A verdict-equivalence test over a corpus that never reaches gates 4-7
+        # would pass no matter how they were ordered. Prove the corpus bites.
+        reached = {"vowel": 0, "lower": 0, "entropy": 0, "decode": 0, "passed": 0}
+        for w in self._windows():
+            if len(w) != _SECRET_KEY_LEN or not security._has_all_three_char_classes(w):
+                continue
+            if security._HEX_ONLY_RE.match(w):
+                continue
+            if security._lowercase_run_exceeds(w, security._SECRET_MAX_LOWER_RUN):
+                reached["lower"] += 1
+            elif security._vowel_ratio(w) > security._SECRET_MAX_VOWEL_RATIO:
+                reached["vowel"] += 1
+            elif security._shannon_entropy(w) < security._SECRET_ENTROPY_MIN:
+                reached["entropy"] += 1
+            elif security._decodes_to_printable_text(w):
+                reached["decode"] += 1
+            else:
+                reached["passed"] += 1
+        for gate in ("vowel", "lower", "entropy", "decode", "passed"):
+            assert reached[gate] > 0, f"corpus never exercised gate {gate}: {reached}"
+
+    def test_a_real_secret_key_still_redacts_end_to_end(self) -> None:
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        result, warnings = redact_credentials(f"AWS_SECRET={secret} keep this prose")
+        assert secret not in result
+        assert warnings
+        assert "keep this prose" in result
+
+
+class TestLowercaseRunExceedsStopsAtTheCap:
+    """``_lowercase_run_exceeds`` replaced a full-maximum scan with a capped check.
+
+    The caller only compares against a threshold, so the helper answers the
+    threshold question directly. These tests pin the boundary in both directions
+    -- a run exactly at the cap must NOT trip it, cap+1 must -- so an off-by-one
+    in either direction fails.
+    """
+
+    @pytest.mark.parametrize(
+        ("token", "cap", "expected"),
+        [
+            ("", 5, False),
+            ("ABC123", 5, False),
+            ("abcde", 5, False),  # exactly at cap
+            ("abcdef", 5, True),  # cap + 1
+            ("abcdeX", 5, False),  # run broken before exceeding
+            ("abcdeXabcde", 5, False),  # two runs at cap, neither exceeds
+            ("Xabcdefghij", 5, True),  # run starts after a non-lower char
+            ("abcdefghij", 0, True),  # zero cap: any lowercase exceeds
+            ("ABCDEF", 0, False),
+            ("aB3" * 20, 5, False),  # never two lowercase in a row
+        ],
+    )
+    def test_boundary(self, token: str, cap: int, expected: bool) -> None:
+        assert security._lowercase_run_exceeds(token, cap) is expected
+
+    def test_agrees_with_the_full_maximum_it_replaced(self) -> None:
+        def longest_run(token: str) -> int:
+            best = current = 0
+            for ch in token:
+                if ch.islower():
+                    current += 1
+                    best = max(best, current)
+                else:
+                    current = 0
+            return best
+
+        rng = random.Random(20260811)
+        alphabet = string.ascii_letters + string.digits + "+/"
+        for _ in range(3000):
+            t = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 44)))
+            cap = security._SECRET_MAX_LOWER_RUN
+            assert security._lowercase_run_exceeds(t, cap) is (
+                longest_run(t) > cap
+            ), f"disagreement on {t!r}"
+
+
 class TestSandboxDeniedCommands:
     """Verify command denial allows/blocks the right ada and AWS patterns.
 

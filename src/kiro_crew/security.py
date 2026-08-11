@@ -6151,26 +6151,41 @@ def _decodes_to_printable_text(token: str) -> bool:
     return printable / len(raw) >= _SECRET_PRINTABLE_DECODE_RATIO
 
 
-def _longest_lowercase_run(token: str) -> int:
-    """Return the length of the longest run of consecutive lowercase letters.
+def _lowercase_run_exceeds(token: str, cap: int) -> bool:
+    """Return True if any run of consecutive lowercase letters is longer than *cap*.
 
     Dictionary-word identifiers and file-path segments contain long lowercase
     word runs; a uniformly random base64 secret almost never does. This is the
     primary discriminator that keeps camelCase identifiers and mixed-case file
     paths out of the bare-secret heuristic.
+
+    The only question the caller asks is whether the longest run EXCEEDS a
+    threshold, so this stops at cap+1 rather than scanning the whole token to
+    find the true maximum. On the tokens this gate exists to reject -- the ones
+    with a long lowercase run -- it exits after a handful of characters instead
+    of all 40, which measured 3.97 -> 1.65 us per window.
     """
-    best = current = 0
+    current = 0
     for ch in token:
         if ch.islower():
             current += 1
-            best = max(best, current)
+            if current > cap:
+                return True
         else:
             current = 0
-    return best
+    return False
 
 
 def _vowel_ratio(token: str) -> float:
-    """Return the fraction of alphabetic characters in *token* that are vowels."""
+    """Return the fraction of alphabetic characters in *token* that are vowels.
+
+    Deliberately left in this two-pass comprehension form. A single-pass rewrite
+    measured 1.18x -- about 0.4 us on a 2.89 us gate -- which does not justify
+    replacing the clearest possible expression of "fraction of letters that are
+    vowels", and would owe its own independent-oracle test. Its neighbour
+    :func:`_lowercase_run_exceeds` WAS rewritten because that one measured 2.4x.
+    Do not optimise this unmeasured.
+    """
     letters = [ch for ch in token if ch.isalpha()]
     if not letters:
         return 0.0
@@ -6183,20 +6198,49 @@ def _looks_like_secret_key(token: str) -> bool:
     Conservative, multi-gate classifier for a label-less 40-char base64 secret.
     Every gate must pass; the design bias is toward NOT
     redacting (a false negative merely reverts to today's behavior, a false
-    positive corrupts benign output). Gates, cheapest-first:
+    positive corrupts benign output).
+
+    Gates are ordered by MEASURED cost per rejection, cheapest-per-reject first.
+    Every gate is a pure predicate whose failure returns False, so the order is
+    verdict-neutral and can be chosen purely for cost. Measured on a corpus of
+    1705 windows that clear gates 1-3 (cost per window, share of windows that
+    gate rejects on its own):
+
+        lowercase run   1.65 us   66.5%  ->  2.5 us per rejection
+        vowel ratio     2.89 us   62.3%  ->  4.6 us per rejection
+        entropy         8.48 us   54.5%  -> 15.5 us per rejection
+        decode          3.01 us    0.0%  ->  rejected nothing in that corpus
+
+    These numbers are a SNAPSHOT from one corpus on one machine: treat them as a
+    relative ranking, not a budget, and do not turn them into assertions (this
+    repo's CI enables coverage on 3.12 only, so absolute durations are not
+    comparable across shards). The ordering is the durable claim, and it is
+    guarded by a test that counts which gates get evaluated -- see
+    ``TestSecretGateOrderIsCostOrdered``.
+
+    Putting the two cheap structural gates ahead of the entropy computation, and
+    the decode check last, halves the cost of gates 4-7 and measured -47% on
+    ``redact_credentials`` end to end. Do not reorder these back into
+    "structural last" without re-measuring: the structural gates are both
+    cheaper AND higher-yield than entropy, which is the opposite of the
+    intuition that entropy is the primary discriminator.
 
     1. Length is EXACTLY 40 (AWS secret-key length).
     2. Contains all three of lower + upper + digit (rejects all-lower prose runs,
        all-upper CONSTANT_NAMES, base32, digit strings).
     3. Not an all-hex run (rejects git SHAs, sha256/md5 digests).
-    4. Shannon entropy >= _SECRET_ENTROPY_MIN (rejects low-entropy repeats/prose
+    4. No lowercase run longer than _SECRET_MAX_LOWER_RUN.
+    5. Vowel ratio <= _SECRET_MAX_VOWEL_RATIO. Gates 4 and 5 are the
+       structural-randomness pair: they separate a random key from word-based
+       identifiers and slash-delimited file paths that survive the entropy
+       floor. Both apply to EVERY token (a '/' or '+' does not exempt a token,
+       so 40-char mixed-case file paths stay intact).
+    6. Shannon entropy >= _SECRET_ENTROPY_MIN (rejects low-entropy repeats/prose
        and most code identifiers, which cluster below 4.3).
-    5. Does not base64-decode to printable text (rejects encoded-text blobs).
-    6. Structural randomness: longest lowercase run <= _SECRET_MAX_LOWER_RUN AND
-       vowel ratio <= _SECRET_MAX_VOWEL_RATIO. These separate a random key from
-       word-based identifiers and slash-delimited file paths that survive the
-       entropy floor. Both gates apply to EVERY token (a '/' or '+' does not
-       exempt a token, so 40-char mixed-case file paths stay intact).
+    7. Does not base64-decode to printable text (rejects encoded-text blobs).
+       Last because it is the lowest-yield gate, not because it is optional --
+       it is what keeps legitimate OAuth ``code_challenge`` values in sign-in
+       URLs from being redacted (guarded by the OAuth-URL corpus).
 
     BOUNDARY ASSUMPTION: this classifier deliberately evaluates an EXACTLY-40-char
     window (gate 1). It does NOT itself scan longer runs — a real key glued to an
@@ -6214,14 +6258,13 @@ def _looks_like_secret_key(token: str) -> bool:
         return False
     if _HEX_ONLY_RE.match(token):
         return False
+    if _lowercase_run_exceeds(token, _SECRET_MAX_LOWER_RUN):
+        return False
+    if _vowel_ratio(token) > _SECRET_MAX_VOWEL_RATIO:
+        return False
     if _shannon_entropy(token) < _SECRET_ENTROPY_MIN:
         return False
-    if _decodes_to_printable_text(token):
-        return False
-    return (
-        _longest_lowercase_run(token) <= _SECRET_MAX_LOWER_RUN
-        and _vowel_ratio(token) <= _SECRET_MAX_VOWEL_RATIO
-    )
+    return not _decodes_to_printable_text(token)
 
 
 def _contains_bare_secret(run: str) -> bool:
@@ -6244,7 +6287,7 @@ def _contains_bare_secret(run: str) -> bool:
     sub-windows whose garbage decode looks high-entropy and would clear every
     per-window gate, wrongly redacting a legitimate sign-in URL (regression
     guarded by the OAuth-URL corpus). This is the same bias-toward-not-redacting
-    that :func:`_looks_like_secret_key` already applies per-window (gate 5),
+    that :func:`_looks_like_secret_key` already applies per-window (gate 7),
     lifted to run granularity so a misaligned window cannot defeat it. A genuine
     glued secret (``X`` + key, key + ``ABC``, key + ``X`` + key) does NOT decode
     cleanly as a whole run, so it still reaches the sliding window below.
