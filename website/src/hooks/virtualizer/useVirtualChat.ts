@@ -807,6 +807,23 @@ export function useVirtualChat<T>(
       } else if (!isSelfScroll(el.scrollTop, lastWriteTopRef.current)) {
         lastUserScrollAtRef.current = performance.now()
         stickRef.current = stickAfterUserScroll(atBottom, followOutput)
+        // A scroll we did not write that leaves us EXACTLY at the bottom was the
+        // layout engine's: the browser clamps scrollTop when a shrinking
+        // scrollHeight drops the maximum below it, and a spacer re-estimate does
+        // the same. Re-baseline the self-scroll reference to where we now are —
+        // otherwise it keeps pointing at our last write, and the next pin
+        // evaluation reads that gap as a user scroll-up, releasing follow for the
+        // rest of the turn with only a manual scroll back to the bottom able to
+        // re-arm it.
+        //
+        // The test is the CLAMP — distance within SELF_SCROLL_EPSILON — and NOT
+        // the 100px `atBottom` UI band. A real 3-100px scroll-up also keeps
+        // `stick` armed via stickAfterUserScroll, so re-baselining across that
+        // band would erase the only evidence evaluateAutoPin has of it and yank
+        // the user back to the bottom on the next append.
+        const clampedAtBottom =
+          geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
+        if (stickRef.current && clampedAtBottom) lastWriteTopRef.current = el.scrollTop
       }
       if (!scrollRafScheduledRef.current) {
         scrollRafScheduledRef.current = true
@@ -947,6 +964,17 @@ export function useVirtualChat<T>(
       }
     })
     resizeObserverRef.current = ro
+    // Back-fill rows that registered before this observer existed. Row ref
+    // callbacks run in the COMMIT phase, this effect runs after paint, so any
+    // row mounted in the same commit reached `measureRef` while
+    // `resizeObserverRef` was still null and its `ro?.observe` was a no-op.
+    // `measureRef` returns a STABLE per-index callback (so a row that stays
+    // mounted never churns observe/unobserve), which means React will not
+    // re-invoke it — without this pass such a row is never measured again and
+    // its streaming growth never reaches the follow pin. `elIndexRef` holds
+    // exactly the currently-mounted rows (the null-element branch deletes on
+    // unmount), so iterating it cannot resurrect a detached node.
+    for (const el of elIndexRef.current.keys()) ro.observe(el)
     return () => {
       ro.disconnect()
       // Cancel a frame queued by the last resize so it can't fire a
