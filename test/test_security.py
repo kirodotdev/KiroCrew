@@ -209,6 +209,13 @@ class TestRedactCredentials:
     # the intended token (the redaction test is unchanged). The split keeps any
     # single source literal from being a complete provider token, so GitHub
     # push-protection / secret scanners don't flag these synthetic fixtures.
+    #
+    # The explicit ``ids=`` labels exist for the same reason one level up:
+    # without them pytest derives each test ID from the REASSEMBLED value, and
+    # the full key-shaped string then lands verbatim in every derived artifact
+    # (.test_durations, junit XML, CI logs). Push protection rejects any branch
+    # carrying such an artifact — that is what kept the Update Test Durations
+    # workflow from ever landing its PR. Keep these labels secret-shape-free.
     @pytest.mark.parametrize(
         "secret",
         [
@@ -228,6 +235,22 @@ class TestRedactCredentials:
             "dop_v1_" "abcdefghijklmnopqrstuvwxyz1234567890abcdefghijklmnopqrst",  # DigitalOcean
             "GOCSPX-" "abcdefghijklmnopqrstuvwx",  # Google OAuth
         ],
+        ids=[
+            "github-classic-pat",
+            "github-oauth",
+            "github-fine-grained-pat",
+            "gitlab-pat",
+            "stripe-live",
+            "stripe-test",
+            "stripe-restricted",
+            "sendgrid",
+            "openai-project",
+            "anthropic",
+            "npm-token",
+            "pypi-token",
+            "digitalocean",
+            "google-oauth",
+        ],
     )
     def test_redacts_third_party_credentials(self, secret: str) -> None:
         text = f"KEY={secret}"
@@ -245,6 +268,9 @@ class TestRedactCredentials:
             "sk_live_" "51HG7aBcDeFgHiJkLmNoPqRsTuVwXyZ",  # Stripe live
             "xoxb-" "1234567890-abcdefghijklmnop",  # Slack bot token
         ],
+        # Safe display labels: pytest would otherwise derive the ID from the
+        # reassembled token — see the note on the parametrize above.
+        ids=["github-classic-pat", "anthropic", "openai-project", "stripe-live", "slack-bot"],
     )
     def test_warning_does_not_leak_secret_prefix(self, secret: str) -> None:
         """The warnings list must carry NO secret bytes — only length metadata.

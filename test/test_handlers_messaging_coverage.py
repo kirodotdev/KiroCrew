@@ -1338,6 +1338,10 @@ class TestHelpers:
             ("abcdefgh", "••••efgh"),
             ("ab", "••••"),
         ],
+        # Safe display labels: without them pytest embeds the token-shaped
+        # value in the test ID, which then lands in derived artifacts
+        # (.test_durations, junit XML) and trips GitHub push protection.
+        ids=["empty", "slack-token", "generic", "too-short"],
     )
     def test_mask_secret(self, value: str, expected: str) -> None:
         assert mod._mask_secret(value) == expected
