@@ -420,6 +420,14 @@ the user to run locally instead of executing it on the server.
 ## Validation Rules
 
 - `name` must match `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` (kebab-case)
+- `name` must not be `system` (it would shadow the `system.*` notification-channel
+  namespace)
+- `name` must not be a Windows reserved device stem — `con`, `prn`, `aux`, `nul`,
+  `com1`–`com9`, `lpt1`–`lpt9` — because the app name becomes a directory and
+  Windows resolves those inside every directory. Names that merely resemble one
+  (`console`, `com10`, `null-app`) are fine. Refused on every platform: an app
+  name is a persistent published identity, so it must mean the same thing on
+  whichever host installs the app.
 - `version` must match semver (`X.Y.Z`)
 - Paths in `agents`, `skills`, `sops`, `ui.entry`, `ui.pages[].entryPoint`, and `backend.entryPoint` must be relative and stay inside the app root: absolute paths and `..` traversal are rejected (canonical resolve + containment when the app dir is known). `backend.hooks.*` are format-checked (`module.path:callable`, which cannot express traversal) and containment-checked again at load time. `mcpServers` entries use `command`/`args`/`url`/`env` (not app-relative file paths) and are not path-checked.
 - All required fields must be non-empty strings

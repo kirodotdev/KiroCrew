@@ -63,6 +63,79 @@ def app_home(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# App-name admission contract
+# ---------------------------------------------------------------------------
+
+
+class TestUnportableAppName:
+    """``nul`` must be refused by EVERY door, not just the manifest one.
+
+    These are behavior-level rather than one test per gate: the defect was not
+    that a single check was wrong, it was that three doors carried three
+    different name checks and a name refused at one was admitted at another.
+    Asserting the outcome at each entry point is what actually pins the shared
+    contract — a future fourth door that grows its own check fails here.
+    """
+
+    def test_install_refuses_it_before_anything_lands_on_disk(self, tmp_path, app_home):
+        """Windows cannot create apps/nul/, so install must refuse rather than
+        half-create an app that can never start.
+
+        The source directory is deliberately NOT named ``nul``: a POSIX host can
+        author that tree and hand it to a Windows host, which is the case the
+        contract exists for, and the destination name comes from the manifest
+        anyway. Naming the source dir ``nul`` would also make the test itself
+        unrunnable on Windows.
+        """
+        src = tmp_path / "source" / "nul-src"
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "nul",
+                    "version": "1.0.0",
+                    "displayName": "Null App",
+                    "description": "A test app for unit tests",
+                    "author": "tester",
+                }
+            )
+        )
+        result = install_app(src)
+        assert not result.ok
+        assert "not portable" in result.error, result.error
+        assert not (app_home / "apps" / "nul").exists()
+
+    def test_register_external_refuses_it_before_materialization(self, app_home):
+        from kiro_crew.apps.manager import register_external_app
+
+        result = register_external_app("nul", "1.0.0", "Null App")
+        assert not result.ok
+        assert "not portable" in result.error, result.error
+        assert _read_installed("nul") is None
+        assert not (app_home / "apps" / "nul").exists()
+
+    def test_builtin_registration_refuses_it(self):
+        from kiro_crew.apps.manager import _validate_builtin_app
+
+        errors = _validate_builtin_app(
+            {
+                "name": "nul",
+                "version": "1.0.0",
+                "displayName": "Null App",
+                "description": "d",
+                "author": "tester",
+            }
+        )
+        assert any("not portable" in e for e in errors), errors
+
+    def test_a_normal_app_still_installs(self, tmp_path, app_home):
+        """Preservation: the contract refuses one name, not names in general."""
+        result = install_app(_make_app_source(tmp_path, name="null-app"))
+        assert result.ok, result.error
+        assert (app_home / "apps" / "null-app").is_dir()
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 

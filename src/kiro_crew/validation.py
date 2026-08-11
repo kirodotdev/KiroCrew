@@ -31,6 +31,7 @@ from typing import Any
 # no native library is loaded on any platform. Aliased so the schema block below
 # reads as "the computer-use vocabulary" rather than bare names.
 from kiro_crew.computer_use import types as _cu_types
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 # ── Constants ──
 
@@ -1201,16 +1202,12 @@ FOLLOWUP_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Z
 # instead, per component so ``feat/x.lock`` is caught as well as ``x.lock``.
 _GIT_RESERVED_REFS = frozenset({"HEAD"})
 
-# Windows reserved device names. A branch is a loose ref FILE
-# (`.git/refs/heads/<component>`), and Windows cannot create a file whose stem is
-# a device name — so `feat/CON` claims fine but the checkout fails, surfacing as
-# a false "Branch already exists". Rejected on every
-# platform so the grammar does not depend on where the gateway runs.
-_WINDOWS_DEVICE_STEMS = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{n}" for n in range(1, 10)}
-    | {f"lpt{n}" for n in range(1, 10)}
-)
+# A branch is a loose ref FILE (`.git/refs/heads/<component>`), and Windows
+# cannot create a file whose stem is a device name — so `feat/CON` claims fine
+# but the checkout fails, surfacing as a false "Branch already exists". Rejected
+# on every platform so the grammar does not depend on where the gateway runs.
+# The stem vocabulary is shared with the app-name grammar; see
+# ``constants.WINDOWS_DEVICE_STEMS``.
 
 
 def is_valid_followup_branch(branch: str) -> bool:
@@ -1223,7 +1220,7 @@ def is_valid_followup_branch(branch: str) -> bool:
         if not part or part.endswith(".") or part.endswith(".lock"):
             return False
         # Device names are reserved with OR without an extension (CON, CON.txt).
-        if part.split(".")[0].lower() in _WINDOWS_DEVICE_STEMS:
+        if part.split(".")[0].lower() in WINDOWS_DEVICE_STEMS:
             return False
     return True
 

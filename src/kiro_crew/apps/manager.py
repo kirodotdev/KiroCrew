@@ -29,7 +29,7 @@ from kiro_crew.apps.execution import (
     app_execution_denied,
     shipped_builtin_app_root,
 )
-from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.manifest import AppManifest, app_name_error
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -1440,20 +1440,16 @@ def register_external_app(
     if not _check_path_safety(name):
         return AppResult(ok=False, error=f"unsafe app name: {name!r}")
 
-    # Enforce the canonical lowercase-ASCII kebab-case form on the
-    # self-registration path (CWE-178). Admission normalizes with
-    # NFKC+casefold+strip, but the backend below stores/resolves the app by the
-    # RAW name (app_dir(name), _write_installed(name), write_app_secret(name)),
-    # so without this an admitted "Safe-App"/"safe-app "/Unicode-equivalent
-    # would diverge from the approved identity. install_app/update_app already
-    # gate on KEBAB_RE via AppManifest; this closes the register_external gap.
-    from kiro_crew.apps.manifest import KEBAB_RE
-
-    if not KEBAB_RE.match(name):
-        return AppResult(
-            ok=False, name=name,
-            error=f"invalid app name (must be lowercase kebab-case): {name!r}",
-        )
+    # Enforce the canonical app-name contract on the self-registration path
+    # (CWE-178). Admission normalizes with NFKC+casefold+strip, but the backend
+    # below stores/resolves the app by the RAW name (app_dir(name),
+    # _write_installed(name), write_app_secret(name)), so without this an
+    # admitted "Safe-App"/"safe-app "/Unicode-equivalent would diverge from the
+    # approved identity. install_app/update_app reach the same contract via
+    # AppManifest.validate(); this closes the register_external gap.
+    name_error = app_name_error(name)
+    if name_error:
+        return AppResult(ok=False, name=name, error=f"invalid app name: {name_error}")
 
     # Builtin provenance is assigned only by register_builtin_apps(). Accepting
     # it from self-registration would make the execution exemption caller-controlled.
@@ -1679,6 +1675,13 @@ def _validate_builtin_app(app_data: dict[str, Any]) -> list[str]:
     name = app_data.get("name", "")
     if name and not _check_path_safety(name):
         errors.append(f"unsafe app name: {name!r}")
+    elif name:
+        # Builtins are registered from a dict, never through AppManifest, so the
+        # shared contract has to be applied here too — otherwise an edition's
+        # AppsLoader could contribute a name the manifest path would refuse.
+        name_error = app_name_error(name)
+        if name_error:
+            errors.append(name_error)
     # migratedTo validation is lenient — invalid formats are handled by
     # _effective_migrated_to() which returns "" for bad values.  We log a
     # warning in register_builtin_apps() but do NOT block registration.
