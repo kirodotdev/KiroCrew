@@ -10254,7 +10254,7 @@
         "theme": "Thème",
         "theme_source": "Source du thème",
         "theme_source_location": "Emplacement de la source du thème",
-        "ui_font_family_for_the_dashboard": "Police de l'interface du tableau de bord",
+        "ui_font_family_for_the_dashboard_code_font_follo": "Police de l'interface du tableau de bord. La police du code suit le thème actif.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Utilisez le zoom de votre navigateur. Votre navigateur le mémorise pour ce site.",
         "view": "Vue",
         "zoom_font": "Zoom et police",

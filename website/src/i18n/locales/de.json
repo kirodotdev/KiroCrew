@@ -10135,7 +10135,7 @@
         "theme": "Theme",
         "theme_source": "Theme-Quelle",
         "theme_source_location": "Speicherort der Theme-Quelle",
-        "ui_font_family_for_the_dashboard": "UI-Schriftfamilie für das Dashboard",
+        "ui_font_family_for_the_dashboard_code_font_follo": "UI-Schriftfamilie für das Dashboard. Die Codeschrift folgt dem aktiven Theme.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Verwenden Sie den Zoom Ihres Browsers. Ihr Browser merkt sich ihn für diese Site.",
         "view": "Ansicht",
         "zoom_font": "Zoom & Schrift",

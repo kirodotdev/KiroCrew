@@ -10135,7 +10135,7 @@
         "theme": "थीम",
         "theme_source": "थीम स्रोत",
         "theme_source_location": "थीम स्रोत का स्थान",
-        "ui_font_family_for_the_dashboard": "डैशबोर्ड के लिए UI फ़ॉन्ट परिवार",
+        "ui_font_family_for_the_dashboard_code_font_follo": "डैशबोर्ड के लिए UI फ़ॉन्ट परिवार। कोड फ़ॉन्ट सक्रिय थीम का अनुसरण करता है।",
         "use_your_browser_s_zoom_your_browser_remembers_i": "अपने ब्राउज़र का ज़ूम उपयोग करें। आपका ब्राउज़र इसे इस साइट के लिए याद रखता है।",
         "view": "दृश्य",
         "zoom_font": "ज़ूम और फ़ॉन्ट",

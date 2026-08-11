@@ -10254,7 +10254,7 @@
         "theme": "Tema",
         "theme_source": "Origine del tema",
         "theme_source_location": "Posizione dell'origine del tema",
-        "ui_font_family_for_the_dashboard": "Famiglia di caratteri dell'interfaccia per la dashboard",
+        "ui_font_family_for_the_dashboard_code_font_follo": "Famiglia di caratteri dell'interfaccia per la dashboard. Il carattere del codice segue il tema attivo.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Usa lo zoom del browser. Il browser lo ricorda per questo sito.",
         "view": "Vista",
         "zoom_font": "Zoom e carattere",

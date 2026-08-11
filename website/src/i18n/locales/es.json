@@ -10254,7 +10254,7 @@
         "theme": "Tema",
         "theme_source": "Origen del tema",
         "theme_source_location": "Ubicación del origen del tema",
-        "ui_font_family_for_the_dashboard": "Familia tipográfica de la interfaz del panel",
+        "ui_font_family_for_the_dashboard_code_font_follo": "Familia tipográfica de la interfaz del panel. La fuente del código sigue el tema activo.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Usa el zoom de tu navegador. El navegador lo recuerda para este sitio.",
         "view": "Vista",
         "zoom_font": "Zoom y tipografía",

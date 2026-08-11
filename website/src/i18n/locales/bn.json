@@ -10135,7 +10135,7 @@
         "theme": "থিম",
         "theme_source": "থিমের সোর্স",
         "theme_source_location": "থিম সোর্সের অবস্থান",
-        "ui_font_family_for_the_dashboard": "ড্যাশবোর্ডের UI ফন্ট ফ্যামিলি",
+        "ui_font_family_for_the_dashboard_code_font_follo": "ড্যাশবোর্ডের UI ফন্ট ফ্যামিলি। কোড ফন্ট সক্রিয় থিম অনুসরণ করে।",
         "use_your_browser_s_zoom_your_browser_remembers_i": "আপনার ব্রাউজারের জুম ব্যবহার করুন। ব্রাউজার এই সাইটের জন্য তা মনে রাখে।",
         "view": "ভিউ",
         "zoom_font": "জুম ও ফন্ট",

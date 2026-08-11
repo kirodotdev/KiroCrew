@@ -10373,7 +10373,7 @@
         "theme": "Тема",
         "theme_source": "Источник темы",
         "theme_source_location": "Расположение источника темы",
-        "ui_font_family_for_the_dashboard": "Шрифт интерфейса панели управления",
+        "ui_font_family_for_the_dashboard_code_font_follo": "Шрифт интерфейса панели управления. Шрифт кода следует активной теме.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Используйте масштаб браузера. Браузер запомнит его для этого сайта.",
         "view": "Вид",
         "zoom_font": "Масштаб и шрифт",

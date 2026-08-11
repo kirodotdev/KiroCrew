@@ -6883,7 +6883,7 @@
         "theme": "Theme",
         "theme_source": "Theme source",
         "theme_source_location": "Theme source location",
-        "ui_font_family_for_the_dashboard": "UI font family for the dashboard",
+        "ui_font_family_for_the_dashboard_code_font_follo": "UI font family for the dashboard. Code font follows the active theme.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Use your browser's zoom. Your browser remembers it for this site.",
         "view": "View",
         "zoom_font": "Zoom & Font",

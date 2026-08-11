@@ -10016,7 +10016,7 @@
         "theme": "テーマ",
         "theme_source": "テーマソース",
         "theme_source_location": "テーマソースの場所",
-        "ui_font_family_for_the_dashboard": "ダッシュボードの UI フォントファミリー",
+        "ui_font_family_for_the_dashboard_code_font_follo": "ダッシュボードの UI フォントファミリー。コードのフォントは現在のテーマに従います。",
         "use_your_browser_s_zoom_your_browser_remembers_i": "ブラウザーのズームを使用してください。ブラウザーはこのサイトのズームを記憶します。",
         "view": "表示",
         "zoom_font": "ズーム＆フォント",

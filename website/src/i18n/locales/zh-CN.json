@@ -10016,7 +10016,7 @@
         "theme": "主题",
         "theme_source": "主题来源",
         "theme_source_location": "主题来源位置",
-        "ui_font_family_for_the_dashboard": "仪表板的界面字体",
+        "ui_font_family_for_the_dashboard_code_font_follo": "仪表板的界面字体。代码字体跟随当前主题。",
         "use_your_browser_s_zoom_your_browser_remembers_i": "使用浏览器自带的缩放，浏览器会为本站点记住此设置。浏览器会为此站点记住此设置。",
         "view": "视图",
         "zoom_font": "缩放与字体",

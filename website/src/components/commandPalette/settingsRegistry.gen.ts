@@ -496,7 +496,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.font-family",
     "label": "Font Family",
-    "description": "UI font family for the dashboard",
+    "description": "UI font family for the dashboard. Code font follows the active theme.",
     "tab": "display",
     "type": "buttonGroup",
     "occurrence": 1

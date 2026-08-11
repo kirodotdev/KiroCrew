@@ -10016,7 +10016,7 @@
         "theme": "테마",
         "theme_source": "테마 소스",
         "theme_source_location": "테마 소스 위치",
-        "ui_font_family_for_the_dashboard": "대시보드의 UI 글꼴",
+        "ui_font_family_for_the_dashboard_code_font_follo": "대시보드의 UI 글꼴. 코드 글꼴은 활성 테마를 따릅니다.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "브라우저의 확대/축소를 사용하세요. 브라우저가 이 사이트의 값을 기억합니다.",
         "view": "보기",
         "zoom_font": "확대/축소 및 글꼴",
