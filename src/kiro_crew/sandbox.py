@@ -359,6 +359,30 @@ def unavailable_remedy() -> str:
     return _last_unshare_failure[2]
 
 
+def unavailable_reason() -> str:
+    """Public: technical reason for the most recent sandbox probe failure.
+
+    Names the failing step verbatim (e.g. ``"unshare(CLONE_NEWNS) failed with
+    errno 1 (EPERM)"``), so a diagnostic surface can show the kernel's answer
+    rather than a paraphrase. ``""`` when the last probe succeeded or none has
+    run. Sibling accessor to :func:`unavailable_remedy`, reading the same
+    recorded failure so the two can never describe different probes.
+    """
+    if _last_unshare_failure is None:
+        return ""
+    return _last_unshare_failure[1]
+
+
+def remedy_guidance(remedy: str) -> str:
+    """Public: mechanism-specific guidance for a ``REMEDY_*`` token (``""`` if none).
+
+    The stable cross-module entry point for :data:`_LINUX_REMEDY_GUIDANCE`, so
+    diagnostic surfaces (doctor, dashboard) render the one shared remedy text
+    for a mechanism instead of maintaining a drifting copy.
+    """
+    return _linux_remedy_guidance(remedy)
+
+
 def _close_probe_fds(*fds: int) -> None:
     """Close probe pipe fds, tolerating an already-closed one. Never raises.
 

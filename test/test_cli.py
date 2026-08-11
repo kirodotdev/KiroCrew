@@ -118,6 +118,17 @@ class TestDoctor:
         monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
         monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
 
+    @pytest.fixture(autouse=True)
+    def _hermetic_sandbox(self, monkeypatch):
+        """Pin the Sandbox section host-independently: a CI runner can restrict
+        user namespaces with no profile installed, which is a genuine issue on
+        that HOST (doctor exits 1 for it) but not the subject of these tests."""
+        import kiro_crew.cli_doctor as _doc
+
+        monkeypatch.setattr(
+            _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
+        )
+
     def test_doctor_with_kiro(self, tmp_path):
         agent_file = tmp_path / "kirocrew.json"
         # A minimally healthy agent config so doctor walks the whole MCP
