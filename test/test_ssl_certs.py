@@ -90,7 +90,7 @@ class TestEnsureSslCerts:
         assert os.environ["REQUESTS_CA_BUNDLE"] == "/existing/bundle.crt"
 
     def test_no_env_set_when_no_candidate_exists(self, monkeypatch):
-        """Should leave env vars unset if no candidate file exists."""
+        """Should leave env vars unset if no candidate file exists and certifi is unavailable."""
         monkeypatch.delenv("SSL_CERT_FILE", raising=False)
         monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
 
@@ -100,6 +100,7 @@ class TestEnsureSslCerts:
         with (
             patch("ssl.get_default_verify_paths", return_value=mock_paths),
             patch("kiro_crew._ssl_compat._CA_CANDIDATES", candidates),
+            patch.dict("sys.modules", {"certifi": None}),
         ):
             _ensure_ssl_certs()
 
@@ -107,6 +108,30 @@ class TestEnsureSslCerts:
 
         assert os.environ.get("SSL_CERT_FILE") is None
         assert os.environ.get("REQUESTS_CA_BUNDLE") is None
+
+    def test_falls_back_to_certifi_when_no_system_path_exists(self, monkeypatch, tmp_path):
+        """macOS has none of the Linux system paths — should fall back to certifi's bundle."""
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+
+        mock_paths = type("P", (), {"cafile": None, "capath": None})()
+        candidates = ("/nonexistent/a.pem", "/nonexistent/b.crt")
+
+        fake_certifi_bundle = tmp_path / "certifi-cacert.pem"
+        fake_certifi_bundle.write_text("fake certifi bundle")
+        mock_certifi = type("M", (), {"where": staticmethod(lambda: str(fake_certifi_bundle))})()
+
+        with (
+            patch("ssl.get_default_verify_paths", return_value=mock_paths),
+            patch("kiro_crew._ssl_compat._CA_CANDIDATES", candidates),
+            patch.dict("sys.modules", {"certifi": mock_certifi}),
+        ):
+            _ensure_ssl_certs()
+
+        import os
+
+        assert os.environ["SSL_CERT_FILE"] == str(fake_certifi_bundle)
+        assert os.environ["REQUESTS_CA_BUNDLE"] == str(fake_certifi_bundle)
 
     def test_cafile_missing_on_disk_falls_through(self, monkeypatch, tmp_path):
         """If cafile is set but the file doesn't exist, should fall through to candidates."""

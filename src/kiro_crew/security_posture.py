@@ -717,6 +717,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "shared tag-creation path. Names are passed through redact_credentials "
         "and redact_exfiltration_urls before resolution or persistence.",
     ),
+    (
+        "Session-pulse survey feedback (Aperture egress)",
+        "dashboard/handlers/feedback.py",
+        "The free-text `feedback` field submitted via POST /api/feedback/submit is "
+        "forwarded to Aperture, a third-party AWS service, so it is a genuine "
+        "external egress boundary — a user typing a credential or exfiltration URL "
+        "while describing their experience would otherwise leave the host "
+        "unredacted. `_customer_responses` runs it through redact_exfiltration_urls "
+        "then redact_credentials before it is included in the outbound payload. "
+        "`rating` (a fixed frontend enum) and `email` (already flagged `pii: True`) "
+        "are not run through this pass.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do

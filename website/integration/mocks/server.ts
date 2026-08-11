@@ -563,12 +563,35 @@ export const handlers = [
 // API or otherwise — surfaces loudly instead of masquerading as success.
 //
 // Allowlisted (empty-200, no dial): `blob:`/`data:` URLs (live-iframe srcdoc /
-// blob navigation) and SAME-ORIGIN static asset paths happy-dom eager-loads for
+// blob navigation), SAME-ORIGIN static asset paths happy-dom eager-loads for
 // a widget iframe (`/vendor/*` runtime scripts, `/assets/*`, `/static/*`, and
-// bare root files like `/logo.png`). Everything else — `/api/**`,
-// `/apps/*/api/*`, cross-origin — gets 501.
-const TEST_ORIGIN = 'http://localhost:3000' // vitest happy-dom default document origin
-const STATIC_ASSET_RE = /^\/(vendor|assets|static)\/|^\/[^/]+\.[a-z0-9]+$/i
+// bare root files like `/logo.png`), and SAME-ORIGIN app-route iframe targets
+// (`/pdf`) that a real backend would serve but this suite never boots. Everything
+// else — `/api/**`, `/apps/*/api/*`, cross-origin — gets 501.
+//
+// `/pdf` (PdfPreview / FileRenderers): `disableIframePageLoading` makes
+// happy-dom itself refuse the navigation and throw a loud, harmless
+// `NotSupportedError` synchronously — but that refusal is not the end of the
+// story. happy-dom's `AsyncTaskManager` still tracks the underlying fetch task
+// and can retry/resolve it later, off the DOM-connect call stack, well after
+// the test that triggered it has finished. With no matching mock this fallback
+// 501s that stray request, which surfaces as a genuine `ECONNREFUSED` socket
+// dial seconds later — landing during vitest's fork-worker teardown, where it
+// can crash the whole worker instead of failing one test. Matching it here
+// (like the static-asset paths above) lets happy-dom's own retry find a
+// same-origin 200 instead of a 501, so it resolves quietly instead of falling
+// through to a real dial.
+// Must match `environmentOptions.happyDOM.url` in vite.config.ts — that is
+// happy-dom's actual document origin for every test, NOT its own factory
+// default (localhost:3000). vite.config.ts pins it to the gateway's real
+// default port (6776) so "the dashboard" and "a dev server" stay
+// distinguishable in tests; when this drifts from that value, same-origin
+// asset requests injected by DOM-driven loads (e.g. dashboardTheme.ts's
+// <link>/<iframe> elements) fall through to the loud 501 below instead of
+// the empty-200 allowlist branch, and happy-dom's retry/abort handling around
+// that unexpected response can crash the fork worker on teardown.
+const TEST_ORIGIN = 'http://localhost:6776'
+const DOM_DRIVEN_LOAD_RE = /^\/(vendor|assets|static)\/|^\/pdf$|^\/[^/]+\.[a-z0-9]+$/i
 
 // Path-kind probe (`usePathKind`): markdown inline-code chips HEAD this endpoint
 // to learn whether a path-shaped string is a file, a directory, or absent, and
@@ -593,7 +616,7 @@ handlers.push(
     }
     const url = new URL(request.url)
     const sameOrigin = url.origin === TEST_ORIGIN
-    if (sameOrigin && STATIC_ASSET_RE.test(url.pathname)) {
+    if (sameOrigin && DOM_DRIVEN_LOAD_RE.test(url.pathname)) {
       return new HttpResponse('', { status: 200 })
     }
     return new HttpResponse(

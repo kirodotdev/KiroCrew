@@ -938,6 +938,20 @@ export default [
     },
   },
 
+  // PROTOCOL VALUES ONLY, same category as `wireValues.ts` above: the two
+  // Aperture-registered literals for the session-pulse survey (a radio
+  // question's response values, and the question text itself). Both are
+  // compared/sent by value against Aperture's registered form template
+  // (category=KiroCrew, name=SessionFeedback, version=1.0.1) — ingestion  // brand-ok: registered category id
+  // 400s on any text/type mismatch, so translating either would break the
+  // submission rather than localize it. See the module's own header.
+  {
+    files: ['src/components/sessionPulseWireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // SEARCH-KEYWORD SYNONYMS ONLY: a manual overlay of extra query terms merged
   // into the Settings search corpus so a query like "dark mode" finds a setting
   // whose label does not contain those words. Every value is a term matched

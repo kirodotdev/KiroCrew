@@ -6028,6 +6028,25 @@
       "split_right_d": "Diviser à droite (⌘D)",
       "terminal_pane_coming_in_phase_2": "Volet terminal — à venir en phase 2"
     },
+    "sessionPulseSurveyCard": {
+      "dismiss": "Fermer le sondage",
+      "email_disclosure": "Nous pourrions vous contacter au sujet de vos commentaires. Votre évaluation et vos commentaires sont envoyés à l’équipe Kiro Crew.",
+      "email_placeholder": "vous@exemple.com (facultatif)",
+      "email_prompt": "Partagez votre adresse e-mail pour rejoindre notre panel de recherche",
+      "feedback_question": "Avez-vous d’autres commentaires sur cette expérience ?",
+      "optional": "Facultatif",
+      "rating_excellent": "Excellent",
+      "rating_fair": "Correct",
+      "rating_good": "Bien",
+      "rating_poor": "Médiocre",
+      "rating_question": "Comment évalueriez-vous votre expérience avec Kiro Crew aujourd’hui ?",
+      "rating_very_poor": "Très médiocre",
+      "select_rating_hint": "Sélectionnez une note pour soumettre",
+      "submit": "Envoyer",
+      "submit_error": "Échec de l’envoi — veuillez réessayer.",
+      "submitting": "Envoi en cours…",
+      "thanks": "Merci pour vos commentaires !"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} msgs",
       "remove_reference": "Supprimer la référence",

@@ -5856,6 +5856,25 @@
       "split_right_d": "오른쪽으로 분할 (⌘D)",
       "terminal_pane_coming_in_phase_2": "터미널 패널 — 2단계에서 제공 예정"
     },
+    "sessionPulseSurveyCard": {
+      "dismiss": "설문 닫기",
+      "email_disclosure": "피드백에 대해 연락드릴 수 있습니다. 평점과 피드백은 Kiro Crew 팀에 전송됩니다.",
+      "email_placeholder": "you@example.com (선택 사항)",
+      "email_prompt": "이메일을 공유하여 리서치 패널에 참여하세요",
+      "feedback_question": "이 경험에 대해 추가 피드백이 있으신가요?",
+      "optional": "선택 사항",
+      "rating_excellent": "매우 좋음",
+      "rating_fair": "보통",
+      "rating_good": "좋음",
+      "rating_poor": "나쁨",
+      "rating_question": "오늘 Kiro Crew를 사용한 경험은 어떠셨나요?",
+      "rating_very_poor": "매우 나쁨",
+      "select_rating_hint": "평점을 선택하여 제출하세요",
+      "submit": "제출",
+      "submit_error": "제출할 수 없습니다. 다시 시도해 주세요.",
+      "submitting": "제출 중…",
+      "thanks": "피드백 감사합니다!"
+    },
     "sessionRefStrip": {
       "n_messages": "메시지 {{n}}개",
       "remove_reference": "참조 삭제",

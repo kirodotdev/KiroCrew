@@ -5942,6 +5942,25 @@
       "split_right_d": "दाईं ओर विभाजित करें (⌘D)",
       "terminal_pane_coming_in_phase_2": "टर्मिनल पैन — चरण 2 में आ रहा है"
     },
+    "sessionPulseSurveyCard": {
+      "dismiss": "सर्वेक्षण खारिज करें",
+      "email_disclosure": "हम तुमसे तुम्हारी प्रतिक्रिया के बारे में संपर्क कर सकते हैं। तुम्हारी रेटिंग और कोई भी फ़ीडबैक Kiro Crew टीम को भेजी जाती है।",
+      "email_placeholder": "you@example.com (वैकल्पिक)",
+      "email_prompt": "हमारे रिसर्च पैनल से जुड़ने के लिए अपना ईमेल साझा करें",
+      "feedback_question": "क्या इस अनुभव के बारे में तुम्हारी कोई अतिरिक्त प्रतिक्रिया है?",
+      "optional": "वैकल्पिक",
+      "rating_excellent": "उत्कृष्ट",
+      "rating_fair": "ठीक",
+      "rating_good": "अच्छा",
+      "rating_poor": "ख़राब",
+      "rating_question": "आज Kiro Crew के साथ अनुभव को तुम कैसे आँकोगे?",
+      "rating_very_poor": "बहुत ख़राब",
+      "select_rating_hint": "सबमिट करने के लिए रेटिंग चुनें",
+      "submit": "सबमिट करें",
+      "submit_error": "सबमिट नहीं हो सका — कृपया फिर प्रयास करें।",
+      "submitting": "सबमिट हो रहा है...",
+      "thanks": "तुम्हारी प्रतिक्रिया के लिए धन्यवाद!"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} संदेश",
       "remove_reference": "संदर्भ हटाएँ",
