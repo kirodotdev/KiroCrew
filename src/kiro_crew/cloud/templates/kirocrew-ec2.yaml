@@ -445,34 +445,34 @@ Resources:
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
           echo "--- installing Node.js ---"
-          # The frontend build needs Node >= 22; AL2023 AppStream nodejs is 18.
-          # Signed-repo upgrade path, no curl-pipe-bash: see "Node.js" above.
+          # The frontend build (vite 8 + rolldown) needs Node >=22; AL2023 ships
+          # node 18 (build dies with node:util/styleText). Try AppStream first, then
+          # fall back to a pinned official nodejs.org tarball -- we AVOID
+          # dnf/NodeSource because AL2023's modular filtering kept reinstalling the
+          # distro node 18. /usr/local/bin precedes /usr/bin so the tarball shadows it.
           NODE_MAJOR_MIN=22
-          if ! command -v node >/dev/null 2>&1; then
-            if ! dnf install -y nodejs npm; then
-              # Transient dnf cache/mirror races happen: see "Node.js" above.
-              echo "nodejs install failed - cleaning dnf cache and retrying"
-              dnf clean packages || true
-              dnf makecache || true
-              dnf install -y nodejs npm || true
-            fi
-          fi
+          command -v node >/dev/null 2>&1 || dnf install -y nodejs npm || true
           NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
           [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
           if [ "$NODE_MAJOR" -lt "$NODE_MAJOR_MIN" ]; then
-            echo "Node major $NODE_MAJOR is below the required $NODE_MAJOR_MIN - installing Node 24 from the signed NodeSource repo"
-            NS_KEY=https://rpm.nodesource.com/gpgkey/ns-operations-public.key
-            rpm --import "$NS_KEY" || fail "could not import NodeSource GPG key"
-            # printf (not a heredoc): a column-1 body would break the YAML block.
-            {
-              printf '%s\n' '[nodesource-nodejs]'
-              printf '%s\n' 'name=Node.js Packages'
-              printf '%s\n' 'baseurl=https://rpm.nodesource.com/pub_24.x/nodistro/nodejs/$basearch'
-              printf '%s\n' 'enabled=1'
-              printf '%s\n' 'gpgcheck=1'
-              printf '%s\n' "gpgkey=$NS_KEY"
-            } >/etc/yum.repos.d/nodesource.repo
-            dnf install -y --allowerasing nodejs || fail "Node.js >=$NODE_MAJOR_MIN install failed (signed NodeSource repo)"
+            NODE_V=v22.12.0
+            case "$(uname -m)" in
+              aarch64) NODE_ARCH=linux-arm64; NODE_SHA=9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb ;;
+              x86_64) NODE_ARCH=linux-x64; NODE_SHA=e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044 ;;
+              *) fail "unsupported arch for Node install: $(uname -m)" ;;
+            esac
+            NODE_TARB=node-$NODE_V-$NODE_ARCH
+            echo "installing Node $NODE_V ($NODE_ARCH) from the official nodejs.org tarball"
+            curl --proto '=https' --tlsv1.2 -fsSL "https://nodejs.org/dist/$NODE_V/$NODE_TARB.tar.gz" -o /tmp/node.tar.gz || fail "Node download failed"
+            # Verify the PINNED SHA-256 before extracting as root: TLS protects the
+            # transport, not the artifact, so a tampered/compromised mirror must not
+            # get its Node extracted and run. Fails closed on any mismatch.
+            echo "$NODE_SHA  /tmp/node.tar.gz" | sha256sum -c - || fail "Node tarball checksum mismatch (possible tampering)"
+            tar -xzf /tmp/node.tar.gz -C /usr/local || fail "Node extract failed"
+            ln -sf /usr/local/$NODE_TARB/bin/node /usr/local/bin/node
+            ln -sf /usr/local/$NODE_TARB/bin/npm /usr/local/bin/npm
+            ln -sf /usr/local/$NODE_TARB/bin/npx /usr/local/bin/npx
+            hash -r 2>/dev/null || true
             NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
             [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
           fi
@@ -502,6 +502,10 @@ Resources:
           cat > /tmp/kcfetch.sh <<KCFETCH
           #!/bin/bash
           set -e
+          # sudo resets PATH to secure_path, which can resolve `node` to the distro
+          # node 18 in /usr/bin over the Node 22 tarball in /usr/local/bin -- so the
+          # vite build would still fail. Prepend /usr/local/bin so the build sees 22.
+          export PATH="/usr/local/bin:\$PATH"
           cd "$RUN_HOME"
           rm -rf kirocrew && mkdir kirocrew
           if [ -n "${SourceBucket}" ]; then
