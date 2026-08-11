@@ -3475,6 +3475,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // what gets sent. Cleared whenever the options list changes (new assistant
   // message) or the active chat switches — both signal a fresh turn.
   const [followUpPicked, setFollowUpPicked] = useState<Set<string>>(() => new Set())
+  // Read by the option handler instead of the state: two clicks landing before a
+  // re-render would both see the same set and both take the append branch.
+  const followUpPickedRef = useRef(followUpPicked); followUpPickedRef.current = followUpPicked
   const followUpOptionsKey = followUpOptions.join('\x00')
   useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, activeSlot])
   const { data: dashCfg } = useQuery<{ quick_send?: boolean; session_grid?: boolean; link_previews?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
@@ -6724,12 +6727,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   return
                 }
                 // One-click: enabled + no shift + not busy + not already in multi-select
-                if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, slotRunning, followUpPicked.size, send)) return
+                if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, slotRunning, followUpPickedRef.current.size, send)) return
                 // Regular options: toggle. Click unpicked → append + mark; click
                 // picked → try to remove text + unmark (if the user edited the
                 // text so it no longer matches, leave text alone — the chip
                 // still un-highlights for consistency).
-                if (followUpPicked.has(o)) {
+                if (followUpPickedRef.current.has(o)) {
+                  const next = new Set(followUpPickedRef.current); next.delete(o)
+                  followUpPickedRef.current = next
                   setInput(prev => {
                     // Order matters: try leading ", o" first so "opt, opt" + remove
                     // last "opt" doesn't match "opt, " and splice the wrong one.
@@ -6742,10 +6747,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     if (prev === o) return ''
                     return prev  // user edited — leave text, still unmark below
                   })
-                  setFollowUpPicked(prev => { const next = new Set(prev); next.delete(o); return next })
+                  setFollowUpPicked(next)
                 } else {
+                  const next = new Set(followUpPickedRef.current); next.add(o)
+                  followUpPickedRef.current = next
                   setInput(prev => prev.trim() ? prev.trimEnd() + ', ' + o : o)
-                  setFollowUpPicked(prev => new Set(prev).add(o))
+                  setFollowUpPicked(next)
                 }
               }}
               pasteBlocks={pasteBlocks}
