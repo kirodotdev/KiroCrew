@@ -1107,7 +1107,7 @@ class _ChatSlot:
         "_frozen_prefix_cache",
         "_pending_rewrite",
         "_file_changes",
-        "linked_session_key",
+        "_linked_session_key",
         "_active_turn_session_key",
         "_side",
         "_acp_client",
@@ -1487,7 +1487,7 @@ class _ChatSlot:
         self._file_changes: list[dict[str, str]] = (
             []
         )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
-        self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
+        self._linked_session_key: str = ""  # when set, _run_chat uses this as session key
         # Where the turn CURRENTLY in flight actually started, as opposed to
         # where the slot would route a new one. The two diverge whenever the
         # routing above is reassigned on a live slot — a cron injection binds an
@@ -1610,6 +1610,60 @@ class _ChatSlot:
             # impossible and a missed bump can only cause an extra (harmless)
             # flush, never a skipped one.
             self._dirty_gen += 1
+
+    @property
+    def linked_session_key(self) -> str:
+        """The session this slot's conversation actually runs on, if any.
+
+        A binding is AUTHORITY: every route that acts on a slot authorizes on
+        ownership (App Kit §5.2 compares ``request_app`` against ``_app``) and
+        then addresses ``effective_session_key(slot)``, so whatever is stored
+        here decides whose conversation an app's turns reach. Slot ownership
+        does not imply ownership of that session, which is why an app-scoped
+        slot may not carry one at all.
+
+        Deliberately a property, following ``_dirty`` above: the binding is
+        assigned from five modules — the explicit ``get_or_create_slot``
+        argument, its channel-stem inference, both restore paths reading
+        persisted metadata, and the three injectors that bind an already-live
+        slot (``api_cron_to_chat``, ``inject_cron_result_to_dashboard``,
+        ``inject_workflow_result``) — and a rule enforced at each of them is a
+        rule the next site added forgets. Enforcing it on the attribute is also
+        what makes an UPGRADE safe: a transcript written by an older version can
+        already carry ``app`` and ``linked_session_key`` together, and the
+        restore paths assign the two independently, so a creation-time check
+        alone would let a poisoned tab come back armed after a restart.
+        """
+        return self._linked_session_key
+
+    @linked_session_key.setter
+    def linked_session_key(self, value: str) -> None:
+        if value and getattr(self, "_app", ""):
+            # Refused, not raised: the assignment sites are a restore loop and a
+            # slot factory, and neither can abandon a whole boot over one tab.
+            # Dropping the binding degrades the slot to its own dashboard
+            # session — the app keeps its conversation and loses only authority
+            # it was never granted.
+            logger.warning(
+                "refusing channel/session binding %r on app-scoped slot %r (app=%r)",
+                value,
+                getattr(self, "key", ""),
+                self._app,
+            )
+            try:
+                sel().log_api_access(
+                    caller=self._app,
+                    operation="slot_session_bind",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={getattr(self, 'key', '')}",
+                    error="app-scoped slots cannot carry a linked session binding",
+                )
+            except Exception:  # noqa: BLE001
+                # Audit is best-effort; the refusal itself is the control.
+                logger.debug("SEL write for a refused slot binding failed", exc_info=True)
+            return
+        self._linked_session_key = value
 
     @property
     def _plan_stage_count(self) -> int:
@@ -4464,6 +4518,11 @@ class DashboardState:
         reads the persisted link off the slot's effective session key, so a
         binding applied later would hydrate against the wrong key and leave a
         channel-born tab looking unlinked.
+
+        A channel-stem *name* also resolves a binding, for a caller with no
+        *app* scope. An app-scoped slot takes no binding at all, by either
+        route — see :attr:`_ChatSlot.linked_session_key`, which is where that
+        invariant is enforced for every assignment site including restore.
         """
         requested_name = ""
         if name:
@@ -4546,7 +4605,7 @@ class DashboardState:
             slot.channel_origin = True
         if linked_session_key:
             slot.linked_session_key = linked_session_key
-        elif self.sessions:
+        elif self.sessions and not app:
             # No caller-supplied binding, but a channel-stem name means this slot
             # displays a conversation that runs on the channel's own session.
             # Resolving it HERE rather than in each caller is what makes the
@@ -4560,6 +4619,14 @@ class DashboardState:
             # only a real channel key may become a binding, so a malformed map
             # answer leaves the slot unbound (a supported state) rather than
             # routing the user's replies to a session no channel reads.
+            #
+            # Skipped outright for an app-scoped slot. ``linked_session_key``'s
+            # setter refuses such a binding anyway, so this is not the control —
+            # it keeps the common app path from paying a session-map scan and
+            # logging a refusal for something it never asked for. The inference
+            # reads a caller-supplied NAME, so without both an app asking for
+            # ``slack_<ts>`` would be handed a slot it OWNS bound to a
+            # conversation it has no claim on.
             if is_channel_session_key(name):
                 resolved = self.sessions.channel_key_for_stem(name)
                 if isinstance(resolved, str) and is_channel_session_key(resolved):
