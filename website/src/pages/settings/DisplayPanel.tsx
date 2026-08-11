@@ -1,5 +1,5 @@
 import { X, Loader2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
 import { useTheme } from '../../hooks/useTheme'
@@ -80,7 +80,7 @@ export function DisplayPanel() {
   // kirocrewConfig query, so the choice follows the user across browsers/restarts. Optimistic
   // cache write makes the sidebar tint (which reads the same query) re-rank instantly.
   const qc = useQueryClient()
-  const mcQ = useQuery<{ dashboard?: { recent_tint_count?: number } }>({
+  const mcQ = useQuery<{ dashboard?: { recent_tint_count?: number; terminal?: { shell?: string } } }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
@@ -99,6 +99,28 @@ export function DisplayPanel() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
   })
   const setTintCount = (n: number) => tintMut.mutate(clampTintCount(n))
+
+  // Terminal shell is persisted server-side (dashboard.terminal.shell) because
+  // the PTY spawn happens in the gateway; committed on blur rather than per
+  // keystroke so a half-typed path never lands in config.json. "" = system
+  // default ($SHELL). Applies to NEW terminal sessions only.
+  const [localShell, setLocalShell] = useState('')
+  const shellInitRef = useRef(false)
+  useEffect(() => {
+    if (mcQ.data && !shellInitRef.current) {
+      shellInitRef.current = true
+      setLocalShell(mcQ.data.dashboard?.terminal?.shell ?? '')
+    }
+  }, [mcQ.data])
+  const shellMut = useMutation({
+    mutationFn: (value: string) => api.patchConfig('dashboard.terminal.shell', value),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+  const commitShell = () => {
+    const v = localShell.trim()
+    if (v !== localShell) setLocalShell(v)
+    if (v !== (mcQ.data?.dashboard?.terminal?.shell ?? '')) shellMut.mutate(v)
+  }
 
   // ── Install theme (Level 0) from a local folder or a GitHub repo ──
   const [installType, setInstallType] = useState<'github' | 'local'>('github')
@@ -206,6 +228,25 @@ export function DisplayPanel() {
 
       <SettingsSection title={i18nT('pages.settings.displayPanel.terminal')}>
         <SettingsCard>
+          {/* Server-persisted (the PTY spawns in the gateway): committed on
+              blur, and only NEW terminal sessions read it. Free text like the
+              font family below — enumerating /etc/shells would need a backend
+              endpoint and still miss brew-installed shells not registered
+              there, while a wrong value fails visibly on the next open. */}
+          <SettingsInput
+            label={i18nT('pages.settings.displayPanel.terminal_shell')}
+            description={i18nT('pages.settings.displayPanel.terminal_shell_desc')}
+            value={localShell}
+            onChange={setLocalShell}
+            onBlur={commitShell}
+            aria-label={i18nT('pages.settings.displayPanel.terminal_shell')}
+            configKey="dashboard.terminal.shell"
+          />
+          {shellMut.isError && (
+            <span className="text-[12px] text-danger" role="status" aria-live="polite">
+              {i18nT('pages.settings.displayPanel.terminal_shell_failed')}
+            </span>
+          )}
           {/* Free-text family: the browser cannot enumerate OS-installed fonts, so
               the user names the font (a monospace / Nerd Font they have installed).
               resolveTerminalFontFamily quotes multi-word names and appends a

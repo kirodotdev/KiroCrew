@@ -509,6 +509,51 @@ class TestUserProfilePatch:
             assert resp.status == 400
 
 
+# ── Terminal shell (Settings > Display > Terminal) ────────────────────────
+
+
+class TestTerminalShell:
+    @pytest.mark.asyncio
+    async def test_shell_path_persists_nested(self, tmp_config) -> None:
+        """The value lands under dashboard.terminal.shell, where the PTY spawn
+        (handlers/terminal.py) reads it for every NEW session."""
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.terminal.shell", "/opt/homebrew/bin/fish")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["dashboard"]["terminal"]["shell"] == "/opt/homebrew/bin/fish"
+
+    @pytest.mark.asyncio
+    async def test_empty_shell_means_system_default(self, tmp_config) -> None:
+        """"" is the documented reset: the spawn falls back to $SHELL."""
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.terminal.shell", "")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["dashboard"]["terminal"]["shell"] == ""
+
+    @pytest.mark.asyncio
+    async def test_control_characters_rejected(self, tmp_config) -> None:
+        """A CR/LF or ESC in the stored value would corrupt config round-trips
+        and SEL log lines; the pattern refuses them."""
+        async with TestClient(TestServer(_make_app())) as c:
+            for bad in ("/bin/zsh\n", "/bin/zsh\x1b]0;x\x07", "sh\r"):
+                resp = await _patch(c, "dashboard.terminal.shell", bad)
+                assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_shell_length_capped(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.terminal.shell", "/x" * 129)
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_non_string_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.terminal.shell", ["zsh"])
+            assert resp.status == 400
+
+
 # ── Default model + default reasoning effort (Settings > Chat) ────────────
 
 

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import struct
 import subprocess
 import time
@@ -574,6 +575,19 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 "TERM": "xterm-256color",
                 "KIROCREW_TERMINAL": "1",
             }
+            # When the operator configured a custom shell, export SHELL to match
+            # the program actually spawned. The inherited value names the
+            # ACCOUNT's login shell, so `echo $SHELL` inside a configured-bash
+            # terminal would print /bin/zsh — misleading, and programs that
+            # consult $SHELL to spawn subshells (vim's :sh, tmux default-shell)
+            # would open the wrong one. Resolved to an absolute path because
+            # that is $SHELL's contract; left inherited when resolution fails
+            # (the exec below will surface the real error) or when no custom
+            # shell is set.
+            if cfg.get("shell"):
+                resolved = shell if os.path.isabs(shell) else shutil.which(shell)
+                if resolved:
+                    env["SHELL"] = resolved
             # Security: intentionally unsandboxed — this is the user's own
             # interactive terminal (like SSH), not agent-executed code.
             # Auth is enforced at WS handshake via token_auth_middleware.

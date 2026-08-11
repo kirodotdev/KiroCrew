@@ -558,6 +558,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.shell",
+    "label": "Shell",
+    "description": "Shell launched by new terminal sessions — a command name or absolute path (zsh, /opt/homebrew/bin/fish). Leave empty to use the system default. Terminals already open keep their shell.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "dashboard.terminal.shell"
+  },
+  {
     "id": "display.theme",
     "label": "Theme",
     "description": "Select a theme for the dashboard",

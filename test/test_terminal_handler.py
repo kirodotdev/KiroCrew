@@ -1911,6 +1911,93 @@ def _make_app(registry=None, cfg=None, user="testuser"):
     return app
 
 
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="PTY spawn is POSIX-only")
+class TestSpawnShellEnv:
+    """The PTY child's $SHELL must match the shell actually spawned.
+
+    The inherited value names the ACCOUNT's login shell, so without the export
+    a configured-bash terminal answers `echo $SHELL` with /bin/zsh and programs
+    that consult $SHELL (vim's :sh, tmux default-shell) open the wrong shell.
+    The spawn is mocked: these pin the env contract, not the PTY lifecycle."""
+
+    def _cfg(self, tmp_path, monkeypatch, shell=None):
+        term_cfg: dict = {"enabled": True}
+        if shell is not None:
+            term_cfg["shell"] = shell
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": term_cfg}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+
+    def _capture_spawn(self, monkeypatch) -> dict:
+        captured: dict = {}
+
+        async def fake_spawn(*argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
+            proc = MagicMock()
+            proc.pid = 4242
+            proc.returncode = 0  # already-exited child: no kill path needed
+            return proc
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+        return captured
+
+    async def _open_and_close(self, registry):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app = _make_app(registry=registry)
+        async with TestClient(TestServer(app)) as client:
+            async with client.ws_connect("/api/ws/terminal/shell-env-sess") as ws:
+                await ws.close()
+            sess = registry.pop("shell-env-sess", None)
+            if sess is not None:
+                await terminal._kill_session(sess)
+
+    @pytest.mark.asyncio
+    async def test_custom_shell_exports_absolute_shell_env(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        self._cfg(tmp_path, monkeypatch, shell="bash")
+        captured = self._capture_spawn(monkeypatch)
+        await self._open_and_close({})
+        assert captured["argv"][0] == "bash"
+        shell_env = captured["env"]["SHELL"]
+        assert os.path.isabs(shell_env)
+        assert os.path.basename(shell_env) == "bash"
+
+    @pytest.mark.asyncio
+    async def test_absolute_custom_shell_used_verbatim(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        self._cfg(tmp_path, monkeypatch, shell="/bin/bash")
+        captured = self._capture_spawn(monkeypatch)
+        await self._open_and_close({})
+        assert captured["env"]["SHELL"] == "/bin/bash"
+
+    @pytest.mark.asyncio
+    async def test_default_shell_leaves_inherited_shell_env(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """No custom shell configured: $SHELL stays whatever the gateway
+        inherited (absent stays absent) — the account default is then correct."""
+        self._cfg(tmp_path, monkeypatch, shell=None)
+        captured = self._capture_spawn(monkeypatch)
+        await self._open_and_close({})
+        assert captured["env"].get("SHELL") == os.environ.get("SHELL")
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_shell_leaves_inherited_shell_env(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A bare name which() cannot resolve exports nothing — the exec's own
+        failure is the honest signal, not a fabricated $SHELL."""
+        self._cfg(tmp_path, monkeypatch, shell="definitely-not-a-shell-xyz")
+        captured = self._capture_spawn(monkeypatch)
+        await self._open_and_close({})
+        assert captured["env"].get("SHELL") == os.environ.get("SHELL")
+
+
 @pytest.mark.xdist_group("pty_integration")
 class TestTerminalWsIntegration:
     """Integration tests that exercise the full WebSocket PTY lifecycle.

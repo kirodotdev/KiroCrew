@@ -3522,7 +3522,10 @@
         "terminal_font_family": "Font",
         "terminal_font_family_desc": "Font for the built-in terminal. Enter a monospace font installed on your computer — use a Nerd Font to render Powerline and prompt-theme glyphs.",
         "terminal_font_size": "Font size",
-        "terminal_font_size_desc": "Text size in the built-in terminal, measured in pixels."
+        "terminal_font_size_desc": "Text size in the built-in terminal, measured in pixels.",
+        "terminal_shell": "Shell",
+        "terminal_shell_desc": "Shell launched by new terminal sessions — a command name or absolute path (zsh, /opt/homebrew/bin/fish). Leave empty to use the system default. Terminals already open keep their shell.",
+        "terminal_shell_failed": "Could not save the shell. Check the value and try again."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

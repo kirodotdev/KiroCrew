@@ -5,6 +5,7 @@
   "components.filePickerMenu.folder": "aria-label on the folder ICON in the @-mention picker row and on the staged-folder chip in the composer. A directory in the file system, not a UI grouping.",
   "components.filePickerMenu.folder_kind": "Row metadata in the @-mention picker, rendered as 'folder · 3d ago' where a file row shows '12 KB · 3d ago'. Lowercase noun naming the entry kind (a file-system directory).",
   "entries": {
+    "pages.settings.displayPanel.terminal_shell": "Settings label for the SHELL program (command interpreter: zsh, bash, fish) the built-in terminal launches — not the terminal emulator app and not a sea shell. Many languages keep the English word.",
     "app.cpu": "Abbreviation for \"CPU\" in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.dsk": "Abbreviation for \"disk\" in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.mem": "Abbreviation for \"memory\" (RAM) in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",

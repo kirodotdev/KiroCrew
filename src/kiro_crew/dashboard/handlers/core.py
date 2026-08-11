@@ -1437,6 +1437,18 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
     "dashboard.prevent_sleep": {"type": "bool"},
+    # Shell launched by NEW web-terminal PTY sessions (read by
+    # handlers/terminal.py at spawn). A path or bare command name; "" = system
+    # default ($SHELL on POSIX, powershell.exe on Windows). The value is passed
+    # as argv[0] to an exec — never interpreted by a shell — so nothing needs
+    # escaping; the pattern refuses control characters because a CR/LF or ESC
+    # in the stored value would corrupt config round-trips and SEL log lines.
+    # Existing terminal sessions keep their shell; only new spawns read this.
+    "dashboard.terminal.shell": {
+        "type": "str",
+        "max_len": 256,
+        "pattern": r"^[^\x00-\x1f\x7f]*$",
+    },
     # User profile (onboarding step 2 + Settings > General > About You).
     # Structured slugs, not free text: context.py maps them to prompt-ready
     # descriptions in its [USER PROFILE] block. "" = unspecified/cleared.
