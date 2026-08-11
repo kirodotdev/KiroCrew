@@ -269,6 +269,100 @@ class TestTemplate:
             assert line.isascii(), f"non-ASCII in template line {i}: {line!r}"
 
 
+class TestUserDataSize:
+    """Guard the EXPANDED UserData size against EC2's hard 16 KB limit.
+
+    EC2 rejects a launch whose DECODED UserData exceeds 16,384 bytes, and the
+    limit applies AFTER CloudFormation resolves the !Sub — so the raw literal
+    in the template is not the number that matters. Each ``${...}`` grows at
+    render time (the WaitHandle presigned S3 URL alone is ~250 chars), so a
+    template can look comfortably sized in the file yet be rejected at launch.
+    This test renders a worst-case expansion and enforces a ceiling with real
+    headroom, so a regression fails here instead of at a user's
+    ``kirocrew cloud launch``.
+    """
+
+    # EC2's hard limit on the decoded UserData payload, in bytes.
+    _EC2_USERDATA_LIMIT = 16_384
+
+    # Enforced ceiling: 2 KB of headroom under the hard limit, ON TOP of the
+    # already-pessimistic substitution values below. When this trips, slim the
+    # script by MOVING knowledge into the template comments above UserData
+    # (see the "Bootstrap script rationale" block) — never by deleting it or
+    # making the script cryptic.
+    _CEILING = _EC2_USERDATA_LIMIT - 2_048
+
+    # Worst-case value per !Sub variable. Parameter lengths come from the
+    # template's own AllowedPattern caps; pseudo-params and the WaitHandle use
+    # pessimistic constants (a presigned S3 URL measures ~250 chars — 512
+    # doubles that for margin). A NEW substitution variable fails the test
+    # until an entry is added here, forcing its growth to be sized.
+    _WORST_CASE = {
+        "WaitHandle": "h" * 512,
+        "SourceBucket": "b" * 63,
+        "SourceKey": "k" * 255,
+        "KirocrewRepo": "r" * 255,
+        "KirocrewRef": "f" * 128,
+        "DashboardPort": "65535",
+        "StackTag": "t" * 51,
+        "AWS::AccountId": "1" * 12,
+        "AWS::Region": "ap-southeast-99",
+        "AWS::StackName": "s" * 128,
+    }
+
+    def _raw_userdata(self) -> str:
+        text = ec2.load_template()
+        m = re.search(r"Fn::Base64: !Sub \|\n((?: {10}.*\n|\n)+)", text)
+        assert m, "UserData !Sub block scalar not found in the template"
+        # Strip the 10-space YAML block indent — CloudFormation does the same
+        # when it materializes the scalar.
+        script = "".join(
+            (line[10:] if line.startswith(" " * 10) else line) + "\n"
+            for line in m.group(1).splitlines()
+        )
+        # Guard the extraction itself: a regex that silently matched a stub
+        # would turn this whole test into a no-op.
+        assert script.startswith("#!/bin/bash"), "extracted UserData is not the bootstrap script"
+        assert len(script) > 4_000, "extracted UserData is implausibly small"
+        return script
+
+    def _expand(self, script: str) -> str:
+        # Substitute every real ${Var}; leave ${!x} literal escapes for the
+        # final unescape step, exactly as CloudFormation's Sub does.
+        def sub_one(m: re.Match[str]) -> str:
+            var = m.group(1)
+            assert var in self._WORST_CASE, (
+                f"!Sub variable ${{{var}}} has no worst-case size entry — add one "
+                f"to {type(self).__name__}._WORST_CASE so its render-time growth "
+                "is accounted for"
+            )
+            return self._WORST_CASE[var]
+
+        expanded = re.sub(r"\$\{([^!}][^}]*)\}", sub_one, script)
+        return expanded.replace("${!", "${")
+
+    def test_expanded_userdata_stays_under_ceiling(self):
+        script = self._raw_userdata()
+        expanded = self._expand(script)
+        size = len(expanded.encode("utf-8"))
+        assert size <= self._CEILING, (
+            f"worst-case expanded UserData is {size} bytes, over the "
+            f"{self._CEILING}-byte ceiling ({self._EC2_USERDATA_LIMIT} EC2 limit "
+            f"minus headroom). Slim the bootstrap script by relocating comments "
+            f"into the template's rationale block above UserData — do not delete "
+            f"the knowledge or obfuscate the script."
+        )
+
+    def test_expansion_grows_the_payload(self):
+        # Confidence-check the harness: the worst-case render must be LARGER than
+        # the raw literal (the substitutions net-add bytes). If this fails the
+        # worst-case table has degraded into an optimistic one.
+        script = self._raw_userdata()
+        assert len(self._expand(script).encode()) > len(
+            script.replace("${!", "${").encode()
+        )
+
+
 _BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary"
 
 

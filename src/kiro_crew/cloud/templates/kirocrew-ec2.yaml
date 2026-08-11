@@ -261,40 +261,150 @@ Resources:
         - { Key: "Name", Value: !Sub "kirocrew-${StackTag}" }
         - { Key: "kirocrew:managed", Value: "true" }
         - { Key: "kirocrew:instance", Value: !Ref StackTag }
+      # --- Bootstrap script rationale (kept OUT of UserData for size) -------
+      # EC2 rejects a launch whose DECODED UserData exceeds 16,384 bytes, and
+      # the !Sub expansion below grows at render time (the WaitHandle
+      # presigned URL alone is roughly 250 chars), so the script carries only
+      # what the instance needs and the reasoning lives here, keyed by the
+      # quoted names the script's short comments reference. The worst-case
+      # EXPANDED size is guarded by test_cloud_ec2.py's UserData size test;
+      # when it trips, trim the script or move knowledge here, never delete it.
+      #
+      # "Logging": log via a plain file redirect (NOT `tee` via process
+      #   substitution) and do NOT set `pipefail` -- install.sh's progress
+      #   spinner writes many \r updates through a pipe, and a tee+pipefail
+      #   combination turns a harmless SIGPIPE on that pipe into a fatal
+      #   SIGTERM mid-install.
+      # "fail()": CloudFormation terminates the instance the instant a FAILURE
+      #   signal lands, destroying the setup log -- so fail() folds the last
+      #   log lines INTO the signal reason (CFN allows ~1KB), letting the real
+      #   error survive in the stack event where `kirocrew cloud launch` can
+      #   surface it. Quotes/backslashes are stripped because the fallback
+      #   curl embeds the reason in hand-built JSON; an unescaped quote would
+      #   malform the body and the WaitCondition would hang to timeout instead
+      #   of failing cleanly. The ${!tail_ctx} inside fail() is
+      #   CloudFormation's !Sub literal escape, NOT bash indirect expansion:
+      #   !Sub renders it as the plain dollar-brace form, an ordinary bash
+      #   expansion at runtime; without the "!" escape, !Sub would try to
+      #   resolve tail_ctx as a template parameter and the deploy would fail.
+      # "SELinux reboot": AL2023 ships /etc/cloud/cloud.cfg.d/
+      #   40_selinux-reboot.cfg, a cloud-init power_state drop-in that runs
+      #   `shutdown -r now` (to apply an SELinux kernel commandline) whenever
+      #   /run/cloud-init-selinux-reboot exists. That reboot fires ~60-90s
+      #   into first boot -- straight through the long dnf + npm build --
+      #   SIGTERM-killing the in-flight install.sh build (seen as "Terminated"
+      #   mid-vite, then WaitCondition FAILURE). It is NOT OOM and NOT the
+      #   build itself (both re-run clean on the warm box); it is the stock
+      #   reboot racing the bootstrap. SELinux runs Permissive here (the
+      #   kernel-cmdline tweak is cosmetic), so the script removes the trigger
+      #   flag AND the drop-in before the heavy work. cloud-init may already
+      #   have SCHEDULED the reboot in parallel ("The system will reboot at
+      #   ..." ~60s out) and removing the flag won't cancel an in-flight
+      #   schedule, so `shutdown -c` cancels any pending timed shutdown
+      #   (harmless if none is set). Best-effort: never fails the bootstrap.
+      # "Swap": provisioned BEFORE install.sh as defense-in-depth headroom.
+      #   The frontend build (`tsc -b && vite build` over ~900 npm packages)
+      #   runs alongside dnf + a fresh `npm ci` during first boot and peaks
+      #   ~3.4 GB (measured). The smallest tier is 16 GB (8 GB was retired),
+      #   so this is NOT the primary bring-up fix (that is the SELinux reboot
+      #   suppression) -- just cheap insurance so first boot degrades to swap
+      #   instead of a kill under a transient spike. Unused headroom on every
+      #   tier is harmless. Best-effort: never fails on swap.
+      # "System packages": install.sh needs Python >= 3.10; AL2023's default
+      #   python3 is 3.9, so python3.11 is installed explicitly (install.sh's
+      #   _find_python prefers python3.12/3.11/3.10 over the bare python3).
+      #   ripgrep is optional and must never fail the bootstrap.
+      # "Node.js": the frontend build (vite 8 + rolldown) REQUIRES Node >= 22;
+      #   AL2023's default AppStream nodejs is 18, on which the build dies
+      #   with "SyntaxError: ... 'node:util' does not provide an export named
+      #   'styleText'". Keep AppStream node only if it is already >= 22,
+      #   otherwise install Node 24 from the signed NodeSource repo. That path
+      #   does NOT pipe a remote script into bash (a supply-chain risk if
+      #   NodeSource were MITM'd): it imports NodeSource's GPG key over pinned
+      #   TLS and writes a signed dnf repo with gpgcheck=1, so every RPM is
+      #   signature-verified before install. NodeSource rotated its GPG key
+      #   URL once (the old nodesource-repo.gpg.key now 404s, which caused a
+      #   BOOTSTRAP FAILED); the current key is ns-operations-public.key. A
+      #   transient dnf cache/mirror race can drop a dependency RPM
+      #   mid-transaction ("No such file: .../libbrotli-...rpm"), hence the
+      #   clean-cache-and-retry on the first nodejs install failure.
+      #   --allowerasing lets NodeSource's nodejs replace an AppStream node 18.
+      # "kiro-cli": AL2023 ships glibc 2.34; the standard kiro-cli build needs
+      #   glibc 2.39+, so the musl build is REQUIRED (validated on AL2023).
+      #   The install step tolerates a nonzero exit (two installer invocations
+      #   + `|| true`), so the script VERIFIES the binary actually landed --
+      #   otherwise the gateway would serve HTTP but every chat would error
+      #   (no ACP backend). A missing binary fails the WaitCondition so the
+      #   stack rolls back cleanly instead of handing the user a broken box.
+      # "Source fetch": prefer the S3 source tarball the launcher uploaded
+      #   (works for a private repo, using the instance role); fall back to a
+      #   public git clone when no S3 source was provided. The CloudFormation
+      #   values are inlined into a script file (via !Sub) and run as the
+      #   target user -- this avoids passing env through `sudo`, whose
+      #   env_reset strips VAR=value assignments by default, which silently
+      #   emptied SourceBucket and took the git-clone branch. The `--` before
+      #   the clone URL ends option parsing: defense-in-depth so a repo/ref
+      #   value can't be interpreted as a git flag (both are AllowedPattern-
+      #   validated already; the separator costs nothing).
+      #   KIROCREW_REQUIRE_FRONTEND=1 makes install.sh exit non-zero on a
+      #   failed frontend build (non-fatal by default, for local CLI users) --
+      #   which is what lets the retry actually re-run it. install.sh is
+      #   retried once on a cold first boot: observed on the light tier, the
+      #   very first run can be signal-killed mid-build (no clean error, no
+      #   kernel OOM) under first-boot contention (cloud-init + SSM
+      #   registration + dnf + kiro-cli install + a fresh `npm ci` all
+      #   compressed together); a retry on the now-warm box (primed caches,
+      #   node_modules present) reliably reaches "installed successfully".
+      #   `set -e` is relaxed only for the first attempt (the `if` guard); a
+      #   failed retry still exits nonzero so the outer `|| fail` signals the
+      #   WaitCondition.
+      # "Dashboard build verification": install.sh treats a frontend build
+      #   failure as a NON-FATAL warning (it falls back to a "legacy" page) --
+      #   correct for a local CLI user who may not even have Node, wrong for a
+      #   cloud crew whose entire purpose is the remote dashboard. With no
+      #   built SPA the gateway serves a ~782-byte "not built" stub that still
+      #   returns HTTP 200, so the health probe passes and the stack reaches
+      #   CREATE_COMPLETE while the crew's pane can never load -- a green
+      #   launch that hands the user a dead, billing box. So a missing build
+      #   is FATAL here, and the failure reason greps the actual npm/vite/tsc
+      #   error out of the setup log (fail() otherwise only carries the log
+      #   tail, which at that point is install.sh's success banner, not the
+      #   earlier build error) -- diagnosable even when the crew installed
+      #   from a CLONED source whose install.sh does not itself hard-fail
+      #   (the default clone-of-main path). install.sh stages website/dist ->
+      #   src/kiro_crew/static/dist.
+      # "systemd unit": a system-level unit so the gateway survives reboots
+      #   and runs as ec2-user. The local tunnel MIRRORS DashboardPort, so the
+      #   crew must listen on the launcher-allocated port, not the built-in
+      #   default -- hence the KIROCREW_PORT Environment line.
+      # Editing hazard: the whole UserData is ONE CloudFormation !Sub, so any
+      #   dollar-brace token in the script -- even inside a bash comment -- is
+      #   parsed as a Sub variable and breaks change-set creation. Use plain
+      #   "$var" bash expansions only; a genuine literal dollar-brace must use
+      #   the "!"-escaped form (see "fail()"). Heredoc/printf bodies must stay
+      #   indented: a column-1 line would terminate the YAML block scalar.
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          # KiroCrew EC2 bootstrap. Runs as root via cloud-init on first boot.
-          # Logs to /var/log/kirocrew-setup.log and signals the CloudFormation
-          # WaitCondition at the end (success or failure).
-          #
-          # NB: log via a plain file redirect (NOT `tee` via process substitution)
-          # and do NOT set `pipefail` — install.sh's progress spinner writes a lot
-          # of \r updates through a pipe, and a `tee`+pipefail combination turns a
-          # harmless SIGPIPE on that pipe into a fatal SIGTERM mid-install.
+          # Kiro Crew EC2 bootstrap (cloud-init, first boot, root). EC2 caps
+          # decoded UserData at 16384 bytes AFTER !Sub expansion, so this
+          # script carries only what the instance needs: the rationale for
+          # every non-obvious choice lives in the template comments right
+          # above UserData, keyed by the section names quoted below.
+          # No pipefail + plain-file logging: see "Logging" above.
           set -u
           exec >>/var/log/kirocrew-setup.log 2>&1
           echo "=== KiroCrew bootstrap starting $(date -u) ==="
 
           HANDLE="${WaitHandle}"
           LOG=/var/log/kirocrew-setup.log
+          # Folds the log tail into the FAILURE reason: see "fail()" above.
           fail() {
             echo "BOOTSTRAP FAILED: $1"
-            # CloudFormation terminates the instance the instant we signal
-            # FAILURE, destroying this log — so fold the last log lines INTO the
-            # signal reason (CFN allows ~1KB) so the real error survives in the
-            # stack event and `kirocrew cloud launch` can surface it.
-            # Strip quotes/backslashes: the fallback curl below embeds $reason
-            # in hand-built JSON, and an unescaped quote would malform the body
-            # (the WaitCondition would then hang to timeout instead of failing).
             tail_ctx=$(tail -n 25 "$LOG" 2>/dev/null | tr -d '\r"\\' \
               | grep -aviE 'Installing (npm|kirocrew and) depend|building React app' \
               | tr '\n' '|' | tail -c 900)
-            # NB: the ${!tail_ctx} below is a CloudFormation !Sub literal escape,
-            # NOT bash indirect expansion. !Sub turns the "!"-escaped form into a
-            # literal dollar-brace tail_ctx, so at runtime it's an ordinary bash
-            # variable expansion of tail_ctx. Without the "!" escape, !Sub would
-            # try to resolve tail_ctx as a template parameter and fail to deploy.
+            # NB: ${!tail_ctx} is the !Sub literal escape, not bash indirection.
             reason="$(echo "$1" | tr -d '"\\') :: ...${!tail_ctx}"
             /opt/aws/bin/cfn-signal -e 1 -r "$(echo "$reason" | head -c 1000)" "$HANDLE" || \
               curl -s -X PUT -H 'Content-Type:' --data-binary \
@@ -302,40 +412,19 @@ Resources:
             exit 1
           }
 
-          # Suppress the Amazon Linux 2023 first-boot SELinux reboot. AL2023 ships
-          # /etc/cloud/cloud.cfg.d/40_selinux-reboot.cfg, a cloud-init power_state
-          # drop-in that runs `shutdown -r now` (to apply an SELinux kernel
-          # commandline) whenever /run/cloud-init-selinux-reboot exists. That
-          # reboot fires ~60-90s into first boot - i.e. straight through our long
-          # dnf + npm build - SIGTERM-killing the in-flight `install.sh` build
-          # (seen as "Terminated" mid-vite, then WaitCondition FAILURE). It is NOT
-          # OOM and NOT the build itself (both re-run clean on the warm box); it is
-          # this stock reboot racing our bootstrap. We run SELinux Permissive (the
-          # kernel-cmdline tweak is cosmetic for us), so cancel the pending reboot
-          # by removing the trigger flag AND neutering the drop-in before the heavy
-          # work. Best-effort: never fail the bootstrap on this.
+          # The stock AL2023 reboot would SIGTERM the build mid-install: see
+          # "SELinux reboot" above. Best-effort, never fails the bootstrap.
           echo "--- suppressing AL2023 first-boot SELinux reboot ---"
           rm -f /run/cloud-init-selinux-reboot 2>/dev/null || true
           rm -f /etc/cloud/cloud.cfg.d/40_selinux-reboot.cfg 2>/dev/null || true
-          # cloud-init's power_state module may already have SCHEDULED the reboot
-          # (observed: "The system will reboot at ..." ~60s out) in parallel with
-          # this script, and removing the flag won't cancel an in-flight schedule.
-          # `shutdown -c` cancels a pending timed shutdown; harmless if none is set.
+          # Also cancel an already-SCHEDULED reboot; harmless if none is set.
           shutdown -c 2>/dev/null || true
 
-          # Run the whole install as a non-root user; KiroCrew and kiro-cli are
-          # per-user tools and the systemd unit runs as this user.
+          # Per-user tools: install as non-root; the systemd unit runs as it.
           RUN_USER=ec2-user
           RUN_HOME=/home/$RUN_USER
 
-          # Provision swap BEFORE install.sh as defense-in-depth headroom. The
-          # frontend build (`tsc -b && vite build` over ~900 npm packages) runs
-          # alongside dnf + a fresh `npm ci` during first boot and peaks ~3.4 GB
-          # (measured). The smallest tier is now 16 GB (8 GB was retired), so this
-          # is NOT the primary bring-up fix (that was the SELinux reboot suppressed
-          # above) - it is cheap insurance so first boot degrades to swap instead
-          # of a kill under a transient spike. Unused headroom on every tier
-          # (harmless). Best-effort: never fail on swap.
+          # Insurance against a first-boot memory spike: see "Swap" above.
           echo "--- provisioning swap (headroom for the vite build) ---"
           if [ ! -e /swapfile ] && [ "$(free -m | awk '/^Swap:/ {print $2}')" = "0" ]; then
             ( fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096 ) 2>/dev/null \
@@ -348,32 +437,20 @@ Resources:
           fi
 
           echo "--- installing system packages ---"
-          # Essentials must succeed. AL2023 provides these in the default repo.
-          # KiroCrew's install.sh needs Python >= 3.10; AL2023's default python3
-          # is 3.9, so install python3.11 explicitly (install.sh's _find_python
-          # prefers python3.12/3.11/3.10 over the bare python3).
+          # python3.11 explicitly: install.sh needs >= 3.10, AL2023's default
+          # python3 is 3.9 (see "System packages" above).
           dnf install -y git tmux python3.11 python3.11-pip python3 python3-pip \
             unzip tar gzip which \
             || fail "essential package install failed (git/python3.11/unzip)"
-          # ripgrep is optional — don't fail the bootstrap if it isn't available.
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
           echo "--- installing Node.js ---"
-          # The frontend build (vite 8 + rolldown) REQUIRES Node >=22: AL2023's
-          # default AppStream `nodejs` is 18, on which the build dies with
-          # "SyntaxError: ... 'node:util' does not provide an export named
-          # 'styleText'". So enforce a floor -- keep AppStream node only if it is
-          # already >=22, otherwise install Node 24 from the signed NodeSource repo.
-          # The NodeSource path does NOT pipe a remote script into bash (a supply-
-          # chain risk if NodeSource is MITM'd); it imports NodeSource's GPG key
-          # over pinned TLS and writes a signed dnf repo with gpgcheck=1, so every
-          # RPM is signature-verified before install.
+          # The frontend build needs Node >= 22; AL2023 AppStream nodejs is 18.
+          # Signed-repo upgrade path, no curl-pipe-bash: see "Node.js" above.
           NODE_MAJOR_MIN=22
           if ! command -v node >/dev/null 2>&1; then
             if ! dnf install -y nodejs npm; then
-              # A transient dnf cache/mirror race can drop a dependency RPM
-              # mid-transaction ("No such file: .../libbrotli-...rpm"); clean the
-              # cache and retry once.
+              # Transient dnf cache/mirror races happen: see "Node.js" above.
               echo "nodejs install failed - cleaning dnf cache and retrying"
               dnf clean packages || true
               dnf makecache || true
@@ -384,12 +461,9 @@ Resources:
           [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
           if [ "$NODE_MAJOR" -lt "$NODE_MAJOR_MIN" ]; then
             echo "Node major $NODE_MAJOR is below the required $NODE_MAJOR_MIN - installing Node 24 from the signed NodeSource repo"
-            # NodeSource rotated its GPG key URL; the old nodesource-repo.gpg.key
-            # now 404s (caused BOOTSTRAP FAILED). Current: ns-operations-public.key.
             NS_KEY=https://rpm.nodesource.com/gpgkey/ns-operations-public.key
             rpm --import "$NS_KEY" || fail "could not import NodeSource GPG key"
-            # Write the repo file line-by-line (kept indented so the YAML |
-            # block stays well-formed; a column-1 heredoc body would break it).
+            # printf (not a heredoc): a column-1 body would break the YAML block.
             {
               printf '%s\n' '[nodesource-nodejs]'
               printf '%s\n' 'name=Node.js Packages'
@@ -398,7 +472,6 @@ Resources:
               printf '%s\n' 'gpgcheck=1'
               printf '%s\n' "gpgkey=$NS_KEY"
             } >/etc/yum.repos.d/nodesource.repo
-            # --allowerasing so NodeSource's nodejs can replace an AppStream node 18.
             dnf install -y --allowerasing nodejs || fail "Node.js >=$NODE_MAJOR_MIN install failed (signed NodeSource repo)"
             NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
             [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
@@ -408,8 +481,7 @@ Resources:
           echo "npm:  $(command -v npm) $(npm --version 2>/dev/null || echo missing)"
 
           echo "--- installing kiro-cli ---"
-          # Amazon Linux 2023 ships glibc 2.34; the standard kiro-cli build needs
-          # glibc 2.39+, so we MUST use the musl build here (validated on AL2023).
+          # AL2023 glibc 2.34 is too old for the standard build: musl required.
           ARCH=$(uname -m)
           if [ "$ARCH" = "aarch64" ]; then KIRO_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux-musl.zip"; else KIRO_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-x86_64-linux-musl.zip"; fi
           sudo -u $RUN_USER bash -lc "
@@ -419,23 +491,14 @@ Resources:
             unzip -o -q kirocli.zip
             ./kirocli/install.sh --no-confirm || yes | ./kirocli/install.sh || true
           " || echo 'kiro-cli install returned nonzero (verifying the binary below)'
-          # The install step tolerates a nonzero exit (the two installer
-          # invocations + `|| true`), so VERIFY the binary actually landed —
-          # otherwise the gateway would serve HTTP but every chat would error
-          # (no ACP backend). Fail the WaitCondition so the stack rolls back
-          # cleanly instead of handing the user a broken box.
+          # The install tolerates nonzero exits, so verify the binary landed;
+          # without it every chat would error (see "kiro-cli" above).
           sudo -u $RUN_USER bash -lc 'command -v kiro-cli >/dev/null 2>&1 || [ -x "$HOME/.local/bin/kiro-cli" ] || [ -x /usr/local/bin/kiro-cli ]' \
             || fail "kiro-cli did not install (the chat backend would not work)"
 
           echo "--- fetching + installing KiroCrew ---"
-          # Prefer the S3 source tarball the launcher uploaded (works for a
-          # private repo, using the instance role). Fall back to a public git
-          # clone when no S3 source was provided.
-          #
-          # We write a script file with the CloudFormation values inlined
-          # (via !Sub) and run it as the target user. This avoids passing env
-          # through `sudo` (env_reset strips VAR=value assignments by default,
-          # which silently emptied SourceBucket and took the git-clone branch).
+          # S3 source preferred, git clone fallback. Values are inlined into a
+          # script file to dodge sudo env_reset: see "Source fetch" above.
           cat > /tmp/kcfetch.sh <<KCFETCH
           #!/bin/bash
           set -e
@@ -448,25 +511,14 @@ Resources:
           else
             echo "cloning ${KirocrewRepo}@${KirocrewRef}"
             rm -rf kirocrew
-            # `--` ends option parsing: defense-in-depth so a repo/ref value
-            # can't be interpreted as a git flag (they're already charset- +
-            # AllowedPattern-validated, but the separator costs nothing).
+            # `--` ends option parsing so the URL can't read as a git flag.
             git clone --depth 1 --branch "${KirocrewRef}" -- "${KirocrewRepo}" kirocrew
           fi
           cd kirocrew
-          # A cloud crew is useless without its dashboard, so require the frontend
-          # build (install.sh treats a build failure as non-fatal by default, for
-          # local CLI users). This makes install.sh exit non-zero on a failed build —
-          # which is what lets the retry below actually re-run it.
+          # Make a failed frontend build fatal so the retry below re-runs it.
           export KIROCREW_REQUIRE_FRONTEND=1
-          # Retry install.sh once on a cold first boot. Observed on the light tier:
-          # the very first run can be signal-killed mid-build (no clean error, no
-          # kernel OOM) under first-boot contention (cloud-init + SSM registration
-          # + dnf + kiro-cli install + a fresh `npm ci` all compressed together);
-          # a retry on the now-warm box (primed caches, node_modules present)
-          # reliably reaches "installed successfully". `set -e` is relaxed only for
-          # the first attempt (the `if` guard); a failed retry still exits nonzero
-          # so the outer `|| fail` signals the WaitCondition.
+          # One retry: first-boot contention can signal-kill the first build;
+          # the warm re-run reliably succeeds (see "Source fetch" above).
           if ! bash install.sh; then
             echo "install.sh failed on first attempt - settling then retrying once"
             sleep 20
@@ -478,29 +530,13 @@ Resources:
           sudo -u $RUN_USER bash /tmp/kcfetch.sh || fail "kirocrew install.sh failed"
 
           echo "--- verifying the dashboard SPA was actually built ---"
-          # install.sh treats a frontend build failure as a NON-FATAL warning (it
-          # falls back to a "legacy" page) -- correct for a local CLI user who may
-          # not even have Node, but wrong for a cloud crew whose entire purpose is
-          # the remote dashboard. With no built SPA the gateway serves a ~782-byte
-          # "not built" stub that still returns HTTP 200, so the health probe below
-          # passes and the stack reaches CREATE_COMPLETE while the crew's pane can
-          # never load -- a green launch that hands the user a dead, billing box.
-          # Make a missing build FATAL here: fail the WaitCondition (folding the
-          # build log into the reason) so the stack rolls back with a real error
-          # instead. install.sh stages website/dist -> src/kiro_crew/static/dist.
+          # A missing SPA means a green stack serving a dead dashboard, so it
+          # is FATAL, with the real build error grepped from the setup log
+          # into the failure reason: see "Dashboard build verification" above.
+          # NB: plain "$var" only in this whole script; any dollar-brace token,
+          # even in a comment, is parsed by !Sub and breaks change-set creation.
           DIST_INDEX="$RUN_HOME/kirocrew/src/kiro_crew/static/dist/index.html"
           if [ ! -f "$DIST_INDEX" ]; then
-            # Surface WHY the build failed, straight from the setup log, so the failure
-            # is diagnosable even when the crew installed from a CLONED source whose
-            # install.sh does not itself hard-fail (the default clone-of-main path,
-            # where install.sh treats a build failure as a non-fatal warning). Grep the
-            # actual npm/vite/tsc error out of the log and fold it into the reason --
-            # fail() otherwise only carries the log's tail, which at this point is
-            # install.sh's success banner, not the earlier build error.
-            # NB: use only plain "$var" below, never a brace expansion. This whole
-            # UserData is a CloudFormation !Sub, so any dollar-brace token -- even
-            # inside a comment -- is parsed as a Sub variable and breaks change-set
-            # creation (a real bash brace default must be written as the !-escaped form).
             fe_err="$(grep -aiE 'npm error|npm ERR|error TS[0-9]|vite|Killed|Cannot find module|ENOSPC|no space left|out of memory|FATAL ERROR|Skipping frontend build' "$LOG" 2>/dev/null | tr -d '\r"\\' | tail -n 12 | tr '\n' '|' | tail -c 500)"
             if [ -z "$fe_err" ]; then
               fe_err="<none captured; check /var/log/kirocrew-setup.log on the instance>"
@@ -531,8 +567,7 @@ Resources:
           WorkingDirectory=$RUN_HOME
           Environment=HOME=$RUN_HOME
           Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
-          # The local tunnel mirrors this port, so the crew must listen on the
-          # port the launcher allocated for it — not the built-in default.
+          # The local tunnel mirrors this launcher-allocated port.
           Environment=KIROCREW_PORT=${DashboardPort}
 
           [Install]
