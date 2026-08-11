@@ -1616,13 +1616,14 @@ class TestCuratedTips:
         for tid in (
             "split-view", "interface-cli-mode", "warm-pool", "mcp-gateway",
             "subagent-parallelism", "zero-token-cron", "dev-fleet", "app-store",
+            "command-palette",
         ):
             action = tips[tid].get("action")
             assert action is not None, f"{tid} should have an action"
             assert _sanitize_tip_action(action) == action, f"{tid} action must be valid"
             assert action["route"].startswith("/")
         # Features with no in-dashboard destination render body only (no button).
-        for tid in ("command-palette", "steer-or-queue", "local-telemetry"):
+        for tid in ("steer-or-queue", "local-telemetry"):
             assert "action" not in tips[tid], f"{tid} must not carry an action"
 
     @pytest.mark.asyncio
