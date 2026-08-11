@@ -13,8 +13,18 @@ function isSafeOAuthUrl(url: string): boolean {
   return lower.startsWith('https://') || lower.startsWith('http://')
 }
 
-/** Render an mcp_oauth message into a banner, or null if there's nothing to show. */
-export function renderMcpOAuthMessage(m: ChatMessage): ReactNode {
+/** Render an mcp_oauth message into a banner, or null if there's nothing to show.
+ *
+ * `hideCardOwned` drops requests the backend tagged `card_owned` — a Connections
+ * card owns that consent flow and shows the same Authorize action, so repeating
+ * it in chat is a duplicate prompt that re-fires on every session init. Callers
+ * pass it only when the card is actually reachable (`connections_ui` on); the
+ * default renders everything, which is what every surface without a card does.
+ * The message itself is always delivered either way — the card reads its approval
+ * URL out of it.
+ */
+export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false): ReactNode {
+  if (hideCardOwned && m.meta?.card_owned) return null
   const serverName = (m.meta?.server_name as string) || ''
   const oauthUrl = (m.meta?.oauth_url as string) || ''
   const completed = !!m.meta?.completed

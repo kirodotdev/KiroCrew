@@ -80,4 +80,36 @@ describe('InstalledAppCard hero art', () => {
     expect(document.querySelector('img')).toBeNull()
     expect(screen.getByTestId('app-icon')).toBeTruthy()
   })
+
+  it('resolves a repo-relative hero path through the blob proxy', () => {
+    renderCard(app({ heroImageDark: 'assets/hero-dark.png', repo: 'octocat/some-app' }))
+    expect(document.querySelector('img')!.getAttribute('src'))
+      .toBe('/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Fhero-dark.png')
+  })
+
+  it('resolves a repo-relative screenshot through the blob proxy', () => {
+    renderCard(app({ screenshots: ['shots/one.png'], repo: 'octocat/some-app' }))
+    expect(document.querySelector('img')!.getAttribute('src'))
+      .toBe('/api/apps/blob?repo=octocat%2Fsome-app&path=shots%2Fone.png')
+  })
+
+  it('leaves an absolute hero path untouched even when the manifest carries a repo', () => {
+    renderCard(app({ heroImageDark: '/app-assets/dev-fleet/hero-dark.svg', repo: 'octocat/some-app' }))
+    expect(document.querySelector('img')!.getAttribute('src'))
+      .toBe('/app-assets/dev-fleet/hero-dark.svg')
+  })
+
+  it('leaves a repo-relative hero path unresolved when the manifest has no repo', () => {
+    // Without a repo there is nothing to proxy against; the value passes
+    // through and the existing onError chain degrades it gracefully.
+    renderCard(app({ heroImageDark: 'assets/hero-dark.png' }))
+    expect(document.querySelector('img')!.getAttribute('src')).toBe('assets/hero-dark.png')
+  })
+
+  it('degrades to the icon when a proxied relative hero still 404s', () => {
+    renderCard(app({ heroImageDark: 'assets/missing.png', repo: 'octocat/some-app' }))
+    fireEvent.error(document.querySelector('img')!)
+    expect(document.querySelector('img')).toBeNull()
+    expect(screen.getByTestId('app-icon')).toBeTruthy()
+  })
 })

@@ -176,7 +176,7 @@ def _load_cfn_yaml(path: Path) -> dict:
     )
 
     with open(path) as f:
-        return yaml.load(f, Loader=CfnLoader)
+        return yaml.load(f, Loader=CfnLoader)  # noqa: S506 — tag-blind CFN parse
 
 
 class TestF3IdentitySourceList:

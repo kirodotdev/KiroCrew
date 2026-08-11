@@ -155,7 +155,12 @@ class KnowledgeWatcher:
             dirs = self._project_dirs()
             if not dirs:
                 return
-            created = await asyncio.to_thread(discover_project_docs, self.store, dirs)
+            try:
+                max_sources = max(0, int(cfg.knowledge.max_sources))
+            except (TypeError, ValueError):
+                max_sources = 0
+            created = await asyncio.to_thread(
+                discover_project_docs, self.store, dirs, max_sources=max_sources)
             self._project_docs_error_sig = None
             for source_id in created:
                 # Registering a source that will spend LLM extraction on the
@@ -180,6 +185,12 @@ class KnowledgeWatcher:
         # folder made since the last sweep is ingested in this same pass.
         await self._discover_drop_folder()
         await self._discover_project_docs()
+
+        # Global sweep budget: caps total extraction calls across ALL sources in
+        # one sweep. Read live so the knob takes effect without a restart.
+        sweep_budget = self._sweep_chunk_budget()
+        sweep_chunks_used = 0
+
         # Folder sources (local_folder, obsidian_vault)
         folder_rows = self.store.db.execute(
             "SELECT id, uri, source_type, properties FROM sources WHERE source_type IN ({})".format(
@@ -190,6 +201,13 @@ class KnowledgeWatcher:
         ws_base: str | None = None
         chunk_budget: int | None = None
         for row in folder_rows:
+            # Global budget exhausted — defer remaining sources to next sweep.
+            if sweep_budget and sweep_chunks_used >= sweep_budget:
+                logger.info(
+                    "Sweep chunk budget exhausted (%d/%d); deferring %s to next sweep",
+                    sweep_chunks_used, sweep_budget, row["uri"],
+                )
+                break
             try:
                 source = dict(row)
                 props = self._parse_props(source.get("properties"))
@@ -235,7 +253,18 @@ class KnowledgeWatcher:
                     # later sweeps -- but pointing the Library at a source repo no
                     # longer spends the whole bill before anyone can look at it.
                     budget = folder_chunk_budget(props)
+
+                # Apply global budget as an additional cap on the per-source budget.
+                if sweep_budget:
+                    remaining = sweep_budget - sweep_chunks_used
+                    if budget is None:
+                        budget = remaining
+                    else:
+                        budget = min(budget, remaining)
+
                 stats = await self._folder_watcher.scan_source(source, chunk_budget=budget)
+                # Track consumed chunks against global budget.
+                sweep_chunks_used += stats.get("chunks_ingested", 0)
                 if stats.get("error"):
                     logger.warning("Folder scan error for %s: %s", source["uri"], stats["error"])
                 elif any(stats.get(k, 0) for k in ("new", "changed", "deleted")):
@@ -325,6 +354,18 @@ class KnowledgeWatcher:
             return max(0, int(KiroCrewConfig.load().knowledge.auto_ingest_chunk_budget))
         except Exception:
             logger.debug("Could not read auto_ingest_chunk_budget", exc_info=True)
+            return 0
+
+    @staticmethod
+    def _sweep_chunk_budget() -> int:
+        """Global cap on chunks across ALL sources in one sweep.
+
+        Read per sweep so the value is live. 0 disables the bound.
+        """
+        try:
+            return max(0, int(KiroCrewConfig.load().knowledge.sweep_chunk_budget))
+        except Exception:
+            logger.debug("Could not read sweep_chunk_budget", exc_info=True)
             return 0
 
     async def _maybe_dedup_sweep(self) -> None:

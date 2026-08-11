@@ -4,9 +4,15 @@ import { safeSetItem } from '../utils/safeStorage'
 export type FontFamily = 'sans' | 'mono' | 'system'
 
 const FAMILIES: FontFamily[] = ['sans', 'mono', 'system']
+// The two theme-able options read a role token an installed pack can fill, so a
+// pack's proportional face reaches Sans and its monospace face reaches Mono. An
+// unfilled token falls through to Kiro Crew's own stack, which is what leaves a
+// colour-only pack (or a pack that ships just one role) on the built-in families.
+// System deliberately reads no token: the OS face is the one choice a theme must
+// never be able to take away.
 const FAMILY_MAP: Record<FontFamily, string> = {
-  sans: "var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif",
-  mono: "var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace",
+  sans: "var(--theme-font-sans, var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif)",
+  mono: "var(--theme-font-mono, var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace)",
   system: "var(--script-fallbacks),-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
 }
 

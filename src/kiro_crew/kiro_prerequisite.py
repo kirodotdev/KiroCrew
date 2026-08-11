@@ -111,6 +111,20 @@ def legacy_idle_operation() -> dict[str, str]:
 _MAX_CAPTURED_OUTPUT = 64 * 1024
 _MAX_VISIBLE_DETAIL = 4_000
 _PROBE_TIMEOUT_SECS = 10
+# The identity probe's own budget, deliberately separate from
+# _PROBE_TIMEOUT_SECS. ``whoami`` is not a local read: when the cached token has
+# expired, Kiro CLI refreshes an OIDC token against the organization's IdP —
+# for IAM Identity Center users that network round trip measures 12–20 seconds,
+# so a probe killed at the shared 10-second ceiling reports a fully signed-in
+# CLI as ``authenticated=False`` and wedges the first-run gate. The budget is
+# NOT applied to ``--version``: that probe is the FIRST execution of an unknown
+# candidate and must stay on a short leash, so a genuinely missing or hung
+# binary is still reported quickly rather than blocking the gate for the full
+# identity budget. Sized to cover the observed refresh with headroom, while the
+# in-flight latch in :meth:`KiroPrerequisiteService.snapshot` keeps the gate's
+# machine polls answering from cached state instead of queueing behind a probe
+# this long.
+_IDENTITY_PROBE_TIMEOUT_SECS = 30
 _PROBE_CACHE_SECS = 2.0
 # Floor between HOST probes driven by the status endpoint, however many callers
 # ask. The first-run gate polls with ``refresh=1`` every 5s while it blocks the
@@ -212,6 +226,66 @@ _PROBE_ENV_KEYS = frozenset(
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_RUNTIME_DIR",
+    }
+)
+
+# Kiro CLI's OWN model credential, forwarded to the identity probe only.
+#
+# ``kiro-cli`` accepts an API key through the environment as an alternative to a
+# ``kiro-cli login`` token store, and ``whoami`` reports "Authenticated with API
+# key" only when it can see that variable. Filtered out, the probe answers "Not
+# logged in" (exit 1) on a host where an ACP session authenticates fine, because
+# ACP inherits the real environment — so dropping it latches
+# ``authenticated=False`` while chat still works, which is the worst of both: the
+# first-run gate demands a sign-in the user has already done, and every
+# ``verified_ready`` caller (``/api/models``, usage polling, the destructive
+# reruns) answers 503.
+#
+# SECURITY: the exposure delta is one probe's argv, not a new surface. The value
+# reaches the same resolved binary this same probe already executes, in the same
+# standard sandbox posture, against the same real home (see
+# :meth:`KiroPrerequisiteService._run_auth_command`'s ``isolate_home=False`` note),
+# on a fixed ``whoami`` argv. It is kept OUT of :data:`_PROBE_ENV_KEYS` because
+# ``--version`` is the FIRST execution of a candidate that has not yet answered
+# anything, and nothing about resolving a version needs a key.
+#
+# The CLI's exit status reports which credential kind is CONFIGURED, not whether
+# the credential is accepted, so a stale or mistyped key reads as signed in. That
+# is the same answer an ACP session acts on, which is the point — but it means
+# presence of this variable must never become a shortcut that skips the probe.
+_IDENTITY_PROBE_ENV_KEYS = frozenset({"KIRO_API_KEY"})
+
+# Proxy configuration, forwarded to the ``whoami`` identity probe only.
+#
+# On a host that reaches the network only through an HTTP proxy, ``whoami``
+# must talk to the IdP the same way the user's own shell does — filtered out,
+# the child cannot connect, the probe answers "Not logged in", and the setup
+# gate latches unauthenticated on a host where sign-in actually works. Both
+# case spellings are listed because matching is exact on POSIX and the HTTP
+# stacks disagree on which case they honour (curl-family reads the lowercase
+# names, Rust/Python stacks read either), so forwarding only one case
+# reproduces the bug on half of hosts. ALL_PROXY is included deliberately: a
+# SOCKS-only host sets it INSTEAD of the scheme-specific pair, and curl and
+# reqwest both honour it as the fallback, so omitting it keeps the exact same
+# defect for that host class.
+#
+# These are kept OUT of :data:`_PROBE_ENV_KEYS` for the same reason as the
+# credential above: a proxy URL can embed credentials, and ``--version`` is
+# the FIRST execution of a candidate that has not yet answered anything — and
+# nothing about resolving a version needs the network. ``whoami`` runs only
+# after ``--version`` succeeds, against the same resolved binary an ACP
+# session already runs with the full inherited environment, so the exposure
+# delta is confined to a candidate that has already passed the version gate.
+_IDENTITY_PROXY_ENV_KEYS = frozenset(
+    {
+        "ALL_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
     }
 )
 
@@ -824,12 +898,37 @@ def _allowlisted_env(
 
 
 def _probe_env(environ: MutableMapping[str, str], search_path: str) -> dict[str, str]:
-    """Build a non-interactive probe environment without proxy or desktop IPC."""
+    """Build a non-interactive probe environment from the fixed allowlist.
+
+    Network-reachability configuration (TLS trust, the session bus where a CLI
+    build needs it) passes through; proxy settings join only the ``whoami``
+    stage via :func:`_identity_probe_env`, because a proxy URL can embed
+    credentials and ``--version`` executes a candidate that has not yet
+    answered anything. Ambient credentials (cloud, Slack, SSH agent,
+    application secrets) never pass.
+    """
 
     result = _allowlisted_env(environ, _PROBE_ENV_KEYS)
     result["PATH"] = search_path
     result["NO_COLOR"] = "1"
     result["TERM"] = "dumb"
+    return result
+
+
+def _identity_probe_env(
+    environ: MutableMapping[str, str], probe_environment: dict[str, str]
+) -> dict[str, str]:
+    """Add Kiro CLI's own credential and proxy env to a probe environment.
+
+    Separate from :func:`_probe_env` so only the identity probe carries the
+    credential and the (possibly credentialed) proxy configuration; see
+    :data:`_IDENTITY_PROBE_ENV_KEYS` and :data:`_IDENTITY_PROXY_ENV_KEYS` for
+    why ``whoami`` needs them and why ``--version`` must not get them.
+    """
+
+    result = dict(probe_environment)
+    result.update(_allowlisted_env(environ, _IDENTITY_PROXY_ENV_KEYS))
+    result.update(_allowlisted_env(environ, _IDENTITY_PROBE_ENV_KEYS))
     return result
 
 
@@ -1640,7 +1739,9 @@ class KiroPrerequisiteService:
         supported way to re-probe on demand.
 
         ``coalesce=True`` additionally floors the probe at
-        :data:`_FORCED_PROBE_FLOOR_SECS`. It is for the MACHINE-driven force — the
+        :data:`_FORCED_PROBE_FLOOR_SECS`, and serves the latched answer without
+        waiting when a probe is already in flight. It is for the MACHINE-driven
+        force — the
         blocking gate's auto-poll, which every open tab runs independently — so N
         tabs collapse onto one probe per interval instead of multiplying the
         spawns. A human-driven force (Check again) passes ``coalesce=False`` and
@@ -1651,6 +1752,18 @@ class KiroPrerequisiteService:
         """
 
         if force and coalesce and self._clock() - self._last_probe_at < _FORCED_PROBE_FLOOR_SECS:
+            force = False
+        if force and coalesce and self._has_probed and self._probe_lock.locked():
+            # A probe is already in flight and a latched answer exists. The
+            # machine poll must not queue behind ``_probe_lock`` here: the
+            # identity probe can legitimately run for
+            # _IDENTITY_PROBE_TIMEOUT_SECS (an IdP token refresh), and every
+            # open tab polls every few seconds, so queueing would hang each
+            # poll for the probe's whole remaining duration — a frozen gate,
+            # exactly what the floor exists to prevent. Serving the latched
+            # answer keeps the pane live; the in-flight probe refreshes it for
+            # the next poll. A human Check again keeps queueing: it promised a
+            # fresh answer, and it runs its own probe after the winner.
             force = False
         if force:
             # ``force=not coalesce`` is what actually coalesces a BURST. The floor
@@ -2018,6 +2131,10 @@ class KiroPrerequisiteService:
         runs against the real home (like an ACP session) and detects CLIs whose
         session or tool registry lives there. ``isolate_home=True`` keeps the
         credential-minimal temporary home for callers that need it.
+
+        Either way the environment carries :data:`_IDENTITY_PROBE_ENV_KEYS`, so a
+        host authenticated by Kiro CLI's own API-key variable is detected as
+        signed in rather than reported "Not logged in".
         """
 
         action = "probe_identity"
@@ -2031,8 +2148,14 @@ class KiroPrerequisiteService:
             result = await self._run_auth_command(
                 executable,
                 ["whoami"],
-                base_env=self._probe_environment,
-                timeout_secs=_PROBE_TIMEOUT_SECS,
+                base_env=_identity_probe_env(self._environ, self._probe_environment),
+                # The identity budget, not the shared probe ceiling: ``whoami``
+                # may refresh an OIDC token against an organization IdP (see
+                # _IDENTITY_PROBE_TIMEOUT_SECS). By the time this runs, the same
+                # binary already answered ``--version`` inside the short budget,
+                # so the extra headroom is never spent on a missing or hung
+                # candidate.
+                timeout_secs=_IDENTITY_PROBE_TIMEOUT_SECS,
                 isolate_home=isolate_home,
             )
         except asyncio.CancelledError:

@@ -590,7 +590,7 @@ SKILL_TREE_MAX_ENTRIES = 500
 SKILL_FILE_MAX_BYTES = 1_048_576  # 1 MiB
 
 
-def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
+def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "") -> Path | None:
     """Return the absolute skill directory for *name*, or None.
 
     Accepts the same nested-name scheme used by the existing skill API:
@@ -599,6 +599,11 @@ def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
     - ``package/<skill>`` → resolved via _resolve_aim_skill_path() lookup
     - ``kiro-user/<skill>`` → ``~/.kiro/skills/<skill>``
     - ``kiro-workspace/<skill>`` → ``<project>/.kiro/skills/<skill>``
+
+    *session_key* scopes ``kiro-workspace/`` to the requesting chat slot's
+    project. Without it, resolution falls back to the single project shared by
+    every slot — and fails closed to ``None`` when open slots disagree, since
+    guessing could read the wrong checkout (#2457).
 
     The returned path is always under one of the allowed roots — paths
     that try to escape via ``..`` or symlinks are rejected.
@@ -610,9 +615,7 @@ def _resolve_skill_root(name: str, state: DashboardState) -> Path | None:
         root = Path.home() / ".kiro" / "skills"
     elif name.startswith("kiro-workspace/"):
         rel = name[len("kiro-workspace/") :]
-        # We cannot reliably resolve project dir here — gate this to
-        # paths under any active slot's project directory.
-        proj = active_project_dir(state)
+        proj = active_project_dir(state, session_key)
         if proj is None:
             return None
         root = proj / ".kiro" / "skills"
@@ -710,16 +713,19 @@ MAX_AGENT_SKILLS = 100
 _GLOB_CHARS = ("*", "?", "[")
 
 
-def _skill_key_roots(state: DashboardState) -> list[tuple[str, Path]]:
+def _skill_key_roots(state: DashboardState, session_key: str = "") -> list[tuple[str, Path]]:
     """``(key_prefix, root)`` pairs for every location skills are keyed from.
 
     Mirrors :func:`_resolve_skill_root`'s roots, in the same precedence order,
     so an enumerated key names the same directory that function would resolve.
     Roots that cannot exist in this deployment (no active project dir, no
-    edition roots) are omitted.
+    edition roots) are omitted. *session_key* scopes the ``kiro-workspace/``
+    root to the requesting chat slot's project, exactly as
+    :func:`_resolve_skill_root` does — the two MUST agree or an enumerated key
+    would not resolve (#2457).
     """
     out: list[tuple[str, Path]] = [("kiro-user/", Path.home() / ".kiro" / "skills")]
-    proj = active_project_dir(state)
+    proj = active_project_dir(state, session_key)
     if proj is not None:
         out.append(("kiro-workspace/", proj / ".kiro" / "skills"))
     out.append(("", skills_dir()))
@@ -793,7 +799,7 @@ def _collect_skills_under(
             _collect_skills_under(entry, root, root_resolved, prefix, out, depth - 1)
 
 
-def enumerate_skill_catalog(state: DashboardState) -> dict[str, Path]:
+def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dict[str, Path]:
     """Map every discoverable catalog key to its ``SKILL.md`` path.
 
     Built by **enumerating** the skill roots, never by joining a caller-supplied
@@ -805,12 +811,17 @@ def enumerate_skill_catalog(state: DashboardState) -> dict[str, Path]:
     validate-then-join — it also removes the tainted-path dataflow that
     validate-then-join leaves for static analysis to flag.
 
+    *session_key* only selects which project's ``kiro-workspace/`` root joins
+    the walk (see :func:`_skill_key_roots`); it never widens the enumeration
+    property above. Results are computed per call — nothing is cached — so a
+    per-session root cannot leak into another session's catalog.
+
     It is additionally the single source of truth for BOTH directions of the
     key <-> URI mapping, so they cannot disagree: a mapping written against a
     symlinked skill directory inverts back to the same key it was written from.
     """
     catalog: dict[str, Path] = {}
-    for prefix, root in _skill_key_roots(state):
+    for prefix, root in _skill_key_roots(state, session_key):
         if is_sensitive_path(str(root)) or not root.is_dir():
             continue
         try:
@@ -839,6 +850,7 @@ def skill_key_for_uri(
     agent_path: Path,
     state: DashboardState,
     catalog: dict[str, Path] | None = None,
+    session_key: str = "",
 ) -> str | None:
     """Invert a ``skill://`` resource URI back to a catalog key, or ``None``.
 
@@ -855,7 +867,7 @@ def skill_key_for_uri(
     expanded = expand_skill_uri(uri, agent_path)
     if not expanded:
         return None
-    entries = catalog if catalog is not None else enumerate_skill_catalog(state)
+    entries = catalog if catalog is not None else enumerate_skill_catalog(state, session_key)
     wanted = Path(expanded)
     for key, path in entries.items():
         if path == wanted:
@@ -876,7 +888,10 @@ def skill_key_for_uri(
 
 
 def skill_uri_for_key(
-    key: str, state: DashboardState, catalog: dict[str, Path] | None = None
+    key: str,
+    state: DashboardState,
+    catalog: dict[str, Path] | None = None,
+    session_key: str = "",
 ) -> str | None:
     """Resolve a catalog key to the ``skill://`` URI for its ``SKILL.md``.
 
@@ -887,7 +902,7 @@ def skill_uri_for_key(
 
     Pass *catalog* to reuse one walk across many keys.
     """
-    entries = catalog if catalog is not None else enumerate_skill_catalog(state)
+    entries = catalog if catalog is not None else enumerate_skill_catalog(state, session_key)
     skill_md = entries.get(key)
     if skill_md is None:
         return None
@@ -895,7 +910,7 @@ def skill_uri_for_key(
 
 
 def agent_skill_views(
-    data: dict[str, Any], agent_path: Path, state: DashboardState
+    data: dict[str, Any], agent_path: Path, state: DashboardState, session_key: str = ""
 ) -> tuple[list[str], list[str]]:
     """``(catalog_keys, unmanaged_uris)`` for *data*, from ONE catalog walk.
 
@@ -907,7 +922,7 @@ def agent_skill_views(
     Filesystem-heavy (it enumerates the skill roots) — callers on the asyncio
     event loop MUST run this off the loop.
     """
-    catalog = enumerate_skill_catalog(state)
+    catalog = enumerate_skill_catalog(state, session_key)
     keys: list[str] = []
     unmanaged: list[str] = []
     seen: set[str] = set()
@@ -922,7 +937,7 @@ def agent_skill_views(
 
 
 def agent_skill_keys(
-    data: dict[str, Any], agent_path: Path, state: DashboardState
+    data: dict[str, Any], agent_path: Path, state: DashboardState, session_key: str = ""
 ) -> list[str]:
     """Catalog keys for the skills *data* maps, de-duplicated, order-preserving.
 
@@ -930,11 +945,11 @@ def agent_skill_keys(
     Templates editor owns and can rewrite. Wildcard / hand-authored URIs are
     excluded here and reported separately by :func:`agent_unmanaged_skill_uris`.
     """
-    return agent_skill_views(data, agent_path, state)[0]
+    return agent_skill_views(data, agent_path, state, session_key)[0]
 
 
 def agent_unmanaged_skill_uris(
-    data: dict[str, Any], agent_path: Path, state: DashboardState
+    data: dict[str, Any], agent_path: Path, state: DashboardState, session_key: str = ""
 ) -> list[str]:
     """``skill://`` URIs that the catalog editor cannot express, in order.
 
@@ -942,7 +957,7 @@ def agent_unmanaged_skill_uris(
     the UI and preserved on every write so editing an agent through the dashboard
     never silently drops a hand-authored mapping.
     """
-    return agent_skill_views(data, agent_path, state)[1]
+    return agent_skill_views(data, agent_path, state, session_key)[1]
 
 
 def apply_skill_mapping(
@@ -950,6 +965,7 @@ def apply_skill_mapping(
     agent_path: Path,
     state: DashboardState,
     keys: list[str],
+    session_key: str = "",
 ) -> tuple[list[str], list[str]]:
     """Rewrite *data*'s ``skill://`` resources to *keys*, in place.
 
@@ -971,7 +987,7 @@ def apply_skill_mapping(
     # One enumeration for the whole write: every key resolved and every existing
     # URI inverted against the SAME snapshot, so a concurrent skill add/remove
     # cannot make the two halves disagree mid-request.
-    catalog = enumerate_skill_catalog(state)
+    catalog = enumerate_skill_catalog(state, session_key)
     for key in keys:
         if key in seen:
             continue

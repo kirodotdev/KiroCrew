@@ -536,6 +536,34 @@
           "step_why_it_matters": "Why it matters",
           "finding_dimension_in_file": "{{dimension}} in {{file}}"
         },
+        "reviewChat": {
+          "closed_notice": "This conversation has ended and the reviewer is no longer loaded, so it cannot answer anything new. The questions above are kept.",
+          "empty_hint": "This reviewer still has the reasoning behind its findings. Ask why one was raised, or what it checked.",
+          "end_chat": "End conversation",
+          "error_busy": "It is still answering the previous question.",
+          "error_empty": "Type a question first.",
+          "error_expired": "The reviewer is no longer loaded, so it cannot answer. Review this pull request again to ask more.",
+          "error_generic": "The question could not be answered. Try again.",
+          "error_needs_override": "Turn on YOLO to continue this conversation — answering may require running a tool.",
+          "error_override_expiring": "Tool authorization runs out before an answer would finish. Extend it, then ask again.",
+          "error_override_lapsed": "Tool authorization ended while the reviewer was answering, so the answer was stopped. Re-authorize, then ask again.",
+          "error_persist_failed": "The answer could not be saved, so it is not part of this conversation. Ask again.",
+          "error_tool_denied": "The reviewer tried to use a tool your security policy blocks, so the answer was stopped. Nothing ran.",
+          "error_transcript_unsafe": "This conversation cannot be saved safely, so it was not written. Check the review's folder.",
+          "error_run_deleted": "This review was deleted, so the conversation has ended.",
+          "error_too_long": "That question is too long. Shorten it and send again.",
+          "needs_override_notice": "The reviewer is still loaded, but it cannot answer while tool approval is unavailable — it may need to read code to answer, and that cannot be authorised right now. Turn on YOLO to continue this conversation.",
+          "placeholder": "Ask why a finding was raised…",
+          "ran_tools": "Looked at: {{tools}}",
+          "reasoning": "Reasoning",
+          "refused_notice": "It needed to run a tool to answer fully and was not allowed, so this answer is limited. Turn on YOLO to let it.",
+          "role_reviewer": "Reviewer",
+          "role_you": "You",
+          "send": "Send",
+          "sending": "Asking…",
+          "title": "Ask the reviewer",
+          "unsent_label": "Not sent"
+        },
         "runCard": {
           "cancel": "Cancel",
           "clean": "Clean",
@@ -2771,6 +2799,86 @@
         "word_count_other": "{{count}} words"
       }
     },
+    "personalShopper": {
+      "manifest": {
+        "description": "A personal advisor that remembers your preferences, browses real stores as you, and helps solve problems that may or may not end in a purchase. It never buys anything — you do.",
+        "display_name": "Personal Shopper",
+        "highlight_1": "Diagnoses the problem before recommending anything — sometimes the answer is not a purchase at all",
+        "highlight_2": "Remembers your sizes, brands, style, budget and restrictions across every session",
+        "highlight_3": "Browses the stores you configure with your own login, so prices and availability are real",
+        "highlight_4": "You watch the research happen in the Browser panel, and it never touches a cart or checkout",
+        "highlight_5": "Organize what it knows about you into your own groups, without affecting how it recalls them",
+        "page_label": "Personal Shopper"
+      },
+      "historyTab": {
+        "liked": "Liked",
+        "loading_history": "Loading history...",
+        "no_history_yet": "No history yet",
+        "no_products_recommended_advice_was_the_solution": "No products recommended — advice was the solution",
+        "no_sessions_matching": "No sessions matching \"{{query}}\"",
+        "purchased": "Purchased",
+        "search_past_sessions": "Search past sessions...",
+        "skipped": "Skipped",
+        "your_past_advisor_conversations_and_recommendati": "Your past advisor conversations and recommendations will appear here.",
+        "mark_liked": "Mark as liked",
+        "mark_purchased": "Mark as purchased",
+        "mark_skipped": "Mark as skipped",
+        "change_feedback": "Change feedback"
+      },
+      "personalShopperPage": {
+        "personal_shopper": "Personal Shopper",
+        "say_something_like_help_me_find_running_shoes_or": "Say something like \"help me find running shoes\" or \"my daughter's birthday is coming up\"",
+        "start_a_conversation_with_your_personal_advisor": "Start a conversation with your personal advisor in any chat session.",
+        "your_life_problem_advisor_solves_first_shops_sec": "Your life-problem advisor — solves first, shops second",
+        "tab_chat": "Chat",
+        "tab_preferences": "Preferences",
+        "tab_history": "History",
+        "tab_sites": "Sites"
+      },
+      "preferencesTab": {
+        "add": "Add",
+        "add_a_preference_e_g_shoe_size_us_10": "Add a preference (e.g. \"shoe size US 10\")",
+        "add_group": "Add group",
+        "cancel": "Cancel",
+        "create": "Create",
+        "delete": "Delete",
+        "delete_group_keeps_preferences": "Delete group (keeps preferences)",
+        "edit": "Edit",
+        "group_name": "Group name",
+        "loading_preferences": "Loading preferences...",
+        "no_items_in_this_group": "No items in this group",
+        "no_preferences_yet": "No preferences yet",
+        "save": "Save",
+        "ungrouped": "Ungrouped",
+        "assign_to_group": "Assign to group",
+        "no_group": "No group",
+        "delete_named_group": "Delete group {{name}}",
+        "edit_named_preference": "Edit preference “{{text}}”",
+        "delete_named_preference": "Delete preference “{{text}}”",
+        "add_your_first_preference": "Add one above, or import them later."
+      },
+      "sitesTab": {
+        "add_shopping_site": "Add shopping site",
+        "add_site": "Add site",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "Add your shopping sites so the advisor can browse them for you.",
+        "cancel": "Cancel",
+        "how_login_works": "How login works",
+        "loading_sites": "Loading sites...",
+        "no_sites_configured": "No sites configured",
+        "privacy": "Privacy",
+        "remove_site": "Remove site",
+        "shopping_sources_the_advisor_can_browse_login_en": "Shopping sources the advisor can browse. Login enables member prices and personalized results.",
+        "site_name_e_g_example_store": "Site name (e.g. Example Store)",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "The advisor only visits sites you've enabled here. Disabled sites are never browsed, even if they might have relevant results.",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "The advisor opens sites in the Browser panel during a shopping conversation. You log in once when prompted — the session cookie persists locally for future searches. Your credentials are never stored by the app.",
+        "url_e_g_store_example_com": "URL (e.g. store.example.com)",
+        "logged_in": "Logged in",
+        "not_logged_in": "Not logged in",
+        "toggle_site": "Enable {{name}}",
+        "remove_named_site": "Remove {{name}}",
+        "save_failed": "Could not save. Error code: {{code}}"
+      }
+    },
     "pptxMaker": {
       "boardFrame": {
         "loading": "Loading the preview…",
@@ -3308,9 +3416,9 @@
       "close": "Close",
       "cycle": "· cycle",
       "describe_what_you_want_the_agent_to_accomplish": "Describe what you want the agent to accomplish…",
-      "give_the_agent_a_goal_and_it_will_keep_working_t": "Give the agent a goal and it will keep working toward it autonomously — nudging itself when idle until the goal is met or the cycle limit is reached.",
+      "give_the_agent_a_goal_and_it_will_keep_working_t": "Give the agent a goal and it will keep working toward it autonomously — nudging itself between turns at the interval below until the goal is met or the cycle limit is reached.",
       "goal_description": "Goal description",
-      "idle_seconds_before_nudge": "Idle seconds before nudge",
+      "seconds_between_nudges": "Seconds between nudges",
       "last_fire": "Last fire:",
       "max_cycles_0": "Max cycles (0 = ∞)",
       "max_cycles_0_infinite": "Max cycles (0 = infinite)",
@@ -3563,6 +3671,8 @@
       "type_2_chars_to_search_files": "Type 2+ chars to search files and folders…"
     },
     "fileRenderers": {
+      "download": "Download",
+      "download_file": "Download {{filename}}",
       "empty_file": "Empty file",
       "html_preview": "HTML Preview",
       "invalid_json": "Invalid JSON:",
@@ -3570,6 +3680,7 @@
       "lines": "lines",
       "more": "more",
       "null": "null",
+      "office_download_hint": "Office documents can't be previewed inline. Download to open in Word, Excel, PowerPoint, or a compatible viewer.",
       "open_in_new_tab": "Open in new tab",
       "pdf_preview": "PDF Preview",
       "rows": "rows",
@@ -3816,13 +3927,13 @@
       "no_matches": "No matches"
     },
     "modelEffortDropdown": {
-      "default_for_agent": "Default for {{agent}}",
+      "default_for_agent": "Default model for <agent/>",
       "filter_models": "Filter models",
       "model_list": "Model list",
       "models": "Models",
-      "pin_model_unavailable": "{{model}} isn't offered right now",
+      "pin_model_unavailable": "<model/> isn't offered right now",
       "reasoning": "Reasoning",
-      "set_default_for_agent": "Set {{model}} as default for {{agent}}",
+      "set_default_for_agent": "Set <model/> as default model for <agent/>",
       "set_default_for_new_sessions": "Global fallback for new sessions…",
       "type_to_filter": "Type to filter…"
     },
@@ -4333,9 +4444,8 @@
       "live_browser_session": "Live browser session",
       "load_preview": "Load preview",
       "localhost_5173": "localhost:5173",
-      "open": "Open",
       "open_in_browser": "Open in browser",
-      "page_mixed_content_open_it_in_a_new_tab_instead": "page (mixed content). Open it in a new tab instead.",
+      "page_mixed_content": "page (mixed content).",
       "preview_a_local_web_server": "Preview a local web server",
       "preview_ready": "Preview ready",
       "preview_server_not_reachable": "Preview server not reachable",
@@ -5094,7 +5204,6 @@
         "ask_a_side_question": "Ask a side question",
         "ask_a_side_question_main_agent_keeps_working": "Ask a side question — main agent keeps working",
         "context_from": "Context from",
-        "copy": "Copy",
         "refresh_context": "Refresh context",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
@@ -5317,7 +5426,6 @@
       "no_sessions_match": "No sessions match",
       "older_sessions": "Older sessions",
       "older_sessions_2": "Older Sessions",
-      "open_split_view": "Open Split View",
       "pick_a_model_for_every_session_switching_a_sessi": "Pick a model for every session. Switching a session",
       "pinned": "Pinned",
       "pinned_sessions_are_kept": "Pinned sessions are kept.",
@@ -5345,8 +5453,6 @@
       "sort_and_filter_sessions": "Sort and filter sessions",
       "sort_by": "Sort by",
       "sort_filter_sessions": "Sort & filter sessions",
-      "split_view": "Split View",
-      "split_view_multi_pane_session_grid_d": "Split View — multi-pane session grid (⌘D)",
       "switch_all_sessions": "Switch All Sessions",
       "switch_all_to_model": "Switch all to model…",
       "temporary_no_memory_reads_or_writes": "Temporary — no memory reads or writes",
@@ -6397,8 +6503,12 @@
       "no_archives_with_compaction_hint": "No archives. Archives are created when session files are rotated (>2MB) or compacted. Auto-compaction is controlled by <settingRef/>."
     },
     "sessionStorage": {
+      "age_option_one": "Older than {{days}} days — {{count}} session · {{size}}",
+      "age_option_other": "Older than {{days}} days — {{count}} sessions · {{size}}",
       "back_to_disk": "System · Performance › Disk",
       "background_group": "Background agents ({{count}})",
+      "background_truncated": "Showing the {{listed}} largest of {{total}}.",
+      "background_truncated_sweep": "Showing the {{listed}} largest of {{total}}. Reclaim the rest by age above.",
       "bulk_selected": "{{count}} selected",
       "cancel": "Cancel",
       "cannot_delete_resumable": "This session can still be resumed, so it is kept. Reclaiming it is not offered yet.",
@@ -6414,6 +6524,8 @@
       "in_use": "In use",
       "move_to_trash_bulk": "Move to Trash",
       "move_to_trash_single": "Move to Trash",
+      "preview_sweep": "Preview sweep",
+      "reclaim_by_age": "Reclaim by age",
       "refused_heading": "{{count}} sessions could not be moved",
       "refused_in_use": "session is in use",
       "refused_resumable": "still resumable",
@@ -6426,6 +6538,10 @@
       "sort_name": "Name",
       "sort_oldest": "Oldest first",
       "subheading": "{{sessions}} sessions · {{total}} on disk · {{reclaimable}} can be reclaimed",
+      "sweep_failed": "That sweep could not be run. Nothing was moved.",
+      "sweep_preview_one": "Would move {{count}} session · {{size}}",
+      "sweep_preview_other": "Would move {{count}} sessions · {{size}}",
+      "sweep_remaining": "· {{remaining}} more to go",
       "trash": "Trash",
       "trash_batch_label": "{{sessions}} sessions · {{size}}",
       "trash_batch_reason": "Moved by {{reason}}",
@@ -6529,7 +6645,11 @@
         "required": "Required",
         "settings_are_managed_on_the_machine_running_kiro": "settings are managed on the machine running Kiro Crew and are read-only from remote sessions.",
         "setup_guide": "Setup guide",
-        "soft_context_threshold": "Soft context threshold %"
+        "soft_context_threshold": "Soft context threshold %",
+        "file_sessions_in_folder": "File sessions in a folder",
+        "file_sessions_in_folder_desc": "New {{channel}} sessions go into a sidebar folder instead of staying unfiled.",
+        "session_folder_name": "Folder name",
+        "session_folder_name_desc": "Created for you when you save these settings, if it does not exist yet."
       },
       "browserPanel": {
         "attach_to_my_browser": "Attach to my browser",
@@ -6662,7 +6782,7 @@
         "time_window_for_session_restoration": "Time window for session restoration",
         "ultra_concise_3_sentences": "Ultra-concise — answer first, minimal prose",
         "when_enabled_inline_tool_pills_show_simplified_t": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run",
-        "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Crews, or pick one inside a session to override it there.",
+        "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",
         "widget_density": "Widget Density",
         "your_role": "Your Role"
@@ -7245,6 +7365,15 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Inbound webhooks",
+        "endpoint_status": "Endpoint",
+        "lets_an_outside_system_start_one_agent_turn": "Lets an outside system — a CI job, a review bot, a deploy script — start one agent turn by POSTing a message with an access token.",
+        "manage_webhooks": "Manage webhooks",
+        "tokens_count_one": "{{count}} access token",
+        "tokens_count_other": "{{count}} access tokens",
+        "could_not_read_webhook_status": "Could not read webhook status — check that the gateway is running"
       }
     },
     "settingsPage": {
@@ -7607,5 +7736,13 @@
       "slot_other": "{{count}} slots"
     },
     "sessionMemoryCard": {}
+  },
+  "settings": {
+    "tabs": {
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Let an outside system start one agent turn"
+      }
+    }
   }
 }

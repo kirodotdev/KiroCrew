@@ -54,6 +54,7 @@ from kiro_crew import frontend, hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.instances import run_marker
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
     create_subprocess_limited,
@@ -722,6 +723,43 @@ _SANDBOX_ERR_MAX = 900
 # an arbitrarily long stderr from a broken repo.
 _GIT_ERR_MAX = 300
 
+# Identity for the "no trusted executable" failure, so callers can branch on
+# the CLASS of failure instead of re-matching prose: `_run_cmd` puts this
+# prefix on the stderr it synthesizes when `_trusted_bin` resolves nothing,
+# and error paths that want to name the remedy (set the per-tool override in
+# the service environment) test `startswith` on it. Deliberately a constant,
+# not an exception type: `_run_cmd` reports every failure through its
+# (rc, stdout, stderr) tuple and callers already handle it that way.
+_UNRESOLVED_TOOL_PREFIX = "no trusted executable for "
+
+
+def _bin_override_var(name: str) -> str:
+    """Env var that overrides trusted-bin resolution for *name*.
+
+    Single source of truth shared by `_trusted_bin` (which reads it) and the
+    user-facing remedy messages (which name it) — deriving it twice is how the
+    advertised remedy drifts from the one that works.
+    """
+    return f"KIROCREW_DEVFLEET_BIN_{name.upper().replace('-', '_')}"
+
+
+def _unresolved_tool_message(name: str) -> str:
+    """User-facing message for an unresolved trusted tool.
+
+    Blames the HOST toolchain, not the checkout (issue #2530: the previous
+    wording folded this failure into "git worktree discovery failed in
+    <repo>", sending users to debug a healthy repository), and names the
+    operator remedy in the same voice as the missing-checkout branch. The
+    trusted-PATH detail stays in the log line, not here: it is unactionable
+    noise in a UI banner.
+    """
+    return (
+        f"no trusted {name!r} executable found on this host — the checkout "
+        f"itself is not the problem. Set {_bin_override_var(name)} to an "
+        f"absolute path in the gateway's service environment (it needs a "
+        "restart to be seen)."
+    )
+
 
 def _trusted_bin(name: str) -> str | None:
     """Resolve *name* to a canonical executable in a system or Homebrew bin dir.
@@ -739,7 +777,7 @@ def _trusted_bin(name: str) -> str | None:
     # system dirs (e.g. gh in ~/.local/bin): an explicit absolute path set
     # in the SERVICE environment (operator-owned unit file), never derived
     # from the inherited PATH.
-    override = os.environ.get(f"KIROCREW_DEVFLEET_BIN_{name.upper().replace('-', '_')}")
+    override = os.environ.get(_bin_override_var(name))
     if override and Path(override).is_absolute() and Path(override).is_file() \
             and os.access(override, os.X_OK):
         _TRUSTED_BIN_CACHE[name] = override
@@ -830,7 +868,9 @@ async def _run_cmd(
     if cmd and "/" not in cmd[0]:
         trusted = _trusted_bin(cmd[0])
         if trusted is None:
-            return -1, "", f"no trusted executable for {cmd[0]!r} in {_TRUSTED_PATH}"
+            return -1, "", (
+                f"{_UNRESOLVED_TOOL_PREFIX}{cmd[0]!r} in {_TRUSTED_PATH}"
+            )
         cmd = [trusted, *cmd[1:]]
     base_env["PATH"] = _TRUSTED_PATH
     base_env.update(_GIT_ENV_NEUTRALIZERS)
@@ -1509,6 +1549,15 @@ async def _discover_worktrees() -> list[dict]:
             # swallow the fix. Keep a generous bound purely to stop an unbounded
             # stderr reaching the UI.
             raise RuntimeError(raw[:_SANDBOX_ERR_MAX])  # already prefixed by _run_cmd
+        if raw.startswith(_UNRESOLVED_TOOL_PREFIX):
+            # git never ran: the HOST has no git the resolver is willing to
+            # execute. Checked before the .git probe because the probe's
+            # outcome is irrelevant here — wrapping this in "worktree
+            # discovery failed in <repo>" (the old behavior) sent users to
+            # debug a healthy checkout (#2530). The trusted-PATH detail is
+            # operator-diagnostic, so it goes to the log, not the banner.
+            logger.warning("dev-fleet: %s", raw)
+            raise RuntimeError(_unresolved_tool_message("git"))
         # Every other git failure was previously swallowed into a silent [] —
         # which the UI renders as the "No worktrees found / Nothing under the
         # worktrees root yet" empty state. When MAIN_REPO is wrong that empty
@@ -2970,9 +3019,17 @@ async def _sync_start_locked() -> dict:
         ),
     )
     if git_bin is None:
-        return {"ok": False, "error": (
-            f"no trusted executable for 'git' in {_TRUSTED_PATH}"
-        )}
+        # Same failure class as the discovery path: name the remedy in the
+        # response; the log records the event. The searched dirs are the
+        # static _TRUSTED_BIN_DIRS constant (and the discovery-path warning
+        # already prints them when it fires) — repeating them here trips
+        # CodeQL's name-based secret heuristic on _TRUSTED_PATH for no
+        # diagnostic gain.
+        logger.warning(
+            "dev-fleet: %s'git' — no trusted-dir candidate passed vetting "
+            "and no override is set", _UNRESOLVED_TOOL_PREFIX
+        )
+        return {"ok": False, "error": _unresolved_tool_message("git")}
     if npm_bin is None:
         # Drop the memoized resolution so the remedy this message advertises
         # actually works. `node_bin_dirs()` is lru_cached and `_BUILD_PATH_CACHE`
@@ -3966,6 +4023,29 @@ def _gateway_backend() -> "gateway_service.GatewayServiceBackend | None":
     )
 
 
+def _foreground_backend() -> "gateway_service.ForegroundBackend | None":
+    """The last-resort foreground restart backend, or ``None`` off-POSIX.
+
+    Constructed per call for the same reason as :func:`_gateway_backend`, and
+    ``sys.platform`` is read through this module's globals so the tests that
+    patch ``server.sys`` keep controlling it. POSIX-only: the detach mechanism
+    is a new session standing in for ``systemd-run --collect``, and the hosts
+    this exists for (no drivable systemd/launchd) are Linux and macOS; Windows
+    keeps the manual-restart advisory. Whether a restart can actually be
+    attempted is the backend's ``status()``, not this constructor — callers
+    must gate on both :data:`gateway_service.FOREGROUND_ELIGIBLE` and
+    ``status() == ok``.
+    """
+    if sys.platform not in ("linux", "darwin"):
+        return None
+    return gateway_service.ForegroundBackend(
+        marker_ports=run_marker.marker_ports,
+        read_pid=run_marker.read_pid,
+        read_launcher=run_marker.read_launcher,
+        pid_exists=platform_compat.pid_exists,
+    )
+
+
 async def _gateway_service_reason() -> str | None:
     """Human-readable reason the gateway service cannot be driven, or ``None``.
 
@@ -4030,7 +4110,26 @@ async def _gateway_start_id() -> str | None:
     ``_restart_gateway`` / ``_make_live`` actually bounce (pod or live).
     """
     svc = _gateway_backend()
-    return None if svc is None else await svc.start_id()
+    sid = None if svc is None else await svc.start_id()
+    if sid is not None:
+        return sid
+    # Foreground fallback: on a host where no manager can be driven the
+    # handshake still needs an identity that changes when the replacement
+    # starts, or a foreground cutover could never be observed to complete. The
+    # run-marker pid stands in (see ForegroundBackend). Gated on the same
+    # eligibility codes as the foreground restart itself so that a host with a
+    # mis-set-up manager (which this app refuses to bounce) does not start
+    # advertising an identity for a restart path that will never run.
+    if _foreground_eligible(await _live_user_unit_status()):
+        fg = _foreground_backend()
+        if fg is not None:
+            return await fg.start_id()
+    return None
+
+
+def _foreground_eligible(status: str) -> bool:
+    """True when *status* permits the foreground last resort."""
+    return status in gateway_service.FOREGROUND_ELIGIBLE
 
 
 async def _restart_gateway() -> dict:
@@ -4335,25 +4434,32 @@ def _manual_restart_command() -> str:
 
 
 def _make_live_plan(worktree: Path, kcbin: Path, *,
-                    svc: "gateway_service.GatewayServiceBackend | None") -> dict:
+                    svc: "gateway_service.GatewayServiceBackend | None",
+                    foreground: "gateway_service.ForegroundBackend | None" = None,
+                    ) -> dict:
     """Describe — without mutating anything — what making *worktree* live does.
 
     Validates the target the same way the real cutover does, so a dry run
     reports an unusable worktree instead of promising a cutover that would then
     be refused. When the service is drivable the backend's own plan is folded in,
-    because the cutover restages that definition too.
+    because the cutover restages that definition too. *foreground* is the
+    last-resort restart that will be ATTEMPTED when no manager is drivable
+    (see ``_make_live``): a dry run must report that restart as automatic, or
+    the preview would promise a manual step the real call then performs itself.
     """
     live_target.validate(str(worktree))
     plan: dict = {
         "mechanism": "live-target pointer",
         "pointer_path": str(live_target.pointer_path()),
         "exec": str(kcbin),
-        "restart": "automatic" if svc is not None else "manual",
+        "restart": "automatic" if (svc is not None or foreground is not None) else "manual",
     }
-    if svc is None:
-        plan["manual_restart"] = _manual_restart_command()
-    else:
+    if svc is not None:
         plan.update(svc.plan(worktree, kcbin))
+    elif foreground is not None:
+        plan.update(foreground.plan(worktree, kcbin))
+    else:
+        plan["manual_restart"] = _manual_restart_command()
     return plan
 
 
@@ -4418,6 +4524,17 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
     svc = _gateway_backend()
     unit_status = await _live_user_unit_status()
     can_restart = svc is not None and unit_status == "ok"
+    # LAST RESORT (strictly systemd > launchd > foreground): when no manager is
+    # drivable at all, a detached `kirocrew restart` can still finish the
+    # cutover (see gateway_service.ForegroundBackend). Probed ONCE per request,
+    # mirroring can_restart, so the plan and the act cannot disagree. Only the
+    # FOREGROUND_ELIGIBLE codes qualify — a mis-set-up manager keeps its named
+    # remedy instead of being bounced behind its back.
+    foreground: "gateway_service.ForegroundBackend | None" = None
+    if not can_restart and _foreground_eligible(unit_status):
+        fg = _foreground_backend()
+        if fg is not None and await fg.status() == gateway_service.STATUS_OK:
+            foreground = fg
 
     live = await _live_worktree_path()
     same_as_running = live is not None and _same_path(str(real), live)
@@ -4579,7 +4696,8 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
         )}
 
     try:
-        plan = _make_live_plan(real, kcbin, svc=svc if can_restart else None)
+        plan = _make_live_plan(real, kcbin, svc=svc if can_restart else None,
+                               foreground=foreground)
     except live_target.InvalidTarget as exc:
         return {"ok": False, "code": "unsafe_path", "error": (
             "refusing make-live: the worktree path cannot be used as a live "
@@ -4690,15 +4808,42 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
                     "rolled_back": await _unwind(),
                     "error": _redact(str(exc))}
 
-        # Nothing bounces the gateway on this host, so the cutover is STAGED and
-        # the operator finishes it. Reported as a success with the exact command,
-        # not a failure: the pointer is written and correct, and the next start
-        # of the gateway — however it happens — comes up on the new target.
-        # Deliberately NOT latched as committed: no restart is pending, so a
-        # subsequent cutover to a different worktree must stay allowed.
+        # Nothing MANAGED bounces the gateway on this host. When the foreground
+        # last resort is usable it finishes the cutover below; otherwise the
+        # cutover is STAGED and the operator finishes it — reported as a success
+        # with the exact command, not a failure: the pointer is written and
+        # correct, and the next start of the gateway — however it happens —
+        # comes up on the new target. The staged-only outcome is deliberately
+        # NOT latched as committed: no restart is pending, so a subsequent
+        # cutover to a different worktree must stay allowed.
         if not can_restart:
             _LIVE_WORKTREE = None
             _LIVE_CHECK_AT = 0.0
+            if foreground is not None:
+                # Capture identity BEFORE establishing the restart, mirroring
+                # the drivable path: the detached bounce can tear this process
+                # down at any moment after the spawn.
+                start_id = await foreground.start_id()
+                restarted, fg_err = await foreground.restart_detached()
+                if restarted:
+                    # A restart IS pending now — latch exactly as the drivable
+                    # path does, so no further cutover mutates the pointer
+                    # while the detached `kirocrew restart` is acting on it.
+                    _MAKE_LIVE_COMMITTED = True
+                    return {"ok": True, "cutover": True, "target": str(real),
+                            "plan": plan, "start_id": start_id}
+                # FAIL SAFE: the spawn was never established, so nothing has
+                # been signalled and the gateway is untouched. The pointer
+                # stays staged (it is written and correct) and the operator
+                # gets the exact status-quo advisory. Rolling the pointer back
+                # here would be strictly worse: it would turn "finish with one
+                # command" into "start over".
+                logger.warning(
+                    "foreground restart could not be established (%s); "
+                    "falling back to the manual-restart advisory", fg_err,
+                )
+                plan = {**plan, "restart": "manual",
+                        "manual_restart": _manual_restart_command()}
             return {"ok": True, "cutover": True, "staged_only": True,
                     "target": str(real), "plan": plan,
                     "manual_restart": _manual_restart_command(),

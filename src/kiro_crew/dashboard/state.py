@@ -18,13 +18,13 @@ import uuid
 from collections.abc import Coroutine, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 from aiohttp import web
 
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
+from kiro_crew.config.loader import DASHBOARD_PORT, _raw_config, config_dir
 from kiro_crew.constants import (
     OPTIONS_RE_LINE,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
@@ -71,6 +71,9 @@ if TYPE_CHECKING:
     from kiro_crew.slack.outbound import PostedOptions  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+#: Return type of a mutate_folders callback.
+_T = TypeVar("_T")
 
 _CHANNEL_ID_PREFIX_RE = re.compile(r"^([a-z][a-z0-9_-]*):(.*)$", re.IGNORECASE)
 _CHANNEL_LABELS = {
@@ -846,6 +849,7 @@ class _ChatSlot:
         "_queue",
         "_approval_futures",
         "_trust",
+        "_trust_scope",
         "_trust_reads",
         "_trusted_patterns",
         "_titled",
@@ -856,6 +860,7 @@ class _ChatSlot:
         "_title_in_flight",
         "_title_retry_pending",
         "_artifact",
+        "_channel_folder_filed",
         "_resumed_count",
         "_todo",
         "_on_message",
@@ -866,6 +871,7 @@ class _ChatSlot:
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
         "_eager_spawn_task",
+        "_prefetch_ttl_task",
         "_dirty_flag",
         "_dirty_gen",
         "_orch_tracker",
@@ -911,6 +917,7 @@ class _ChatSlot:
         "_ephemeral",
         "_pending_context",
         "_app",
+        "_human_seen",
         "_pending_variants",
         "_lock",
         "forked_from",
@@ -970,6 +977,13 @@ class _ChatSlot:
         self._queue: list[dict[str, str]] = []  # [{"id": uuid, "content": str}, ...]
         self._approval_futures: dict[str, asyncio.Future[str]] = {}  # type: ignore[type-arg]
         self._trust: bool = False  # auto-approve tools for this slot
+        # SafetyOverride scope key holding an EXPIRING, SEL-audited auto-approve
+        # grant, for an unattended app worker with no human present to click
+        # "trust this session". Empty on an ordinary session, and empty is what
+        # makes the approval path ignore it entirely. Never a substitute for
+        # ``_trust``: this names where the live decision is held, it is not itself
+        # the decision — ``safety_override().is_scope_active()`` is.
+        self._trust_scope: str = ""
         self._trust_reads: bool = False  # auto-approve read-only bash commands
         self._trusted_patterns: set[str] = set()  # session-scoped fnmatch globs
         self._titled: bool = False  # True once a title has been assigned
@@ -1007,6 +1021,15 @@ class _ChatSlot:
         # active binding from the slots snapshot, and the binding must survive
         # gateway restarts.
         self._artifact: str = ""
+        # True once per-channel default filing has been APPLIED to this
+        # conversation (see kiro_crew.dashboard.channel_folders). Persisted,
+        # because it is the only durable record that the automatic placement
+        # already happened: `folder_id` is omitted from the metadata line when
+        # empty, so a conversation the user drags out to the top level is
+        # otherwise indistinguishable from one that was never filed, and the
+        # next reconcile pass after a restart would file it right back in.
+        # Default filing is a first-surface action, not a recurring one.
+        self._channel_folder_filed: bool = False
         self._resumed_count: int = 0  # messages loaded from history on resume
         # Agent-authored TODO list, replaced wholesale from each todo_list tool
         # result (every command echoes the full list, so there is nothing to
@@ -1045,6 +1068,9 @@ class _ChatSlot:
         # At most one per slot: scheduling a new one cancels the previous, so
         # rapid signals (create + project set) collapse into a single spawn.
         self._eager_spawn_task: asyncio.Task[None] | None = None
+        # Unclaimed-prefetch teardown timer (resume prefetch). At most one per
+        # slot: a newer resumed prefetch cancels the previous timer.
+        self._prefetch_ttl_task: asyncio.Task[None] | None = None
         self._dirty_flag: bool = False  # True when messages changed since last flush
         # Bumped by the _dirty setter on every True. Lets the periodic flush tell
         # "the True I started this save under" from "a NEW True set during it".
@@ -1168,6 +1194,25 @@ class _ChatSlot:
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
         self._app: str = ""  # App identity tag (App Kit §5.2)
+        # FIX 1 (unattended approval park). Evidence that a HUMAN has driven
+        # this slot through a dashboard-user route (typed a message, answered an
+        # approval). Only ever set by a caller with an empty ``request_app``, so
+        # an app cannot forge it. It is the escape hatch on ``unattended``: an
+        # app-owned tab a person is actually working in gets the full 2h
+        # approval window back from their first interaction onward.
+        #
+        # PERSISTED (``human_seen`` in the session metadata, restored by both
+        # slot-restore paths) and monotonic — it only ever goes False → True, so
+        # it needs no clearing rule and the ``auto_tagged`` once-flag beside it
+        # is the shape to copy. Persistence is load-bearing rather than tidy: a
+        # gateway restart is not evidence that the person left. It happens on
+        # every upgrade and every crash, the browser tab reconnects to the same
+        # slot, and without the flag on disk that tab's approval window silently
+        # collapses from 2h to the 180s deny-fast — a behaviour change for EVERY
+        # app-owned session, not just for worker fleets. The fast deny still
+        # covers every app-owned slot no human has ever touched, which is what
+        # a crew, a cron worker and an app-spawned session all are.
+        self._human_seen: bool = False
         # Regenerate feature: variants pending attachment to next finalized assistant message
         self._pending_variants: list[dict] = []
         self._lock = asyncio.Lock()
@@ -1629,6 +1674,36 @@ class _ChatSlot:
     def blocks_reads(self) -> bool:
         """True when memory-context injection into this session is blocked."""
         return self.memory_mode == "temporary"
+
+    @property
+    def unattended(self) -> bool:
+        """True when no human is driving this session's turns.
+
+        FIX 1 + FIX 2 share this predicate: it decides which slots get the
+        deny-fast approval window (:meth:`DashboardState.approval_timeout_for`)
+        and which turns are charged against the background concurrency cap
+        (:meth:`DashboardState.run_background_turn`).
+
+        ``_app`` is the whole test, plus the ``_human_seen`` escape hatch. Why
+        app-ownership and not ``_trust``:
+
+        * ``_trust`` is False *by construction* wherever this predicate is
+          consulted. The runner auto-approves and ``continue``s while trust
+          holds, so a tool only reaches the interactive wait once trust is
+          absent — and trust is in-memory, so a gateway restart clears it on
+          every app worker. A ``_trust``-based detector reads False in exactly
+          the situation it exists to detect.
+        * ``_app`` is set only by an app creating the slot (App Kit §5.2), is
+          persisted in the session metadata, and is already the ownership axis
+          every other isolation decision in these files keys on. A session a
+          person created has ``_app == ""`` and is therefore never affected —
+          which is what keeps interactive behaviour byte-identical.
+
+        Both halves are persisted, and they have to be: ``_app`` surviving a
+        restart while ``_human_seen`` did not is what made an attended app tab
+        silently revert to the deny-fast window after every upgrade.
+        """
+        return bool(self._app) and not self._human_seen
 
     def enqueue_or_run_prompt(
         self,
@@ -2224,6 +2299,12 @@ class DashboardState:
         # Serializes pin mutation + persistence so concurrent requests cannot
         # interleave snapshots and replace chat_pins.json out of order.
         self._chat_pins_lock = asyncio.Lock()
+        # Serializes read-modify-write of the folder store; see
+        # mutate_folders(). Constructed here rather than lazily so two
+        # concurrent first-callers cannot each make their own lock and
+        # serialize against nothing. asyncio.Lock binds no loop at
+        # construction (3.10+), so building it off-loop is safe.
+        self._folders_lock = asyncio.Lock()
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # True once load_tags() parsed tags.json successfully (or seeded a
@@ -2235,6 +2316,14 @@ class DashboardState:
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
         self._tag_boards: list[dict[str, Any]] = []
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        # FIX 2: unattended-turn concurrency cap. Semaphore is created lazily
+        # (see _background_turn_sema) because this object outlives / predates
+        # the event loop in some hosts. The counters exist so a queued fleet is
+        # observable — see background_turn_stats().
+        self._bg_turn_sema: asyncio.Semaphore | None = None
+        self._bg_turn_cap: int = 0
+        self._bg_turns_running: int = 0
+        self._bg_turns_waiting: int = 0
         self.no_crons: bool = False  # --no-crons flag: cron execution disabled
         self._hook_store: Any = None  # Lazy-init ScriptHookStore
         # Task refine state (background LLM spec generation)
@@ -2465,6 +2554,7 @@ class DashboardState:
         update_self_updatable: bool = False,
         update_checked: bool = False,
         update_command: str = "",
+        update_channel: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -2494,6 +2584,15 @@ class DashboardState:
             # user on something actionable. Deriving it only from a manual check
             # left the badge pointing at an Update button that 409s.
             "update_command": update_command,
+            # The release channel this INSTALL follows (the ``channel`` file
+            # cli.sh wrote), empty when the layout has no channel at all (a git
+            # checkout tracks a remote; a desktop bundle or container is updated
+            # by something else). Distinct from ``release_channel`` below, which
+            # is derived from the running version string and answers "which lane
+            # were these BYTES built on". The two diverge for the whole window
+            # between switching channels and the new lane's build landing, so the
+            # switcher must key on this one or it would snap back on every poll.
+            "update_channel": update_channel,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
@@ -2506,14 +2605,26 @@ class DashboardState:
             # The dashboard uses this to give prerelease users an obvious way to
             # report a bug; see release_channel.py for the full rule.
             "release_channel": _release_channel_of_build(),
-            # True when the gateway has wired up a live Slack client (Socket Mode
-            # connected). None in pure-dashboard mode or when Slack is disabled.
-            "slack_connected": self.slack_client is not None,
+            # True only when Socket Mode actually connected this session, not
+            # merely that tokens were present at boot. slack_client is set
+            # whenever tokens existed, even if connect() then failed
+            # (invalid_auth, a network error), so keying the status badge on it
+            # alone painted a green "Connected" over a Slack that never came up.
+            # Require BOTH a wired client and the real connect outcome the
+            # gateway records after _connect_slack. This is the same field
+            # /api/slack/config already reports to the settings badge.
+            "slack_connected": (
+                self.slack_client is not None and self.slack_socket_connected
+            ),
             # Governance enforcement health: "active" (enforcing),
             # "disabled" (permissive default / not restricting), "degraded" (a
             # fail-closed trip, integrity mismatch, or unverified policy this
             # session), or "unknown" (policy not yet loaded).  Pure in-memory read.
             "governance": _governance_status(),
+            # FIX 2: cap / in-flight / queued counts for unattended app-owned
+            # turns. Published so a fleet parked behind the cap is visibly
+            # throttled rather than looking like a set of hung workers.
+            "background_turns": self.background_turn_stats(),
         }
 
     _APPROVAL_TIMEOUT = 7200  # 2 hours — triggers pause (not skip/fail) via deny path
@@ -2536,7 +2647,151 @@ class DashboardState:
     _QUESTION_TIMEOUT_MAX = 540  # 9 minutes — 60s under the 600s tool-stall watchdog
     _FLUSH_INTERVAL = 5  # seconds between dirty-slot flushes
 
+    # ── FIX 2: bounded concurrency for unattended, app-owned turns ──────────
+    # Nothing capped chat slots or concurrent turns. The nearest analogue caps
+    # at 12 (dashboard/handlers/terminal.py::_MAX_SESSIONS, 429 on excess) and
+    # the only real ceiling was asyncio.Semaphore(4) on agent cold starts plus
+    # host memory — so an app that arms N worker slots could put N turns on the
+    # runtime at once and exhaust it. Shape copied from
+    # apps/builtins/code_review_sage/sage_lib/review_pool.py (default +
+    # ``MAX_CONCURRENT_CEIL`` clamp): configurable, but never unbounded.
+    MAX_BACKGROUND_TURNS = 4  # default in-flight unattended turns
+    MAX_BACKGROUND_TURNS_CEIL = 16  # hard ceiling — config can raise up to here
+    # Longest a queued turn may sit waiting for a permit. Needed because the
+    # queue wait happens INSIDE the coroutine ``spawn_guarded_turn`` already
+    # bounds at ``CHAT_TURN_TIMEOUT`` (7200s), so an unbounded wait would let a
+    # fully-saturated cap consume a turn's whole ceiling and then kill it with
+    # "turn exceeded the 7200s ceiling" — a true statement that names the wrong
+    # cause. 1800s never trips under ordinary throttling and leaves 90 minutes
+    # of the ceiling for the turn itself; on expiry the turn fails with a
+    # message that says what actually happened.
+    _BACKGROUND_QUEUE_WAIT_SECS = 1800
+
     _log = logging.getLogger(__name__)
+
+    def approval_timeout_for(self, slot: "_ChatSlot") -> float:
+        """Approval window for an interactive tool prompt raised inside *slot*.
+
+        FIX 1. The dashboard runner waits on its OWN per-slot future rather than
+        going through :meth:`request_approval`, so it never reached the
+        deny-fast background branch: every unattended app worker that tripped
+        one untrusted tool held its slot for the full
+        ``_APPROVAL_TIMEOUT`` (2h) and then denied anyway — two hours of a
+        worker's life spent parked, with nothing on screen to explain it.
+
+        Returning the SAME two constants ``request_approval`` uses is the point:
+        the previous bug was a hardcoded ``7200.0`` at the call site, which
+        could not track either constant. See :attr:`_ChatSlot.unattended` for
+        why app-ownership is the detector.
+        """
+        if slot.unattended:
+            return float(self._BACKGROUND_APPROVAL_TIMEOUT_SECS)
+        return float(self._APPROVAL_TIMEOUT)
+
+    def effective_max_background_turns(self) -> int:
+        """Configured cap on concurrent unattended turns.
+
+        Reads ``config.json → dashboard.max_background_turns`` (same
+        ``_raw_config`` route ``sandbox.py`` and ``mcp_gateway/pool.py`` use for
+        their tunables) and clamps to ``[1, MAX_BACKGROUND_TURNS_CEIL]`` so an
+        operator can widen the fleet without editing code but can never remove
+        the bound. Unreadable/garbage config falls back to the default rather
+        than failing a turn.
+        """
+        try:
+            raw = (_raw_config().get("dashboard") or {}).get(
+                "max_background_turns", self.MAX_BACKGROUND_TURNS
+            )
+            val = int(raw)
+        except Exception:
+            self._log.debug("background-turn cap config unavailable; using default", exc_info=True)
+            val = self.MAX_BACKGROUND_TURNS
+        return max(1, min(val, self.MAX_BACKGROUND_TURNS_CEIL))
+
+    def _background_turn_sema(self) -> asyncio.Semaphore:
+        """The cap's semaphore, created on first use and resized when idle.
+
+        Lazy because ``DashboardState`` is constructed before the event loop in
+        some hosts (tests, CLI) and ``asyncio.Semaphore`` binds to the running
+        loop. Resized only while nothing is in flight: in-flight holders own
+        permits on the object they entered, so swapping under them would let the
+        cap be exceeded by the difference.
+        """
+        eff = self.effective_max_background_turns()
+        if self._bg_turn_sema is None:
+            self._bg_turn_sema = asyncio.Semaphore(eff)
+            self._bg_turn_cap = eff
+        elif eff != self._bg_turn_cap and not (self._bg_turns_running or self._bg_turns_waiting):
+            self._bg_turn_sema = asyncio.Semaphore(eff)
+            self._bg_turn_cap = eff
+        return self._bg_turn_sema
+
+    def background_turn_stats(self) -> dict[str, int]:
+        """Cap / in-flight / queued counts — the cap's observability surface.
+
+        Surfaced in the status payload and asserted by tests, so "the fleet is
+        queued behind the cap" is a readable state rather than an invisible
+        stall that looks like a hung worker.
+        """
+        return {
+            "cap": self._bg_turn_cap or self.effective_max_background_turns(),
+            "running": self._bg_turns_running,
+            "waiting": self._bg_turns_waiting,
+        }
+
+    async def run_background_turn(self, slot: "_ChatSlot", coro: Any) -> Any:
+        """Await *coro* under the unattended-turn cap.
+
+        QUEUES rather than rejects at the cap: a rejected crew turn loses the
+        issue it was mid-way through, while a queued one only starts late. An
+        attended slot is passed straight through, so this wrapper is inert for
+        every human session and adds no semaphore traffic to the interactive
+        path.
+        """
+        if not slot.unattended:
+            return await coro
+        sema = self._background_turn_sema()
+        queued = sema.locked()
+        if queued:
+            self._bg_turns_waiting += 1
+            # info, not debug: this is the difference between "the fleet is
+            # throttled" and "a worker is hung", and it is the only signal a
+            # queued turn emits before it starts.
+            self._log.info(
+                "background turn queued behind the cap: slot=%s cap=%d running=%d waiting=%d",
+                slot.key,
+                self._bg_turn_cap,
+                self._bg_turns_running,
+                self._bg_turns_waiting,
+            )
+        try:
+            await asyncio.wait_for(sema.acquire(), timeout=self._BACKGROUND_QUEUE_WAIT_SECS)
+        except asyncio.TimeoutError:
+            coro.close()
+            self._log.warning(
+                "background turn abandoned after waiting %ds for a permit: slot=%s cap=%d",
+                self._BACKGROUND_QUEUE_WAIT_SECS,
+                slot.key,
+                self._bg_turn_cap,
+            )
+            raise TimeoutError(
+                f"queued {self._BACKGROUND_QUEUE_WAIT_SECS}s behind the background-turn "
+                f"cap ({self._bg_turn_cap} concurrent) without a free slot"
+            ) from None
+        except BaseException:
+            # Cancelled while queued: the turn never ran, so close its coroutine
+            # rather than leaving an un-awaited coroutine warning behind.
+            coro.close()
+            raise
+        finally:
+            if queued:
+                self._bg_turns_waiting -= 1
+        self._bg_turns_running += 1
+        try:
+            return await coro
+        finally:
+            self._bg_turns_running -= 1
+            sema.release()
 
     @property
     def knowledge_store(self):  # type: ignore[override]
@@ -3129,9 +3384,29 @@ class DashboardState:
         return False
 
     async def clear_notifications(self) -> None:
-        """Remove all notifications from memory and disk."""
+        """Remove all notifications from memory and disk.
+
+        Broadcasts ``notifications_clear`` so every connected dashboard view
+        drops its copy of the list. Without the broadcast only the clearing
+        view converges — any other live view (second window, another tab, an
+        embedded viewport) keeps stale items and therefore a stale bell badge.
+        Clearing an already-empty list is a no-op on every client, never an
+        error.
+
+        The broadcast is emitted at the instant memory becomes empty, BEFORE
+        the awaited rewrite, unlike the ack path which broadcasts after it.
+        The difference is that an ack frame is ``ts``-scoped while this one is
+        global: awaiting first yields the loop, so a note delivered during the
+        rewrite would broadcast its own ``notification`` frame first and then
+        be discarded by a clear frame arriving after it — leaving the clients
+        empty while the backend (and the file, since the append lands after
+        the empty-snapshot rewrite on the same ordered executor) still holds
+        that note. Emitting first means any later delivery's frame sequences
+        after the clear and survives on both sides.
+        """
         self._notification_log.clear()
         self._unread_count = 0
+        self.broadcast_ws("notifications_clear", {})
         await self._rewrite_notifications_async()
 
     def get_slot(self, name: str) -> _ChatSlot | None:
@@ -3667,7 +3942,14 @@ class DashboardState:
             logger.warning("Failed to load folders", exc_info=True)
 
     def save_folders(self) -> None:
-        """Persist folder definitions to disk (atomic write)."""
+        """Persist folder definitions to disk (atomic write).
+
+        Synchronous and therefore ON the event loop when called from a handler.
+        Prefer :meth:`mutate_folders` for anything reachable from a request or a
+        background pass — it serializes the read-modify-write and moves the
+        ``fsync`` off the loop. This form remains for the boot path and for
+        callers that hold no loop.
+        """
         path = config_dir() / self._FOLDERS_FILE
         self._atomic_write_json(path, self._folders)
 
@@ -3881,6 +4163,95 @@ class DashboardState:
                 raise
             return removed
 
+    async def mutate_folders(self, mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]]) -> _T:
+        """Serialize one read-modify-write of the folder store; persist off-loop.
+
+        *mutate* receives the live folder list and returns
+        ``(changed, value)``: ``changed`` decides whether the store is written,
+        ``value`` is handed back to the caller. It must be **synchronous** — it
+        runs while the store lock is held, and that is what makes the whole
+        find-then-modify sequence atomic against another coroutine doing the
+        same thing. Do not call ``mutate_folders`` from inside *mutate*.
+
+        Why both halves matter, from two defects this replaced:
+
+        * **Serialized.** Every writer used to be a bare ``save_folders()``, so
+          the store was race-free only because no writer yielded mid-update —
+          the event loop was the lock by accident. The moment one writer
+          awaited, two of them could each read a stale list and the later write
+          would drop the other's folder. Holding one lock across
+          modify-and-persist removes that coupling.
+        * **Off the loop.** The write is a tempfile + ``os.fsync`` +
+          ``os.replace``; on slow or network storage that stalls chat and
+          heartbeat processing for as long as the flush takes. Only the IO
+          crosses the thread boundary.
+
+        The snapshot handed to the worker is taken here, under the lock, rather
+        than letting the thread read ``self._folders``: the list is mutated on
+        the loop, and serializing it from another thread could observe a
+        half-applied mutation.
+
+        If the write raises, the in-memory list is restored to its pre-callback
+        state before the exception propagates, so memory never silently diverges
+        from disk on a failed persist. The write is also *confirmed* before the
+        lock is released (see :meth:`_write_folders_confirmed`), so a mutation
+        that did not land is undone while the store is still held — no reader,
+        locked or not, can observe a folder that is about to be rolled back.
+        """
+        async with self._folders_lock:
+            before = [dict(f) for f in self._folders]
+            changed, value = mutate(self._folders)
+            if not changed:
+                return value
+            path = config_dir() / self._FOLDERS_FILE
+            snapshot = [dict(f) for f in self._folders]
+            try:
+                await asyncio.to_thread(self._write_folders_confirmed, path, snapshot)
+            except Exception:
+                self._folders[:] = before
+                raise
+            return value
+
+    async def read_folders(self, read: Callable[[list[dict[str, Any]]], _T]) -> _T:
+        """Run *read* against the folder list under the store lock.
+
+        The read-only counterpart to :meth:`mutate_folders`. Callers that only
+        inspect the store still need the lock: ``mutate_folders`` applies its
+        callback's mutation to the live list and only then persists it off-loop,
+        so an unlocked reader can observe a folder mid-transaction — including
+        one whose write is about to fail and be rolled back. Taking the lock
+        means a reader sees only committed state.
+
+        *read* must not mutate the list and must not call ``mutate_folders``
+        (re-entering the lock would deadlock).
+        """
+        async with self._folders_lock:
+            return read(self._folders)
+
+    def _write_folders_confirmed(self, path: Path, snapshot: list[dict[str, Any]]) -> None:
+        """Persist the folder list and prove it landed. Raises if it did not.
+
+        Runs in a worker thread, called with the store lock held.
+        :meth:`_atomic_write_json` LOGS and swallows every error, so a normal
+        return from it is not evidence of a write — a read-only or full disk
+        looks exactly like success. Reading the store back is evidence, and
+        doing it here rather than in the caller is what keeps the check inside
+        the lock: :meth:`mutate_folders` restores the in-memory list when this
+        raises, so an unwritten folder is never visible outside the transaction.
+        """
+        self._atomic_write_json(path, snapshot)
+        try:
+            on_disk = json.loads(path.read_bytes())
+        except Exception as exc:
+            raise OSError(f"folder store unreadable after write: {path.name}") from exc
+        # The WHOLE value, not just the id set: a rename, reparent, collapse or
+        # icon change leaves the ids untouched, so an id-only comparison would
+        # accept a silently-failed update and let the stale values come back on
+        # the next restart. Folder records are flat JSON scalars, so the snapshot
+        # round-trips exactly and equality is a faithful test.
+        if on_disk != snapshot:
+            raise OSError(f"folder store did not persist as intended: {path.name}")
+
     def folder_breadcrumb(self, folder_id: str, sep: str = " › ") -> str:
         """Render a folder's ancestry root→leaf as a breadcrumb string.
 
@@ -3962,6 +4333,20 @@ class DashboardState:
                 raw = json.loads(columns_path.read_text(encoding="utf-8"))
                 if isinstance(raw, list):
                     self._tag_boards = [c for c in raw if isinstance(c, dict) and c.get("id")]
+                    # Prune column tag_ids missing from the vocabulary: tag
+                    # deletion commits the vocab write first (crash-atomic),
+                    # so a crash mid-delete can leave dangling ids here. The
+                    # column API rejects unknown ids, so a dangling id left
+                    # in place would make that column's filter permanently
+                    # un-editable (the popover echoes the full list back).
+                    # Same fail-open rule as the slot-restore prune: only
+                    # prune when the vocabulary is authoritative.
+                    if self._tags_authoritative:
+                        known = {t.get("id") for t in self._tags}
+                        for col in self._tag_boards:
+                            tag_ids = col.get("tag_ids")
+                            if isinstance(tag_ids, list):
+                                col["tag_ids"] = [t for t in tag_ids if t in known]
         except Exception:
             logger.warning("Failed to load sidebar columns", exc_info=True)
 

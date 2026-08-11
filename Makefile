@@ -64,6 +64,9 @@ backend:
 	# prebuilt wheel instead. No-op where the newest deps already have a usable
 	# wheel (macOS, AL2023).
 	KIROCREW_SKIP_FRONTEND=1 $(PIP) install --prefer-binary -e ".[dev]"
+	# CI parity: also install the PEP 735 dev dependency-group (pins
+	# jsonschema so the config-validation guard tests actually run).
+	$(PIP) install --group dev
 	bash packaging/resign-macos-libs.sh $(VENV)/bin/python
 
 test: build

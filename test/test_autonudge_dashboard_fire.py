@@ -53,6 +53,10 @@ def _orchestrator() -> gw.GatewayOrchestrator:
         get_slot=MagicMock(return_value=None),
         push_slots_update=MagicMock(),
         _background_tasks=set(),
+        # FIX 2 seam: the real method awaits the turn under the unattended-turn
+        # semaphore. Here it is a plain passthrough returning the inner
+        # coroutine, so ``_fake_spawn`` can still close exactly one coroutine.
+        run_background_turn=MagicMock(side_effect=lambda _slot, coro: coro),
     )
     orch.autonudge_svc = MagicMock()
     orch.autonudge_svc.remove = AsyncMock()
@@ -94,7 +98,9 @@ class TestDashboardNudgeSlotResolution:
             patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
         ):
             assert await orch._fire_dashboard_nudge(loop) is True
-        rehydrate.assert_awaited_once_with(orch.dashboard_state, loop.slot_key)
+        rehydrate.assert_awaited_once_with(
+            orch.dashboard_state, loop.slot_key, adopt_closed=True
+        )
         orch.autonudge_svc.remove.assert_not_awaited()
         assert spawn.calls == [restored], "the nudge turn did not run in the restored slot"
         assert orch._session_tasks[restored.key] is restored.task
@@ -123,7 +129,9 @@ class TestDashboardNudgeSlotResolution:
             patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
         ):
             assert await orch._fire_dashboard_nudge(loop) is True
-        rehydrate.assert_awaited_once_with(orch.dashboard_state, loop.slot_key)
+        rehydrate.assert_awaited_once_with(
+            orch.dashboard_state, loop.slot_key, adopt_closed=True
+        )
         assert spawn.calls == [restored]
 
     @pytest.mark.asyncio
@@ -171,7 +179,12 @@ class TestDashboardNudgeSlotResolution:
     async def test_unreachable_session_retires_the_loop_once_with_a_reason(
         self, caplog
     ) -> None:
-        """A genuinely gone session (deleted, or closed with ✕) still retires."""
+        """A genuinely gone session (no history, or deleted) still retires.
+
+        A tab the user dismissed with ✕ is retired by the close handler itself
+        now (api_chat_slot_delete removes the loop), not by this miss — the fire
+        path adopts a ``closed`` session so idle archival cannot destroy a loop.
+        """
         orch = _orchestrator()
         loop = _loop()
         spawn = _fake_spawn()

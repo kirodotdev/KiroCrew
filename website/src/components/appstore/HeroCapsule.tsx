@@ -17,8 +17,9 @@ import { gradientFor } from './gradient'
 import { useHeroArt } from './useHeroArt'
 import type { RegistryApp } from './types'
 
-/** The art-bearing subset of a manifest or registry row. */
-export type HeroArtFields = Pick<RegistryApp, 'heroImage' | 'heroImageDark' | 'screenshots'>
+/** The art-bearing subset of a manifest or registry row. ``repo`` lets
+ * ``useHeroArt`` resolve repo-relative paths through the blob proxy. */
+export type HeroArtFields = Pick<RegistryApp, 'heroImage' | 'heroImageDark' | 'screenshots' | 'repo'>
 
 export default function HeroCapsule({
   name,

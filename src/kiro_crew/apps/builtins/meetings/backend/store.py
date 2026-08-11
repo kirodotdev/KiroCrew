@@ -12,6 +12,7 @@ Layout::
     <data>/calendar-cache.json               # last calendar sync
     <data>/meetings/<safe_id>/session.json   # per-meeting metadata
     <data>/meetings/<safe_id>/tasks.json     # extracted tasks
+    <data>/meetings/<safe_id>/transcript.jsonl # finalized speech + typed lines
     <data>/meetings/<safe_id>/<agent>.md     # per-agent output (markdown)
     <data>/meetings/<safe_id>/<agent>.html   # per-agent output (html widget)
 
@@ -32,10 +33,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -301,7 +304,7 @@ def _repair_builtin_agent_refs(agents: Any) -> Any:
             and isinstance(ref, str)
             and ref.startswith(k.LEGACY_AGENT_NAMESPACE)
         ):
-            entry = {**entry, "agent": ref[len(k.LEGACY_AGENT_NAMESPACE):]}
+            entry = {**entry, "agent": ref[len(k.LEGACY_AGENT_NAMESPACE) :]}
         repaired.append(entry)
     return repaired
 
@@ -450,6 +453,141 @@ def delete_meeting(meeting_id: str, root: Path | None = None) -> bool:
             return False
         shutil.rmtree(resolved)
     return True
+
+
+# ── durable transcript ──────────────────────────────────────────────────────────────
+
+
+def transcript_path(meeting_id: str, root: Path | None = None) -> Path:
+    """The append-only transcript file for one meeting, containment-checked."""
+    return contain(
+        meeting_dir(meeting_id, root) / k.TRANSCRIPT_FILE,
+        operation="meetings.transcript",
+        root=root,
+    )
+
+
+# Final STT callbacks and typed broadcasts can land on worker threads at the same
+# time. A single lock keeps each JSONL record whole and makes the capacity check
+# plus append one transaction. The critical section contains local file IO only.
+_TRANSCRIPT_LOCK = threading.Lock()
+
+
+def append_transcript(
+    meeting_id: str,
+    text: str,
+    source: str,
+    root: Path | None = None,
+) -> dict[str, str] | None:
+    """Durably append one finalized transcript segment.
+
+    Returns the stored wire record, or ``None`` when the explicit file-size
+    ceiling would be exceeded. The caller turns that result into a 413 before
+    dispatching the line to agents, so any accepted agent input also has a
+    durable transcript record.
+    """
+    entry = {
+        "id": uuid.uuid4().hex,
+        "timestamp": utc_now_iso(),
+        "source": source,
+        "text": text,
+    }
+    encoded = (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    path = transcript_path(meeting_id, root)
+    with _TRANSCRIPT_LOCK:
+        current_size = path.stat().st_size if path.is_file() else 0
+        separator = b""
+        if current_size:
+            with path.open("rb") as transcript:
+                transcript.seek(-1, os.SEEK_END)
+                if transcript.read(1) != b"\n":
+                    # A process loss can leave the last JSON object incomplete. A
+                    # separator quarantines that tail as one malformed row instead
+                    # of joining it to, and thereby corrupting, the next valid one.
+                    separator = b"\n"
+        payload = separator + encoded
+        if current_size + len(payload) > k.MAX_TRANSCRIPT_BYTES:
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("ab") as transcript:
+            transcript.write(payload)
+            transcript.flush()
+            os.fsync(transcript.fileno())
+    return entry
+
+
+def read_transcript_page(
+    meeting_id: str,
+    cursor: int = 0,
+    root: Path | None = None,
+) -> tuple[list[dict[str, str]], int]:
+    """Read valid transcript records at or after an opaque byte cursor.
+
+    A process loss can leave one partial tail record even though each accepted
+    append is flushed and synced. Ignore only malformed rows so earlier durable
+    speech remains available instead of treating the whole meeting as corrupt.
+    A cursor beyond the current file restarts from zero, which makes a stale
+    browser cursor recover if the meeting data is replaced between requests.
+    """
+    path = transcript_path(meeting_id, root)
+    if not path.is_file():
+        return [], 0
+
+    entries: list[dict[str, str]] = []
+    with _TRANSCRIPT_LOCK:
+        try:
+            with path.open("rb") as transcript:
+                transcript.seek(0, os.SEEK_END)
+                size = transcript.tell()
+                start = cursor if 0 <= cursor <= size else 0
+                transcript.seek(start)
+                lines = transcript.read().splitlines()
+                next_cursor = transcript.tell()
+        except OSError:
+            logger.warning("meetings: unreadable transcript at %s", path)
+            return [], cursor
+
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            raw = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning(
+                "meetings: malformed transcript row %d at %s — skipping",
+                line_number,
+                path,
+            )
+            continue
+        if not isinstance(raw, dict):
+            continue
+        entry_id = raw.get("id")
+        timestamp = raw.get("timestamp")
+        source = raw.get("source")
+        text = raw.get("text")
+        if not isinstance(entry_id, str) or not entry_id:
+            continue
+        if not isinstance(timestamp, str) or not timestamp:
+            continue
+        if not isinstance(source, str) or not source:
+            continue
+        if not isinstance(text, str) or not text:
+            continue
+        if source not in k.VALID_TRANSCRIPT_SOURCES:
+            continue
+        entries.append(
+            {
+                "id": entry_id,
+                "timestamp": timestamp,
+                "source": source,
+                "text": text,
+            }
+        )
+    return entries, next_cursor
+
+
+def read_transcript(meeting_id: str, root: Path | None = None) -> list[dict[str, str]]:
+    """Read every valid transcript record in append order."""
+    entries, _cursor = read_transcript_page(meeting_id, root=root)
+    return entries
 
 
 # ── tasks ───────────────────────────────────────────────────────────────────

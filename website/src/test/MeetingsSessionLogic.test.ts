@@ -10,10 +10,13 @@ import {
   ALLOWED_TRANSITIONS,
   canTransition,
   isDuplicateSegment,
+  mergeTranscriptSegments,
   newSegmentText,
+  reconcileTranscriptPage,
   resolveEnabledAgents,
 } from '../apps/meetings/hooks/useMeetingSession'
 import {
+  CAPTION_FINALS_LIMIT,
   CAPTION_WINDOW_CHARS,
   captionWindow,
 } from '../apps/meetings/hooks/useMeetingTranscription'
@@ -106,6 +109,33 @@ describe('resolveEnabledAgents', () => {
   it('treats a missing enabled_by_default as enabled', () => {
     const agents: AgentDef[] = [{ id: 'x', name: 'X', widget_type: 'markdown' }]
     expect(resolveEnabledAgents('', undefined, agents)).toEqual(['x'])
+  })
+})
+
+describe('mergeTranscriptSegments', () => {
+  const segment = (id: string) => ({
+    id,
+    timestamp: '2026-08-10T10:00:00Z',
+    source: 'speech' as const,
+    text: id,
+  })
+
+  it('appends cursor pages while deduplicating immediate dispatch responses', () => {
+    expect(
+      mergeTranscriptSegments(
+        [segment('first'), segment('immediate')],
+        [segment('immediate'), segment('polled')],
+      ).map(item => item.id),
+    ).toEqual(['first', 'immediate', 'polled'])
+  })
+
+  it('restores durable order after concurrent dispatch responses resolve out of order', () => {
+    expect(
+      reconcileTranscriptPage(
+        [segment('first'), segment('third'), segment('second')],
+        [segment('second'), segment('third')],
+      ).map(item => item.id),
+    ).toEqual(['first', 'second', 'third'])
   })
 })
 
@@ -228,6 +258,15 @@ describe('final-segment dispatch is retried, never swallowed', () => {
       /const dispatchWithRetry[\s\S]*?\n  \},\n?\s*\[[^\]]*\],?\n?\s*\)/,
     )
     expect(helper![0]).toContain('onErrorRef.current?.(')
+  })
+
+  it('treats transcript capacity as permanent and blocks later retries', () => {
+    const helper = TranscriptionSource.match(
+      /const dispatchWithRetry[\s\S]*?\n  \},\n?\s*\[[^\]]*\],?\n?\s*\)/,
+    )
+    expect(helper![0]).toContain("error.code === 'transcript_too_large'")
+    expect(helper![0]).toContain('dispatchBlockedRef.current = true')
+    expect(helper![0]).toContain("onErrorRef.current?.('transcript_full')")
   })
 
   it('the reported code has a distinct catalog key', () => {
@@ -533,9 +572,8 @@ describe('starting before the config loads does not persist an empty roster', ()
 })
 
 describe('the live caption shows the newest speech, not the meeting opening', () => {
-  // `finalsRef` accumulates every final segment and is cleared only by `start()`,
-  // so by mid-meeting it holds the entire transcript. It used to be handed to the
-  // caption verbatim, into an element that clipped its overflow — and
+  // The durable transcript owns the complete history. The bounded local array is
+  // handed to a caption element that clips its overflow — and
   // `text-overflow: ellipsis` shows a string's HEAD. The visible caption was
   // therefore the meeting's first sentence, frozen for its whole duration.
 
@@ -586,5 +624,10 @@ describe('the live caption shows the newest speech, not the meeting opening', ()
     expect(TranscriptionSource).not.toContain("finalsRef.current.join(' ')")
     expect(TranscriptionSource).toContain('captionWindow(finalsRef.current, lastPartial)')
     expect(TranscriptionSource).toContain('captionWindow(finalsRef.current)')
+  })
+
+  it('bounds the browser-only final segment buffer', () => {
+    expect(CAPTION_FINALS_LIMIT).toBeGreaterThan(1)
+    expect(TranscriptionSource).toContain('finalsRef.current.splice(')
   })
 })

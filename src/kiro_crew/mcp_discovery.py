@@ -31,6 +31,7 @@ from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import augmented_path
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -215,6 +216,9 @@ def reset_unresolvable_warnings() -> None:
 # source of truth for the ``presence`` field on each server.
 SCOPE_KIROCREW = "kirocrew"
 SCOPE_KIRO_GLOBAL = "kiroGlobal"
+# Surface label carried into the provenance decision so a declined rewrite names
+# the file it declined to touch.
+_CC_SIDECAR_SURFACE = "~/.mcp.json"
 # Well-known label for a provider global (e.g. Claude Code's ~/.claude.json).
 # The core does not scan it directly — a companion edition contributes it
 # via the extra_mcp_scopes() CPP seam (see :func:`_extra_scope_sources`), so
@@ -1838,18 +1842,26 @@ def sync_to_agent_config(servers: list[McpServerInfo]) -> bool:
 
 
 def kirocrew_managed_names() -> set[str]:
-    """Server names the dashboard store owns, and may therefore be rewritten.
+    """Server names the dashboard store owns.
 
     A usable dict under the ``kirocrew`` scope (``<data home>/mcp.json``) is the
-    one signal that Kiro Crew owns a name -- the same discriminator the agent-spec
-    emit path uses for its OAuth hints, so ownership means one thing everywhere.
+    one signal that Kiro Crew manages a name -- the same discriminator the
+    agent-spec emit path uses for its OAuth hints, so management means one thing
+    everywhere.
 
-    Every write to a config surface we do NOT own -- the kiro-global
-    ``mcp.json``, the Claude Code ``~/.mcp.json`` sidecar -- must be gated on
-    this. Discovery merges ALL scopes, so a name present only in a user's global
-    file reaches the sync set exactly like a managed one; without the gate a
-    Kiro Crew sync would rewrite a server the user configured by hand, and the
-    fields it reconstructs (url, OAuth hints) would silently replace theirs.
+    This is the store-side half of the ownership predicate and a NECESSARY
+    precondition for every write to a config surface we do not own -- the
+    kiro-global ``mcp.json``, the Claude Code ``~/.mcp.json`` sidecar. Discovery
+    merges ALL scopes, so a name present only in a user's global file reaches the
+    sync set exactly like a managed one; without the gate a Kiro Crew sync would
+    rewrite a server the user configured by hand.
+
+    It is deliberately NOT sufficient. Managing a NAME says nothing about who
+    wrote a given ENTRY, and the two answers differ per file -- an entry can be
+    ours in the kiro-global file and the user's in the sidecar. That half is
+    :func:`kiro_crew.mcp_provenance.resolve_write`, which reads the marker on the
+    entry itself. Keeping this function name-only is what lets a single set answer
+    for every surface without silently answering for the wrong one.
 
     A malformed store value is skipped for the same reason the merge skips it: it
     contributed nothing, so it cannot make the name ours.
@@ -1871,8 +1883,9 @@ def register_servers_for_cc(
     Adds entries without removing existing ones. CC-side complement
     to sync_to_agent_config() which handles kiro-side registration.
 
-    A remote that already has an entry is left alone entirely -- see the loop
-    below for why this surface is add-only for remotes.
+    A remote entry is rewritten only when it carries our authorship marker --
+    see the loop below. So is a stdio entry: the marker records who wrote an
+    entry, which no transport makes knowable on its own.
 
     Returns True if any servers were added or updated.
     """
@@ -1894,15 +1907,6 @@ def register_servers_for_cc(
 
     for s in servers:
         if s.is_remote:
-            # Add-only: a remote already present here keeps whatever it holds.
-            # This writer rebuilds an entry from scratch rather than merging into
-            # it, and ownership on this surface is name-only -- a managed
-            # server's moved url is indistinguishable from a user's own
-            # same-named entry -- so rewriting one could silently replace
-            # configuration nobody here authored. Propagating a changed remote
-            # shape needs a record of which entries we wrote, and waits for it.
-            if s.name in mcp:
-                continue
             entry: dict = {"url": s.url}
             if s.headers:
                 entry["headers"] = s.headers
@@ -1915,6 +1919,27 @@ def register_servers_for_cc(
             entry = {"command": s.command, "args": s.args or [], "type": "stdio"}
             if s.env:
                 entry["env"] = s.env
+
+        # This writer rebuilds an entry from scratch, so rewriting one we did not
+        # author would drop the fields it does not reconstruct. The marker says
+        # which ones those are: an entry we wrote re-syncs (its url or command
+        # legitimately moves), an unmarked entry is the user's and stays add-only,
+        # exactly as this surface behaved before the marker existed. The gate is
+        # per ENTRY, not per transport -- a ``command`` makes authorship no more
+        # knowable than a ``url`` does, and this loop rewrites a diverging stdio
+        # entry in place, so a user's own server sharing a managed name reaches
+        # the same collision. ``ABSENT`` rather than ``None``: a hand-edited file
+        # can hold ``null`` under a name, and that occupies the name.
+        resolved = resolve_write(
+            name=s.name,
+            on_disk=mcp.get(s.name, ABSENT),
+            candidate=entry,
+            store_managed=s.name in _managed,
+            surface=_CC_SIDECAR_SURFACE,
+        )
+        if resolved is None:
+            continue
+        entry = resolved
 
         if s.name not in mcp or mcp[s.name] != entry:
             mcp[s.name] = entry

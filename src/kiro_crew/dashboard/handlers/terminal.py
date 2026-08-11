@@ -55,20 +55,6 @@ _ORPHAN_TIMEOUT_S = 900  # 15 min with no WS → reap PTY (grace window for relo
 _SCROLLBACK_MAX = 50 * 1024  # 50KB ring buffer per session for reconnect replay
 
 
-def _redact_terminal(data: bytes | bytearray) -> bytes:
-    """Strip credentials/exfiltration URLs from PTY output before it reaches a
-    client. ``kiro_crew.security`` redactors return ``(text, warnings)`` tuples
-    (unlike upstream's str-returning ``redaction`` module), so unpack both.
-
-    Accepts ``bytearray`` too: the reconnect-replay path passes the
-    ``_TerminalSession.scrollback`` ring buffer (a ``bytearray``) directly, and
-    ``.decode()`` behaves identically on both."""
-    text = data.decode("utf-8", errors="replace")
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text.encode("utf-8")
-
-
 def _sel():
     import kiro_crew.dashboard.handlers as _pkg  # circular import: __init__ imports terminal
 
@@ -516,7 +502,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # Replay scrollback BEFORE assigning ws to prevent read_pty from
         # forwarding live data before replay completes.
         if existing.scrollback:
-            await ws.send_bytes(_redact_terminal(existing.scrollback))
+            # Replay the ring buffer verbatim. It holds the raw stream, and the
+            # client runs its own incremental decoder, so a character the
+            # buffer's head cut in half is the client's to render — the server
+            # never decodes and so cannot desynchronize from it.
+            await ws.send_bytes(bytes(existing.scrollback))
         existing.ws = ws
         existing.last_ws_disconnect = None
         # A fresh client starts with empty title/cwd state; clear the dedup
@@ -668,9 +658,24 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 sess.frames_dirty = True
                 if len(sess.scrollback) > _SCROLLBACK_MAX:
                     sess.scrollback = sess.scrollback[-_SCROLLBACK_MAX:]
-                if sess.ws and not sess.ws.closed:
+                # Capture the socket into a local and re-check it after the lock
+                # await: `sess.ws` is set to None by the WS handler on
+                # disconnect, so touching it after a suspension point can raise
+                # AttributeError, which `except OSError` does NOT catch — that
+                # would kill this task and stop PTY draining and scrollback
+                # capture for a session the client may yet reconnect to. Same
+                # capture-and-revalidate rule the title poller already follows.
+                live = sess.ws
+                if live is not None and not live.closed:
+                    # Forward the read byte-for-byte. The server never decodes
+                    # PTY output: xterm.js runs its own incremental decoder, so
+                    # a multi-byte character split across two reads is
+                    # reassembled on the client and no read boundary can turn
+                    # one into U+FFFD.
                     async with sess.send_lock:
-                        await sess.ws.send_bytes(_redact_terminal(data))
+                        if sess.ws is not live or live.closed:
+                            continue  # client went away while we waited
+                        await live.send_bytes(data)
         except OSError:
             pass
 
@@ -818,11 +823,13 @@ _REDACT_MAX_BYTES = 256 * 1024
 
 
 async def api_terminal_redact(request: web.Request) -> web.Response:
-    """POST /api/terminal/redact — re-scan a COMPLETE terminal selection before
-    it is inserted into chat. Streaming output is redacted per read chunk, so a
-    credential straddling a chunk boundary can evade both scans; the selection
-    hand-off re-runs the redactors over the contiguous text. Callers MUST fail
-    closed: no chat insertion unless this returns 200 with redacted text."""
+    """POST /api/terminal/redact — scan a COMPLETE terminal selection before it
+    is inserted into chat. This is the whole credential boundary for the web
+    terminal: the live PTY stream is forwarded to the browser unscanned, and the
+    scrollback ring buffer is replayed only there, so the selection hand-off is
+    the one path by which terminal output reaches a model. It therefore runs
+    unconditionally, and callers MUST fail closed: no chat insertion unless this
+    returns 200 with redacted text."""
     caller = request.get("user")
     if not caller:
         _sel().log_api_access(
@@ -851,9 +858,12 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
         return web.json_response({"error": "expected JSON body {text: string}"}, status=400)
     if len(text.encode("utf-8", errors="replace")) > _REDACT_MAX_BYTES:
         return web.json_response({"error": "selection too large"}, status=413)
-    # Same redactors as the streaming path (_redact_terminal), applied to the
-    # contiguous selection so boundary-straddling secrets cannot slip through.
-    # Run off-loop: the redactors are regex scans that scale with input size.
+    # This is the ONLY credential scan on the path from PTY output to a model,
+    # so it runs unconditionally and there is no configuration that skips it.
+    # A contiguous selection is also the only input the redactors can be
+    # accurate on: they are regex scans, and a secret split across two reads is
+    # invisible to a per-chunk scan by construction.
+    # Run off-loop: the redactors scale with input size.
     loop = asyncio.get_running_loop()
 
     def _scan(t: str) -> str:

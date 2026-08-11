@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 from typing import Callable, NoReturn
 
-from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
@@ -107,12 +106,14 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         _audit("pod.up", "denied", f"name={name}", error="derived port is the live plane")
         _die(f"refusing: derived port is the live plane :{cfg.live_port}")
 
-    # Pin the resolved checkout BEFORE starting the unit so the systemd-booted
+    # Pin the resolved checkout BEFORE starting the unit so the service-booted
     # gateway (and any Restart= re-exec) resolves it without shelling git from a
     # clean environment. SEED (if any) is merged in without clobbering the pin.
-    # The whole pin -> start transaction holds the per-name mutex (no-op on
-    # Linux): without it, a concurrent `down` finishing its sweep after our pin
-    # would delete the pin we just wrote and this pod would crash-loop on boot.
+    # The whole pin -> start transaction holds the per-name mutex: without it, a
+    # concurrent `down` finishing its sweep after our pin would delete the pin we
+    # just wrote and this pod would crash-loop on boot. The pod's own boot
+    # (`pod _run`) deliberately takes no lock, so holding this across the health
+    # wait cannot deadlock against the process we are waiting for.
     with rt.pod_name_mutex(cfg, name):
         rt.pin_checkout(cfg, name, checkout)
         # Boot-time settings, merged into a single env-file write. ``boot`` reads
@@ -221,20 +222,33 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 def _down(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
-    was_up = rt.is_active(cfg, name)
-    # The stop and the env-file removal move together under the per-name mutex
-    # (no-op on Linux): unlinking the env file after releasing the lock let a
-    # concurrent `up` — which pins its checkout under the same mutex — have its
-    # fresh pin deleted by this stale teardown.
+    # The stop, the state it is judged against, and the env-file removal all move
+    # together under the per-name mutex: unlinking the env file after releasing
+    # the lock let a concurrent `up` — which pins its checkout under the same
+    # mutex — have its fresh pin deleted by this stale teardown. Sampling
+    # was_up/had_home OUTSIDE the lock had the same shape: a concurrent `up`
+    # holding the lock meant we sampled "not running, nothing to reclaim", waited,
+    # and then judged a REAL failure against that stale answer — swallowing it and
+    # deleting the live pod's checkout pin.
     with rt.pod_name_mutex(cfg, name):
+        was_up = rt.is_active(cfg, name)
+        # Whether there is residue to reclaim is a separate question from whether
+        # the pod is running: `down` is also the documented way to reclaim an
+        # orphaned HOME left by a pod that went away without one.
+        had_home = cfg.home_dir(name).exists()
         cp = rt.stop_pod(cfg, name)
-        # A nonzero stop means the pod may still be live — don't claim success or
-        # delete the env file. On macOS this must hold even when was_up is False:
-        # a loaded-but-dead agent has no pid (is_active False) yet still needs its
-        # unload CONFIRMED; swallowing the failure deleted the metadata while
-        # leaving the service, plist and HOME behind. An absent service is rc 0 on
-        # both backends, so this cannot fire for plain "was not running".
-        if cp.returncode != 0 and (was_up or rt.IS_MACOS):
+        # A nonzero stop means the pod may still be live, or its HOME survived —
+        # don't claim success or delete the env file. Gated on there being
+        # something at stake: an inactive Linux name with no HOME left behind has
+        # nothing to lose, and `systemctl stop` on an instance of a template that
+        # was never installed reports "unit not loaded" — swallowing that keeps
+        # `pod down <never-used-name>` the documented no-op it has always been.
+        # When the pod WAS up, or a HOME is there to reclaim, the failure is
+        # fatal: a reclaim that could not finish must not report success.
+        # On macOS it is always fatal, because a loaded-but-dead agent has no pid
+        # (was_up False) yet still needs its unload CONFIRMED before anything is
+        # torn down.
+        if cp.returncode != 0 and (was_up or had_home or rt.IS_MACOS):
             _audit("pod.down", "failure", f"name={name}", error=f"stop rc={cp.returncode}")
             _die(f"stopping pod {name} failed: {(cp.stderr or '').strip()}")
         if rt.RECLAIMED_MARKER in (cp.stdout or ""):
@@ -254,16 +268,18 @@ def _down(cfg: PodConfig, args: argparse.Namespace) -> None:
     _audit("pod.down", "allowed", f"name={name} was_up={was_up}")
     if was_up:
         print(f"pod '{name}' stopped — isolated HOME nuked (zero residue), live plane untouched")
+    elif had_home:
+        print(f"pod '{name}' was not running — reclaimed the isolated HOME it left behind")
     else:
         print(f"pod '{name}' was not running (nothing to stop)")
 
 
 def _ls(cfg: PodConfig, args: argparse.Namespace) -> None:
     names = sorted(rt.active_names(cfg))
-    # macOS only: launchd has no ExecStopPost, so a pod killed without an
-    # explicit `down` leaves its isolated HOME behind. Surface those here —
-    # the docs promise `ls`/`down` make them visible — but keep the JSON array
-    # shape unchanged (three callers parse it); orphans are human-output only.
+    # Teardown belongs to `pod down` on BOTH platforms, so a pod that went away
+    # without one leaves its isolated HOME. Surface those here — the docs promise
+    # `ls`/`down` make them visible — but keep the JSON array shape unchanged
+    # (three callers parse it); orphans are human-output only.
     if args.json:
         rows = [
             {"name": n, "port": rt.derive_port(cfg, n), "health": rt.health(rt.derive_port(cfg, n))}
@@ -271,15 +287,9 @@ def _ls(cfg: PodConfig, args: argparse.Namespace) -> None:
         ]
         print(json.dumps(rows))
         return
-    orphans: list[str] = []
-    if rt.IS_MACOS:
-        try:
-            orphans = launchd.orphan_homes(cfg)
-        except launchd.LaunchdError as exc:
-            # Same translation the runtime seam does: the dispatch layer's
-            # documented contract is PodError -> one-line `pod: <msg>` + exit 1,
-            # not a traceback from the fail-closed probe underneath.
-            raise rt.PodError(str(exc)) from exc
+    # Any fail-closed probe underneath surfaces as PodError, which the dispatch
+    # layer renders as the documented one-line `pod: <msg>` refusal.
+    orphans = rt.orphan_homes(cfg)
     if not names:
         print("no pods running")
         _print_orphans(cfg, orphans)
@@ -292,12 +302,12 @@ def _ls(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 
 def _print_orphans(cfg: PodConfig, orphans: list[str]) -> None:
-    """Human-readable orphan-HOME report (macOS only; empty elsewhere)."""
+    """Human-readable report of pod HOMEs with no live pod behind them."""
     if not orphans:
         return
     print(
-        f"\n{len(orphans)} orphaned pod HOME(s) — left by a pod that died without "
-        "an explicit `down` (launchd has no post-stop hook):"
+        f"\n{len(orphans)} orphaned pod HOME(s) — left by a pod that went away "
+        "without an explicit `down` (a crash, a raw service stop, a reboot):"
     )
     for n in orphans:
         print(f"  {n:<26} reclaim: kirocrew pod down {n}")
@@ -415,11 +425,14 @@ def _run_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 
 def _cleanup_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
-    """Hidden: ExecStopPost body. Safe-deletes the pod's isolated HOME.
+    """Hidden: reclaim ONE pod's isolated HOME by name.
 
-    Re-validates the systemd ``%i`` instance name (which is NOT gated by the CLI's
-    validate_name) and refuses ``..``/absolute/empty before deleting, so a unit
-    started directly as ``kirocrew-pod@..`` can't ``rm`` outside the pod root.
+    Not wired to a service-manager hook (see :mod:`kiro_crew.pod.unit` for why
+    teardown belongs to the ``down`` path) — this is the single-name safe-delete
+    entry point for a manual reclaim, and it re-validates the name, refusing
+    ``..``/absolute/empty, so a caller that never went through the CLI's
+    ``validate_name`` still cannot ``rm`` outside the pod root. Prefer
+    ``kirocrew pod down <name>``, which stops the service first.
     """
     rc = rt.cleanup_home(cfg, args.name)
     outcome = "allowed" if rc == 0 else "failure"

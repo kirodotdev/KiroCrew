@@ -121,6 +121,31 @@ def read_pid(port: int) -> int | None:
     return pid if pid > 0 else None
 
 
+def read_launcher(port: int) -> str | None:
+    """Launcher path recorded by the gateway serving *port*, or ``None``.
+
+    The marker's *contents* — the absolute path to the running gateway's own
+    ``kirocrew`` launcher (see :func:`write_marker`), or ``None`` when the
+    marker is absent, unreadable, or empty (a source-tree ``python -m
+    kiro_crew`` launch records no launcher). Same trust argument as
+    :func:`read_pid`: the file is written ``0600`` inside the keystone-fenced
+    ``0700`` ``run/`` dir, so only the gateway itself can have planted it.
+    Callers that exec the result must still validate it the way mint's shell
+    clause does (an existing executable file).
+
+    Read-only: never creates ``run/`` (unlike :func:`marker_path`, whose
+    ``_run_dir`` materialises the directory).
+    """
+    try:
+        raw = (config_dir() / "run" / f"{_MARKER_PREFIX}{int(port)}{_MARKER_SUFFIX}").read_text(
+            encoding="utf-8"
+        )
+    except (OSError, ValueError):
+        return None
+    raw = raw.strip()
+    return raw or None
+
+
 def marker_ports() -> list[int]:
     """Ports named by the run-markers currently on disk, ascending.
 

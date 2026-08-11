@@ -4,8 +4,8 @@
 // Two translations happen here and both are silent when they break:
 //   • a backend `{"error": …}` body must become the thrown message, or every
 //     failure toast in the app degrades to a bare HTTP status text;
-//   • the STATUS must survive on the error, because the session hook branches on
-//     409 ("another meeting is running") to show a specific message.
+//   • status and machine code must survive on the error, because the session hook
+//     distinguishes conflicts from permanent transcript-capacity failures.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -56,6 +56,31 @@ describe('meetingsApi transport', () => {
       status: 409,
       name: 'MeetingsApiError',
     })
+  })
+
+  it('carries the backend code so permanent failures are not retried', async () => {
+    fetchMock.mockResolvedValue(response(413, {
+      error: 'meeting transcript is too large',
+      code: 'transcript_too_large',
+    }))
+
+    await expect(meetingsApi.dispatch('m', 'hello')).rejects.toMatchObject({
+      status: 413,
+      code: 'transcript_too_large',
+    })
+  })
+
+  it('adds the opaque cursor only to incremental transcript requests', async () => {
+    fetchMock.mockResolvedValue(response(200, { segments: [], next_cursor: 42 }))
+
+    await meetingsApi.transcript('m')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/apps/meetings/meetings/m/transcript')
+
+    fetchMock.mockClear()
+    await meetingsApi.transcript('m', 42)
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/apps/meetings/meetings/m/transcript?cursor=42',
+    )
   })
 
   it('falls back to the status text when the body is not JSON', async () => {

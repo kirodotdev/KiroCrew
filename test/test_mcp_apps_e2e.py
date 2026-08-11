@@ -272,9 +272,15 @@ async def test_declared_only_without_tools_list_no_interception(apps_flag_on, sp
         await live.aclose()
 
 
-async def test_app_only_tool_listed_with_visibility(apps_flag_on, spool_tmp):
-    """tools/list exposes save_state as an app-only tool — the shape the
-    callback endpoint's visibility enforcement consumes."""
+async def test_app_only_tool_withheld_from_agent_listing(apps_flag_on, spool_tmp):
+    """The agent's tools/list omits save_state (visibility ["app"]) but keeps
+    draw, while the app-call path's own listing still sees both.
+
+    Both halves matter and they pull in opposite directions: the model must not
+    be offered an app-only tool (SEP-1865 MUST), and app_call's authorization
+    snapshot must still contain it or every app-only call would be refused as
+    non-existent.
+    """
     live = await _spawn_live_server()
     try:
         inbox = await live.backend.attach_stub("s1")
@@ -287,6 +293,17 @@ async def test_app_only_tool_listed_with_visibility(apps_flag_on, spool_tmp):
         reply = await _recv(inbox)
         tools = {t["name"]: t for t in reply["result"]["tools"]}
         assert tools["draw"]["_meta"]["ui"]["visibility"] == ["model", "app"]
-        assert tools["save_state"]["_meta"]["ui"]["visibility"] == ["app"]
+        assert "save_state" not in tools
+
+        # The app-call stub prefix is what exempts a listing from the filter.
+        app_inbox = await live.backend.attach_stub("__app_call__e2e0")
+        await live.backend.forward_from_stub(
+            "__app_call__e2e0",
+            {"jsonrpc": "2.0", "id": 8, "method": "tools/list", "params": {}},
+        )
+        app_reply = await _recv(app_inbox)
+        app_tools = {t["name"]: t for t in app_reply["result"]["tools"]}
+        assert app_tools["save_state"]["_meta"]["ui"]["visibility"] == ["app"]
+        assert "draw" in app_tools
     finally:
         await live.aclose()

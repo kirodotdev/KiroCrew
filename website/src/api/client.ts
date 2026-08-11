@@ -164,6 +164,8 @@ export interface SlackConfigData {
   allowed_enterprise_ids: string[]
   reactions_enabled: boolean
   show_thinking: boolean
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Slack config fields sent to PUT /api/slack/config. */
@@ -177,6 +179,8 @@ export interface SlackConfigSave {
   allowed_enterprise_ids: string[]
   reactions_enabled: boolean
   show_thinking: boolean
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Discord config as returned by GET /api/discord/config (secret masked). */
@@ -191,6 +195,8 @@ export interface DiscordConfigData {
   allowed_user_ids: string[]
   allowed_thread_ids: string[]
   soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Telegram config as returned by GET /api/telegram/config (secret masked). */
@@ -207,6 +213,8 @@ export interface TelegramConfigData {
   // Forum per-topic config. chat_ids are negative supergroup ids as strings.
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Discord config fields sent to PUT /api/discord/config. */
@@ -217,6 +225,8 @@ export interface DiscordConfigSave {
   allowed_user_ids: string[]
   allowed_thread_ids: string[]
   soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Telegram config fields sent to PUT /api/telegram/config. */
@@ -228,6 +238,8 @@ export interface TelegramConfigSave {
   soft_threshold_pct: number
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** WeCom config as returned by GET /api/wecom/config (secrets masked). */
@@ -247,6 +259,8 @@ export interface WeComConfigData {
   /** Explicit opt-in: every org member may DM the bot (allow-list bypassed). */
   allow_all_users: boolean
   soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable WeCom config fields sent to PUT /api/wecom/config. */
@@ -259,6 +273,8 @@ export interface WeComConfigSave {
   allowed_user_ids: string[]
   allow_all_users: boolean
   soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Webex config as returned by GET /api/webex/config (secret masked). */
@@ -271,6 +287,8 @@ export interface WebexConfigData {
   bot_token_preview: string
   enabled: boolean
   allowed_emails: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Webex config fields sent to PUT /api/webex/config. */
@@ -279,6 +297,8 @@ export interface WebexConfigSave {
   bot_token_clear: boolean
   enabled: boolean
   allowed_emails: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Microsoft Teams channel status + config, from GET /api/teams/config. */
@@ -292,6 +312,8 @@ export interface TeamsConfigData {
   enabled: boolean
   tenant_id: string
   allowed_emails: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Weixin (iLink personal WeChat) config from GET /api/weixin/config.
@@ -307,6 +329,8 @@ export interface WeixinConfigData {
   account_id: string
   dm_policy: string
   allowed_user_ids: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Teams config fields sent to PUT /api/teams/config. The secret
@@ -318,6 +342,8 @@ export interface TeamsConfigSave {
   tenant_id: string
   enabled: boolean
   allowed_emails: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** Writable Weixin config fields sent to PUT /api/weixin/config. */
@@ -326,6 +352,8 @@ export interface WeixinConfigSave {
   dm_policy: string
   allowed_user_ids: string[]
   disconnect: boolean
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
 }
 
 /** A built-in denied-command rule as returned by GET /api/security/denied-commands. */
@@ -1221,6 +1249,9 @@ export const api = {
   telemetryContextTrace: (slot: string) =>
     fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot)).then(j),
   beaconStatus: () => fetch('/api/telemetry/beacon').then(j),
+  /** Local metric-collection posture for the Privacy panel's recording switch.
+   *  Separate from telemetryStartup(), which parses every shard in the window. */
+  collectionStatus: () => fetch('/api/telemetry/collection').then(j),
   // Background polls read the gateway's latched state (no kiro-cli subprocess).
   // `refresh` is the explicit user action (Refresh / Check again) that forces a
   // real host probe.
@@ -1432,7 +1463,17 @@ export const api = {
   agentPatch: (name: string, body: object) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   agentDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
   // KiroCrew agents
-  kirocrewAgents: () => fetch('/api/agents').then(j),
+  // sessionKey identifies the CHAT SLOT whose project scope applies. The
+  // server resolves project-local agents through
+  // active_project_dir(state, session_key); with no key it falls back to
+  // "the single project shared by every slot" and fails closed when two
+  // slots sit on different projects, so project-scoped agents silently
+  // vanish from the picker. Surfaces with no slot context (Channels,
+  // Schedule) pass nothing and keep the global-only view.
+  kirocrewAgents: (sessionKey?: string) =>
+    fetch('/api/agents', {
+      headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
+    }).then(j),
   /** The model a new session on this KiroCrew agent would run on. Empty
    *  `agent` resolves the configured default agent. */
   agentResolvedModel: (agent: string) =>
@@ -1918,6 +1959,18 @@ export const api = {
   releases: () => fetch('/api/releases').then(j),
   applyUpdate: () => post('/api/update').then(j),
   setAutoUpdate: (enabled: boolean) => post('/api/update/auto', { enabled }).then(j),
+  /**
+   * Move this install onto another release channel. Changes which feed the next
+   * check compares against; it never installs anything, so the response is the
+   * re-run check against the NEW channel.
+   */
+  setUpdateChannel: (channel: string) => post('/api/update/channel', { channel }).then(j),
+  /**
+   * Restart the gateway without updating. The connection drops as the process
+   * image is replaced, so callers must treat a network failure after a 200 as
+   * the expected path rather than an error.
+   */
+  restartGateway: () => post('/api/restart').then(j),
   cancelUpdate: () => post('/api/update/cancel').then(j),
   simulateUpdate: (opts?: { delay?: number; fail_at?: string }) => post('/api/update/simulate', opts || {}).then(j),
   pickFiles: () => post('/api/upload').then(j) as Promise<{ paths: string[] }>,

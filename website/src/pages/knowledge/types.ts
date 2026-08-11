@@ -49,6 +49,34 @@ export interface SourceSummary {
   generated_at?: string
 }
 
+/**
+ * Per-source indexing progress and the Kiro requests still owed for it.
+ *
+ * Indexing draws billed Kiro requests sweep after sweep while files remain, so
+ * these counters are what make that ongoing cost visible before it lands on a
+ * bill. One model call is one billed request, which is why the UI denominates
+ * the figure in requests: `estimated_llm_calls_remaining` keeps the engine-side
+ * name, but it is the same quantity the bill counts. It is an order-of-magnitude
+ * estimate, not a bound the sweep enforces.
+ *
+ * The four file counters are a strict partition of `files_total` — every file is
+ * in exactly one of done / failed / skipped / pending. Deliberately kept that way
+ * rather than pre-combining them: "how far along is this" is a presentation
+ * question with more than one defensible answer, and a caller that wants a
+ * different split (say, treating skipped as unresolved) can compute it. The
+ * sources list adds `files_done + files_skipped` for its fraction and shows
+ * `files_failed` separately.
+ */
+export interface SourceSpend {
+  files_total: number
+  files_done: number
+  files_failed: number
+  files_skipped: number
+  files_pending: number
+  chunks_embedded: number
+  estimated_llm_calls_remaining: number
+}
+
 export interface Source {
   id: string
   name: string
@@ -60,6 +88,7 @@ export interface Source {
   properties?: string | Record<string, unknown>
   summary_topic?: string
   summary_themes?: string
+  spend?: SourceSpend
 }
 
 export interface SourceFileInfo {

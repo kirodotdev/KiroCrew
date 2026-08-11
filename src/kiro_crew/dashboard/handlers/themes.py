@@ -426,7 +426,10 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
         stage = _themes_dir() / f".install-staging-{token}"
         try:
             _copy_installed_theme(src, stage)
-            summary, err = _validate_theme_dir(stage)
+            # installing=True: only the install path refuses a pack for pinning
+            # the UI font, so a pack installed before that rule keeps loading on
+            # the read path (see _validate_overrides_css).
+            summary, err = _validate_theme_dir(stage, installing=True)
         except ValueError as ve:
             shutil.rmtree(stage, ignore_errors=True)
             return None, str(ve), 400

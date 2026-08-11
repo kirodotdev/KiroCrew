@@ -219,8 +219,14 @@
      what makes leading safe. */
   --script-fallbacks:'KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --font-body:var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;
-  --mono:var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  /* An installed theme pack fills --theme-font-sans / --theme-font-mono with its
+     own faces (see hooks/themeCss.ts). Reading them here means code surfaces
+     follow a pack's monospace face without the user having to switch the whole UI
+     to monospace, and the pack's proportional face is already in place on first
+     paint rather than swapping in when the preference effect runs. Unfilled, each
+     var() falls back to the built-in stack. */
+  --font-body:var(--theme-font-sans, var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif);
+  --mono:var(--theme-font-mono, var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace);
   --radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;
 }
 html:lang(ja) {
@@ -1960,6 +1966,31 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 [data-theme*="dark"] .file-chip:not(.glass-static):hover {
   border-color: rgba(255, 255, 255, 0.09);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* ── No-backdrop-filter fallback (issue #1817) ──
+ * Every glass surface gets ALL of its real opacity from backdrop-filter: the
+ * background tints are 3-8% alpha (.glass-surface) or a transparent color-mix
+ * (.topbar-glass, .notif-material). Where the engine does not support the
+ * property — older Chromium/Electron builds where it was flag-gated, or Linux
+ * builds compiled without it — the blur declaration is dropped at parse time
+ * and only the near-invisible tint remains, i.e. a transparent panel
+ * (issue #1817, Linux AppImage).
+ *
+ * Mirror of the prefers-reduced-transparency fallback below so there is ONE
+ * degradation story: solid themed background, borders/shadows untouched so
+ * panels stay delimited. !important is required — the dark-theme and :hover
+ * glass rules outrank these selectors on specificity, and Tailwind hover
+ * utilities outrank .notif-material — and it matches the a11y overrides,
+ * which stay later in source order so they still win when both apply.
+ * Test BOTH prefixes: Electron/Chromium historically supported one or the
+ * other. Scoped to the glass classes: platforms with working backdrop-filter
+ * never match this query and keep the glass look. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topbar-glass,.glass-surface{ background:var(--bg) !important }
+  /* Floating notification cards (NotificationFeed mac variant) sit OVER page
+     content, so they solidify to the card color, not the page background. */
+  .notif-material{ background:var(--card) !important }
 }
 
 /* ── TIER1 a11y: reduced motion / transparency / contrast ── */

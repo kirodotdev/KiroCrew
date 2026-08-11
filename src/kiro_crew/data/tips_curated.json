@@ -15,10 +15,11 @@
       "id": "command-palette",
       "feature": "Command Palette",
       "title": "Jump anywhere with ⌘K",
-      "body": "Press **⌘K** (**Ctrl+K**), or double-tap **Shift**, to open Search Everywhere — sessions, pages, skills, prompts, artifacts, settings, and runnable actions in one box.",
+      "body": "Press **⌘K** (**Ctrl+K**) to open Search Everywhere — sessions, pages, skills, prompts, artifacts, settings, and runnable actions in one box. Prefer the IntelliJ-style double-tap **Shift**? Turn it on in **Settings › Shortcuts**.",
       "why": "",
       "doc": "",
-      "cta_prompt": ""
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Shortcuts settings", "route": "/settings?tab=shortcuts" }
     },
     {
       "id": "steer-or-queue",

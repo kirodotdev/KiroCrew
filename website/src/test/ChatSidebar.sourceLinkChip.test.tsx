@@ -310,4 +310,18 @@ describe('ChatSidebar – terminal PR chips suppress CI', () => {
     expect(chipEl.querySelector('[aria-label="Checks passed"]')).toBeNull()
     expect(chipEl.querySelector('[aria-label="Checks failed"]')).toBeNull()
   })
+
+  /**
+   * The pending-CI glyph must be STATIC. An animated spinner on a session card
+   * reads as "the agent is working on this session" — users conflated PR check
+   * status with session activity. Motion on the card is reserved for session
+   * activity; PR-pending is a still amber dot (the provider's own convention).
+   */
+  it('renders pending CI as a static glyph, not a spinner', () => {
+    renderSidebar({ rows: stateRows() })
+    const glyph = spinner(995)
+    expect(glyph).not.toBeNull()
+    expect(glyph!.classList.contains('animate-spin')).toBe(false)
+    expect(glyph!.className.baseVal ?? glyph!.className).not.toMatch(/animate/)
+  })
 })

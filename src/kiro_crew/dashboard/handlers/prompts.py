@@ -18,6 +18,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from ._shared import (
     _capability_manager,
     _get_skills,
+    _read_session_key,
     _resolve_skill_root,
     active_project_dir,
     collect_skills_blocking,
@@ -185,7 +186,10 @@ async def api_skills(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     # Resolve the active project dir (cheap in-memory scan of slots) on the loop.
-    project_dir: Path | None = active_project_dir(state)
+    # Scoped to the requesting chat slot: without the key, two chats on
+    # different projects made this fall to None and kiro-workspace skills
+    # silently vanished from the listing (#2457).
+    project_dir: Path | None = active_project_dir(state, _read_session_key(request))
     # Run the AIM subprocess async (on the loop, non-blocking), then offload ALL
     # blocking filesystem work — kirocrew list_skills() (os.walk + per-file
     # frontmatter reads), AIM path globs, kiro per-skill resolve/read, and the
@@ -223,7 +227,18 @@ async def api_skill_tree(request: web.Request) -> web.Response:
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["name"]
-    root = _resolve_skill_root(name, state)
+    session_key = _read_session_key(request)
+
+    def _resolve_and_list() -> tuple["Path | None", list]:
+        # Resolve (stat/realpath) and the tree walk are one filesystem
+        # transaction; both run on the discovery pool so a network-backed
+        # project cannot stall the event loop.
+        r = _resolve_skill_root(name, state, session_key)
+        return (r, list_skill_tree(r) if r is not None else [])
+
+    root, entries = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _resolve_and_list
+    )
     if root is None:
         _sel().log_tool_invocation(
             session_key='', agent='api', source='dashboard',
@@ -231,7 +246,6 @@ async def api_skill_tree(request: web.Request) -> web.Response:
             metadata={'name': name},
         )
         return web.json_response({"error": "not found"}, status=404)
-    entries = list_skill_tree(root)
     # Sanitize the absolute path — never expose the server's real home to the
     # client.  ``root`` is already resolved (symlinks followed), so compare
     # against the *resolved* home too; otherwise a symlinked home (e.g. macOS
@@ -269,11 +283,22 @@ async def api_skill_file(request: web.Request) -> web.Response:
     if not rel_path:
         _audit('bad_request')
         return web.json_response({"error": "path query param required"}, status=400)
-    root = _resolve_skill_root(name, state)
+    session_key = _read_session_key(request)
+
+    def _resolve_and_read() -> tuple["Path | None", str | None, str | None]:
+        # One filesystem transaction on the discovery pool (see api_skill_tree).
+        r = _resolve_skill_root(name, state, session_key)
+        if r is None:
+            return None, None, None
+        c, e = read_skill_file(r, rel_path)
+        return r, c, e
+
+    root, content, err = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _resolve_and_read
+    )
     if root is None:
         _audit('not_found')
         return web.json_response({"error": "not found"}, status=404)
-    content, err = read_skill_file(root, rel_path)
     if err:
         if err == "access denied":
             _audit('blocked')
@@ -672,11 +697,21 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         # same path-resolution logic used by the tree/file endpoints so the
         # detail modal can fetch SKILL.md regardless of which root the
         # skill lives in.
-        root = _resolve_skill_root(name, state)
-        if root is not None:
-            content_value, err = read_skill_file(root, "SKILL.md")
-            if err is None:
-                content = content_value
+        session_key = _read_session_key(request)
+
+        def _resolve_and_read_md() -> str | None:
+            # One filesystem transaction on the discovery pool (see api_skill_tree).
+            r = _resolve_skill_root(name, state, session_key)
+            if r is None:
+                return None
+            c, e = read_skill_file(r, "SKILL.md")
+            return c if e is None else None
+
+        content_value = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _resolve_and_read_md
+        )
+        if content_value is not None:
+            content = content_value
     if content is None:
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response({"name": name, "content": content})

@@ -7,6 +7,7 @@
 ``GET  …/meetings``           list every meeting with metadata on disk
 ``GET  …/{id}``               one meeting's metadata
 ``DELETE …/{id}``             permanently remove an inactive meeting
+``GET  …/{id}/transcript``     finalized speech and typed broadcasts
 ``GET  …/{id}/outputs``       batch-read every agent output + tasks.json
 ``POST …/{id}/attachments``   add/remove context attachments
 """
@@ -26,6 +27,7 @@ from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 from kiro_crew.apps.builtins.meetings.backend.routes import tasks as task_routes
 from kiro_crew.apps.builtins.meetings.backend.routes._common import (
     ACTIVE,
+    DISPATCH_LOCK,
     START_LOCK,
     BadRequest,
     audit,
@@ -34,6 +36,7 @@ from kiro_crew.apps.builtins.meetings.backend.routes._common import (
     field_str_list,
     hooks_of,
     json_body,
+    query_int,
     sessions_of,
 )
 from kiro_crew.security import redact
@@ -70,9 +73,7 @@ def _clean_attachment(raw: Any) -> dict[str, str] | None:
     return {"type": "file", "path": redact(path), "label": label or path.rsplit("/", 1)[-1]}
 
 
-def _init_meeting(
-    meeting_id: str, title: str, body: dict[str, Any], root: Any
-) -> dict[str, Any]:
+def _init_meeting(meeting_id: str, title: str, body: dict[str, Any], root: Any) -> dict[str, Any]:
     """Create the meeting folder, metadata, tasks file, and agent outputs. BLOCKING.
 
     Runs on a worker thread, never the event loop: this is half a dozen filesystem
@@ -122,9 +123,7 @@ async def handle_meeting_init(request: web.Request) -> web.Response:
     # the whole worker-thread transaction under the lifecycle lock so a meeting
     # cannot be recreated after a concurrent delete has returned 204.
     async with START_LOCK:
-        meta = await asyncio.to_thread(
-            _init_meeting, meeting_id, title, body, data_root(request)
-        )
+        meta = await asyncio.to_thread(_init_meeting, meeting_id, title, body, data_root(request))
     return web.json_response({"ok": True, "meeting_id": meeting_id, "meta": meta})
 
 
@@ -133,7 +132,9 @@ async def handle_get_meeting(request: web.Request) -> web.Response:
     meeting_id = _meeting_id(request)
     meta = await asyncio.to_thread(store.read_meeting_meta, meeting_id, data_root(request))
     if meta is None:
-        return web.json_response({"error": "meeting not found", "code": "meeting_not_found"}, status=404)
+        return web.json_response(
+            {"error": "meeting not found", "code": "meeting_not_found"}, status=404
+        )
     live = ACTIVE.get(meeting_id)
     return web.json_response(
         {
@@ -148,6 +149,37 @@ async def handle_list_meetings(request: web.Request) -> web.Response:
     # every hit, so it grows with the user's meeting history — off the loop.
     meetings = await asyncio.to_thread(store.list_meetings, data_root(request))
     return web.json_response({"meetings": meetings})
+
+
+def _collect_transcript(
+    meeting_id: str, cursor: int, root: Any
+) -> tuple[bool, list[dict[str, str]], int]:
+    """Read meeting existence and its transcript off the event loop. BLOCKING."""
+    exists = store.read_meeting_meta(meeting_id, root) is not None
+    if not exists:
+        return False, [], 0
+    segments, next_cursor = store.read_transcript_page(meeting_id, cursor, root)
+    return True, segments, next_cursor
+
+
+async def handle_get_transcript(request: web.Request) -> web.Response:
+    """Return finalized transcript segments from an optional byte cursor."""
+    meeting_id = _meeting_id(request)
+    cursor = query_int(
+        request,
+        "cursor",
+        default=0,
+        low=0,
+        high=k.MAX_TRANSCRIPT_BYTES,
+    )
+    exists, segments, next_cursor = await asyncio.to_thread(
+        _collect_transcript, meeting_id, cursor, data_root(request)
+    )
+    if not exists:
+        return web.json_response(
+            {"error": "meeting not found", "code": "meeting_not_found"}, status=404
+        )
+    return web.json_response({"segments": segments, "next_cursor": next_cursor})
 
 
 def _delete_meeting(meeting_id: str, root: Any) -> bool:
@@ -242,7 +274,8 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
         if existing is not None and existing.meeting_id != meeting_id and not existing.expired:
             audit("meetings.start", meeting_id, outcome="denied", error="another meeting is active")
             return web.json_response(
-                {"error": "another meeting is already active", "code": "meeting_already_active"}, status=409
+                {"error": "another meeting is already active", "code": "meeting_already_active"},
+                status=409,
             )
 
         meta, config = await asyncio.to_thread(
@@ -262,8 +295,17 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
         # the same loss as the teardown paths, reached by a different route. Awaiting is
         # possible here because this is an `async def`; the previous justification for
         # the non-awaiting `set()` did not survive checking.
+        # Close the outgoing session's ingress before draining it. Dispatch uses a
+        # separate short-lived lock, so later speech is rejected promptly while an
+        # agent takes time to finish its queued turn.
+        async with DISPATCH_LOCK:
+            ACTIVE.suspend_dispatches(ACTIVE.get())
         outgoing = await ACTIVE.drain_and_clear()
-        ACTIVE.set(session)
+        async with DISPATCH_LOCK:
+            ACTIVE.set(session)
+            # Agent initialization may await several model turns. Keep ingress
+            # closed until every enabled agent knows its output contract.
+            ACTIVE.suspend_dispatches(session)
 
         # A replacement of a DIFFERENT meeting is a teardown of that meeting, so its
         # metadata needs the same terminal status every other teardown writes.
@@ -309,6 +351,8 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
         await sess.init_agents(session, meta, root)
         if is_restart:
             await sess.broadcast_system(session, k.SYSTEM_MEETING_RESTARTED)
+        async with DISPATCH_LOCK:
+            ACTIVE.resume_dispatches(session)
 
     audit("meetings.start", meeting_id, outcome="ok")
     return web.json_response(
@@ -373,19 +417,35 @@ async def handle_meeting_status(request: web.Request) -> web.Response:
     if status not in k.VALID_STATUSES:
         raise BadRequest(f"status must be one of {', '.join(k.VALID_STATUSES)}")
 
-    meta = await asyncio.to_thread(_apply_status, meeting_id, status, root)
-    if meta is None:
-        return web.json_response({"error": "meeting not found", "code": "meeting_not_found"}, status=404)
+    # The admission lock first waits for an in-flight durable append/fan-out. It is
+    # released before agent flushes, so a slow agent cannot hold every later
+    # request in this endpoint's queue.
+    async with START_LOCK:
+        async with DISPATCH_LOCK:
+            meta = await asyncio.to_thread(_apply_status, meeting_id, status, root)
+            if meta is None:
+                return web.json_response(
+                    {"error": "meeting not found", "code": "meeting_not_found"},
+                    status=404,
+                )
 
-    session = ACTIVE.get(meeting_id)
-    if session is not None and status in (k.STATUS_PAUSED, k.STATUS_REVIEWING, k.STATUS_ENDED):
-        # A paused/reviewing meeting stops receiving transcription, so flush what
-        # is queued rather than leaving a half-batch to expire with the session.
-        await session.flush_all()
-    if session is not None and status == k.STATUS_ENDED:
-        # Already flushed above for this status, but use the draining teardown so a
-        # future edit to the branch above cannot silently reintroduce the loss.
-        await ACTIVE.drain_and_clear()
+            session = ACTIVE.get(meeting_id)
+            if session is not None and status in (k.STATUS_REVIEWING, k.STATUS_ENDED):
+                ACTIVE.suspend_dispatches(session)
+            elif session is not None and status == k.STATUS_ACTIVE:
+                ACTIVE.resume_dispatches(session)
+        if session is not None and status in (
+            k.STATUS_PAUSED,
+            k.STATUS_REVIEWING,
+            k.STATUS_ENDED,
+        ):
+            # A paused/reviewing meeting stops receiving transcription, so flush what
+            # is queued rather than leaving a half-batch to expire with the session.
+            await session.flush_all()
+        if session is not None and status == k.STATUS_ENDED:
+            # Already flushed above for this status, but use the draining teardown so a
+            # future edit to the branch above cannot silently reintroduce the loss.
+            await ACTIVE.drain_and_clear()
 
     return web.json_response({"ok": True, "status": status})
 
@@ -406,7 +466,9 @@ async def handle_stop_meeting(request: web.Request) -> web.Response:
     meeting_id = _meeting_id(request)
     root = data_root(request)
     async with START_LOCK:
-        session = ACTIVE.get(meeting_id)
+        async with DISPATCH_LOCK:
+            session = ACTIVE.get(meeting_id)
+            ACTIVE.suspend_dispatches(session)
         if session is not None:
             await sess.broadcast_system(session, k.SYSTEM_MEETING_ENDED)
             # The finalize notice is itself enqueued, so the teardown MUST drain or
@@ -514,9 +576,9 @@ async def handle_attachments(request: web.Request) -> web.Response:
     """Add or remove meeting context attachments."""
     meeting_id = _meeting_id(request)
     body = await json_body(request)
-    attachments = await asyncio.to_thread(
-        _apply_attachments, meeting_id, body, data_root(request)
-    )
+    attachments = await asyncio.to_thread(_apply_attachments, meeting_id, body, data_root(request))
     if attachments is None:
-        return web.json_response({"error": "meeting not found", "code": "meeting_not_found"}, status=404)
+        return web.json_response(
+            {"error": "meeting not found", "code": "meeting_not_found"}, status=404
+        )
     return web.json_response({"ok": True, "attachments": attachments})

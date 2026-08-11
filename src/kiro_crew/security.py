@@ -5048,6 +5048,14 @@ _NORMALIZER_READ_VERBS: frozenset[str] = frozenset(
 # same fidelity as reading it. npm's own fs.link() never transits this gate.
 _LINK_CREATE_VERBS: frozenset[str] = frozenset({"ln", "link"})
 
+# Shell redirection operators attached without a space (``>~/path``,
+# ``>>~/path``, ``2>~/path``, ``2>>~/path``, ``<~/path``).  shlex keeps these
+# as a single token; we strip the operator prefix to expose the path for
+# checking.  Covers output (``>``, ``>>``) and input (``<``) redirections,
+# each with an optional fd number prefix.  Does NOT match heredoc (``<<``)
+# since that takes a delimiter word, not a path.
+_REDIR_PREFIX_RE = re.compile(r"^\d*(?:>>?|<(?!<))")
+
 
 def is_sensitive_bash_command(command: str) -> str | None:
     """Check if a bash command reads sensitive paths, accesses IMDS, or leaks env creds.
@@ -5100,8 +5108,17 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     - Relative traversal: ``awk '{print}' ~/../../.aws/credentials``
     - Mixed evasion: ``"cat" ~/.aws/credentials``
 
-    Only triggers when a recognized read verb is present in the resolved tokens
-    (avoids false positives on write/create commands).
+    Runs VERB-INDEPENDENTLY, matching the posture the regex first-pass already
+    ships: :func:`_build_sensitive_regex`'s catch-all branch blocks any command
+    that NAMES a sensitive path, whatever the verb, because naming one is itself
+    the signal. This pass previously required a token from
+    :data:`_NORMALIZER_READ_VERBS`, so normalization — the only layer that can
+    decide path equivalence — ran on the read path alone. A single dot segment
+    then turned the keystone fence off for every write verb: ``tee
+    ~/.kiro/crew/live_target.json`` was blocked while ``echo x >
+    ~/.kiro/crew/./live_target.json`` was not, on a default install. The verb
+    allowlist is now used only to skip the command name itself, never to decide
+    whether operands get checked.
 
     Returns denial reason string, or None if clean.
     """
@@ -5113,41 +5130,49 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     if not tokens:
         return None
 
-    # Check if any token resolves to a known read verb or hardlink/symlink
-    # creation verb (by basename, so /usr/bin/cat is recognized as "cat").
-    has_relevant_verb = False
-    for token in tokens:
-        if not token:
-            continue
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
-            has_relevant_verb = True
-            break
-
-    if not has_relevant_verb:
-        return None
-
     # Route each path-like token through is_sensitive_path()
     for token in tokens:
         if not token:
             continue
-        # Skip flags
-        if token.startswith("-"):
-            continue
-        # Skip tokens that ARE the verb itself
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
-            continue
-        # Only check tokens that look like filesystem paths
-        if not _is_path_like(token):
-            continue
-        # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
-        # $HOME expansion, and all sensitive directory checks
-        if is_sensitive_path(token):
-            return (
-                "Blocked: command accesses sensitive credential path "
-                f"(resolved via normalizer: {token[:80]})"
-            )
+        # ``key=value`` operands carry the real path to the RIGHT of the first
+        # ``=``: dd's ``of=…``/``if=…`` and long flags like ``--output=…``.
+        # Checking the raw token cannot work (``of=/x`` resolves to nothing),
+        # and the flag skip below would drop ``--output=/x`` before it is ever
+        # looked at — so split and check the value too.
+        candidates = [token]
+        if "=" in token:
+            value = token.split("=", 1)[1]
+            if value:
+                candidates.append(value)
+        for cand in candidates:
+            # Shell redirections attached without a space (``>~/path``,
+            # ``>>~/path``, ``2>~/path``) are kept as a single token by
+            # shlex.  Strip the leading operator so the path portion is
+            # checked.  Pattern: optional fd digit(s), then ``>`` or ``>>``.
+            stripped = _REDIR_PREFIX_RE.sub("", cand)
+            if stripped != cand:
+                # The stripped form is the real path candidate; if empty
+                # after stripping, skip (bare ``>`` alone).
+                if not stripped:
+                    continue
+                cand = stripped
+            # Skip flags
+            if cand.startswith("-"):
+                continue
+            # Skip tokens that ARE the verb itself
+            basename = os.path.basename(cand).lower()
+            if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
+                continue
+            # Only check tokens that look like filesystem paths
+            if not _is_path_like(cand):
+                continue
+            # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
+            # $HOME expansion, and all sensitive directory checks
+            if is_sensitive_path(cand):
+                return (
+                    "Blocked: command accesses sensitive credential path "
+                    f"(resolved via normalizer: {cand[:80]})"
+                )
     return None
 
 
@@ -5653,6 +5678,124 @@ def _exfil_exempt_hosts() -> frozenset[str]:
     return frozenset(host.lower() for host in _exempt_exact_hosts())
 
 
+# ── Kiro Crew's own Slack app-create deep link ──
+# ``kirocrew manifest --url`` and ``GET /api/slack/manifest`` both hand the user
+# Slack's new-app deep link carrying the bundled app manifest percent-encoded
+# into ``manifest_yaml``. That payload is ~1.9 KB, so the aggregate query-length
+# heuristic classifies it as exfiltration and the user is shown
+# ``[REDACTED: suspicious URL to api.slack.com]`` instead of the link the setup
+# guide tells them to click.
+#
+# The carve-out VALIDATES rather than trusts the destination: the decoded payload
+# must reproduce the bundled template, so an approved (host, path) carries no
+# arbitrary bytes. A different path, an extra or missing parameter, a repeated
+# parameter, or a payload that does not rebuild the template all keep the full
+# heuristics. This is deliberately NOT a host exemption: ``_exempt_exact_hosts``
+# is companion-owned tenant trust, and widening it here would exempt every URL at
+# api.slack.com including a model-authored one.
+#
+# The ALIAS is the one caller-controlled span, so it does NOT ride free: the
+# caller feeds it back through the base64-blob heuristic (see
+# ``_exfil_url_warning``) instead of zeroing the heuristic payload. Zeroing it was
+# a real bypass — the alias slot accepted 64 chars of ``[A-Za-z0-9_-]``, which is
+# wide enough for a 40-char alphanumeric secret, and ``_EXFIL_PATTERNS`` needs a
+# 40+ char run to fire. ``slack_manifest.ALIAS_MAX`` (32) now makes such a run
+# impossible AND the surviving span is still scanned, so an ``AKIA…`` id or an
+# ``xox…`` token short enough to fit is caught on the alias alone.
+#
+# Residual, stated rather than implied: an alias of up to ALIAS_MAX chars that
+# resembles no known credential is exempt from the base64/length heuristics. That
+# opens no NEW capability — any URL at any host may already carry a query under
+# _EXFIL_QUERY_MIN_LEN (200) chars without tripping either heuristic, so this
+# span is strictly narrower than what is available without the carve-out.
+#
+# Every unconditional check runs BEFORE this point and is unaffected:
+# hard-credential markers, canonical provider tokens, the multi-pass decode (and
+# its fail-closed saturation branch), and heavy percent-encoding.
+_SLACK_APP_CREATE_PARAMS = frozenset({"new_app", "manifest_yaml"})
+# Single-slot cache for the derived pattern. A plain module constant would read
+# packaged data at import time, which ``security`` avoids: it is imported by the
+# stdio MCP servers, where import-time file I/O is on the critical path.
+_slack_manifest_re_slot: list[re.Pattern[str] | None] = []
+
+
+def _slack_manifest_payload_re() -> re.Pattern[str] | None:
+    """Pattern matching the bundled Slack manifest rendered with any one alias.
+
+    Derived from ``slack_manifest.stripped_template()`` — the SAME procedure both
+    emitters use to build the payload — so the accepted payload cannot drift from
+    the emitted one. Every ``{{ALIAS}}`` after the first must be the same alias
+    (backreference), so a payload that varies them is rejected. Returns None when
+    the template cannot be read, which fails closed (no exemption).
+    """
+    if _slack_manifest_re_slot:
+        return _slack_manifest_re_slot[0]
+    compiled: re.Pattern[str] | None = None
+    try:
+        from kiro_crew import slack_manifest
+
+        rendered = slack_manifest.stripped_template()
+        placeholder_token = slack_manifest.ALIAS_PLACEHOLDER
+        alias_body = slack_manifest.ALIAS_PATTERN
+    except Exception:
+        rendered = ""
+        placeholder_token = ""
+        alias_body = ""
+    if rendered and placeholder_token in rendered:
+        parts = rendered.split(placeholder_token)
+        pattern = re.escape(parts[0])
+        for index, part in enumerate(parts[1:]):
+            slot = f"(?P<alias>{alias_body})" if index == 0 else "(?P=alias)"
+            pattern += slot + re.escape(part)
+        compiled = re.compile(pattern)
+    _slack_manifest_re_slot.append(compiled)
+    return compiled
+
+
+def _kirocrew_slack_app_link_alias(
+    domain: str,
+    path: str,
+    query: str,
+    *,
+    is_https: bool,
+    port: str,
+) -> str | None:
+    """The alias when this is our own Slack app-create link, else None.
+
+    Returns the captured alias rather than a bool so the caller can keep that one
+    caller-controlled span under the heuristics. An empty-string alias is
+    impossible (the pattern requires at least one char), so a truthiness test on
+    the result would be safe — but callers should compare against None to keep
+    that dependence explicit.
+
+    ``domain`` is expected already lowercased by the caller. HTTPS-only and no
+    explicit port, matching the OAuth gate's posture.
+    """
+    if not is_https or port:
+        return None
+    from kiro_crew import slack_manifest
+
+    if domain != slack_manifest.APP_CREATE_HOST or path != slack_manifest.APP_CREATE_PATH:
+        return None
+    params = parse_qs(query, keep_blank_values=True)
+    # Exact param set — an extra parameter is the obvious smuggling shape, so a
+    # superset is refused rather than ignored.
+    if set(params) != _SLACK_APP_CREATE_PARAMS:
+        return None
+    if params["new_app"] != ["1"]:
+        return None
+    payloads = params["manifest_yaml"]
+    if len(payloads) != 1:
+        return None
+    pattern = _slack_manifest_payload_re()
+    if pattern is None:
+        return None
+    match = pattern.fullmatch(payloads[0])
+    if match is None:
+        return None
+    return match.group("alias")
+
+
 def _exfil_url_warning(
     domain: str,
     path_and_query: str,
@@ -5747,6 +5890,21 @@ def _exfil_url_warning(
             for segment in query.split("&")
             if segment.partition("=")[0] not in _OAUTH_QUERY_PARAMS
         )
+    elif (
+        _slack_alias := _kirocrew_slack_app_link_alias(
+            _dom,
+            path_and_query.split("?", 1)[0],
+            query,
+            is_https=is_https,
+            port=port,
+        )
+    ) is not None:
+        # Our own app-create link: the payload reproduces the bundled template,
+        # so the constant bytes are what caused the false positive and are
+        # excluded. The alias is the one caller-controlled span, so it STAYS
+        # under the heuristics rather than riding free — zeroing this was a
+        # bypass wide enough for a 40-char alphanumeric secret.
+        heuristic_query = _slack_alias
     elif _dom in exempt_hosts:
         heuristic_query = ""
     else:
@@ -6079,6 +6237,35 @@ def _shannon_entropy(token: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in counts.values())
 
 
+def _has_all_three_char_classes(text: str) -> bool:
+    """Return True if *text* holds at least one lowercase, uppercase AND digit.
+
+    One pass with early exit, rather than three ``any()`` scans. Semantically
+    identical, but this is the hottest predicate in the redaction path:
+    :func:`_contains_bare_secret` slides a 40-char window BYTE BY BYTE across
+    every base64-alphabet run, so a single 512-char run asks this question 473
+    times. Three ``any()`` scans build three generators per call and cost the
+    SUM of their three first-match offsets; one loop breaks on completion and
+    costs the MAX. Both forms short-circuit, so the saving is generator frames
+    plus that sum-vs-max difference.
+
+    Absence of a class is closed under substring, which is what lets
+    :func:`_contains_bare_secret` ask this about a whole run and retire every
+    window at once.
+    """
+    has_lower = has_upper = has_digit = False
+    for ch in text:
+        if not has_lower and ch.islower():
+            has_lower = True
+        elif not has_upper and ch.isupper():
+            has_upper = True
+        elif not has_digit and ch.isdigit():
+            has_digit = True
+        if has_lower and has_upper and has_digit:
+            return True
+    return False
+
+
 def _decodes_to_printable_text(token: str) -> bool:
     """Return True if *token* base64-decodes to mostly-printable ASCII.
 
@@ -6097,26 +6284,41 @@ def _decodes_to_printable_text(token: str) -> bool:
     return printable / len(raw) >= _SECRET_PRINTABLE_DECODE_RATIO
 
 
-def _longest_lowercase_run(token: str) -> int:
-    """Return the length of the longest run of consecutive lowercase letters.
+def _lowercase_run_exceeds(token: str, cap: int) -> bool:
+    """Return True if any run of consecutive lowercase letters is longer than *cap*.
 
     Dictionary-word identifiers and file-path segments contain long lowercase
     word runs; a uniformly random base64 secret almost never does. This is the
     primary discriminator that keeps camelCase identifiers and mixed-case file
     paths out of the bare-secret heuristic.
+
+    The only question the caller asks is whether the longest run EXCEEDS a
+    threshold, so this stops at cap+1 rather than scanning the whole token to
+    find the true maximum. On the tokens this gate exists to reject -- the ones
+    with a long lowercase run -- it exits after a handful of characters instead
+    of all 40, which measured 3.97 -> 1.65 us per window.
     """
-    best = current = 0
+    current = 0
     for ch in token:
         if ch.islower():
             current += 1
-            best = max(best, current)
+            if current > cap:
+                return True
         else:
             current = 0
-    return best
+    return False
 
 
 def _vowel_ratio(token: str) -> float:
-    """Return the fraction of alphabetic characters in *token* that are vowels."""
+    """Return the fraction of alphabetic characters in *token* that are vowels.
+
+    Deliberately left in this two-pass comprehension form. A single-pass rewrite
+    measured 1.18x -- about 0.4 us on a 2.89 us gate -- which does not justify
+    replacing the clearest possible expression of "fraction of letters that are
+    vowels", and would owe its own independent-oracle test. Its neighbour
+    :func:`_lowercase_run_exceeds` WAS rewritten because that one measured 2.4x.
+    Do not optimise this unmeasured.
+    """
     letters = [ch for ch in token if ch.isalpha()]
     if not letters:
         return 0.0
@@ -6129,20 +6331,49 @@ def _looks_like_secret_key(token: str) -> bool:
     Conservative, multi-gate classifier for a label-less 40-char base64 secret.
     Every gate must pass; the design bias is toward NOT
     redacting (a false negative merely reverts to today's behavior, a false
-    positive corrupts benign output). Gates, cheapest-first:
+    positive corrupts benign output).
+
+    Gates are ordered by MEASURED cost per rejection, cheapest-per-reject first.
+    Every gate is a pure predicate whose failure returns False, so the order is
+    verdict-neutral and can be chosen purely for cost. Measured on a corpus of
+    1705 windows that clear gates 1-3 (cost per window, share of windows that
+    gate rejects on its own):
+
+        lowercase run   1.65 us   66.5%  ->  2.5 us per rejection
+        vowel ratio     2.89 us   62.3%  ->  4.6 us per rejection
+        entropy         8.48 us   54.5%  -> 15.5 us per rejection
+        decode          3.01 us    0.0%  ->  rejected nothing in that corpus
+
+    These numbers are a SNAPSHOT from one corpus on one machine: treat them as a
+    relative ranking, not a budget, and do not turn them into assertions (this
+    repo's CI enables coverage on 3.12 only, so absolute durations are not
+    comparable across shards). The ordering is the durable claim, and it is
+    guarded by a test that counts which gates get evaluated -- see
+    ``TestSecretGateOrderIsCostOrdered``.
+
+    Putting the two cheap structural gates ahead of the entropy computation, and
+    the decode check last, halves the cost of gates 4-7 and measured -47% on
+    ``redact_credentials`` end to end. Do not reorder these back into
+    "structural last" without re-measuring: the structural gates are both
+    cheaper AND higher-yield than entropy, which is the opposite of the
+    intuition that entropy is the primary discriminator.
 
     1. Length is EXACTLY 40 (AWS secret-key length).
     2. Contains all three of lower + upper + digit (rejects all-lower prose runs,
        all-upper CONSTANT_NAMES, base32, digit strings).
     3. Not an all-hex run (rejects git SHAs, sha256/md5 digests).
-    4. Shannon entropy >= _SECRET_ENTROPY_MIN (rejects low-entropy repeats/prose
+    4. No lowercase run longer than _SECRET_MAX_LOWER_RUN.
+    5. Vowel ratio <= _SECRET_MAX_VOWEL_RATIO. Gates 4 and 5 are the
+       structural-randomness pair: they separate a random key from word-based
+       identifiers and slash-delimited file paths that survive the entropy
+       floor. Both apply to EVERY token (a '/' or '+' does not exempt a token,
+       so 40-char mixed-case file paths stay intact).
+    6. Shannon entropy >= _SECRET_ENTROPY_MIN (rejects low-entropy repeats/prose
        and most code identifiers, which cluster below 4.3).
-    5. Does not base64-decode to printable text (rejects encoded-text blobs).
-    6. Structural randomness: longest lowercase run <= _SECRET_MAX_LOWER_RUN AND
-       vowel ratio <= _SECRET_MAX_VOWEL_RATIO. These separate a random key from
-       word-based identifiers and slash-delimited file paths that survive the
-       entropy floor. Both gates apply to EVERY token (a '/' or '+' does not
-       exempt a token, so 40-char mixed-case file paths stay intact).
+    7. Does not base64-decode to printable text (rejects encoded-text blobs).
+       Last because it is the lowest-yield gate, not because it is optional --
+       it is what keeps legitimate OAuth ``code_challenge`` values in sign-in
+       URLs from being redacted (guarded by the OAuth-URL corpus).
 
     BOUNDARY ASSUMPTION: this classifier deliberately evaluates an EXACTLY-40-char
     window (gate 1). It does NOT itself scan longer runs — a real key glued to an
@@ -6156,21 +6387,17 @@ def _looks_like_secret_key(token: str) -> bool:
     """
     if len(token) != _SECRET_KEY_LEN:
         return False
-    has_lower = any(ch.islower() for ch in token)
-    has_upper = any(ch.isupper() for ch in token)
-    has_digit = any(ch.isdigit() for ch in token)
-    if not (has_lower and has_upper and has_digit):
+    if not _has_all_three_char_classes(token):
         return False
     if _HEX_ONLY_RE.match(token):
         return False
+    if _lowercase_run_exceeds(token, _SECRET_MAX_LOWER_RUN):
+        return False
+    if _vowel_ratio(token) > _SECRET_MAX_VOWEL_RATIO:
+        return False
     if _shannon_entropy(token) < _SECRET_ENTROPY_MIN:
         return False
-    if _decodes_to_printable_text(token):
-        return False
-    return (
-        _longest_lowercase_run(token) <= _SECRET_MAX_LOWER_RUN
-        and _vowel_ratio(token) <= _SECRET_MAX_VOWEL_RATIO
-    )
+    return not _decodes_to_printable_text(token)
 
 
 def _contains_bare_secret(run: str) -> bool:
@@ -6193,13 +6420,30 @@ def _contains_bare_secret(run: str) -> bool:
     sub-windows whose garbage decode looks high-entropy and would clear every
     per-window gate, wrongly redacting a legitimate sign-in URL (regression
     guarded by the OAuth-URL corpus). This is the same bias-toward-not-redacting
-    that :func:`_looks_like_secret_key` already applies per-window (gate 5),
+    that :func:`_looks_like_secret_key` already applies per-window (gate 7),
     lifted to run granularity so a misaligned window cannot defeat it. A genuine
     glued secret (``X`` + key, key + ``ABC``, key + ``X`` + key) does NOT decode
     cleanly as a whole run, so it still reaches the sliding window below.
     """
     if len(run) < _SECRET_KEY_LEN:
         return False
+    # RUN-LEVEL FAST PATH. Two of the per-window gates reject on a property that
+    # is closed under substring, so asking about the whole run once can retire
+    # every window without classifying any of them:
+    #   gate 2 -- a character class absent from the run is absent from all of its
+    #             substrings, so no window can hold all three;
+    #   gate 3 -- every substring of an all-hex run is itself all-hex.
+    # Both answers are False either way, so this only reorders WHICH check
+    # returns False, never the verdict. Guarded on a run longer than one window,
+    # because at exactly 40 chars the sole window pays the same two gates anyway
+    # and the pre-check would be pure duplicate work. This is what keeps the
+    # slide affordable on long non-secret runs (hex digests, lowercase blobs),
+    # which are the common shape in tool output.
+    if len(run) > _SECRET_KEY_LEN:
+        if not _has_all_three_char_classes(run):
+            return False
+        if _HEX_ONLY_RE.match(run):
+            return False
     if _decodes_to_printable_text(run):
         return False
     for start in range(len(run) - _SECRET_KEY_LEN + 1):
@@ -7425,28 +7669,34 @@ def normalize_shell_command(cmd: str) -> list[str]:
     if not cmd or not cmd.strip():
         return []
 
-    # Pre-process: expand $HOME/${HOME} BEFORE shlex splitting so that
-    # expansion happens even inside quoted strings that shlex won't expand.
-    home = os.path.expanduser("~")
-    # Replace via a FUNCTION, not a string template: on Windows the home path
-    # is ``C:\Users\<name>``, and ``re.sub`` parses a str replacement as a
-    # template eagerly -- ``\U`` is an invalid escape, so a string replacement
-    # raises ``re.error`` for EVERY input on that platform, not just ones
-    # containing ``$HOME``.  A callable is substituted literally.
-    preprocessed = _HOME_VAR_RE.sub(lambda _m: home, cmd)
+    # NOTE: $HOME expansion happens AFTER tokenization (in the per-token loop
+    # below), NOT here.  The previous pre-shlex expansion inserted the raw home
+    # path (e.g. ``C:\Users\name`` on Windows) into the command string before
+    # shlex.split(posix=True), which then consumed the backslashes as escape
+    # characters — mangling the path so is_sensitive_path() could not match it.
+    # Moving expansion to per-token mirrors how tilde (``~``) is already
+    # handled: shlex strips quotes and produces a literal ``$HOME/...`` token,
+    # which the loop then expands safely without backslash reinterpretation.
 
     # Tokenize using POSIX shlex — handles quoting, escaping, etc.
     try:
-        tokens = shlex.split(preprocessed, posix=True)
+        tokens = shlex.split(cmd, posix=True)
     except ValueError:
         # Unbalanced quotes or other parse errors — fall back to basic split.
-        tokens = preprocessed.split()
+        tokens = cmd.split()
         tokens = [t.strip("\"'\\") for t in tokens]
 
+    home = os.path.expanduser("~")
     resolved: list[str] = []
     for token in tokens:
         # Strip empty-string concatenation artifacts: ca""t -> cat, g''it -> git
         token = _EMPTY_QUOTE_RE.sub("", token)
+
+        # Expand $HOME/${HOME} per-token (after shlex, so Windows backslashes
+        # in the expanded path are never reinterpreted as escape characters).
+        # Uses a callable replacement to avoid re.error on Windows where the
+        # home path contains ``\U`` which re.sub parses as a template escape.
+        token = _HOME_VAR_RE.sub(lambda _m: home, token)
 
         # Expand tilde (shlex doesn't do tilde expansion)
         if token.startswith("~"):

@@ -420,6 +420,96 @@ def test_extract_drops_non_http_icon_href() -> None:
     assert meta.icon_candidates == ("https://example.com/favicon.ico",)
 
 
+# --- icon colour-scheme lanes ----------------------------------------------
+
+
+def test_dark_scoped_icon_goes_to_its_own_lane() -> None:
+    """A dark-scheme icon must not be served as the default one.
+
+    Using it on a light surface is the same invisible-glyph bug as using a
+    light-mode icon on a dark surface, in mirror image.
+    """
+    html = (
+        '<head><link rel="icon" href="/light.png" media="(prefers-color-scheme: light)">'
+        '<link rel="icon" href="/dark.png" media="(prefers-color-scheme: dark)"></head>'
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.icon_candidates == (
+        "https://example.com/light.png",
+        "https://example.com/favicon.ico",
+    )
+    assert meta.dark_icon_candidates == ("https://example.com/dark.png",)
+
+
+def test_unscoped_icon_stays_in_the_default_lane() -> None:
+    """The overwhelmingly common shape: one icon, no media attribute."""
+    html = '<head><link rel="icon" href="/i.png"></head>'
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.icon_candidates[0] == "https://example.com/i.png"
+    assert meta.dark_icon_candidates == ()
+
+
+def test_dark_lane_has_no_favicon_fallback() -> None:
+    """`/favicon.ico` is not a dark variant of anything, so it is not appended.
+
+    Appending it would spend a request per link on bytes the default lane
+    already fetched, and then hand the client the same picture twice.
+    """
+    html = '<head><link rel="icon" href="/i.png"></head>'
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.dark_icon_candidates == ()
+
+
+def test_dark_lane_drops_an_href_the_default_lane_already_has() -> None:
+    # One href declared twice is not a variant; it is one picture.
+    html = (
+        '<head><link rel="icon" href="/i.png">'
+        '<link rel="icon" href="/i.png" media="(prefers-color-scheme: dark)"></head>'
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.icon_candidates[0] == "https://example.com/i.png"
+    assert meta.dark_icon_candidates == ()
+
+
+def test_dark_scoped_apple_touch_icon_is_ordered_after_plain_icons() -> None:
+    html = (
+        '<head><link rel="apple-touch-icon" href="/apple-dark.png"'
+        ' media="(prefers-color-scheme: dark)">'
+        '<link rel="icon" href="/dark.png" media="screen and (prefers-color-scheme:dark)">'
+        "</head>"
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.dark_icon_candidates == (
+        "https://example.com/dark.png",
+        "https://example.com/apple-dark.png",
+    )
+
+
+@pytest.mark.parametrize(
+    "media,expected",
+    [
+        ("", ""),
+        ("screen", ""),
+        ("(prefers-color-scheme: dark)", "dark"),
+        ("(prefers-color-scheme:DARK)", "dark"),
+        ("screen and (prefers-color-scheme: light)", "light"),
+        # A negation inverts the match, and this is a regex rather than a media
+        # query engine — so it declines to guess and the icon stays unscoped.
+        ("not all and (prefers-color-scheme: dark)", ""),
+    ],
+)
+def test_icon_color_scheme_reads_only_what_it_can_prove(media: str, expected: str) -> None:
+    assert lu.icon_color_scheme(media) == expected
+
+
+def test_negated_dark_media_icon_stays_usable_as_the_default() -> None:
+    """An icon this parser cannot classify stays in the default lane."""
+    html = '<head><link rel="icon" href="/i.png" media="not all and (prefers-color-scheme: dark)">'
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.icon_candidates[0] == "https://example.com/i.png"
+    assert meta.dark_icon_candidates == ()
+
+
 def test_extract_ignores_head_content_after_body() -> None:
     html = "<head><title>Real</title></head><body><title>Injected</title></body>"
     assert lu.extract_meta(html, base_url="https://example.com/").title == "Real"
@@ -713,6 +803,165 @@ def test_oversized_icon_is_dropped_end_to_end(monkeypatch) -> None:
     )
     status, body = _run(_call("https://example.com/p"))
     assert (status, body["icon"]) == (200, "")
+
+
+# --- endpoint: dark icon variant -------------------------------------------
+
+_DARK_ICON_HTML = _html(
+    extra=(
+        '<link rel="icon" href="/light.png">'
+        '<link rel="icon" href="/dark.png" media="(prefers-color-scheme: dark)">'
+    )
+)
+
+
+def test_declared_dark_variant_is_returned_alongside_the_default(monkeypatch) -> None:
+    """Both are sent: the CLIENT picks, because the theme switches at runtime."""
+    transport = _install(
+        monkeypatch,
+        {
+            "https://example.com/p": (200, _HTML_HEADERS, _DARK_ICON_HTML),
+            "https://example.com/light.png": (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+            "https://example.com/dark.png": (200, {"Content-Type": "image/png"}, b"\x89PNGdark"),
+        },
+    )
+    status, body = _run(_call("https://example.com/p"))
+    assert status == 200
+    assert body["icon"] == "data:image/png;base64,iVBORw=="
+    assert body["icon_dark"] == "data:image/png;base64,iVBOR2Rhcms="
+    assert transport.fetch_count == 3  # page + both icons, once each
+
+
+def test_no_declared_variant_costs_no_extra_request(monkeypatch) -> None:
+    """The common case must stay exactly as cheap as it was: one icon fetch."""
+    transport = _install(
+        monkeypatch,
+        {
+            "https://example.com/p": (200, _HTML_HEADERS, _html()),
+            "https://example.com/favicon.ico": (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+        },
+    )
+    status, body = _run(_call("https://example.com/p"))
+    assert (status, body["icon_dark"]) == (200, "")
+    assert transport.fetch_count == 2  # page + favicon only
+
+
+def test_dark_variant_is_dropped_when_it_is_the_same_picture(monkeypatch) -> None:
+    """Identical bytes carry no information and would double the payload."""
+    _install(
+        monkeypatch,
+        {
+            "https://example.com/p": (
+                200,
+                _HTML_HEADERS,
+                _html(
+                    extra=(
+                        '<link rel="icon" href="/a.png">'
+                        '<link rel="icon" href="/b.png" media="(prefers-color-scheme: dark)">'
+                    )
+                ),
+            ),
+            "https://example.com/a.png": (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+            "https://example.com/b.png": (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+        },
+    )
+    status, body = _run(_call("https://example.com/p"))
+    assert status == 200
+    assert body["icon"] == "data:image/png;base64,iVBORw=="
+    assert body["icon_dark"] == ""
+
+
+def test_dark_variant_failure_does_not_fail_the_preview(monkeypatch) -> None:
+    """A 404 on the nicety leaves the default icon and the card intact."""
+    _install(
+        monkeypatch,
+        {
+            "https://example.com/p": (200, _HTML_HEADERS, _DARK_ICON_HTML),
+            "https://example.com/light.png": (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+            "https://example.com/dark.png": (404, {}, b""),
+        },
+    )
+    status, body = _run(_call("https://example.com/p"))
+    assert status == 200
+    assert body["icon"] == "data:image/png;base64,iVBORw=="
+    assert body["icon_dark"] == ""
+
+
+def test_dark_lane_is_vetted_like_any_other_fetch(monkeypatch) -> None:
+    """The variant href is a second attacker-chosen URL; the vet still owns it."""
+    transport = _install(
+        monkeypatch,
+        {
+            "https://example.com/p": (
+                200,
+                _HTML_HEADERS,
+                _html(
+                    extra=(
+                        '<link rel="icon" href="/light.png">'
+                        '<link rel="icon" href="http://169.254.169.254/latest/meta-data"'
+                        ' media="(prefers-color-scheme: dark)">'
+                    )
+                ),
+            ),
+            "https://example.com/light.png": (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+        },
+    )
+    status, body = _run(_call("https://example.com/p"))
+    assert (status, body["icon_dark"]) == (200, "")
+    assert transport.fetch_count == 2  # page + the default icon; the link-local host was refused
+
+
+def test_dark_svg_variant_is_dropped_like_any_other_svg(monkeypatch) -> None:
+    """SVG is active content in an `<img src>`; a second icon field is no exemption."""
+    _install(
+        monkeypatch,
+        {
+            "https://example.com/p": (
+                200,
+                _HTML_HEADERS,
+                _html(
+                    extra=(
+                        '<link rel="icon" href="/light.png">'
+                        '<link rel="icon" href="/dark.svg" media="(prefers-color-scheme: dark)">'
+                    )
+                ),
+            ),
+            "https://example.com/light.png": (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+            "https://example.com/dark.svg": (
+                200,
+                {"Content-Type": "image/svg+xml"},
+                b"<svg onload='fetch(1)'/>",
+            ),
+        },
+    )
+    status, body = _run(_call("https://example.com/p"))
+    assert (status, body["icon_dark"]) == (200, "")
+
+
+def test_dark_lane_spends_exactly_one_request(monkeypatch) -> None:
+    """Two declared dark variants, one attempt: this lane buys a nicety."""
+    transport = _install(
+        monkeypatch,
+        {
+            "https://example.com/p": (
+                200,
+                _HTML_HEADERS,
+                _html(
+                    extra=(
+                        '<link rel="icon" href="/light.png">'
+                        '<link rel="icon" href="/d1.png" media="(prefers-color-scheme: dark)">'
+                        '<link rel="icon" href="/d2.png" media="(prefers-color-scheme: dark)">'
+                    )
+                ),
+            ),
+            "https://example.com/light.png": (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+            "https://example.com/d1.png": (404, {}, b""),
+            "https://example.com/d2.png": (200, {"Content-Type": "image/png"}, b"\x89PNGtwo"),
+        },
+    )
+    status, body = _run(_call("https://example.com/p"))
+    assert (status, body["icon_dark"]) == (200, "")
+    assert transport.fetch_count == 3  # page + default icon + ONE dark attempt
 
 
 # --- endpoint: body caps ---------------------------------------------------

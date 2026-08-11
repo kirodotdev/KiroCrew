@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types'
-import { OPTION_MARKER_RE } from './optionsMarker'
+import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
 
 // `<mcwidget>...</mcwidget>` bodies render as a sandboxed iframe (WidgetFrame).
 // Their visible text lives in a separate document the in-chat highlighter's

@@ -18,6 +18,7 @@ from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.mcp_gateway import is_gateway_supported
 from kiro_crew.mcp_gateway.backend import MCP_APPS_ENV_FLAG, mcp_apps_env_override
+from kiro_crew.mcp_provenance import ABSENT, resolve_write, stamp
 from kiro_crew.mcp_utils import (
     INTERNAL_CLIENT_ID_KEY,
     INTERNAL_SCOPES_KEY,
@@ -53,6 +54,9 @@ def _is_valid_mcp_name(name: str) -> bool:
 
 
 _GLOBAL_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
+# Surface label carried into the provenance decision so a declined rewrite names
+# the file it declined to touch.
+_KIRO_GLOBAL_SURFACE = "~/.kiro/settings/mcp.json"
 
 # Max per-request changes accepted by /api/mcp/apply. The capability-manager
 # uninstalls run OFF the MCP file lock (deferred, bounded-concurrent, under one
@@ -726,20 +730,19 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
             except (FileNotFoundError, json.JSONDecodeError):
                 gdata = {"mcpServers": {}}
             gservers = gdata.setdefault("mcpServers", {})
-            # The kiro-global mcp.json is NOT ours. Discovery merges every scope,
-            # so a name the user configured only in their own global file reaches
-            # this sync set exactly like a managed one -- and the branch below
-            # RECONSTRUCTS the entry, so it would replace their url and OAuth
-            # fields with whatever the merged view produced. Base only ever
-            # CREATED missing entries here; the gate keeps that guarantee for
-            # names we do not own while still letting a managed entry re-sync,
-            # which is the whole point of the scope fix.
+            # The kiro-global mcp.json is NOT ours, and a name cannot say who
+            # wrote an entry in it: the minimal ``{"url": ...}`` this emitter
+            # produces for a hint-less managed server is also the smallest thing a
+            # user can hand-type. Ownership is therefore the marker on the entry --
+            # ``resolve_write`` rewrites what we provably wrote, and declines
+            # everything else so a hand-authored collision survives untouched. A
+            # present unmarked entry is never written, not even when its bytes
+            # already match this emit: that state is also what reclaiming an entry
+            # leaves behind, so stamping it would take the entry back.
             _managed = kirocrew_managed_names()
             for s in to_sync:
                 if s.is_remote:
                     current = gservers.get(s.name)
-                    if isinstance(current, dict) and s.name not in _managed:
-                        continue
                     entry: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
                     for key in ("command", "args", "env", "type"):
                         entry.pop(key, None)
@@ -809,15 +812,29 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
                         client_id=s.client_id,
                         server=s.name,
                     )
-                    if current != entry:
-                        gservers[s.name] = entry
+                    resolved = resolve_write(
+                        name=s.name,
+                        # ``ABSENT``, not ``current``: a hand-edited file can hold
+                        # ``null`` or a string under a name, and that value
+                        # occupies the name -- it cannot carry a marker, so it is
+                        # the user's, not a free slot to create into.
+                        on_disk=gservers.get(s.name, ABSENT),
+                        candidate=entry,
+                        store_managed=s.name in _managed,
+                        surface=_KIRO_GLOBAL_SURFACE,
+                    )
+                    if resolved is not None and current != resolved:
+                        gservers[s.name] = resolved
                 elif s.name not in gservers:
                     entry = {"command": s.command}
                     if s.args:
                         entry["args"] = s.args
                     if s.env:
                         entry["env"] = s.env
-                    gservers[s.name] = entry
+                    # Create-only here, as on the base ref, so there is no rewrite
+                    # to gate -- but the entry is still ours, and marking it now is
+                    # what lets a later slice re-sync it without guessing.
+                    gservers[s.name] = stamp(entry) if s.name in _managed else entry
             _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
             _write_mcp_json(gdata)
 

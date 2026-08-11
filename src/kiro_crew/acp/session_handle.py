@@ -243,6 +243,27 @@ _POST_COMPACTION_METADATA_GRACE_SECS = 5.0
 # are processed before the first prompt, instead of racing into the first turn.
 _MCP_DRAIN_DURATION = 1.0
 _MCP_DRAIN_IDLE_EXIT = 0.25
+# Hard ceiling while NO MCP server has reported yet. The idle shortcut is only
+# meaningful once reporting has begun — before the first registration frame,
+# queue silence just means the server is still booting (an npx-based stdio
+# server spends seconds on npm resolution plus a Node boot before emitting
+# anything), so the drain keeps waiting up to this ceiling instead. Sized to
+# cover a realistic npx cold start (npm resolve + Node boot, observed 1-6s)
+# while bounding the cost for a session whose agent config has no MCP servers
+# at all — the one case that pays the full ceiling, since nothing ever arms
+# the idle exit. Sessions with fast servers are unaffected: their registration
+# frames are staged during session/new and arm the idle exit immediately.
+_MCP_DRAIN_NO_REPORT_CEILING = 6.0
+# Notification actions that count as "an MCP server reported in" for the
+# drain's arming logic. OAuth requests count: a server that asks for OAuth has
+# booted and reached its auth step, which is the same liveness signal.
+_MCP_DRAIN_REPORT_ACTIONS = frozenset(
+    {
+        "mcp_server_initialized",
+        "mcp_server_init_failure",
+        "mcp_oauth_request",
+    }
+)
 _SENTINEL = object()
 
 
@@ -1945,29 +1966,70 @@ class AcpSessionHandle:
         self,
         duration: float = _MCP_DRAIN_DURATION,
         idle_exit: float = _MCP_DRAIN_IDLE_EXIT,
+        no_report_ceiling: float | None = None,
+        ignore_queued_reports: bool = False,
     ) -> None:
         """Drain MCP-init / oauth / config frames from the queue after set_mode.
 
         Parity with AcpClient._drain_notifications. During session setup there is
         no in-flight prompt, so every frame on this session's queue is an
         init-time notification. Draining them here keeps them out of the first
-        turn's event stream and gives MCP servers a brief window to report in
-        before the first prompt races ahead. Bounded by ``duration`` with early
-        exit after ``idle_exit`` seconds of silence. ``config_option_update``
-        frames refresh cached configOptions; OAuth requests remain drainable via
+        turn's event stream and gives MCP servers a window to report in before
+        the first prompt races ahead.
+
+        The idle shortcut means "quiet AFTER the servers reported", not "quiet,
+        therefore done": until the first MCP registration frame (initialized /
+        init_failure / oauth_request) is observed, queue silence is treated as a
+        server still booting and the drain keeps waiting, bounded by
+        ``no_report_ceiling`` (defaults to ``_MCP_DRAIN_NO_REPORT_CEILING``,
+        resolved at call time so tests can shrink the module constant). Once a
+        report has been seen, the drain allows up to ``duration`` more and exits
+        after ``idle_exit`` seconds of silence, so warm sessions — whose
+        registration frames were staged during session/new — arm immediately and
+        pay no extra latency. ``config_option_update`` frames refresh cached
+        configOptions; OAuth requests remain drainable via
         ``pop_pending_oauth_requests``; everything else is logged/discarded.
         Best-effort — never raises.
+
+        ``ignore_queued_reports``: registration frames already sitting on the
+        queue when the drain starts describe the roster that initialized during
+        ``session/new`` — for a session whose mode was then SWITCHED via
+        ``set_mode``, that is the PRE-switch agent's roster, and the
+        switched-to agent's own servers may still be booting. Passing True
+        keeps that stale backlog from arming the idle shortcut (the frames are
+        still drained and processed normally); only a report observed after
+        the pre-drain backlog is exhausted counts as the active agent's.
         """
-        deadline = time.monotonic() + duration
+        if no_report_ceiling is None:
+            no_report_ceiling = _MCP_DRAIN_NO_REPORT_CEILING
+        start = time.monotonic()
+        deadline = start + duration
+        hard_deadline = start + max(duration, no_report_ceiling)
+        # A nonpositive ceiling means "do not hold for a first report" — the
+        # caller knows no MCP server can register (MCP-free runtime). The idle
+        # shortcut is then active from the start, i.e. the pre-fix behavior.
+        reported = no_report_ceiling <= 0.0
+        stale_backlog = ignore_queued_reports and not self._queue.empty()
         drained = 0
-        while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
+        while True:
+            now = time.monotonic()
+            limit = deadline if reported else hard_deadline
+            if now >= limit:
+                break
+            remaining = limit - now
+            if stale_backlog and self._queue.empty():
+                # The pre-drain backlog is exhausted; anything from here on
+                # arrived after set_mode and speaks for the ACTIVE agent.
+                stale_backlog = False
             try:
                 msg = await asyncio.wait_for(
-                    self._queue.get(), timeout=min(remaining, idle_exit)
+                    self._queue.get(),
+                    timeout=min(remaining, idle_exit) if reported else remaining,
                 )
             except asyncio.TimeoutError:
-                break  # queue went quiet — MCP servers done reporting
+                # Armed: queue went quiet after reporting — servers are done.
+                # Unarmed: the no-report ceiling elapsed with nothing to show.
+                break
             if msg is None:
                 # Runtime died during init — re-poison so the next consumer sees it.
                 await self._queue.put(None)
@@ -1975,6 +2037,11 @@ class AcpSessionHandle:
             drained += 1
             try:
                 action = classify_notification(msg)
+                if not reported and not stale_backlog and action in _MCP_DRAIN_REPORT_ACTIONS:
+                    # First server report: arm the idle shortcut and give the
+                    # remaining servers up to ``duration`` from this point.
+                    reported = True
+                    deadline = time.monotonic() + duration
                 if action == "update":
                     params = msg.params or {}
                     update = params.get("update") or {}

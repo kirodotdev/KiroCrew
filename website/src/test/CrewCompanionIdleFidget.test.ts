@@ -23,12 +23,12 @@ const NIGHT = new Date(2026, 0, 1, 2, 0, 0)  // 02:00 → base 600s, an order ra
 const DAY_MAX_DELAY = 300_000    // base 150s + up to 150s jitter
 const NIGHT_BASE = 600_000
 
-function mount(enabled: boolean) {
+function mount(enabled: boolean, allowMood = true) {
   const walkPath = vi.fn()
   const setMood = vi.fn()
   const playFidget = vi.fn()
   const view = renderHook(() =>
-    useIdleFidget({ enabled, getPos: () => HOME, walkPath, setMood, playFidget }),
+    useIdleFidget({ enabled, getPos: () => HOME, walkPath, setMood, allowMood, playFidget }),
   )
   return { walkPath, setMood, playFidget, ...view }
 }
@@ -60,6 +60,16 @@ describe('useIdleFidget gating', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.25)
     const { walkPath } = mount(true)
     act(() => { vi.advanceTimersByTime(DAY_MAX_DELAY) })
+    expect(walkPath).toHaveBeenCalledTimes(1)
+  })
+
+
+  it('keeps Kiro body motions for idle-only custom art without ghost eye moods', () => {
+    vi.setSystemTime(DAY)
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const { walkPath, setMood } = mount(true, false)
+    act(() => { vi.advanceTimersByTime(150_000) })
+    expect(setMood).not.toHaveBeenCalled()
     expect(walkPath).toHaveBeenCalledTimes(1)
   })
 })

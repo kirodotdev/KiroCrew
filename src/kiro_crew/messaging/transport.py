@@ -64,13 +64,19 @@ class TransportCapabilities:
       here: it routes inbound through its own ``_thread_to_session`` index and
       never sets the marker.
 
+    * ``max_buttons`` — TOTAL interactive choices a renderer may present for
+      one ``[OPTIONS:]`` trailer (not a per-row layout number — row packing
+      stays channel-internal). Widget-capable renderers route the parsed
+      list through ``messaging.renderer.apply_options_cap``, which keeps the
+      first N for the widget and degrades the remainder to a numbered text
+      list in the body. Channels declaring 0 render no widget (trailer
+      stripped; text fallback arrives with the approval-ladder work).
+
     ASPIRATIONAL (declared, honest, but nothing reads them yet — the
     capability-gated interface work will consume them; do NOT write code that
     assumes they are enforced):
 
     * ``streaming``, ``edit``, ``reactions``, ``rich_blocks``, ``threads``
-    * ``max_buttons`` — per-renderer caps are currently hardcoded
-      (slack ``[:10]``, discord ``[:25]``); no renderer reads this field.
     * ``files_inbound`` / ``files_outbound`` — split because one boolean was
       undecidable: discord ingests attachments but cannot upload, slack does
       both. Inbound = the transport ingests user attachments into the turn;
@@ -91,7 +97,7 @@ class TransportCapabilities:
     threads: bool = False
     # parameters (channels differ widely -- NOT booleans)
     max_message_chars: int = 4096  # CHARS. Slack path caps 3900, Telegram 4000, Discord 1900
-    max_buttons: int = 3  # interactive choices per prompt (WhatsApp reply buttons = 3)
+    max_buttons: int = 3  # TOTAL interactive choices per prompt (WhatsApp reply buttons = 3)
     # send-policy
     supports_proactive_send: bool = True  # WhatsApp: False outside the 24h window
     # inbound-routing policy. Default False: a transport that forgets to declare

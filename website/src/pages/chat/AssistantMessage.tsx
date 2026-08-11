@@ -14,11 +14,9 @@ import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
 import type { PlanStepInput } from '../../api/client'
-import { OPTION_MARKER_RE, stripPartialOptionMarker } from '../../utils/optionsMarker'
+import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
 import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
-const PLAN_HEADER_RE = /📋\s*Plan for:/i
-const STAGE_RE = /^Stage\s+\d+\s*:/m
 
 /** Per-turn stats attached by the backend to the last assistant message of a
  *  completed turn (chat_runner._attach_turn_stats). Parity with the end-of-turn
@@ -44,42 +42,6 @@ export function fmtCredits(c: number): string {
   // (de/fr/ru want `0,25`). Both bounds are pinned so trailing zeros survive.
   const digits = c >= 10 ? 1 : 2
   return fmtNumber(c, { minimumFractionDigits: digits, maximumFractionDigits: digits })
-}
-
-export function parseOptions(content: string): { text: string; options: string[]; multi: boolean; isPlan: boolean } {
-  let last: RegExpMatchArray | null = null
-  for (const m of content.matchAll(OPTION_MARKER_RE)) last = m
-  if (!last || last.index === undefined) return { text: content, options: [], multi: true, isPlan: false }
-  const multi = !!last[1] // [OPTIONS:] is the multi-select syntax; [OPTION:] is single
-  const sep = last[2].includes('|') ? '|' : ','
-  const options = last[2].split(sep).map(o => o.trim()).filter(Boolean)
-  const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
-  // Strip ALL markers from the displayed text (not just the last) so a stray earlier
-  // marker can't leak as raw "[OPTION: …]" syntax to the user; options still come from
-  // the LAST marker (computed above). OPTION_MARKER_RE is global, so replace removes
-  // every occurrence while preserving the prose around them.
-  const text = content.replace(OPTION_MARKER_RE, '').trim()
-  return { text, options, multi, isPlan }
-}
-
-// kiro-cli emits a steering acknowledgment inline in the model's output when it
-// consumes a mid-turn steer: `[STEERING steer-<id>: <what it did in response>]`.
-// Showing that raw marker is ugly; instead we pull it out and render it as a
-// distinct "Steered" chip (mirrors KiRoom's stripSteeringTag display-parity).
-// The id part is `steer-<hex>` (no ']' or ':'); the summary is non-greedy up to
-// the first ']' (matching KiRoom's behavior — a literal ']' inside a summary ends
-// it early, which producers avoid).
-const STEER_ACK_RE = /\[STEERING\s+steer-[^\]:]+:\s*([\s\S]*?)\]/g
-
-export function extractSteeringAcks(content: string): { cleaned: string; acks: string[] } {
-  const acks: string[] = []
-  const cleaned = content.replace(STEER_ACK_RE, (_m, summary) => {
-    const s = String(summary).trim()
-    if (s) acks.push(s)
-    return ''
-  })
-  // Collapse the blank line the removed marker leaves behind.
-  return { cleaned: cleaned.replace(/\n{3,}/g, '\n\n').trimEnd(), acks }
 }
 
 // A compact "Steered" chip rendered in place of the raw [STEERING …] marker.

@@ -293,7 +293,7 @@ class TestEnumerateSkillCatalog:
         _make_skill(creds, "looks-legit")
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers._shared._skill_key_roots",
-            lambda state: [("kiro-user/", creds)],
+            lambda state, session_key="": [("kiro-user/", creds)],
         )
         assert enumerate_skill_catalog(_State()) == {}
 
@@ -486,6 +486,9 @@ class _FakeRequest:
         self._body = body
         self.app = {"state": state}
         self.query: dict[str, str] = {}
+        # api_agent_detail reads X-Session-Key via _read_session_key(request)
+        # to scope the skill catalog to the requesting slot (#2457).
+        self.headers: dict[str, str] = {}
 
     async def json(self):
         return self._body

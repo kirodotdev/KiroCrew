@@ -187,6 +187,25 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Tailscale. Routing it would make dashboard startup depend on sandbox
         # availability, which is exactly the failure that property rules out.
         "dashboard/tailnet.py::_run_json_detail",
+        # Tailnet publish/withdraw (same RFC): three fixed argv shapes —
+        # ``serve status --json``, ``serve --bg --https=443 http://127.0.0.1:<port>``
+        # and ``serve --https 443 off``. The only interpolated value is the
+        # dashboard's own port, read from config and rendered as an int. Same
+        # hardening as the read path and for the same reasons: the binary comes
+        # from ``_cli_path``'s vetted absolute allowlist and never from ``PATH``,
+        # and the child gets ``sandbox.scrub_env()`` instead of the gateway's
+        # environment — both shared with ``tailnet.py`` by import rather than
+        # copied, so the two cannot drift apart.
+        #
+        # Deliberately NOT routed through ``sandboxed_spawn_argv``: the whole
+        # purpose of the call is to mutate the LOCAL Tailscale daemon's serve
+        # configuration through its unix socket, which is precisely the ambient
+        # authority a sandbox exists to remove. A routed call would either fail
+        # or need the socket handed back in, which is the sandbox in name only.
+        # This is an operator-initiated action, gated on the
+        # ``capabilities.tailnet_origin`` ceiling at the enforcement call, and
+        # never reached from a tool dispatch path.
+        "dashboard/tailnet_serve.py::_run",
         "apps/backend.py::_proc_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",
@@ -506,6 +525,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # git rev-parse at startup, no agent input, no sandbox needed).
         "apps/builtins/dev_fleet/server.py::_resolve_primary_checkout",
         "apps/builtins/dev_fleet/server.py::worker",
+        # Foreground last-resort restart (Make Live on hosts with no drivable
+        # service manager): a detached `kirocrew restart --port <marker port>`,
+        # fixed argv whose binary is validated (basenamed kirocrew, absolute,
+        # executable) from the gateway's own keystone-fenced run-marker or
+        # shutil.which — never agent input. Deliberately NOT sandboxed for the
+        # same reason as cli_server.py::_spawn_detached_gateway above: the child
+        # must outlive and REPLACE the gateway (kill + respawn + own session),
+        # which a scoped/sandboxed child cannot do.
+        "apps/builtins/dev_fleet/gateway_service.py::default_detached_spawn",
         # (apps/dependencies.py::_run_aim removed — App Kit capability deps now
         # resolve through the CapabilityManager seam, so the resolver spawns no
         # subprocess at all and needs no allowlist entry.)
@@ -534,6 +562,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``asyncio.run`` sites below (cli_doctor.py::_doctor, workflows
         # server.py::handle_run).
         "cli_commands.py::_cleanup_app_crons_from_scheduler",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``), used to drive the async
+        # ``register_app_crons_with_service`` coroutine from the loop-less CLI
+        # enable path — the exact enable-direction mirror of
+        # ``_cleanup_app_crons_from_scheduler`` above. No child process is
+        # created; the sole input is the operator-typed app name.
+        "cli_commands.py::_register_app_crons_to_scheduler",
         "cli_doctor.py::_doctor",
         "cli_doctor.py::_doctor_mcp_tools",
         # Read-only diagnostic: `loginctl show-user <user> -p Linger --value`,

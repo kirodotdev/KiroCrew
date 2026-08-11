@@ -59,9 +59,20 @@ running, updates itself on the channel you download, and can connect to a
 remote Gateway over an SSH tunnel. See the
 [desktop app guide](docs/build/desktop-app.md).
 
-- **macOS**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew.dmg) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg)
-- **Linux**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage)
+- **macOS** (one universal DMG, Apple Silicon + Intel): [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew.dmg) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg)
+- **Linux x86_64**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage)
+- **Linux aarch64** (Graviton, Raspberry Pi, ARM laptops): [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-aarch64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.AppImage)
 - **Windows**: no desktop build yet, so run the Gateway from a [source install](#build-from-source) and open the dashboard in your browser
+
+Not sure which Linux file you need? `uname -m` prints it — `x86_64` or `aarch64`.
+Every architecture below is a first-class lane: each gets its own build, its own
+auto-update feed, and its own SLSA provenance attestation.
+
+| Install path | x86_64 | aarch64 (ARM64) |
+|---|---|---|
+| **Desktop AppImage** | yes | yes |
+| **CLI one-liner / wheel** | yes | yes (the wheel is `py3-none-any`; native libraries are vendored per architecture) |
+| **Docker image** | yes | yes (`linux/amd64` and `linux/arm64` under every tag, so `docker pull` picks yours) |
 
 Take Stable unless you have a reason not to — the table below says who each
 channel is for.
@@ -404,7 +415,10 @@ KIROCREW_PORT=5477 kirocrew service install
 ```
 
 To change it later without reinstalling, edit `/etc/kirocrew/kirocrew.env`
-(created by `service install`) and run `sudo systemctl restart kirocrew`.
+(created by `service install`) and run `sudo systemctl restart kirocrew`. Units
+installed by releases before v0.2.0 lack the `EnvironmentFile=` directive that
+reads this file — re-run `kirocrew service install` or use a systemd drop-in;
+see [the install guide](docs/guides/install.md#setting-the-service-port).
 
 The desktop app can use this local Gateway or connect to a remote one. For an
 always-on VPS, home server, or cloud VM in your account, follow the
@@ -734,6 +748,7 @@ make this tool possible:
 <a href="https://github.com/JasonZhang1993" title="Jason Zhang's Git"><img src="https://github.com/JasonZhang1993.png?size=64" width="64" height="64" alt="Jason Zhang's Git" /></a>
 <a href="https://github.com/jayaprakashreddy007" title="jayaprakashreddy007"><img src="https://github.com/jayaprakashreddy007.png?size=64" width="64" height="64" alt="jayaprakashreddy007" /></a>
 <a href="https://github.com/jbandon" title="Jack Bandon"><img src="https://github.com/jbandon.png?size=64" width="64" height="64" alt="Jack Bandon" /></a>
+<a href="https://github.com/jeeshofone" title="Will Laws"><img src="https://github.com/jeeshofone.png?size=64" width="64" height="64" alt="Will Laws" /></a>
 <a href="https://github.com/jeffn12" title="Jeff Neuberger"><img src="https://github.com/jeffn12.png?size=64" width="64" height="64" alt="Jeff Neuberger" /></a>
 <a href="https://github.com/jfnlewis-aws" title="Jeffrey Lewis"><img src="https://github.com/jfnlewis-aws.png?size=64" width="64" height="64" alt="Jeffrey Lewis" /></a>
 <a href="https://github.com/jianwenl" title="jianwenl"><img src="https://github.com/jianwenl.png?size=64" width="64" height="64" alt="jianwenl" /></a>

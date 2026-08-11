@@ -13,6 +13,7 @@ const API = '/api/apps/meetings'
 export type MeetingStatus = 'idle' | 'active' | 'paused' | 'reviewing' | 'ended'
 export type WidgetType = 'markdown' | 'html' | 'chat'
 export type TaskPriority = 'high' | 'medium' | 'low'
+export type TranscriptSource = 'speech' | 'typed'
 
 /**
  * Full literal catalog keys per enum value, not a suffix interpolated at the call
@@ -151,16 +152,36 @@ export interface DictionaryTerm {
   aliases: string[]
 }
 
+export interface TranscriptSegment {
+  id: string
+  timestamp: string
+  source: TranscriptSource
+  text: string
+}
+
+export interface TranscriptResponse {
+  segments: TranscriptSegment[]
+  next_cursor: number
+}
+
+export interface DispatchResponse {
+  dispatched: number
+  text: string
+  segment: TranscriptSegment
+}
+
 // ── transport ───────────────────────────────────────────────────────────────
 
 /** An error carrying the backend's status so callers can branch on 409/410/502. */
 export class MeetingsApiError extends Error {
   readonly status: number
+  readonly code: string
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code = '') {
     super(message)
     this.name = 'MeetingsApiError'
     this.status = status
+    this.code = code
   }
 }
 
@@ -173,13 +194,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // The backend answers every error as `{"error": "..."}`; fall back to the
     // status text when the body is not JSON (a proxy error page, say).
     let detail = res.statusText
+    let code = ''
     try {
       const body = await res.json()
       if (body?.error) detail = String(body.error)
+      if (body?.code) code = String(body.code)
     } catch {
       /* non-JSON body */
     }
-    throw new MeetingsApiError(detail, res.status)
+    throw new MeetingsApiError(detail, res.status, code)
   }
   if (res.status === 204) return undefined as T
   const text = await res.text()
@@ -240,6 +263,10 @@ export const meetingsApi = {
     request<{ outputs: Record<string, string>; tasks: Task[] }>(
       `/meetings/${encodeURIComponent(id)}/outputs`,
     ),
+  transcript: (id: string, cursor = 0) =>
+    request<TranscriptResponse>(
+      `/meetings/${encodeURIComponent(id)}/transcript${cursor ? `?cursor=${cursor}` : ''}`,
+    ),
   attachments: (id: string, body: { action: 'add' | 'remove'; attachments?: Attachment[]; index?: number }) =>
     post<{ attachments: Attachment[] }>(`/meetings/${encodeURIComponent(id)}/attachments`, body),
 
@@ -255,7 +282,7 @@ export const meetingsApi = {
       muted,
     }),
   dispatch: (id: string, text: string, chat = false) =>
-    post<{ dispatched: number; text: string }>(`/meetings/${encodeURIComponent(id)}/dispatch`, {
+    post<DispatchResponse>(`/meetings/${encodeURIComponent(id)}/dispatch`, {
       text,
       chat,
     }),

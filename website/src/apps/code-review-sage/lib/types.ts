@@ -329,3 +329,42 @@ export type MainView = 'reviews' | 'learning' | 'settings'
 /** Which list the middle column shows: the active repo's PRs, or the threads. */
 export type ListTab = 'pulls' | 'reviews'
 export type RailSection = 'repos' | 'reviews' | 'learning' | 'settings'
+
+// --- Post-review chat --------------------------------------------------------
+
+/** One exchange with the reviewer that produced this run's findings. */
+export interface ChatTurn {
+  /** 'user' | 'reviewer' — widened to string because it is worker-written JSON
+   *  crossing a trust boundary, and an unknown role must render as unknown
+   *  rather than crash the panel. */
+  role: string
+  text: string
+  /** The reviewer's reasoning for this answer. Empty when it did not think aloud. */
+  thinking: string
+  /** Titles of tools it ran while answering. */
+  tools: string[]
+  /** Tools it was NOT allowed to run. Non-empty means the answer is degraded. */
+  refusals: string[]
+  ts: number
+}
+
+export interface ChatState {
+  run_id: string
+  change_id: string
+  /** Whether the reviewer session is still alive and can be asked anything. */
+  live: boolean
+  /** A question is in flight; the session refuses a second one. */
+  busy: boolean
+  turns: ChatTurn[]
+  /** How long a chat may sit idle before it is closed, for the explainer copy. */
+  idle_ttl_secs: number
+  /** Whether a question can be answered at all right now. False means tool use
+   *  cannot be gated (no safety override), so the turn would be refused — the UI
+   *  must say so instead of offering a composer. */
+  can_ask: boolean
+}
+
+export interface ChatAskResponse {
+  ok: boolean
+  turns: ChatTurn[]
+}

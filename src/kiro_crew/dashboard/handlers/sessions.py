@@ -120,6 +120,11 @@ async def api_sessions_health(request: web.Request) -> web.Response:
 _usage_cache: dict[str, object] = {}
 _usage_cache_ts: float = 0.0
 _USAGE_REFRESH_SECS = 600  # background refresh every 10 min
+# Ceiling on ONE whole refresh. Sized above the sum of the inner bounded steps
+# (whoami ≤30s + the billed scrape ≤60s, plus the unbounded API read between
+# them) so a healthy slow refresh still completes, while a wedged one is
+# guaranteed to release the in-flight guard instead of parking it forever.
+_USAGE_FETCH_DEADLINE_SECS = 180
 _usage_fetching = False
 
 # --- Text-scrape gate ------------------------------------------------------
@@ -652,7 +657,11 @@ async def _fetch_usage_bg() -> None:
     # backoff — an API-path error or a missing kiro-cli says nothing about
     # whether the scrape works.
     scrape_attempted = False
-    try:
+
+    async def _refresh() -> None:
+        nonlocal proc, sandbox_cleanup, kiro_bin, scrape_attempted
+        global _usage_cache, _usage_cache_ts
+
         kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
             # kiro-cli absent (non-Kiro provider): cache an unavailable marker so
@@ -815,6 +824,18 @@ async def _fetch_usage_bg() -> None:
             # blanking the pill; only hide when we have nothing to show.
             _record_scrape_outcome(False)
             _cache_transient_failure()
+
+    try:
+        # ONE deadline over the whole refresh. Every await inside is either
+        # already bounded or an executor call that can block on DNS or a wedged
+        # TLS handshake; without a ceiling on the total, one such hang means
+        # this coroutine never reaches its `finally`, `_usage_fetching` stays
+        # True for the process lifetime, and every later refresh returns at the
+        # guard above — so the cache is never populated and the dashboard's
+        # credit pill shows "Checking usage..." forever with nothing logged.
+        # A timeout here lands in the handler below, which keeps the last good
+        # value or marks usage unavailable, so the pill always resolves.
+        await asyncio.wait_for(_refresh(), timeout=_USAGE_FETCH_DEADLINE_SECS)
     except asyncio.TimeoutError:
         # Transient hang — keep the last good value (stale) instead of blanking.
         logger.debug("Background usage fetch timed out")

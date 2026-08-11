@@ -16,6 +16,7 @@ the pinned ``pytest==8.4.1`` for async fixtures, so the whole suite avoids
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -2305,3 +2306,142 @@ async def test_grant_holds_the_app_lifecycle_lock_across_validate_and_write(
     # And the lock is released afterwards — a held lock would wedge every later
     # lifecycle op on this app.
     assert lock.locked() is False
+
+
+class TestDisablingAnAppStandsItsWorkersDownInTheRequest:
+    """The off-switch must stop in-process workers NOW, not on their next poll.
+
+    An app whose workers hold something time-bounded — Issue Radar's crews hold an
+    auto-approval grant — can otherwise act once more in the gap between the
+    operator's click and the app's next sweep. At a 60s poll that is a whole
+    fully-approved turn taken after permission was withdrawn.
+    """
+
+    @staticmethod
+    def _teardown_patches(appteardown, ran: list[str], stopped: list[str]):
+        async def _script(name, script, **kw):
+            ran.append(f"script:{script}")
+            return {"output": "", "failed": False}
+
+        async def _hook(name, record, **kw):
+            return {}
+
+        return (
+            patch.object(appteardown, "on_app_disable", _hook),
+            patch.object(appteardown, "stop_app_backend", lambda n: stopped.append(n)),
+            patch.object(appteardown, "recorded_backend_port", lambda n: None),
+            patch.object(appteardown, "unstopped_backend_port", lambda n, **kw: None),
+            patch.object(appteardown, "deregister_app", lambda n: None),
+            patch.object(appteardown, "run_lifecycle_script", _script),
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_hook_runs_before_the_apps_own_shutdown_script(
+        self, home: Path, tmp_path: Path
+    ):
+        # Ordering is the fix, not decoration: `onDisable` is third-party code and
+        # stopping a backend waits on it, so a worker still holding authority while
+        # those run keeps it for their whole duration.
+        import kiro_crew.apps.teardown as appteardown
+
+        ran: list[str] = []
+        stopped: list[str] = []
+
+        async def _revoke(app_name):
+            ran.append(f"revoked:{app_name}")
+
+        _install(tmp_path, _APP, enabled=True)
+        record = {
+            "enabled": True,
+            "manifest": {"setup": {"onDisable": "stop-helper"}},
+        }
+        appteardown.register_app_disable_hook(_APP, _revoke)
+        try:
+            with contextlib.ExitStack() as stack:
+                for p in self._teardown_patches(appteardown, ran, stopped):
+                    stack.enter_context(p)
+                result = await appteardown.teardown_app_runtime(_APP, record)
+        finally:
+            appteardown.unregister_app_disable_hook(_APP)
+
+        assert result.ok, result.failures
+        assert f"revoked:{_APP}" in ran, (
+            "the app was never told it had been disabled, so its workers keep "
+            "whatever authority they hold until their own next sweep"
+        )
+        assert ran[0] == f"revoked:{_APP}", (
+            f"the workers were stood down after slower teardown steps: {ran}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_withdrawing_trust_also_stands_the_workers_down(
+        self, home: Path, tmp_path: Path
+    ):
+        # Revoke and the falling-edge sweep are the SECURITY paths; they must not be
+        # weaker than an ordinary off-switch.
+        import kiro_crew.apps.teardown as appteardown
+
+        ran: list[str] = []
+        _install(tmp_path, _APP, enabled=True)
+        appteardown.register_app_disable_hook(_APP, lambda app_name: _noop(ran))
+        try:
+            with contextlib.ExitStack() as stack:
+                for p in self._teardown_patches(appteardown, ran, []):
+                    stack.enter_context(p)
+                result = await appteardown.teardown_app_runtime(
+                    _APP, {"enabled": True, "manifest": {}}, withdrawing_trust=True
+                )
+        finally:
+            appteardown.unregister_app_disable_hook(_APP)
+
+        assert result.ok, result.failures
+        assert "revoked" in ran, "trust withdrawal left the app's workers armed"
+
+    @pytest.mark.asyncio
+    async def test_a_failing_hook_does_not_abort_the_teardown(
+        self, home: Path, tmp_path: Path
+    ):
+        # Same contract as every other step here: push through and report.
+        import kiro_crew.apps.teardown as appteardown
+
+        ran: list[str] = []
+        stopped: list[str] = []
+
+        async def _boom(app_name):
+            raise RuntimeError("worker registry unreachable")
+
+        _install(tmp_path, _APP, enabled=True)
+        appteardown.register_app_disable_hook(_APP, _boom)
+        try:
+            with contextlib.ExitStack() as stack:
+                for p in self._teardown_patches(appteardown, ran, stopped):
+                    stack.enter_context(p)
+                result = await appteardown.teardown_app_runtime(
+                    _APP, {"enabled": True, "manifest": {}}
+                )
+        finally:
+            appteardown.unregister_app_disable_hook(_APP)
+
+        assert result.ok, result.failures
+        assert stopped == [_APP], "a throwing hook stopped the backend from stopping"
+
+    @pytest.mark.asyncio
+    async def test_an_app_with_no_hook_is_unaffected(self, home: Path, tmp_path: Path):
+        import kiro_crew.apps.teardown as appteardown
+
+        stopped: list[str] = []
+        _install(tmp_path, _APP, enabled=True)
+        assert _APP not in appteardown._APP_DISABLE_HOOKS
+        with contextlib.ExitStack() as stack:
+            for p in self._teardown_patches(appteardown, [], stopped):
+                stack.enter_context(p)
+            result = await appteardown.teardown_app_runtime(
+                _APP, {"enabled": True, "manifest": {}}
+            )
+
+        assert result.ok, result.failures
+        assert stopped == [_APP]
+
+
+async def _noop(ran: list[str]) -> None:
+    ran.append("revoked")

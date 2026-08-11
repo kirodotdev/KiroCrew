@@ -390,7 +390,9 @@ async def _handle_yolo(
             orch.dashboard_state.push_slots_update()
         await respond("🔴 YOLO mode *OFF* — tools require approval.")
     elif arg == "renew":
-        renew_result = so.renew("slack")
+        # renew() audits fail-closed with a synchronous SEL write; keep that
+        # filesystem I/O off the event loop.
+        renew_result = await asyncio.to_thread(so.renew, "slack")
         if renew_result.renewed:
             sel().log_api_access(
                 caller=caller_id,

@@ -8,16 +8,16 @@
  * The predicate is asserted directly rather than through a full render because
  * CapabilitiesPage pulls in the whole tab surface (crews, templates, hooks,
  * prompts, steering) and every provider behind it; a render harness here would
- * test that scaffolding rather than the gate.
+ * test that scaffolding rather than the gate. It is imported from the shared
+ * hook rather than mirrored locally, because the chat renderer now reads the
+ * same flag to decide whether a Connections card owns an OAuth prompt — a
+ * mirrored copy could drift and leave chat hiding a banner on an install where
+ * no card exists to replace it.
  */
 import { describe, it, expect } from 'vitest'
+import { connectionsUiEnabled } from '../hooks/useConnectionsUi'
 
 const CONNECTIONS_UI_FLAG = 'connections_ui'
-
-/** Mirrors the predicate in CapabilitiesPage. */
-function connectionsUiEnabled(config: unknown): boolean {
-  return (config as Record<string, unknown> | undefined)?.[CONNECTIONS_UI_FLAG] === true
-}
 
 describe('Connections UI gate', () => {
   it('is closed when config has not loaded', () => {

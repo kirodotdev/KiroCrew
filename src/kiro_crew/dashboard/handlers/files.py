@@ -767,6 +767,7 @@ _ALLOWED_TEXT_EXT = {
     ".txt",
     ".md",
     ".json",
+    ".har",
     ".yaml",
     ".yml",
     ".xml",
@@ -2185,6 +2186,63 @@ async def api_file_diff(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _browse_dirs_sync(base: str, skip: set[str]) -> list[dict]:
+    """Walk *base* one level deep and return its visible subdirectories.
+
+    Blocking, and unboundedly so: *base* is caller-chosen and defaults to ``$HOME``,
+    so the scan is as large as that directory, and every surviving entry additionally
+    pays an ``is_sensitive_path`` call that resolves several paths of its own. Run via
+    ``asyncio.to_thread`` so one large directory cannot hold the sole event loop for
+    the duration of the listing.
+    """
+    dirs: list[dict] = []
+    try:
+        for entry in sorted(os.scandir(base), key=lambda e: e.name.lower()):
+            if entry.is_dir(follow_symlinks=True) and entry.name not in skip and not entry.name.startswith("."):
+                # Resolve symlinks before the sensitivity check — a symlink in
+                # a benign dir pointing at ~/.aws would otherwise pass through.
+                if is_sensitive_path(os.path.realpath(entry.path)):
+                    continue
+                dirs.append({"name": entry.name, "path": entry.path})
+    except PermissionError:
+        pass
+    return dirs
+
+
+def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict]]:
+    """Walk *base* one level deep and return its ``(dirs, files)`` entries.
+
+    The sibling of :func:`_browse_dirs_sync` and blocking for the same reasons, plus a
+    ``stat`` per entry for the mtime the browser sorts on. Offloaded the same way.
+    """
+    dirs: list[dict] = []
+    files: list[dict] = []
+    try:
+        # Sort: dirs before files, then alphabetical
+        for entry in sorted(os.scandir(base), key=lambda e: (not e.is_dir(follow_symlinks=True), e.name.lower())):
+            if entry.name.startswith("."):
+                continue
+            # Resolve symlinks before the sensitivity check — a symlink in a
+            # benign dir pointing at ~/.aws would otherwise pass through.
+            if is_sensitive_path(os.path.realpath(entry.path)):
+                continue
+            # Capture mtime so the activity-panel browser can offer a
+            # sort-by-date option; fall back to 0 on a race (entry removed
+            # mid-scan) so one unstattable entry never breaks the listing.
+            try:
+                mtime = int(entry.stat(follow_symlinks=True).st_mtime)
+            except OSError:
+                mtime = 0
+            if entry.is_dir(follow_symlinks=True):
+                if entry.name not in skip:
+                    dirs.append({"name": entry.name, "path": entry.path, "mtime": mtime})
+            elif entry.is_file(follow_symlinks=True):
+                files.append({"name": entry.name, "path": entry.path, "mtime": mtime})
+    except PermissionError:
+        pass
+    return dirs, files
+
+
 async def api_browse_dirs(request: web.Request) -> web.Response:
     """GET /api/browse-dirs?path=... — list subdirectories for directory browser."""
     import os  # noqa: F811
@@ -2200,17 +2258,7 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
         _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="denied", resources=base, error="sensitive path")
         return web.json_response({"error": "Access denied"}, status=403)
     skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim"}
-    dirs: list[dict] = []
-    try:
-        for entry in sorted(os.scandir(base), key=lambda e: e.name.lower()):
-            if entry.is_dir(follow_symlinks=True) and entry.name not in skip and not entry.name.startswith("."):
-                # Resolve symlinks before the sensitivity check — a symlink in
-                # a benign dir pointing at ~/.aws would otherwise pass through.
-                if is_sensitive_path(os.path.realpath(entry.path)):
-                    continue
-                dirs.append({"name": entry.name, "path": entry.path})
-    except PermissionError:
-        pass
+    dirs = await asyncio.to_thread(_browse_dirs_sync, base, skip)
     _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="allowed", resources=base)
     return web.json_response({"path": base, "parent": os.path.dirname(base), "dirs": dirs})
 
@@ -2470,31 +2518,7 @@ async def api_browse_files(request: web.Request) -> web.Response:
         _sel().log_api_access(caller=caller, operation="browse_files", outcome="denied", resources=base, error="sensitive path")
         return web.json_response({"error": "Access denied"}, status=403)
     skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim", "build", "dist", ".next"}
-    dirs: list[dict] = []
-    files: list[dict] = []
-    try:
-        # Sort: dirs before files, then alphabetical
-        for entry in sorted(os.scandir(base), key=lambda e: (not e.is_dir(follow_symlinks=True), e.name.lower())):
-            if entry.name.startswith("."):
-                continue
-            # Resolve symlinks before the sensitivity check — a symlink in a
-            # benign dir pointing at ~/.aws would otherwise pass through.
-            if is_sensitive_path(os.path.realpath(entry.path)):
-                continue
-            # Capture mtime so the activity-panel browser can offer a
-            # sort-by-date option; fall back to 0 on a race (entry removed
-            # mid-scan) so one unstattable entry never breaks the listing.
-            try:
-                mtime = int(entry.stat(follow_symlinks=True).st_mtime)
-            except OSError:
-                mtime = 0
-            if entry.is_dir(follow_symlinks=True):
-                if entry.name not in skip:
-                    dirs.append({"name": entry.name, "path": entry.path, "mtime": mtime})
-            elif entry.is_file(follow_symlinks=True):
-                files.append({"name": entry.name, "path": entry.path, "mtime": mtime})
-    except PermissionError:
-        pass
+    dirs, files = await asyncio.to_thread(_browse_files_sync, base, skip)
     _sel().log_api_access(caller=caller, operation="browse_files", outcome="allowed", resources=base)
     return web.json_response({"path": base, "parent": os.path.dirname(base), "dirs": dirs, "files": files})
 

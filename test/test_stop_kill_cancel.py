@@ -491,7 +491,7 @@ class TestDetachOnCancelFailure:
 
         fake_backend = _RaisingBackend()
 
-        async def _fake_acquire(_pool: Any, _key: Any, _resolver: Any):
+        async def _fake_acquire(_pool: Any, _key: Any, _resolver: Any, **_kw: Any):
             return fake_backend, True
 
         async def _fake_drain(_inbox: Any, _writer: Any, _stub_uuid: str = "") -> None:

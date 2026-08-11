@@ -259,6 +259,37 @@ export const captureStatelessCard = (
  *  slot-detail `queue` field. */
 type SlotQueueItem = { content: string; queueId: string; ts: string }
 
+/** Structural equality for the JSON-shaped message fields (`meta`, `variants`). */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  const aArr = Array.isArray(a), bArr = Array.isArray(b)
+  if (aArr !== bArr) return false
+  if (aArr && bArr) return a.length === b.length && a.every((v, i) => jsonEqual(v, b[i]))
+  const ak = Object.keys(a), bk = Object.keys(b)
+  if (ak.length !== bk.length) return false
+  return ak.every(k => Object.prototype.hasOwnProperty.call(b, k)
+    && jsonEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+}
+
+/** Field-for-field equality over every `ChatMessage` field a consumer can render. */
+function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
+  if (a === b) return true
+  return a.role === b.role && a.content === b.content && a.cls === b.cls
+    && a.ts === b.ts && a.rawText === b.rawText && a.kind === b.kind
+    && a.variant_idx === b.variant_idx && a._toolCount === b._toolCount
+    && jsonEqual(a.variants, b.variants) && jsonEqual(a.meta, b.meta)
+}
+
+/** True when `next` renders identically to `prev`, so a reducer can leave
+ *  `state.messages` untouched and every consumer keeps its existing reference. */
+function sameTranscript(prev: ChatMessage[], next: ChatMessage[]): boolean {
+  if (prev === next) return true
+  if (prev.length !== next.length) return false
+  for (let i = 0; i < prev.length; i++) if (!sameMessage(prev[i], next[i])) return false
+  return true
+}
+
 /** SINGLE hydration path for the slot-detail `queue` field — the one place that
  *  turns backend queue entries into `queued` message bubbles. Every reducer that
  *  consumes a `fetchSlotDetail` payload (`switchSlot`, `warmSlotCache`,
@@ -1375,6 +1406,16 @@ const CONTINUE_SCAN_SKIP = new Set(['queued', 'tool_call', 'tool_result', 'injec
  * An empty transcript returns false, which keeps a brand-new chat's send button
  * disabled exactly as it is today.
  */
+/** Project directory of the ACTIVE chat session's slot, or undefined when no
+ *  session is selected or the selected session has no project set. Used by the
+ *  bottom terminal panel so a freshly opened terminal starts in the selected
+ *  session's working tree instead of the server default. */
+export const selectActiveSlotProject = (state: RootState): string | undefined => {
+  const key = state.chat.activeSlot
+  if (!key) return undefined
+  return state.dashboard.slots.find((sl) => sl.key === key)?.project || undefined
+}
+
 export const selectContinuable = (state: RootState): boolean => {
   const c = state.chat
   if (c.slotRunning || c.slotStopping || c.pendingTurnSlot) return false
@@ -2932,13 +2973,17 @@ const chatSlice = createSlice({
             ? preserved.some(m => m.role === 'assistant' && m.meta?.mid === localMid)
             : preserved.some(m => m.role === 'assistant' && m.content === lastLocal.content)
         )
+        // Hold the pre-fetch array so the assignment below can be skipped when
+        // the fetched history turns out to be redundant (see sameTranscript).
+        const existing = state.messages
+        let next: ChatMessage[]
         if (
           state._wsChunkedDuringFetch
           && lastLocal?.role === 'streaming'
           && lastLocal.content.length > 0
         ) {
           // WS chunks arrived during fetch — use fetched history + local streaming
-          state.messages = [...preserved.filter(m => m.role !== 'streaming'), lastLocal]
+          next = [...preserved.filter(m => m.role !== 'streaming'), lastLocal]
         } else if (
           lastLocal
           && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
@@ -2966,9 +3011,9 @@ const chatSlice = createSlice({
           const finalized: ChatMessage = (lastLocal.role === 'streaming' && !running)
             ? { ...lastLocal, role: 'assistant' }
             : lastLocal
-          state.messages = [...preserved.filter(m => m.role !== 'streaming'), finalized]
+          next = [...preserved.filter(m => m.role !== 'streaming'), finalized]
         } else {
-          state.messages = preserved
+          next = preserved
         }
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
@@ -2980,7 +3025,10 @@ const chatSlice = createSlice({
         // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
         // bubbles first (a queue_push may have arrived during the fetch) so the
         // server queue set stays canonical and non-duplicated.
-        state.messages = hydrateQueuedBubbles(state.messages, queue)
+        next = hydrateQueuedBubbles(next, queue)
+        // Switching back to an already-loaded slot re-fetches a history that is
+        // usually identical; skipping the write keeps every existing reference.
+        if (!sameTranscript(existing, next)) state.messages = next
         // Update cache and clear loading state
         state.slotMessages[safeKey(key)] = state.messages
         state.slotLoading = false

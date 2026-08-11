@@ -1103,7 +1103,7 @@ def _read_external_registry_cache(
             if not isinstance(entry, dict):
                 continue
             entry_name = entry.get("name")
-            if not isinstance(entry_name, str) or not KEBAB_RE.match(entry_name):
+            if not isinstance(entry_name, str) or not KEBAB_RE.fullmatch(entry_name):
                 logger.warning(
                     "Dropping cached external registry %s entry with invalid "
                     "name %r (must be lowercase kebab-case)",
@@ -1340,7 +1340,7 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     valid_entries: list[dict[str, Any]] = []
     for entry in entries:
         entry_name = entry.get("name")
-        if not isinstance(entry_name, str) or not KEBAB_RE.match(entry_name):
+        if not isinstance(entry_name, str) or not KEBAB_RE.fullmatch(entry_name):
             logger.warning(
                 "Dropping external registry %s entry with invalid name %r "
                 "(must be lowercase kebab-case)",

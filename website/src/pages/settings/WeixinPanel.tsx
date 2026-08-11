@@ -7,6 +7,8 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
+/** Brand name — do-not-translate, so it lives here rather than in the catalog. */
+const CHANNEL_NAME = "WeChat"
 const SETUP_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/weixin-integration.md'
 
@@ -38,6 +40,22 @@ export function WeixinPanel() {
   const [errMsg, setErrMsg] = useState('')
   const [sessionId, setSessionId] = useState('')
   const deadlineRef = useRef(0)
+  // This panel saves on change, but a folder NAME must not fire a save per
+  // keystroke — hold it locally and commit on blur / Enter. Seeded from the
+  // server value whenever it changes so an external edit is picked up.
+  const [folderName, setFolderName] = useState('')
+  useEffect(() => {
+    setFolderName(data?.session_folder ?? '')
+  }, [data?.session_folder])
+  // Whether the folder field is showing. Distinct from "a name is saved": the
+  // toggle reveals the field without persisting anything, so this cannot be
+  // derived from the server value alone. Re-seeded from the server so an
+  // external edit (or a save that cleared the name) is reflected.
+  const [folderOn, setFolderOn] = useState(false)
+  useEffect(() => {
+    setFolderOn(!!data?.session_folder)
+  }, [data?.session_folder])
+  const [saveError, setSaveError] = useState('')
 
   // Server state goes through React Query, including the QR scan poll: the
   // status endpoint is polled via refetchInterval while a login session is open
@@ -114,7 +132,16 @@ export function WeixinPanel() {
 
   const saveConfig = useMutation({
     mutationFn: (patch: Partial<WeixinConfigSave>) => api.saveWeixinConfig(patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['weixin-config'] }),
+    onSuccess: () => {
+      setSaveError('')
+      qc.invalidateQueries({ queryKey: ['weixin-config'] })
+    },
+    // Without this the folder-name validation (rejects "/", "\", control
+    // characters, over-long names) rejects the value server-side while the
+    // input keeps the typed text and the user is told nothing.
+    onError: (e: unknown) => {
+      setSaveError(e instanceof Error && e.message ? e.message : String(e))
+    },
   })
   const save = (patch: Partial<WeixinConfigSave>) => saveConfig.mutate(patch)
 
@@ -273,6 +300,76 @@ export function WeixinPanel() {
             style={{ maxWidth: 280 }}
           />
         </div>
+      </div>
+
+      {/* Optional session filing. Off by default: WeChat conversations stay
+          unfiled in the sidebar, as before. A configured name IS the on-state
+          (the backend has one field, where "" means off).
+
+          This panel has no Save button — every other control saves on change —
+          so the toggle must persist immediately. Revealing the field without
+          saving loses the setting for anyone who turns it on, sees the name
+          already filled in, and leaves. Renaming afterwards does not strand the
+          folder it creates: the channel's folder is found by its stamp, so a new
+          name relabels that same folder instead of building a second one. */}
+      <div data-testid="weixin-session-folder">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={folderOn}
+            disabled={readOnly}
+            onChange={e => {
+              const on = e.target.checked
+              setFolderOn(on)
+              const next = on ? data?.session_folder || CHANNEL_NAME : ''
+              if (on) setFolderName(next)
+              save({ session_folder: next })
+            }}
+            data-testid="weixin-session-folder-toggle"
+          />
+          <span className="text-[13px] text-text">
+            {i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
+          </span>
+        </label>
+        <p className="text-[11.5px] text-muted mt-1 mb-0">
+          {i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+        </p>
+        {folderOn && (
+          <div className="mt-2">
+            <label
+              htmlFor="weixin-session-folder-name"
+              className="block text-[11px] text-muted mb-1"
+            >
+              {i18nT('pages.settings.botChannelPanel.session_folder_name')}
+            </label>
+            <input
+              id="weixin-session-folder-name"
+              type="text"
+              value={folderName}
+              disabled={readOnly}
+              placeholder={CHANNEL_NAME}
+              onChange={e => setFolderName(e.target.value)}
+              onBlur={() => save({ session_folder: folderName.trim() || CHANNEL_NAME })}
+              onKeyDown={e => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+              }}
+              data-testid="weixin-session-folder-name"
+              className="text-sm px-2.5 py-2 rounded-md bg-bg border border-border text-text"
+            />
+            <p className="text-[11.5px] text-muted mt-1 mb-0">
+              {i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+            </p>
+            {saveError && (
+              <p
+                className="text-[11.5px] text-danger mt-1 mb-0"
+                role="alert"
+                data-testid="weixin-session-folder-error"
+              >
+                {saveError}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {data?.dm_policy === 'allowlist' && (

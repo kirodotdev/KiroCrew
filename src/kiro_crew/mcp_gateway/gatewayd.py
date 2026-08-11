@@ -75,6 +75,7 @@ from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.peer_resolve import resolve_peer_identity
+from kiro_crew.platform_compat import get_process_start_id as _get_process_start_id
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import SecurityEventLog
 
@@ -129,6 +130,19 @@ _MAX_FRAME_BYTES = READ_BUFFER_LIMIT_BYTES  # 1 MiB; see pool.READ_BUFFER_LIMIT_
 # accumulating half-open connections that never send anything.
 _REGISTER_TIMEOUT_SECS = 5.0
 
+# Advertised to every stub in the Registered reply so it can negotiate rather
+# than assume. Each entry means "this daemon implements it":
+#   ensure_backend — the pre-flight control frame
+#   bridge_ping    — the bridge-phase liveness monitor
+#   poolable_ack   — the register payload's ``poolable`` field is READ. A stub
+#                    that asked for a private backend has no other way to tell:
+#                    a daemon predating the field ignores it and routes the
+#                    register through the shared index, silently co-tenanting a
+#                    server the operator never allowlisted. Such a daemon is
+#                    reachable, because the manager adopts anything answering
+#                    ``pong`` with no version handshake — so one that outlived a
+#                    package upgrade serves new stubs.
+REGISTERED_CAPABILITIES: tuple[str, ...] = ("ensure_backend", "bridge_ping", "poolable_ack")
 # Upper bound on a single control/handshake reply's ``drain()`` (pong, stats,
 # registered, rejected, ready, forward-error — everything sent via
 # ``_write_json_line``). ``_REGISTER_TIMEOUT_SECS`` only bounds the inbound
@@ -966,7 +980,7 @@ def _has_outstanding_work(pool: BackendPool) -> bool:
 
 
 def _declared_non_secret_env(pool_key: PoolKey) -> dict[str, str]:
-    """Return the FORWARDABLE declared env for ``pool_key``, or ``{}``.
+    """Return the FORWARDABLE declared env for a SHARED ``pool_key``, or ``{}``.
 
     Reads the ``0600`` sidecar the rewriter wrote for this ``(agent, server)``
     and applies two independent filters:
@@ -982,6 +996,21 @@ def _declared_non_secret_env(pool_key: PoolKey) -> dict[str, str]:
 
     What survives is operator-declared, non-secret, and part of the PoolKey —
     every session sharing this backend agrees on it by construction.
+
+    BLOCKING: reads a file. Callers must run it off the event loop.
+    """
+    pairs = _declared_env_pairs(pool_key)
+    return {
+        k: v for k, v in non_secret_env(pairs).items() if not is_credential_env_key(k)
+    }
+
+
+def _declared_env_pairs(pool_key: PoolKey) -> dict[str, str]:
+    """Return the declared env sidecar's contents for ``pool_key``, or ``{}``.
+
+    Unfiltered, but coherence-gated: a sidecar whose contents no longer hash to
+    ``pool_key.effective_env_hash`` yields ``{}``. Callers apply whatever
+    co-tenancy filtering their acquisition path requires.
 
     BLOCKING: reads a file. Callers must run it off the event loop.
     """
@@ -1028,9 +1057,31 @@ def _declared_non_secret_env(pool_key: PoolKey) -> dict[str, str]:
             pool_key.server_name,
         )
         return {}
-    return {
-        k: v for k, v in non_secret_env(pairs).items() if not is_credential_env_key(k)
-    }
+    return pairs
+
+
+def _declared_env_for_private_backend(pool_key: PoolKey) -> dict[str, str]:
+    """Return the declared env for a CONNECTION-PRIVATE backend, or ``{}``.
+
+    A private backend has exactly one stub, so both filters that
+    :func:`_declared_non_secret_env` applies are inapplicable by construction:
+    there is no co-tenant that could disagree on a rotating secret's value, and
+    the credential scrub exists to stop one session's credentials reaching
+    another session's backend. Here the declaring session and the only consuming
+    session are the same one.
+
+    Nor is this gated on ``forward_declared_env``: that switch exists to let an
+    operator accept the co-tenancy hazard for POOLED backends. Withholding the
+    env here would instead be a regression — the same server spawned without a
+    gateway gets its declared env from the agent runtime, so a private backend
+    that silently dropped it would break servers that work today.
+
+    The coherence gate still applies: a sidecar edited after this session
+    started yields ``{}`` rather than values the running stub never hashed.
+
+    BLOCKING: never call this on the event loop.
+    """
+    return _declared_env_pairs(pool_key)
 
 
 def _declared_env_to_forward(pool_key: PoolKey) -> dict[str, str]:
@@ -1219,9 +1270,16 @@ class _StubConn:
     warm-pool stubs) and is replaced by ``recaller`` frames (stub-initiated,
     deny-by-default) or ``claim`` frames (gateway-initiated, replace-allowed).
     Single event loop — no locking needed.
+
+    ``pid_start_ids`` maps each indexed PID to its register-time process
+    start token (``platform_compat.get_process_start_id``), the PID-recycle
+    guard: a later ``claim`` naming a PID whose token no longer matches is
+    targeting a DIFFERENT process that recycled the number, and must not
+    retarget this connection. ``None`` means "identity unknown" (Windows,
+    unreadable /proc) and never counts as a mismatch.
     """
 
-    __slots__ = ("stub_uuid", "ancestor_pids", "pool_label", "caller")
+    __slots__ = ("stub_uuid", "ancestor_pids", "pool_label", "caller", "pid_start_ids")
 
     def __init__(
         self,
@@ -1229,11 +1287,13 @@ class _StubConn:
         ancestor_pids: list[int],
         pool_label: str,
         caller: Optional[CallerContext],
+        pid_start_ids: Optional[dict[int, Optional[str]]] = None,
     ) -> None:
         self.stub_uuid = stub_uuid
         self.ancestor_pids = ancestor_pids
         self.pool_label = pool_label
         self.caller = caller
+        self.pid_start_ids = pid_start_ids if pid_start_ids is not None else {}
 
 
 #: Live stub connections indexed by every ancestor PID of the kiro-cli
@@ -1474,7 +1534,11 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
     Returns the ack frame. Validation is deny-by-default: a non-integer or
     out-of-range pid, or an empty/malformed caller, updates nothing and is
     audited as denied. A valid claim REPLACES existing identities (gateway-
-    trusted; this is what keeps callers correct across warm-pool re-claims).
+    trusted; this is what keeps callers correct across warm-pool re-claims) —
+    except on a connection whose register-time start token for the PID
+    definitively differs from the frame's ``pid_start_id`` (the PID was
+    recycled to a different process); those are skipped and audited as
+    denied rather than silently misattributed.
     """
     raw_pid = frame.get("pid")
     pid = raw_pid if isinstance(raw_pid, int) and not isinstance(raw_pid, bool) else 0
@@ -1506,7 +1570,34 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
         )
         return {"type": "claim-noop", "updated": 0, "connections": 0}
     updated = 0
+    skipped = 0
+    # PID-recycle guard: the frame's token identifies the process the gateway
+    # actually claimed; the recorded token identifies the process that owned
+    # the PID at register time. Skip a connection only on a DEFINITE mismatch
+    # (both tokens known and unequal) — ``None`` on either side means
+    # "identity unknown" (Windows, unreadable /proc, legacy claim frames) and
+    # MUST count as a match, otherwise every claim on those platforms would
+    # be rejected.
+    raw_token = frame.get("pid_start_id")
+    claim_token = raw_token if isinstance(raw_token, str) else None
     for conn in conns:
+        recorded_token = conn.pid_start_ids.get(pid)
+        if claim_token is not None and recorded_token is not None and claim_token != recorded_token:
+            skipped += 1
+            reason = (
+                f"pid {pid} recycled: claim start-token {claim_token} != "
+                f"register-time token {recorded_token} — refusing to retarget "
+                f"stub {conn.stub_uuid}"
+            )
+            logger.warning("claim skipped stale connection: %s", reason)
+            _audit_caller_claimed(
+                conn.caller.session_key if conn.caller is not None else "",
+                updated_caller.session_key,
+                conn.pool_label,
+                "denied",
+                reason,
+            )
+            continue
         old_key = conn.caller.session_key if conn.caller is not None else ""
         if old_key == updated_caller.session_key:
             continue  # already correct — idempotent re-claim
@@ -1520,7 +1611,7 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
             updated_caller.session_type,
             old_key or "<none>",
         )
-    return {"type": "claimed", "updated": updated, "connections": len(conns)}
+    return {"type": "claimed", "updated": updated, "connections": len(conns), "skipped": skipped}
 
 
 def _audit_abort_applied(
@@ -1838,6 +1929,27 @@ async def _handle_connection(
         return
 
     stub_uuid = str(register.get("stub_uuid", ""))
+    # Absent ``poolable`` means this connection gets its own backend. Absence is
+    # the safe default in both directions: an overlay written before the flag
+    # existed never silently starts sharing, and a malformed frame cannot widen
+    # a connection's blast radius beyond itself.
+    exclusive_stub_uuid = "" if register.get("poolable") is True else stub_uuid
+
+    def _release_reservation() -> None:
+        """Release the hand-out reservation this connection actually took.
+
+        A private backend takes none: it never enters the shared index, so no
+        sweeper can reclaim it between hand-out and attach. Releasing one anyway
+        would be actively harmful — the reservation refcount is per DIGEST, and
+        ``poolable`` is not a PoolKey dimension, so a pooled connection with an
+        identical PoolKey shares the digest. That pairing is reachable whenever
+        the allowlist changes under a daemon that outlives the gateway: the old
+        overlay's stub still registers poolable while the new one does not. The
+        stray decrement would drop the pooled connection's eviction protection
+        before its stub attaches.
+        """
+        if not exclusive_stub_uuid:
+            pool.unreserve(pool_key)
     if not stub_uuid:
         await _write_json_line(
             writer,
@@ -1911,7 +2023,24 @@ async def _handle_connection(
     stub_pids = _register_pids(register)
     indexed_pids = stub_pids + [p for p in peer_host_pids if p not in stub_pids]
 
-    conn = _StubConn(stub_uuid, indexed_pids, pool_key.human_readable(), caller)
+    # PID-recycle guard: snapshot each indexed PID's start token NOW, while
+    # the register-time process tree is still alive. A later claim carries
+    # the claimed runtime's own token; a definite mismatch means the OS
+    # recycled the PID to a different process and the claim must not land
+    # here. Computed server-side so old stubs are covered with no wire
+    # change. subprocess_executor: a /proc read can wedge on a D-state
+    # target, so keep it off the event loop, matching the
+    # _resolve_peer_identity walk above.
+    try:
+        pid_start_ids: dict[int, Optional[str]] = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            lambda: {p: _get_process_start_id(p) for p in indexed_pids},
+        )
+    except Exception:  # graceful degradation: unknown tokens never deny claims
+        logger.exception("pid start-id snapshot failed for stub %s", stub_uuid)
+        pid_start_ids = {}
+
+    conn = _StubConn(stub_uuid, indexed_pids, pool_key.human_readable(), caller, pid_start_ids)
     _conn_index_add(conn)
 
     # Register this connection for the keepalive probe. Scoped to the handler's
@@ -1944,7 +2073,7 @@ async def _handle_connection(
             # the frame would fall through to the forward path and no pong would
             # ever return — turning any call slower than the grace window into a
             # forced degrade of a perfectly healthy pooled session.
-            "capabilities": ["ensure_backend", "bridge_ping"],
+            "capabilities": list(REGISTERED_CAPABILITIES),
         },
     )
     logger.info(
@@ -2102,7 +2231,10 @@ async def _handle_connection(
                 if backend is None:
                     _acquire_t0 = time.monotonic()
                     try:
-                        backend, _was_spawned = await _acquire_backend(pool, pool_key, resolver)
+                        backend, _was_spawned = await _acquire_backend(
+                            pool, pool_key, resolver,
+                            exclusive_stub_uuid=exclusive_stub_uuid,
+                        )
                         # acquire-only duration, captured before the attach_stub
                         # + create_task overhead so the metric stays true to name.
                         _acquire_ms = (time.monotonic() - _acquire_t0) * 1000.0
@@ -2180,9 +2312,9 @@ async def _handle_connection(
                     try:
                         inbox = await backend.attach_stub(stub_uuid)
                     finally:
-                        # Release the hand-out reservation; once attached
-                        # refcount>0 keeps the backend from eviction.
-                        pool.unreserve(pool_key)
+                        # Once attached, refcount>0 keeps the backend from
+                        # eviction, so the hand-out reservation can go.
+                        _release_reservation()
                     writer_task = asyncio.create_task(
                         _drain_inbox_to_stub(inbox, writer, stub_uuid),
                         name=f"mcp-gateway-stub-writer-{stub_uuid[:8]}",
@@ -2199,7 +2331,10 @@ async def _handle_connection(
             if backend is None:
                 _lazy_t0 = time.monotonic()
                 try:
-                    backend, _lazy_was_spawned = await _acquire_backend(pool, pool_key, resolver)
+                    backend, _lazy_was_spawned = await _acquire_backend(
+                        pool, pool_key, resolver,
+                        exclusive_stub_uuid=exclusive_stub_uuid,
+                    )
                     # acquire/spawn-only duration, captured before the attach +
                     # create_task overhead.
                     _lazy_elapsed_ms = (time.monotonic() - _lazy_t0) * 1000.0
@@ -2258,7 +2393,7 @@ async def _handle_connection(
                 try:
                     inbox = await backend.attach_stub(stub_uuid)
                 finally:
-                    pool.unreserve(pool_key)
+                    _release_reservation()
                 writer_task = asyncio.create_task(
                     _drain_inbox_to_stub(inbox, writer, stub_uuid),
                     name=f"mcp-gateway-stub-writer-{stub_uuid[:8]}",
@@ -2370,6 +2505,21 @@ async def _handle_connection(
             # Scope B: if quarantined and now drained, recycle
             elif remaining == 0 and backend.quarantined:
                 await backend.recycle_if_idle()
+        # A connection-private backend has no second consumer to wait for and no
+        # reuse value, so its stub going away is the end of its life. Reap it
+        # here rather than leaving it to a sweeper: it is deliberately outside
+        # the pooling maps, so no sweeper is watching it. A no-op for a pooled
+        # stub, which is why it is unconditional. Fully suppressed: this runs in
+        # ``finally``, where raising would skip the writer-task cancel below and
+        # mask whatever ended the connection.
+        try:
+            orphan = await pool.release_exclusive(stub_uuid)
+            if orphan is not None:
+                await orphan.shutdown(timeout=2.0)
+        except Exception:
+            logger.warning(
+                "releasing private backend for stub %s failed", stub_uuid, exc_info=True
+            )
         if writer_task is not None:
             writer_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -2380,6 +2530,8 @@ async def _acquire_backend(
     pool: BackendPool,
     pool_key: PoolKey,
     resolver: TargetResolver,
+    *,
+    exclusive_stub_uuid: str = "",
 ) -> tuple[Backend, bool]:
     """Return ``(backend, was_spawned)`` for ``pool_key`` — spawning one via
     the resolver if absent.
@@ -2389,6 +2541,11 @@ async def _acquire_backend(
     set inside ``pool.get_or_create`` under the per-key create lock, so it is
     the authoritative, race-free signal of a real spawn — callers can gate a
     spawn-only SEL audit on it without a racy ``pool.get()`` pre-check.
+
+    ``exclusive_stub_uuid`` non-empty routes to a backend bound to that
+    connection alone: no reuse lookup, no pooling capacity budget, and released
+    when the connection ends. ``was_spawned`` is then always ``True``, because a
+    private backend has nothing to reuse by construction.
 
     Raises :class:`_TargetUnknown` when the resolver has no mapping for the
     server (a clean rejection, not a crash).
@@ -2413,7 +2570,11 @@ async def _acquire_backend(
         # the flag check reads config and the sidecar read touches the
         # filesystem, either of which would stall gateway traffic and heartbeat
         # processing if done inline after a config invalidation.
-        declared = await asyncio.to_thread(_declared_env_to_forward, pool_key)
+        declared = await asyncio.to_thread(
+            _declared_env_for_private_backend if exclusive_stub_uuid
+            else _declared_env_to_forward,
+            pool_key,
+        )
         if declared:
             # Declared env wins over the daemon's inherited value: the
             # operator wrote it in the agent spec for this server. Safe to
@@ -2424,6 +2585,8 @@ async def _acquire_backend(
                 "forwarding %d declared env key(s) to backend %s: %s",
                 len(declared),
                 pool_key.server_name,
+                # Key NAMES only. A private backend forwards secret-bearing keys
+                # too, so no value may reach the log.
                 ", ".join(sorted(declared)),
             )
         backend = await spawn_backend(
@@ -2441,6 +2604,10 @@ async def _acquire_backend(
             name=f"mcp-gateway-backend-stdout-{backend.pid}",
         )
         return backend
+
+    if exclusive_stub_uuid:
+        backend = await pool.acquire_exclusive(pool_key, exclusive_stub_uuid, _spawn)
+        return backend, was_spawned
 
     backend = await pool.get_or_create(pool_key, _spawn)
     return backend, was_spawned
@@ -2510,7 +2677,12 @@ async def _respawn_backend_for_stub(
         return None
 
     try:
-        new_backend, _ = await _acquire_backend(pool, pool_key, resolver)
+        new_backend, _ = await _acquire_backend(
+            pool, pool_key, resolver,
+            # A respawn must not silently promote a private backend into the
+            # shared bucket: the replacement inherits the original binding.
+            exclusive_stub_uuid=stub_uuid if old_backend.exclusive_token else "",
+        )
     except (_TargetUnknown, BackendUnavailable, PoolAtCapacity, OSError) as exc:
         logger.info(
             "respawn give-up (acquire rejected) stub=%s pool=%s: %s",
@@ -2544,7 +2716,11 @@ async def _respawn_backend_for_stub(
             return None
         new_inbox = await new_backend.attach_stub(stub_uuid)
     finally:
-        pool.unreserve(pool_key)
+        # A private backend never took a reservation, and releasing one would
+        # decrement a POOLED connection sharing this digest (see
+        # ``_release_reservation`` in the connection handler).
+        if not old_backend.exclusive_token:
+            pool.unreserve(pool_key)
     new_writer_task = asyncio.create_task(
         _drain_inbox_to_stub(new_inbox, writer, stub_uuid),
         name=f"mcp-gateway-stub-writer-{stub_uuid[:8]}",

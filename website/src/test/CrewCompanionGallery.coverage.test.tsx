@@ -703,7 +703,7 @@ describe('importing a pet from PetDex', () => {
     await tick(0)
     await tick(0)
     fireEvent.click(screen.getByRole('button', { name: 'Import from PetDex' }))
-    expect(screen.getByText('Import a pet')).toBeInTheDocument()
+    expect(screen.getByText('Import a companion')).toBeInTheDocument()
   }
 
   beforeEach(() => {
@@ -733,7 +733,7 @@ describe('importing a pet from PetDex', () => {
     expect(api.petdexFetch).toHaveBeenCalledTimes(1)
     expect(api.petdexFetch).toHaveBeenCalledWith('boba')
     expect(screen.getByText('Found · by someone')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Use this pet' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Use this companion' })).toBeEnabled()
   })
 
   it('does not look up a value too short to be a slug', async () => {
@@ -741,7 +741,7 @@ describe('importing a pet from PetDex', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'b' } })
     await tick(1000)
     expect(api.petdexFetch).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: 'Use this pet' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Use this companion' })).toBeDisabled()
   })
 
   it('shows the miss message when the pet is unknown, and keeps Use disabled', async () => {
@@ -750,8 +750,8 @@ describe('importing a pet from PetDex', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'nope' } })
     await tick(500)
 
-    expect(screen.getByText('Could not find that pet')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Use this pet' })).toBeDisabled()
+    expect(screen.getByText('Could not find that companion')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Use this companion' })).toBeDisabled()
   })
 
   it('reports a lookup that threw', async () => {
@@ -776,7 +776,7 @@ describe('importing a pet from PetDex', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'boba' } })
     await tick(500)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Use this pet' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Use this companion' }))
     await tick(0)
 
     expect(mocks.buildSpritePackData).toHaveBeenCalledWith('AAAA', {
@@ -784,7 +784,7 @@ describe('importing a pet from PetDex', () => {
     })
     expect(api.gallerySetActive).toHaveBeenCalledWith('saved-pack')
     expect(screen.getByText('Boba is now your companion')).toBeInTheDocument()
-    expect(screen.queryByText('Import a pet')).not.toBeInTheDocument()
+    expect(screen.queryByText('Import a companion')).not.toBeInTheDocument()
   })
 
   it('confirms with Enter once a pet has resolved', async () => {
@@ -805,11 +805,11 @@ describe('importing a pet from PetDex', () => {
     await openImport()
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'boba' } })
     await tick(500)
-    fireEvent.click(screen.getByRole('button', { name: 'Use this pet' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Use this companion' }))
     await tick(0)
 
     expect(screen.getByText('disk is full')).toBeInTheDocument()
-    expect(screen.getByText('Import a pet')).toBeInTheDocument()
+    expect(screen.getByText('Import a companion')).toBeInTheDocument()
   })
 
   it('reports a save that threw', async () => {
@@ -817,7 +817,7 @@ describe('importing a pet from PetDex', () => {
     await openImport()
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'boba' } })
     await tick(500)
-    fireEvent.click(screen.getByRole('button', { name: 'Use this pet' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Use this companion' }))
     await tick(0)
     expect(screen.getByText('could not build the pack')).toBeInTheDocument()
   })
@@ -827,7 +827,7 @@ describe('importing a pet from PetDex', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'boba' } })
     await tick(500)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(screen.queryByText('Import a pet')).not.toBeInTheDocument()
+    expect(screen.queryByText('Import a companion')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Import from PetDex' }))
     expect(screen.getByRole('textbox')).toHaveValue('')
@@ -836,14 +836,14 @@ describe('importing a pet from PetDex', () => {
   it('closes on a click outside the dialog', async () => {
     await openImport()
     fireEvent.click(overlayOf(screen.getByRole('dialog')))
-    expect(screen.queryByText('Import a pet')).not.toBeInTheDocument()
+    expect(screen.queryByText('Import a companion')).not.toBeInTheDocument()
   })
 
   it('backs out on Escape — which today also closes the whole window', async () => {
     await openImport()
     fireEvent.keyDown(window, { key: 'Escape' })
     await tick(0)
-    expect(screen.queryByText('Import a pet')).not.toBeInTheDocument()
+    expect(screen.queryByText('Import a companion')).not.toBeInTheDocument()
     // Pinning current behaviour, not endorsing it: the dialog and the gallery
     // window BOTH listen for Escape on `window` and neither stops propagation,
     // so backing out of the dialog tears down the window under it.

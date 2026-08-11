@@ -18,6 +18,15 @@ export interface StatusData {
   update_checked?: boolean
   /** Upgrade command for an install that cannot replace itself ("" when it can). */
   update_command?: string
+  /**
+   * The release channel this INSTALL follows (the `channel` file `cli.sh` wrote).
+   * "" when the layout has no channel at all — a git checkout tracks a remote, a
+   * desktop bundle and a container are updated by something else — which is what
+   * gates the gateway channel switcher. Distinct from `release_channel` below,
+   * which says which lane the RUNNING BYTES were built on; the two legitimately
+   * diverge between a channel switch and the new lane's build landing.
+   */
+  update_channel?: string
   update_progress?: { step: string; detail: string } | null
   version?: string
   /**
@@ -132,7 +141,17 @@ export interface SessionInventoryList {
   total_sessions: number
   reclaimable_bytes: number
   reclaim_blocked_reason: string
+  /** Every conversation, plus only the LARGEST replay-only sessions — see `background`. */
   sessions: SessionInventoryItem[]
+  /** The replay-only group as a whole. `listed` is how many of `sessions` it
+   *  contributed, so the difference is what the list does not name. Never derive
+   *  the group's size or total by filtering `sessions`: on a long-lived install
+   *  the group holds six figures of rows and the list carries a capped sample. */
+  background: { sessions: number; bytes: number; listed: number }
+  /** What an age sweep would reclaim at each offered threshold, cumulative
+   *  ("older than `days`") and already excluding anything in use — so an option
+   *  can be labelled with real numbers before any dry run. */
+  age_options: { days: number; sessions: number; bytes: number }[]
   trash: {
     bytes: number
     still_on_disk: boolean
@@ -154,7 +173,8 @@ export interface SessionInventoryDetail {
 /** One uid the server refused in POST .../trash */
 export interface SessionTrashRefusal {
   uid: string
-  reason: 'in_use' | 'too_fresh' | 'unknown'
+  /** `resumable` is the common one: idle, but the product could still resume it. */
+  reason: 'in_use' | 'resumable' | 'too_fresh' | 'unknown'
 }
 
 /** POST /api/system/session-storage/trash response */
@@ -625,6 +645,8 @@ export interface PullRequestSource {
 
 export interface ChatFolder {
   id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  /** Channel namespace when this folder was created by per-channel session filing (e.g. 'discord'). */
+  channel?: string
 }
 
 export interface ChatTag {

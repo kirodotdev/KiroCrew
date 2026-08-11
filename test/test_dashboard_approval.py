@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 from contextlib import contextmanager
 from pathlib import Path
@@ -102,13 +103,7 @@ async def _drive_hook_blocked_turn(
     if approve_prompt:
 
         async def _answer() -> None:
-            for _ in range(600):
-                fut = slot._approval_futures.get("req-1")
-                if fut is not None:
-                    if not fut.done():
-                        fut.set_result("approved")
-                    return
-                await asyncio.sleep(0.01)
+            await _answer_approval(slot, "req-1", "approved")
 
         approver = asyncio.get_event_loop().create_task(_answer())
 
@@ -186,6 +181,46 @@ def _tool_messages(slot: _ChatSlot) -> list[dict]:
     return [m for m in slot.messages if m.get("role") in ("tool", "permission")]
 
 
+# How long an answerer waits for the turn to register its approval future. The
+# product parks on that future for the MINIMUM of `approval_timeout_for()` and
+# `tool_approval_timeout_secs()` — 600s by default — which is LONGER than CI's
+# `--timeout=180`, so a poke that misses does not fail the test: pytest-timeout
+# hard-kills the xdist worker and the run reports `worker 'gwN' crashed`,
+# naming an arbitrary in-flight test and discarding the real cause. Waiting for
+# the future to EXIST instead of sleeping a fixed interval removes that race;
+# the deadline exists only so a future that never appears surfaces as the named
+# assertion below rather than as a killed worker.
+_ANSWER_WAIT_SECS = 30.0
+_ANSWER_POLL_SECS = 0.01
+
+
+async def _answer_approval(
+    owner: object, request_id: str, outcome: str, *, timeout: float = _ANSWER_WAIT_SECS
+) -> None:
+    """Resolve *owner*'s approval future for *request_id* once the turn registers it.
+
+    Stands in for a user clicking Approve/Reject. The future is created inside
+    ``_run_chat`` when the permission event is processed, so an answerer that
+    pokes at a fixed offset races the stream: on a loaded runner the event can
+    arrive after the poke, leaving the turn parked on an approval nobody will
+    ever answer.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        fut = owner._approval_futures.get(request_id)  # type: ignore[attr-defined]
+        if fut is not None:
+            if not fut.done():
+                fut.set_result(outcome)
+            return
+        assert loop.time() < deadline, (
+            f"approval future {request_id!r} was never registered within "
+            f"{timeout:.0f}s — the turn never reached its permission event, so "
+            f"there was nothing to answer"
+        )
+        await asyncio.sleep(_ANSWER_POLL_SECS)
+
+
 def _context_builder(hook_result: ToolHookResult = ToolHookResult.allow()) -> MagicMock:
     cb = MagicMock()
     cb.hooks.on_tool_call.return_value = hook_result
@@ -220,17 +255,12 @@ class TestApprovalModes:
         slot = _make_slot()
         _set_stream(client, [_permission_event(), _complete_event()])
 
-        # Poll for the future rather than sleeping a fixed 0.05s and hoping the chat
-        # has registered it by then, and keep a handle so the helper is cancelled
-        # instead of being GC'd mid-flight during a later test.
-        async def _auto_approve():
-            for _ in range(600):
-                fut = slot._approval_futures.get("req-1")
-                if fut is not None:
-                    if not fut.done():
-                        fut.set_result("approved")
-                    return
-                await asyncio.sleep(0.01)
+        # Answer via the shared helper, which waits for the future to EXIST
+        # rather than sleeping a fixed interval and hoping the chat registered
+        # it by then, and keep a handle so the answerer is cancelled instead of
+        # being GC'd mid-flight during a later test.
+        async def _auto_approve() -> None:
+            await _answer_approval(slot, "req-1", "approved")
 
         approver = asyncio.get_event_loop().create_task(_auto_approve())
 
@@ -464,16 +494,14 @@ class TestApprovalModes:
         slot = _make_slot()
         _set_stream(client, [_permission_event(), _complete_event()])
 
-        async def _auto_reject():
-            await asyncio.sleep(0.05)
-            fut = slot._approval_futures.get("req-1")
-            if fut and not fut.done():
-                fut.set_result("rejected")
+        async def _auto_reject() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
 
-        asyncio.get_event_loop().create_task(_auto_reject())
+        rejecter = asyncio.get_event_loop().create_task(_auto_reject())
 
         with _patch_stats():
             await _run_chat(state, slot, "hello")
+        await _drain(rejecter)
 
         client.reject_tool.assert_called_once()
 
@@ -484,14 +512,8 @@ class TestApprovalModes:
         slot = _make_slot()
         _set_stream(client, [_permission_event(), _complete_event()])
 
-        async def _auto_approve():
-            for _ in range(600):
-                fut = slot._approval_futures.get("req-1")
-                if fut is not None:
-                    if not fut.done():
-                        fut.set_result("approved")
-                    return
-                await asyncio.sleep(0.01)
+        async def _auto_approve() -> None:
+            await _answer_approval(slot, "req-1", "approved")
 
         approver = asyncio.get_event_loop().create_task(_auto_approve())
 
@@ -657,16 +679,14 @@ class TestBatchRejection:
         evt2.tool_call_id = "tc-2"
         _set_stream(client, [evt1, evt2, _complete_event()])
 
-        async def _reject_first():
-            await asyncio.sleep(0.05)
-            fut = slot._approval_futures.get("req-1")
-            if fut and not fut.done():
-                fut.set_result("rejected")
+        async def _reject_first() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
 
-        asyncio.get_event_loop().create_task(_reject_first())
+        rejecter = asyncio.get_event_loop().create_task(_reject_first())
 
         with _patch_stats():
             await _run_chat(state, slot, "hello")
+        await _drain(rejecter)
 
         # First tool rejected interactively, second auto-rejected
         client.reject_tool.assert_any_call("req-1")
@@ -1036,18 +1056,16 @@ class TestInteractiveDenyDoesNotTriggerRecovery:
         client.stream = MagicMock(side_effect=_stream)
 
         # Simulate the user clicking Reject after a short delay.
-        async def _auto_reject():
-            await asyncio.sleep(0.05)
-            fut = slot._approval_futures.get("req-1")
-            if fut and not fut.done():
-                fut.set_result("rejected")
+        async def _auto_reject() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
 
-        asyncio.get_running_loop().create_task(_auto_reject())
+        rejecter = asyncio.get_running_loop().create_task(_auto_reject())
 
         with _patch_stats():
             await _run_chat(state, slot, "hello")
             if slot.task:
                 await slot.task
+        await _drain(rejecter)
 
         # The key assertion: no recovery continuation was injected.
         assert not any(
@@ -1292,13 +1310,7 @@ async def _drive_deny_turn(
     if approve_prompt:
 
         async def _answer() -> None:
-            for _ in range(600):
-                fut = slot._approval_futures.get("req-1")
-                if fut is not None:
-                    if not fut.done():
-                        fut.set_result("approved")
-                    return
-                await asyncio.sleep(0.01)
+            await _answer_approval(slot, "req-1", "approved")
 
         approver = asyncio.get_event_loop().create_task(_answer())
 
@@ -1509,3 +1521,81 @@ class TestDenyRowTitleRedaction:
         # Each deny shape is rendered in exactly one place — its helper.
         assert source.count('f"🚫 {title} (invalid: {error})"') == 1
         assert source.count('f"🚫 {title} (hook error)"') == 1
+
+
+class TestApprovalAnswerersDoNotRaceTheStream:
+    """No answerer may wait on the clock instead of on the approval future.
+
+    An answerer that sleeps a fixed interval and then reads
+    ``_approval_futures`` once is racing the provider stream: when the
+    permission event arrives after the poke, the future is registered with
+    nobody left to answer it, and the turn parks on
+    ``asyncio.wait_for(fut, timeout=...)`` for the whole approval window.
+
+    That window (600s by default) outlives CI's ``--timeout=180``, so the test
+    does not fail — pytest-timeout hard-kills the xdist worker and the run
+    reports ``worker 'gwN' crashed while running <whatever was in flight>``,
+    naming an arbitrary test and discarding the real cause.
+
+    These are source ratchets, not behavioral tests, because the racy shape
+    passes every assertion on an idle machine — only load reveals it, and only
+    as somebody else's crashed worker.
+    """
+
+    @staticmethod
+    def _functions():
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                yield node
+
+    @staticmethod
+    def _calls(fn, *, attr, on=None):
+        """Calls of ``<...>.attr(...)`` inside *fn*, optionally on ``<...>.on``."""
+        out = []
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            if not isinstance(f, ast.Attribute) or f.attr != attr:
+                continue
+            if on is not None:
+                base = f.value
+                if not (isinstance(base, ast.Attribute) and base.attr == on):
+                    continue
+            out.append(node)
+        return out
+
+    def test_only_the_shared_helper_waits_for_an_approval_future(self):
+        """A function touching _approval_futures must not also sleep."""
+        offenders = []
+        for fn in self._functions():
+            if fn.name == "_answer_approval":
+                continue  # the one place allowed to wait, and it polls
+            touches = any(
+                isinstance(n, ast.Attribute) and n.attr == "_approval_futures"
+                for n in ast.walk(fn)
+            )
+            if not touches:
+                continue
+            if self._calls(fn, attr="sleep"):
+                offenders.append(f"{fn.name} (line {fn.lineno})")
+        assert not offenders, (
+            "these functions wait on the clock before touching an approval "
+            "future, which races the stream and surfaces as a crashed xdist "
+            "worker -- await _answer_approval() instead: " + ", ".join(offenders)
+        )
+
+    def test_answerers_do_not_hand_roll_the_future_lookup(self):
+        """Only _answer_approval may .get() an approval future to answer it."""
+        offenders = [
+            f"{fn.name} (line {fn.lineno})"
+            for fn in self._functions()
+            if fn.name != "_answer_approval"
+            and self._calls(fn, attr="get", on="_approval_futures")
+        ]
+        assert not offenders, (
+            "these functions look up an approval future themselves instead of "
+            "reusing _answer_approval, so the wait discipline has to be "
+            "re-derived at each site: " + ", ".join(offenders)
+        )

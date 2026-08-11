@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.renderer import (
@@ -57,7 +58,11 @@ from kiro_crew.telegram.transport import (
     TelegramTransport,
     forum_gate_outcome,
 )
-from kiro_crew.telegram.transport_dispatch import _STEER_ACK_EMOJI, TelegramDispatcher
+from kiro_crew.telegram.transport_dispatch import (
+    _STEER_ACK_EMOJI,
+    TelegramDispatcher,
+    _user_safe_failure_reason,
+)
 
 # ── Fakes ──────────────────────────────────────────────────────────────────
 
@@ -883,7 +888,7 @@ class TestTransportAuth:
         assert TELEGRAM_CAPABILITIES.streaming is True
         assert TELEGRAM_CAPABILITIES.edit is True
         assert TELEGRAM_CAPABILITIES.max_message_chars == TELEGRAM_CHUNK_LIMIT
-        assert TELEGRAM_CAPABILITIES.max_buttons == 8
+        assert TELEGRAM_CAPABILITIES.max_buttons == 25
 
 
 class TestTransportReceive:
@@ -1411,6 +1416,48 @@ class TestRenderer:
 
         assert asyncio.run(_go()) == 0
 
+    def test_close_with_failure_reason_replaces_generic_placeholder(self) -> None:
+        # A permanent failure's sanitized reason must reach the user instead of
+        # the misleading "please try again" text (issue #1831).
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES)  # type: ignore[arg-type]
+        reason = "⚠️ Your account does not have access to model 'x'. Pick one in the picker."
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.close(failure_reason=reason)
+
+        asyncio.run(_go())
+        assert cli.sent[-1][0] == reason
+        assert "please try again" not in cli.sent[-1][0]
+
+    def test_close_without_reason_keeps_generic_error_text(self) -> None:
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES)  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.close()
+
+        asyncio.run(_go())
+        assert "please try again" in cli.sent[-1][0]
+
+    def test_close_reason_ignored_after_normal_done(self) -> None:
+        # A reason arriving after on_done already finalized must not post
+        # anything: close() stays a strict no-op post-finalization.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES)  # type: ignore[arg-type]
+
+        async def _go() -> int:
+            await r.on_turn_start()
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="hi"))
+            await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
+            n = len(cli.sent)
+            await r.close(failure_reason="⚠️ too late")
+            return len(cli.sent) - n
+
+        assert asyncio.run(_go()) == 0
+
 
 # ── renderer.py: interactive approval decider ───────────────────────────────
 
@@ -1590,6 +1637,80 @@ class TestDispatcher:
         assert cli.sent and "Error" in cli.sent[-1][0]  # finalized by close()
         assert sess.released == []  # never acquired -> never released
         assert sess.failures == []  # not acquired -> not recorded as a failed turn
+
+    def test_permanent_acp_error_reason_reaches_user(self) -> None:
+        # Issue #1831: a permanent AcpError (model entitlement) must surface
+        # its actionable message, not the generic retry advice.
+        msg = "Your account does not have access to model 'x'. Available: a, b."
+
+        class _FailingProvider(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                raise AcpError(msg, transient=False)
+                yield  # pragma: no cover — makes this an async generator
+
+        class _Sessions(FakeSessions):
+            async def get_or_create(self, key: str, **kw: Any) -> Any:
+                return _FailingProvider(), True, False
+
+        d, cli, sess = _dispatcher({7})
+        d.sessions = _Sessions()  # type: ignore[assignment]
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="hi")
+            )
+
+        asyncio.run(_go())
+        final = cli.sent[-1][0]
+        assert msg in final
+        assert "please try again" not in final
+        assert "\n" not in final  # single-line, bounded output
+
+    def test_transient_acp_error_keeps_retry_text(self) -> None:
+        class _FailingProvider(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                raise AcpError("backend hit a transient error (HTTP 5xx)", transient=True)
+                yield  # pragma: no cover
+
+        class _Sessions(FakeSessions):
+            async def get_or_create(self, key: str, **kw: Any) -> Any:
+                return _FailingProvider(), True, False
+
+        d, cli, sess = _dispatcher({7})
+        d.sessions = _Sessions()  # type: ignore[assignment]
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="hi")
+            )
+
+        asyncio.run(_go())
+        assert "please try again" in cli.sent[-1][0]
+        assert "5xx" not in cli.sent[-1][0]
+
+    def test_non_acp_error_stays_generic_and_leaks_nothing(self) -> None:
+        class _FailingProvider(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                raise ValueError("secret internal detail /home/alice/.kiro/x")
+                yield  # pragma: no cover
+
+        class _Sessions(FakeSessions):
+            async def get_or_create(self, key: str, **kw: Any) -> Any:
+                return _FailingProvider(), True, False
+
+        d, cli, sess = _dispatcher({7})
+        d.sessions = _Sessions()  # type: ignore[assignment]
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(channel_type="telegram", user_id="7", conversation_id="7", text="hi")
+            )
+
+        asyncio.run(_go())
+        final = cli.sent[-1][0]
+        assert "please try again" in final
+        assert "secret internal detail" not in final
+        assert "/home/alice" not in final
 
     def test_new_command_bumps_gen_and_replies(self) -> None:
         d, cli, sess = _dispatcher({7})
@@ -3093,3 +3214,37 @@ class TestTelegramSessionPidPublish:
                 pub.assert_awaited_once_with(sess, "telegram:kirocrew:direct:7")
 
         asyncio.run(_go())
+
+
+# ── transport_dispatch.py: _user_safe_failure_reason sanitizer ──────────────
+
+
+class TestUserSafeFailureReason:
+    def test_permanent_acp_error_yields_bounded_single_line(self) -> None:
+        exc = AcpError("line one\nline two\ttail", transient=False)
+        assert _user_safe_failure_reason(exc) == "⚠️ line one line two tail"
+
+    def test_local_paths_are_redacted(self) -> None:
+        exc = AcpError("failed reading /home/alice/.kiro/crew/creds", transient=False)
+        out = _user_safe_failure_reason(exc)
+        assert out is not None
+        assert "/home/alice" not in out
+
+    def test_length_hard_cap(self) -> None:
+        out = _user_safe_failure_reason(AcpError("x" * 5000, transient=False))
+        assert out is not None
+        # "⚠️ " prefix + capped body (ellipsis included in the cap).
+        assert len(out) <= 500 + len("⚠️ ")
+        assert out.endswith("…")
+
+    def test_transient_returns_none(self) -> None:
+        assert _user_safe_failure_reason(AcpError("5xx", transient=True)) is None
+
+    def test_unclassified_returns_none(self) -> None:
+        assert _user_safe_failure_reason(AcpError("unknown", transient=None)) is None
+
+    def test_non_acp_returns_none(self) -> None:
+        assert _user_safe_failure_reason(ValueError("boom")) is None
+
+    def test_empty_message_returns_none(self) -> None:
+        assert _user_safe_failure_reason(AcpError("   \n ", transient=False)) is None

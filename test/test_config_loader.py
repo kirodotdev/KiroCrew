@@ -1882,8 +1882,14 @@ class TestMultiAgentOrchestrationProperties:
             default_memory_store=store_name,
         )
 
-        result_unknown = resolve_agent_bindings(config, agent_name=unknown_name)
-        result_default = resolve_agent_bindings(config, agent_name=default_name)
+        # Isolate from host ~/.kiro/agents/: pin the materialized-agent snapshot
+        # as empty and ready so _materialized_kiro_agent never scans the host
+        # filesystem. Without this, Hypothesis-generated names like "do" or
+        # "architect" collide with real agent configs on macOS developer hosts.
+        with unittest.mock.patch.object(loader_module, "_MATERIALIZED_AGENTS", frozenset()):
+            with unittest.mock.patch.object(loader_module, "_MATERIALIZED_AGENTS_READY", True):
+                result_unknown = resolve_agent_bindings(config, agent_name=unknown_name)
+                result_default = resolve_agent_bindings(config, agent_name=default_name)
 
         assert result_unknown.workspace_dir == result_default.workspace_dir, (
             f"Unknown agent workspace_dir={result_unknown.workspace_dir} "

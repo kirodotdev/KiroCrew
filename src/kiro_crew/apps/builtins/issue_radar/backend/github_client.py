@@ -737,8 +737,18 @@ def _normalize_timeline_event(ev: dict) -> dict | None:
     if etype == "commented":
         return {
             "kind": "comment",
+            # ``id`` and ``updated_at`` are load-bearing for the crew claim
+            # protocol, not decoration. A crew keeps ONE comment as its public
+            # claim ledger and rewrites it (``update_issue_comment``), so without
+            # ``id`` it cannot address its own comment to PATCH it — and
+            # ``created_at`` on an EDITED comment is still the ORIGINAL post time,
+            # so a crew heartbeating every 20 minutes would read as days stale and
+            # lose a claim it is actively working. Both are on the timeline's
+            # ``commented`` event already, so this costs nothing.
+            "id": ev.get("id"),
             "actor": (ev.get("user") or {}).get("login"),
             "created_at": created,
+            "updated_at": ev.get("updated_at"),
             "body": ev.get("body") or "",
             "author_association": ev.get("author_association"),
             "reactions": _norm_reactions(ev.get("reactions")),
@@ -2225,6 +2235,65 @@ def search_pulls(
 #     path at all — see the note on :func:`merge_pull_request`.
 
 
+def create_pull_request(
+    owner: str, repo: str, head: str, base: str, title: str, body: str = "",
+    *, draft: bool = False, timeout: float = GH_TIMEOUT_SEC,
+) -> dict:
+    """Open a pull request (``POST repos/{o}/{r}/pulls``).
+
+    REST, not ``gh pr create``, and that is the point. The CLI takes the title as
+    ``--title <text>`` and needs the body in a file — both of which put
+    model-authored prose on an argv (or on disk) at the moment a crew opens its PR.
+    Going through :func:`_run_gh_write` sends title AND body as JSON on stdin, so
+    neither can be reinterpreted as a flag or an option value; it also inherits the
+    403/401 → :class:`GhPermissionError` mapping, so a crew without push access gets
+    a permission error instead of an opaque exit code.
+    (``auto_improvement``'s ``pr_recipe.draft()`` is the CLI-based ancestor of this
+    call; it is deliberately NOT reused — it also pushes the branch, writes a durable
+    queue copy, and degrades to ``QUEUED:<fp>`` instead of raising.)
+
+    ``head`` is a branch name on this repo, or ``owner:branch`` for a cross-fork PR.
+    Neither it nor ``base`` is charset-validated, because unlike ``owner``/``repo``
+    they never reach a path or an argv — they are values inside the JSON body.
+
+    ``draft=True`` opens the PR as a draft. GitHub itself refuses a draft on a repo
+    that does not allow them (422), so that policy is not second-guessed here.
+
+    Returns ``{number, url, html_url, draft, state}``. ``url`` is the module's own
+    spelling for the web link (every row here — issues, PRs, checks, comments — uses
+    it), and ``html_url`` carries the same value under GitHub's REST name so a caller
+    written against the API field does not silently read ``None``.
+    """
+    subject = (title or "").strip()
+    if not subject:
+        # GitHub 422s on an empty title; failing here makes it a clear error instead
+        # of an API rejection the caller has to decode.
+        raise GhCliError("a pull request needs a title")
+    if not (head or "").strip() or not (base or "").strip():
+        raise GhCliError(f"a pull request needs both head and base refs (got {head!r} → {base!r})")
+    payload: dict[str, object] = {
+        "title": subject,
+        "head": head.strip(),
+        "base": base.strip(),
+        "body": body or "",
+        "draft": bool(draft),
+    }
+    data = _run_gh_write("POST", f"repos/{owner}/{repo}/pulls", payload, timeout=timeout)
+    if isinstance(data, dict):
+        link = data.get("html_url")
+        return {
+            "number": data.get("number"),
+            "url": link,
+            "html_url": link,
+            "draft": bool(data.get("draft", draft)),
+            "state": data.get("state") or "open",
+        }
+    # No parseable response body: the POST did not fail (that would have raised), but
+    # the PR cannot be identified. Reported as unknown rather than guessed — a caller
+    # that recorded a fabricated number would address the wrong PR from then on.
+    raise GhCliError(f"gh returned no pull request for {owner}/{repo} ({head} → {base})")
+
+
 def set_pr_state(
     owner: str, repo: str, number: int, state: str, *, timeout: float = GH_TIMEOUT_SEC
 ) -> dict:
@@ -2362,6 +2431,49 @@ def add_pr_comment(
     function for a PR on both providers; here the two coincide.
     """
     return add_issue_comment(owner, repo, number, body, timeout=timeout)
+
+
+def update_issue_comment(
+    owner: str, repo: str, comment_id: int, body: str, *, timeout: float = GH_TIMEOUT_SEC
+) -> dict:
+    """EDIT an existing issue/PR comment (``PATCH .../issues/comments/{id}``).
+
+    Addressed by COMMENT id, not by issue number — GitHub's comment endpoints are
+    repo-scoped and flat (``issues/comments/{id}``, no ``/issues/{n}/`` segment),
+    which is also why this one call serves a comment on an issue and on a PR alike.
+
+    This exists for the crew claim ledger: a crew keeps ONE comment as its public
+    record and rewrites it as work progresses, rather than appending a comment per
+    heartbeat. Editing is what makes a 20-minute heartbeat acceptable — GitHub
+    sends no notification for an edit, so a live claim does not spam every
+    subscriber, whereas a fresh comment each cycle would.
+
+    ``body`` is model-authored prose, so it rides through :func:`_run_gh_write` as
+    JSON on stdin and never touches argv; ``comment_id`` is ``int()``-coerced
+    before it reaches the path, so it cannot inject path segments.
+
+    Returns ``{id, url, updated_at}``. ``updated_at`` rather than ``created_at``
+    deliberately: on an edited comment ``created_at`` still reports the ORIGINAL
+    post time, so it is the one field that cannot confirm the edit landed — and a
+    reader using it would see a freshly-heartbeated claim as days stale.
+    """
+    text = (body or "").strip()
+    if not text:
+        # An empty edit is not a no-op — it would BLANK the claim ledger, leaving
+        # the comment in place with nothing in it for either a human or the next
+        # crew to read.
+        raise GhCliError("a comment edit needs a body")
+    data = _run_gh_write(
+        "PATCH", f"repos/{owner}/{repo}/issues/comments/{int(comment_id)}",
+        {"body": text}, timeout=timeout,
+    )
+    if isinstance(data, dict):
+        return {
+            "id": data.get("id"),
+            "url": data.get("html_url"),
+            "updated_at": data.get("updated_at"),
+        }
+    return {"id": int(comment_id), "url": None, "updated_at": None}
 
 
 # GitHub's merge methods, as accepted by the auto-merge mutation.
@@ -2623,3 +2735,124 @@ def rerun_workflow_run(
         "POST", f"repos/{owner}/{repo}/actions/runs/{int(run_id)}/{verb}", None, timeout=timeout
     )
     return {"run_id": int(run_id), "rerun": True, "failed_only": bool(failed_only)}
+
+
+# ── crew claim protocol (reading a claim back off the issue) ──────────────────
+#
+# A crew's claim on an issue lives in a COMMENT, not in a label and not only in
+# Kiro Crew's own store: the comment is the authority, so the claim survives a
+# gateway restart, is visible to a human reading the issue on GitHub, and is
+# readable by a crew running in a different process. The `crew:` labels are a
+# cheap index over it, never the source of truth.
+#
+# The machine-readable half is an HTML comment at the end of that body:
+#
+#   <!-- kirocrew-crew id=c_7f3a phase=implementing pr=2271 updated=2026-08-08T20:44:12Z -->
+#
+# HTML so GitHub renders nothing, and parsed instead of the prose so a crew can
+# rewrite its progress notes freely without breaking the protocol.
+#
+# Everything below is PURE — it takes rows already normalized by
+# ``_normalize_timeline_event`` and spawns no process. It lives here rather than in
+# the store because the rows are this module's shape and the marker's dependency on
+# a comment's ``id``/``updated_at`` is this module's contract.
+
+# The marker itself. ``\s+`` after the name is what keeps the brief sentinel
+# ``<!-- kirocrew-crew-brief v1 -->`` from matching: the next character there is a
+# hyphen, not whitespace. Lazy ``[^>]*?`` stops at the marker's own ``-->`` and
+# cannot run on into later prose.
+_CREW_CLAIM_MARKER_RE = re.compile(r"<!--\s*kirocrew-crew\s+([^>]*?)\s*-->")
+
+# ``key=value`` pairs inside the marker; values are whitespace-delimited. Unknown
+# keys are simply not read, so the marker can grow a field without this parser (or
+# an older crew reading a newer marker) breaking.
+_CREW_CLAIM_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=(\S+)")
+
+# The ONLY accepted timestamp shape: ISO-8601 UTC with a trailing ``Z``.
+#
+# Deliberately stricter than ``_parse_gh_timestamp`` / ``datetime.fromisoformat``,
+# which also accept a space separator and an absent or offset timezone. Those forms
+# are hazardous here rather than merely lax: ``2026-08-08 20:44:12`` parses to a
+# NAIVE datetime, and comparing that against the aware ``now`` a freshness check
+# uses raises TypeError — so a malformed stamp would crash the claim reader instead
+# of reading as stale. Refusing it up front makes "unparseable" mean "not fresh",
+# which is the safe direction: a claim that cannot prove it is alive must not be
+# treated as alive.
+_CREW_CLAIM_ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+
+
+def _parse_crew_marker(body: str) -> dict | None:
+    """The crew payload parsed out of ONE comment body, or ``None`` if it has none.
+
+    Returns ``{crew_id, phase, pr, updated}``. ``pr`` is an int or ``None``;
+    ``updated`` is the validated ISO-8601-``Z`` string or ``None`` (see
+    :data:`_CREW_CLAIM_ISO_Z_RE` — a malformed stamp is unparseable, NOT fresh).
+
+    The FIRST marker in a body wins. A body carrying two is malformed either way,
+    and first-wins at least makes which one is honoured deterministic rather than
+    dependent on how the prose was assembled.
+    """
+    match = _CREW_CLAIM_MARKER_RE.search(body or "")
+    if match is None:
+        return None
+    fields = dict(_CREW_CLAIM_FIELD_RE.findall(match.group(1)))
+    pr = fields.get("pr") or ""
+    updated = fields.get("updated") or ""
+    return {
+        # A marker with no ``id`` names nobody, so it can never be MATCHED against a
+        # crew id — but it is still reported (as ``""``) rather than dropped: it is
+        # evidence that some crew claimed this issue, and losing that evidence is
+        # how two crews end up working the same issue. Losing throughput to an
+        # over-cautious skip is the cheaper failure.
+        "crew_id": fields.get("id") or "",
+        "phase": fields.get("phase") or "",
+        "pr": int(pr) if pr.isdigit() else None,
+        "updated": updated if _CREW_CLAIM_ISO_Z_RE.match(updated) else None,
+    }
+
+
+def find_crew_claim(timeline_rows: list[dict], crew_id: str = "") -> list[dict]:
+    """Crew claims found in a normalized issue timeline, oldest comment id FIRST.
+
+    Takes the output of :func:`list_issue_timeline` and returns one
+    ``{comment_id, crew_id, phase, pr, updated, actor, created_at}`` entry per
+    comment carrying a crew marker. A row with no marker is skipped, and so is any
+    row that is not a ``comment``: a ``review_comment`` lives at a DIFFERENT
+    endpoint (``pulls/comments/{id}``), so treating one as a claim would hand
+    :func:`update_issue_comment` an id it cannot address.
+
+    ``crew_id`` filters to one crew's own claims — the "where is MY comment so I can
+    PATCH it" read. A list is returned either way, so callers never branch on the
+    return type; a single-claim caller takes ``[0]``. It is a list and not a single
+    entry because a duplicated post (a retried comment) is a real state a crew must
+    be able to SEE rather than have silently collapsed. The default ``""`` means
+    unfiltered, so it never matches the id-less markers described below.
+
+    **Ordering is part of the protocol, not presentation.** Collisions are resolved
+    by "smallest comment id wins" — the crew that got there first keeps the claim and
+    the other yields — so ascending comment id makes the winner ``[0]``. An entry
+    whose comment id is unknown sorts LAST: it cannot demonstrate it was first, so it
+    must not be able to win a collision, while still being visible as a claim.
+    """
+    out: list[dict] = []
+    for row in timeline_rows or []:
+        if not isinstance(row, dict) or row.get("kind") != "comment":
+            continue
+        parsed = _parse_crew_marker(row.get("body") or "")
+        if parsed is None:
+            continue
+        raw_id = row.get("id")
+        out.append({
+            # bool is a subclass of int, so it is excluded explicitly — a truthy
+            # non-id must not become comment_id 1.
+            "comment_id": raw_id if isinstance(raw_id, int) and not isinstance(raw_id, bool) else None,
+            **parsed,
+            "actor": row.get("actor"),
+            "created_at": row.get("created_at"),
+        })
+    if crew_id:
+        out = [e for e in out if e["crew_id"] == crew_id]
+    # Two-part key: known ids ascending, unknown ids after them (stable, so their
+    # timeline order is preserved). See the ordering note in the docstring.
+    out.sort(key=lambda e: (e["comment_id"] is None, e["comment_id"] or 0))
+    return out

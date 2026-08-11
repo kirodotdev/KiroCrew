@@ -1,8 +1,9 @@
 """Tests for the MCP Apps render switch (``mcp_gateway.apps_enabled``).
 
-The switch is independent of the pooling opt-in in CONFIG but conjoined with it
-in EFFECT: the render and callback paths live inside the broker, so the switch
-can only ever subtract. These tests pin both halves of that contract.
+The switch stands alone: the broker starts whenever EITHER pooling or MCP Apps
+is on, and the stub that carries the app-call relay is emitted for every server
+regardless of poolability. So ``apps_enabled`` is the whole decision, and these
+tests pin that plus the env-override precedence rules around it.
 """
 
 import json
@@ -32,11 +33,13 @@ def _no_env_override(monkeypatch):
     [
         (True, True, True),
         (True, False, False),
-        (False, True, False),
+        # Pooling off, apps on: the stub layer is still emitted (each connection
+        # simply gets its own backend), so the render path exists.
+        (False, True, True),
         (False, False, False),
     ],
 )
-def test_gate_is_the_conjunction(monkeypatch, enabled, apps_enabled, expected):
+def test_gate_follows_apps_enabled_alone(monkeypatch, enabled, apps_enabled, expected):
     _pin_config(monkeypatch, enabled=enabled, apps_enabled=apps_enabled)
     assert _mcp_apps_enabled() is expected
 
@@ -62,15 +65,16 @@ def test_env_on_still_forces_the_feature_when_config_does_not_opt_out(monkeypatc
     assert _mcp_apps_enabled() is True
 
 
-def test_apps_enabled_alone_grants_nothing(monkeypatch):
-    """The (broker off, apps on) cell.
+def test_apps_enabled_alone_is_enough(monkeypatch):
+    """The (pooling off, apps on) cell — the whole point of the decoupling.
 
-    Turning the render switch on while the broker is off must NOT enable the
-    feature: there is no process to intercept a tool result, so reporting it as
-    enabled would be a lie that other code branches on.
+    Pooling off no longer means no broker and no stub: the broker starts for
+    MCP Apps too, and every server still gets a stub, so a tool result can be
+    intercepted and rendered. Only the backend behind the stub changes — one per
+    connection instead of shared.
     """
     _pin_config(monkeypatch, enabled=False, apps_enabled=True)
-    assert _mcp_apps_enabled() is False
+    assert _mcp_apps_enabled() is True
 
 
 def test_env_kill_switch_still_wins_over_config(monkeypatch):
@@ -103,6 +107,10 @@ class TestConfigParsing:
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(json.dumps(payload), encoding="utf-8")
         monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        # Isolate from host config.local.json which could deep-merge unexpected
+        # values on macOS developer hosts.
+        monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
+        loader._invalidate_config_cache()
         return loader.KiroCrewConfig.load()
 
     def test_defaults_to_true_when_absent(self):

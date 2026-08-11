@@ -8,7 +8,7 @@ import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './Cl
 import { useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
 import { usePanelTabs } from '../hooks/usePanelTabs'
 import { useAppSelector, useAppDispatch } from '../store'
-import { openActivityPanel } from '../store/chatSlice'
+import { openActivityPanel, selectActiveSlotProject } from '../store/chatSlice'
 import { openPopout as openTerminalPopout, isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout, bringBack as bringBackTerminalPopout, returnSelfToMain } from '../utils/terminalPopout'
 import {
   useBottomTerminal, addTab, removeTab, setActiveTab, setTabsOrder,
@@ -96,6 +96,9 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   // Move-to-chat is only offered while the user is actually ON the chat page
   // with a slot active
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  // New tabs spawn in the selected session's project directory when one is
+  // set; otherwise the backend's default cwd applies.
+  const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const chatTabs = usePanelTabs(activeSlot)
   const dispatch = useAppDispatch()
   const location = useLocation()
@@ -177,7 +180,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
         {/* + opens a new terminal tab instantly (no menu). */}
         <button
           className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
-          onClick={() => addTab()}
+          onClick={() => addTab(activeSlotProject)}
           disabled={atCap}
           title={atCap ? i18nT('components.bottomTerminalPanel.maximum_terminals', { n: MAX_TERMINALS }) : i18nT('components.bottomTerminalPanel.new_terminal')}
           aria-label={i18nT('components.bottomTerminalPanel.new_terminal')}

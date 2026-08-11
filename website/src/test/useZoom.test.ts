@@ -170,6 +170,28 @@ test('publishes the resolved family on html[data-font-family]', () => {
   expect(document.documentElement.dataset.fontFamily).toBe('system')
 })
 
+test('routes Sans and Mono through the theme role tokens, System through neither', () => {
+  // An installed theme pack fills --theme-font-sans / --theme-font-mono. The
+  // preference writes --font-body as an INLINE style on <html>, which outranks
+  // every selector — so it must READ the tokens rather than hardcode a stack, or
+  // a pack's font is unreachable no matter what it declares. System is the one
+  // option that must never read a token: the OS face is not the theme's to take.
+  const { result } = renderHook(() => useZoom())
+  const readBody = () => document.documentElement.style.getPropertyValue('--font-body')
+
+  act(() => result.current.setFontFamily('sans'))
+  expect(readBody()).toContain('var(--theme-font-sans,')
+  expect(readBody()).toContain("'Space Grotesk'")
+
+  act(() => result.current.setFontFamily('mono'))
+  expect(readBody()).toContain('var(--theme-font-mono,')
+  expect(readBody()).toContain("'JetBrains Mono'")
+
+  act(() => result.current.setFontFamily('system'))
+  expect(readBody()).not.toContain('--theme-font')
+  expect(readBody()).toContain('-apple-system')
+})
+
 test('cycleFamily rotates sans → mono → system → sans', () => {
   const { result } = renderHook(() => useZoom())
   act(() => result.current.cycleFamily())

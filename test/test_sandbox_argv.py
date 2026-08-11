@@ -34,6 +34,15 @@ from kiro_crew.sandbox import (
 # don't starve each other / blow the 30s timeout. Requires --dist loadgroup.
 pytestmark = pytest.mark.xdist_group(name="subprocess_spawn")
 
+# ``_build_launcher_script`` calls POSIX-only ``os.getuid``/``os.getgid`` (the
+# namespace launcher is Linux-only), so any test that builds the launcher script
+# raises AttributeError on Windows. Skip those on win32 -- the reduced-scope
+# Windows CI lane runs them, but they pass in the full POSIX suite. See #2041.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
+)
+
 
 @pytest.fixture(autouse=True)
 def clean_backend(monkeypatch):
@@ -275,12 +284,14 @@ class TestBuildSeatbeltProfile:
 
 
 class TestBuildLauncherScript:
+    @_POSIX_ONLY
     def test_strict_script_contains_dirs(self):
         script = _build_launcher_script("strict")
         assert "SENSITIVE_DIRS" in script
         assert ".aws" in script
         assert ".gnupg" in script
 
+    @_POSIX_ONLY
     def test_strict_script_denies_namespace_escape_not_hardlinks(self):
         """Linux seccomp deny list must contain the namespace-escape syscalls
         (mount/umount2/unshare/setns/pivot_root) and must NOT contain
@@ -297,11 +308,13 @@ class TestBuildLauncherScript:
         assert "308, 155, 86, 265)" not in script
         assert "268, 41, 37)" not in script
 
+    @_POSIX_ONLY
     def test_standard_script_excludes_aws(self):
         script = _build_launcher_script("standard")
         # Standard dirs don't include .aws
         assert "HIDE_SSH = False" in script
 
+    @_POSIX_ONLY
     def test_auth_staging_is_hidden_except_for_trusted_auth_spawn(self):
         home = Path.home()
         staging = home / ".kiro" / "crew-auth-staging"
@@ -328,6 +341,7 @@ class TestBuildLauncherScript:
         assert str(data_home) in auth_script
         assert str(data_home) in auth_profile
 
+    @_POSIX_ONLY
     def test_a_file_valued_hidden_path_reaches_the_file_loop(self, tmp_path):
         """A hidden path that is a FILE must reach ``SENSITIVE_FILES``.
 
@@ -392,6 +406,7 @@ class TestBuildLauncherScript:
             f"_build_launcher_script stats the filesystem on the event loop: {probes}"
         )
 
+    @_POSIX_ONLY
     def test_every_sensitive_path_reaches_a_loop_that_can_hide_it(self):
         """Whole-list check against the real sensitive-path list.
 
@@ -413,16 +428,19 @@ class TestBuildLauncherScript:
             assert path in dirs, f"{path} never reaches the directory loop"
             assert path in files, f"{path} never reaches the file loop"
 
+    @_POSIX_ONLY
     def test_cc_script_exposes_aws_config(self):
         script = _build_launcher_script("cc")
         assert ".aws/config" in script
         assert "EXPOSE_FILES" in script
 
+    @_POSIX_ONLY
     def test_script_scrubs_env_vars(self):
         script = _build_launcher_script("strict")
         for prefix in _SENSITIVE_ENV_PREFIXES:
             assert prefix in script
 
+    @_POSIX_ONLY
     def test_strips_self_dir_before_ctypes_import(self):
         """The sys.path hardening must run before the first shadowable import.
 
@@ -436,6 +454,7 @@ class TestBuildLauncherScript:
         # sys must be imported first (it is a builtin and cannot be shadowed).
         assert script.index("import sys") < script.index("sys.path[:]")
 
+    @_POSIX_ONLY
     def test_launcher_has_no_unimportable_kiro_crew_refs(self):
         """The launcher runs as a standalone ~/.kirocrew/run script with the
         launcher dir scrubbed from sys.path, so it CANNOT import kiro_crew.
@@ -470,6 +489,7 @@ class TestBuildLauncherScript:
             ), f"{level}: launcher references un-importable module(s) {forbidden}"
 
 
+@_POSIX_ONLY
 class TestHardlinkScanBudget:
     """Step-7 pre-exec hardlink scan: per-root budgets + loud truncation.
 
@@ -565,6 +585,7 @@ class TestHardlinkScanBudget:
             compile(_build_launcher_script(level), "<launcher>", "exec")
 
 
+@_POSIX_ONLY
 class TestLauncherStdlibShadowing:
     """End-to-end: a sibling /tmp/struct.py must NOT crash the launcher.
 
@@ -681,6 +702,7 @@ class TestSignalBroadcastGuard:
     mechanism (session identity, claim-push, systemd) — stays intact.
     """
 
+    @_POSIX_ONLY
     def test_launcher_script_contains_kill_filter(self):
         """Static: the generated launcher carries the kill-broadcast filter
         (arg-inspection block) and per-arch kill syscall numbers."""
@@ -695,6 +717,7 @@ class TestSignalBroadcastGuard:
         assert "0, 0, 20))" not in script
         assert "0xFFFFFFFF" in script  # 32-bit pid -1 comparison
 
+    @_POSIX_ONLY
     def test_launcher_script_exports_host_pid(self):
         """Static: launcher exports KIROCREW_HOST_PID before fork so the
         whole subtree can resolve session_pid files by the recorded pid."""
@@ -825,6 +848,7 @@ class TestSandboxExecArgv:
                 os.unlink(profile_path)
 
 
+@_POSIX_ONLY
 class TestNamespaceArgv:
     @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")
     def test_wraps_with_python_launcher(self, mock_resolve):

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import type { McpServer } from '../types'
+import type { ChatMessage, McpServer } from '../types'
 import {
   connectionStateFor,
   disconnectFeedback,
   effectiveOAuth,
   isValidLoopbackReturnAddress,
+  latestOAuthByServer,
   uninstallOnCancel,
   type OAuthState,
 } from '../pages/connections/ConnectionsPage'
@@ -35,6 +36,46 @@ describe('Connections card states', () => {
       error: 'denied',
       timestamp: 1,
     }, true)).toBe('needs-attention')
+  })
+})
+
+/**
+ * The chat message IS the card's approval-URL feed.
+ *
+ * The backend tags a request `card_owned` when this gallery owns the consent
+ * flow; the tag tells the CHAT renderer not to duplicate the prompt, and the
+ * message is still delivered precisely so the card can read the URL out of it.
+ * If this ever filtered on the tag, connecting a provider would hand the user a
+ * card with no Authorize link and no other surface offering one.
+ */
+describe('card-owned OAuth messages feed the card', () => {
+  const oauthMsg = (meta: Record<string, unknown>): ChatMessage => ({
+    role: 'mcp_oauth',
+    content: '🔐 notion requires authentication.',
+    cls: 'msg msg-info',
+    ts: '2026-08-10T00:00:00Z',
+    meta,
+  })
+
+  it('reads the approval URL off a card_owned message', () => {
+    const feed = latestOAuthByServer(
+      [oauthMsg({
+        server_name: 'notion',
+        oauth_url: 'https://mcp.notion.com/authorize?state=x',
+        card_owned: true,
+      })],
+      {},
+    )
+    expect(feed.notion.oauthUrl).toBe('https://mcp.notion.com/authorize?state=x')
+    expect(connectionStateFor(server('unknown'), feed.notion)).toBe('waiting-for-approval')
+  })
+
+  it('reads an unannotated message identically', () => {
+    const feed = latestOAuthByServer(
+      [oauthMsg({ server_name: 'notion', oauth_url: 'https://mcp.notion.com/authorize?state=x' })],
+      {},
+    )
+    expect(feed.notion.oauthUrl).toBe('https://mcp.notion.com/authorize?state=x')
   })
 })
 

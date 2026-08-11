@@ -34,6 +34,7 @@ from kiro_crew.config import data_home
 from kiro_crew.config.loader import KiroCrewConfig, refresh_materialized_agents
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import (
+    cautious_boot,
     channel_slots,
     chat,
     handlers,
@@ -337,6 +338,38 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
 )
 
 
+async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
+    """Record a middleware refusal in the SEL, off the event loop, best-effort.
+
+    Shared by every middleware that denies BEFORE ``sel_audit_middleware`` runs
+    (that one is registered inner to them, so a bare raise produces a 403 that
+    appears nowhere in the audit log). One helper rather than per-site calls
+    because both properties below are easy to omit at a new deny site and
+    invisible when omitted:
+
+    * OFF THE LOOP — ``log_api_access`` only enqueues, but the first ``sel()``
+      of a process CONSTRUCTS the log: trust-dir creation, key validation, and
+      on Windows an ``icacls`` subprocess to lock the key file's DACL. A fresh
+      dashboard whose first state-changing request is cross-origin would run
+      that synchronously on the event loop and stall every other request.
+    * BEST-EFFORT — a trust root too short to sign the chain makes construction
+      raise, and an unguarded write would turn the refusal into a 500: losing
+      the denial in order to report it.
+    """
+    try:
+        await asyncio.to_thread(
+            lambda: sel().log_api_access(
+                caller=caller,
+                operation=f"{request.method} {request.path}",
+                outcome="denied",
+                resources=request.path,
+                error=error,
+            )
+        )
+    except Exception:
+        logger.warning("Failed to log a middleware denial to SEL", exc_info=True)
+
+
 def _make_host_validation_middleware(caller: str) -> Callable:
     """Build the DNS-rebinding ``Host``-header barrier middleware.
 
@@ -376,14 +409,11 @@ def _make_host_validation_middleware(caller: str) -> Callable:
         if request.path not in PROBE_PATHS and not check_host(request):
             # SEL audit (security-relevant permission decision): make
             # DNS-rebinding attempts visible in the audit log, mirroring the
-            # API-access audit. Non-critical write (no fail-closed fsync) so
-            # it never wedges the event loop.
-            sel().log_api_access(
-                caller=caller,
-                operation=f"{request.method} {request.path}",
-                outcome="denied",
-                resources=request.path,
-                error=f"host header not allowed: {request.headers.get('Host', '')[:100]}",
+            # API-access audit.
+            await _audit_denied(
+                caller,
+                request,
+                f"host header not allowed: {request.headers.get('Host', '')[:100]}",
             )
             raise web.HTTPForbidden(
                 text="Host header not allowed.",
@@ -462,6 +492,30 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/apps/ops-mission-control/incident/transition",
         "/api/apps/ops-mission-control/incident/claim",
         "/api/apps/ops-mission-control/incident/action",
+        # Issue Radar crew ledger — the read leg and the work-item write leg, for
+        # the ``issue_radar_crew_read`` / ``issue_radar_crew_record`` MCP tools. A
+        # crew agent has no dashboard token (same three reasons as the
+        # investigation entry above), and the ledger is the ONLY thing that
+        # survives its compaction, its per-turn ceiling and a gateway restart, so
+        # without these entries an unattended crew has no memory at all.
+        #
+        # FULL paths, never the ``/api/apps/issue-radar`` prefix — for the reason
+        # spelled out on the investigation entry: prefix-matching there would also
+        # admit the app's GitHub/GitLab WRITE routes (label, close/reopen,
+        # comment) to anything holding the internal secret.
+        #
+        # Read this pair as ONE admission, not two. Matching is
+        # ``path == p or path.startswith(p + "/")``, so the ``/crew`` entry
+        # already covers ``/crew/work`` and EVERY future ``/crew/...`` sub-route:
+        # anything added under that segment becomes agent-reachable the moment it
+        # is routed, with no further edit here. So a forge-write or destructive
+        # route must not live under ``/crew/`` — put it on its own path, or refuse
+        # an internal-secret caller at the handler the way
+        # ``api_skills_discover_install`` does below.
+        "/api/apps/issue-radar/crew",
+        # Redundant under the prefix match above; kept explicit so a reader sees
+        # both routes the crew tools actually call.
+        "/api/apps/issue-radar/crew/work",
         # Registry skill discovery — the READ leg only, for the
         # ``skill_discover`` / ``skill_fetch`` MCP tools. The Skills page calls
         # the same two routes with cookie auth, hence mixed rather than strict.
@@ -1464,6 +1518,101 @@ async def _revive_intended_instances(
                 )
         except Exception:
             logger.warning("Startup auto-reconnect of %s failed", inst.id, exc_info=True)
+
+
+def _armed_unattended_loops() -> "list[Any]":
+    """Nudge loops still marked active, for the expiry notice only.
+
+    Deliberately a plain ``active`` read rather than a careful liveness test: this
+    decides whether to TELL someone, and a false positive costs one redundant
+    notice. Nothing is granted on the strength of it, so there is no reason to pay
+    for a stop-sentinel stat or to re-derive the loop's bounds — and this runs on
+    the event loop, reached from tool-approval paths.
+    """
+    try:
+        svc = _autonudge_get()
+        if svc is None:
+            return []
+        return [lp for lp in svc.list_all() if getattr(lp, "active", False)]
+    except Exception:
+        logger.debug("could not enumerate nudge loops for the expiry notice", exc_info=True)
+        return []
+
+
+_UNATTENDED_EXPIRY_TITLE = "🔒 Auto-approve expired while an unattended run was in progress"
+
+
+def _unattended_expiry_text(loop_count: int) -> str:
+    """Body shared by the dashboard note and the owner DM, so the two cannot drift.
+
+    Names the remedy as well as the cause: ``agent.yolo_duration`` accepts
+    ``until_shutdown``, which has no timed expiry. The cheapest half of this
+    problem is that operators do not know that option exists, and the moment it
+    would have helped is the moment worth saying so.
+
+    The stall is stated conditionally because global auto-approve is not the only
+    path to one: a slot carrying its own trust grant is approved by ``slot._trust``
+    independently of the grant, so its cycles keep running after this expiry.
+    Claiming the run has stopped would send an operator to rescue a healthy one.
+    """
+    return (
+        f"{loop_count} monitor loop(s) are still running, but auto-approval has "
+        f"ended, so any cycle that relied on it now waits on a per-tool approval "
+        f"that nobody is there to give. (A session granted its own trust is "
+        f"unaffected.) Re-enable auto-approve to resume. For runs meant to go "
+        f"unattended overnight, Settings → agent.yolo_duration has an "
+        f"'until_shutdown' option that has no timed expiry."
+    )
+
+
+def _notify_unattended_expiry(state: "DashboardState", source: str) -> None:
+    """Report an expiry that landed on an unattended run, on BOTH surfaces.
+
+    An ordinary expiry degrades gracefully — the next tool call asks a human, and
+    a human is there to answer. This one degrades into nothing: the loop keeps
+    waking, dispatches a tool, waits out the approval window with nobody present,
+    and accomplishes no work until someone notices.
+
+    Delivered to the dashboard feed AND pushed to the owner's DM, because the
+    operator this exists for is by definition not looking at a dashboard. Neither
+    delivery is gated behind ``agent.notify_override_expiry``: that switch silences
+    a recurring *expiry* notice, while this says a run in flight stopped being able
+    to work — a different and stronger fact, and one an operator who muted the
+    former did not ask to be uninformed about.
+    """
+    armed = _armed_unattended_loops()
+    if not armed:
+        return
+    logger.warning(
+        "Safety override expired with %d unattended loop(s) still running; "
+        "every further cycle will wait on per-tool approval",
+        len(armed),
+    )
+    body = _unattended_expiry_text(len(armed))
+    try:
+        state.notify(
+            "safety_override",
+            _UNATTENDED_EXPIRY_TITLE,
+            body,
+            meta={"loops": len(armed), "source": source},
+        )
+    except Exception:
+        # ERROR, not debug: this notice is the only operator-visible trace that an
+        # unattended run stopped working rather than finished. Losing it silently
+        # reproduces the failure it exists to explain.
+        logger.error("unattended-expiry notification failed", exc_info=True)
+
+    # The push half. Scheduled directly rather than through
+    # _dispatch_override_expiry_notification, which applies the recurring-expiry
+    # mute this notice deliberately does not inherit.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug("no running event loop — unattended-expiry DM skipped")
+        return
+    task = loop.create_task(_dm_owner(state, f"{_UNATTENDED_EXPIRY_TITLE}\n\n{body}"))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
 
 
 def _dispatch_override_expiry_notification(state: DashboardState, notify_coro_factory: Any) -> bool:
@@ -2734,7 +2883,13 @@ async def start_dashboard(
     app.router.add_get("/api/releases", handlers.api_releases)
     app.router.add_post("/api/update", handlers.api_update_apply)
     app.router.add_post("/api/update/auto", handlers.api_update_auto)
+    app.router.add_post("/api/update/channel", handlers.api_update_channel)
     app.router.add_post("/api/update/cancel", handlers.api_update_cancel)
+    # Restart with no update. Sibling of /api/update rather than a mode of it:
+    # /api/update refuses every layout that is not a git checkout, while a
+    # restart is valid everywhere and is how a wheel install picks up code a
+    # terminal-run installer already replaced on disk.
+    app.router.add_post("/api/restart", handlers.api_gateway_restart)
     # Only expose the simulation endpoint in dev/debug environments
     _is_dev_env = os.environ.get("KIROCREW_HOME", "").endswith("-dev")
     if _is_dev_env or env_flag_enabled("KIROCREW_DEV_MODE"):
@@ -2750,6 +2905,7 @@ async def start_dashboard(
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
     app.router.add_get("/api/telemetry/context-trace", handlers.api_context_trace)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
+    app.router.add_get("/api/telemetry/collection", handlers.api_collection_status)
     app.router.add_get("/api/tailnet/status", handlers.api_tailnet_status)
     app.router.add_post("/api/sessions/restart", handlers.api_sessions_restart)
     # NOTE: /search must be registered before /{key} to avoid the path param catching "search"
@@ -2945,6 +3101,7 @@ async def start_dashboard(
     # wedge-prone blocking work that would freeze this event loop if run inline.
     # subprocess_executor (not the default to_thread pool) isolates it so a hung
     # `ps` cannot starve asyncio's default executor (the RFC's bulkhead intent).
+    await cautious_boot.pause_before("app backends")
     started_apps = await asyncio.get_running_loop().run_in_executor(
         subprocess_executor(), start_enabled_app_backends
     )
@@ -3174,6 +3331,12 @@ async def start_dashboard(
     ) -> web.StreamResponse:
         if request.method not in _safe_methods:
             if not check_origin(request, require=True, fallback_header="Referer"):
+                await _audit_denied(
+                    "dashboard_user",
+                    request,
+                    "CSRF check failed: origin not allowed: "
+                    f"{request.headers.get('Origin', '')[:100]}",
+                )
                 raise web.HTTPForbidden(
                     text="CSRF check failed: request origin not allowed.",
                     content_type="text/plain",
@@ -3447,7 +3610,10 @@ async def start_dashboard(
                 except Exception:
                     logger.debug("stall-exit notification failed", exc_info=True)
 
-    # Fire background MCP probe at startup (non-blocking)
+    # Fire background MCP probe at startup (non-blocking). The probe spawns a
+    # handshake subprocess per configured MCP server, so under cautious boot it
+    # gets its own launch window instead of landing on top of the app backends.
+    await cautious_boot.pause_before("MCP server probe")
     asyncio.create_task(handlers._bg_mcp_probe())
 
     # Start terminal orphan reaper (kills PTYs with no WS past the reaper window)
@@ -3496,6 +3662,9 @@ async def start_dashboard(
             logger.debug("Could not clear trusted sessions", exc_info=True)
         # Slack notification (prevent GC with background_tasks set)
         _dispatch_override_expiry_notification(state, _notify_slack_override_expired)
+        # An expiry that lands on an unattended run is the one case that cannot
+        # self-report: nobody is present to answer the prompts it produces.
+        _notify_unattended_expiry(state, source)
 
     safety_override().on_expired = _on_override_expired
 
@@ -3535,6 +3704,9 @@ async def start_dashboard(
         # messages, so starting up without it is safe.
         logger.warning("channel transcript migration failed", exc_info=True)
 
+    # Session restores spawn a kiro-cli process per restored tab — the last
+    # large group of the startup battery, so it too gets a cautious-boot window.
+    await cautious_boot.pause_before("session restore")
     with state.suspend_slots_push():
         await chat.restore_open_slots_async(state)
         restored = await chat.restore_recent_sessions_async(
@@ -3785,14 +3957,11 @@ async def start_api_server(
         # Origin, so a cross-site page is rejected here even before token auth.
         if request.method not in _safe_methods:
             if not check_origin(request, require=True, fallback_header="Referer"):
-                # Audit the CSRF denial (security-relevant permission decision),
-                # mirroring host_validation_middleware.
-                sel().log_api_access(
-                    caller="mcp_tool",
-                    operation=f"{request.method} {request.path}",
-                    outcome="denied",
-                    resources=request.path,
-                    error=f"CSRF check failed: origin not allowed: {request.headers.get('Origin', '')[:100]}",
+                await _audit_denied(
+                    "mcp_tool",
+                    request,
+                    "CSRF check failed: origin not allowed: "
+                    f"{request.headers.get('Origin', '')[:100]}",
                 )
                 raise web.HTTPForbidden(
                     text="CSRF check failed: request origin not allowed.",

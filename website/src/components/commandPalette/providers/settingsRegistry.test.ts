@@ -22,6 +22,7 @@ const SETTINGS_DIR = path.resolve(__dirname, '../../../pages/settings')
 const VALID_TABS = new Set([
   'overview', 'chat', 'voice', 'display', 'browser', 'skills', 'computer-use',
   'instances', 'security', 'notifications', 'channels', 'developer', 'about',
+  'privacy',
 ])
 
 describe('settingsRegistry.gen.ts — anti-stale guard', () => {

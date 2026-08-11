@@ -1271,10 +1271,17 @@ async def handle_disable_app(request: web.Request) -> web.Response:
             return web.json_response(result.to_dict(), status=400)
         _unregister_notification_channels(request, name)
 
-        # Run builtin on_disable hook if available
-        if name in BUILTIN_NAMES:
+        # Run builtin on_disable hook if available. `name` is the manifest name
+        # (hyphenated, e.g. `code-review-sage`) while `BUILTIN_NAMES` and the
+        # package dirs use underscores, so the membership test and the import both
+        # need the normalized form — without it this hook is unreachable for every
+        # multi-word builtin, which is all of them but `meetings`, `mochi` and
+        # `papyrus`.
+        module_name = name.replace("-", "_")
+        if module_name in BUILTIN_NAMES:
             try:
-                mod = importlib.import_module(f"kiro_crew.apps.builtins.{name}")
+                mod = importlib.import_module(
+                    f"kiro_crew.apps.builtins.{module_name}")
                 if hasattr(mod, "on_disable"):
                     mod.on_disable(request.app)
             except Exception as exc:

@@ -14,6 +14,15 @@ import pytest
 
 from kiro_crew import platform_compat
 
+# These tests exercise POSIX-only process-management semantics: process-group
+# APIs (os.killpg / os.getpgrp / os.getpgid), POSIX identity/age probes
+# (os.getuid / os.sysconf, /proc, ps), the raw signal.SIGKILL constant, and the
+# POSIX kill path of the orphan sweep (which no-ops on Windows). None of these
+# have a Windows equivalent, so they are skipped on Windows. See issue #2041.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX process-management semantics only; see issue #2041"
+)
+
 
 @pytest.fixture()
 def pid_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -237,6 +246,7 @@ class TestCleanupOrphanedMcpServers:
 
 
 class TestCleanupOrphanedSessions:
+    @_POSIX_ONLY
     def test_preserves_non_kiro_pids(self, session_pid_file: Path) -> None:
         """Bug fix: non-kiro PIDs (MCP servers) must survive — not killed."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions
@@ -269,6 +279,7 @@ class TestCleanupOrphanedSessions:
         content = session_pid_file.read_text(encoding="utf-8")
         assert content == ""
 
+    @_POSIX_ONLY
     def test_kiro_pids_killed(self, session_pid_file: Path) -> None:
         """Kiro PIDs should be SIGKILL'd."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions
@@ -642,6 +653,7 @@ class TestFindOrphanMcpCandidates:
         assert result == []
 
 
+@_POSIX_ONLY
 class TestKillOrphanMcps:
     """Tests for kill_orphan_mcps (kill confirmed orphans)."""
 
@@ -808,6 +820,7 @@ class TestParseEtime:
         assert _parse_etime("") == 0.0
 
 
+@_POSIX_ONLY
 class TestOurOrphanPids:
     """Direct tests for _our_orphan_pids (Linux /proc and macOS ps branches)."""
 
@@ -902,6 +915,7 @@ class TestOurOrphanPids:
         assert result == []
 
 
+@_POSIX_ONLY
 class TestLinuxPidAge:
     """Direct tests for _linux_pid_age /proc/<pid>/stat starttime parsing."""
 
@@ -1275,6 +1289,10 @@ class TestMarkedLauncherSweepIntegration:
             patch("os.getpid", return_value=1),
             patch("kiro_crew.session_pid._linux_pid_age", return_value=300.0),
             patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
         ):
             mock_sys.platform = "linux"
             result = find_orphan_mcp_candidates(active_pids=set())
@@ -1298,6 +1316,7 @@ class TestMarkedLauncherSweepIntegration:
 
         assert result == []
 
+    @_POSIX_ONLY
     def test_kill_reverify_honors_marked_launcher(self) -> None:
         from kiro_crew.session_pid import kill_orphan_mcps
 
@@ -1309,6 +1328,10 @@ class TestMarkedLauncherSweepIntegration:
             patch("kiro_crew.session_pid.sys") as mock_sys,
             patch.object(Path, "read_bytes", return_value=b"npx\x00@playwright/mcp\x00--headless"),
             patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
         ):
             mock_sys.platform = "linux"
             killed = kill_orphan_mcps([720])
@@ -1316,6 +1339,7 @@ class TestMarkedLauncherSweepIntegration:
         assert killed == 1
         mock_killpg.assert_called_once_with(720, signal.SIGKILL)
 
+    @_POSIX_ONLY
     def test_kill_reverify_skips_unmarked_launcher(self) -> None:
         from kiro_crew.session_pid import kill_orphan_mcps
 
@@ -1335,6 +1359,381 @@ class TestMarkedLauncherSweepIntegration:
         assert killed == 0
         mock_killpg.assert_not_called()
         mock_kill.assert_not_called()
+
+
+# ── Work-process orphan sweep tests ───────────
+
+
+class TestIsSweepableOrphanWork:
+    """Unit tests for the work-class positive-identity predicate."""
+
+    _PYTEST_CMDLINE = b"/usr/bin/python3\x00-m\x00pytest\x00test/\x00-x\x00-q"
+
+    def test_marked_orphaned_old_work_process_is_sweepable(self) -> None:
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        with (
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+        ):
+            assert _is_sweepable_orphan_work(1234, self._PYTEST_CMDLINE, 700.0) is True
+
+    def test_xdist_execnet_worker_is_sweepable(self) -> None:
+        """pytest-xdist popen workers run under execnet's bootstrap cmdline."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        worker = (
+            b"/repo/.venv/bin/python\x00-u\x00-c"
+            b"\x00import sys;exec(eval(sys.stdin.readline()))"
+        )
+        with (
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+        ):
+            assert _is_sweepable_orphan_work(1234, worker, 700.0) is True
+
+    def test_live_session_leader_blocks_sweep(self) -> None:
+        """A backgrounded run whose kiro-cli session leader is ALIVE is kept.
+
+        ``nohup pytest &`` reparents to init while the owning agent session
+        still polls its log — SID still points at the live leader, so the
+        sweep must leave the run alone. The environ is never read.
+        """
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        with (
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=True,
+            ),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker") as mock_env,
+        ):
+            assert _is_sweepable_orphan_work(1234, self._PYTEST_CMDLINE, 700.0) is False
+        mock_env.assert_not_called()
+
+    def test_unreadable_sid_fails_closed(self) -> None:
+        """SID read failure -> assume the owner is alive -> never sweep."""
+        from kiro_crew.session_pid import _work_orphan_session_leader_alive
+
+        with patch("kiro_crew.session_pid._linux_pid_sid", return_value=-1):
+            assert _work_orphan_session_leader_alive(1234) is True
+
+    def test_self_session_leader_fails_closed(self) -> None:
+        """A setsid'd coordinator (own leader) carries no ownership info -> kept."""
+        from kiro_crew.session_pid import _work_orphan_session_leader_alive
+
+        with patch("kiro_crew.session_pid._linux_pid_sid", return_value=1234):
+            assert _work_orphan_session_leader_alive(1234) is True
+
+    def test_dead_leader_means_session_ended(self) -> None:
+        """Leader gone (or PID recycled into a non-leader) -> session ended."""
+        from kiro_crew.session_pid import _work_orphan_session_leader_alive
+
+        def fake_sid(pid: int) -> int:
+            return 500 if pid == 1234 else -1  # leader 500 unreadable = gone
+
+        with patch("kiro_crew.session_pid._linux_pid_sid", side_effect=fake_sid):
+            assert _work_orphan_session_leader_alive(1234) is False
+
+    def test_marked_detached_daemon_is_not_sweepable(self) -> None:
+        """A marked process WITHOUT a test-runner shape is never swept.
+
+        Agents deliberately leave some marked processes running past turn end
+        (e.g. a preview server detached with ``start_new_session=True``).
+        Those are intentional survivors — the shape gate excludes them, and
+        their environ is never even read.
+        """
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        daemon = b"/usr/bin/node\x00/opt/serve-sim/cli.js\x00--udid\x00ABC123"
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker") as mock_env:
+            assert _is_sweepable_orphan_work(1234, daemon, 7000.0) is False
+        mock_env.assert_not_called()
+
+    def test_pytest_path_fragment_daemon_is_not_sweepable(self) -> None:
+        """'pytest' inside a path ARGUMENT must not match (structural, not
+        substring): ``nohup node /work/pytest-dashboard/server.js`` is a
+        daemon, not a test run."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        daemon = b"/usr/bin/node\x00/work/pytest-dashboard/server.js"
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker") as mock_env:
+            assert _is_sweepable_orphan_work(1234, daemon, 7000.0) is False
+        mock_env.assert_not_called()
+
+    def test_venv_pytest_console_script_is_sweepable(self) -> None:
+        """argv0 basename exactly ``pytest`` (venv console script) matches."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        console = b"/repo/.venv/bin/pytest\x00test/\x00-q"
+        with (
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+        ):
+            assert _is_sweepable_orphan_work(1234, console, 700.0) is True
+
+    def test_bootstrap_payload_as_free_arg_is_not_sweepable(self) -> None:
+        """The execnet payload only matches as the argument OF ``-c`` — the
+        same bytes appearing as any other argv element do not qualify."""
+        from kiro_crew.session_pid import _work_sweep_cmdline_is_test_runner
+
+        free = b"/usr/bin/grep\x00import sys;exec(eval(sys.stdin.readline()))\x00log"
+        assert _work_sweep_cmdline_is_test_runner(free) is False
+
+    def test_young_work_process_is_not_sweepable(self) -> None:
+        """Below the dedicated work floor (600s) — even marked, left alone.
+
+        Age is checked FIRST so a young process never even has its environ
+        read; the env-marker mock asserts it stays uncalled.
+        """
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker") as mock_env:
+            assert _is_sweepable_orphan_work(1234, self._PYTEST_CMDLINE, 599.0) is False
+        mock_env.assert_not_called()
+
+    def test_mcp_floor_is_not_enough_for_work_class(self) -> None:
+        """The 120s MCP floor must NOT admit work processes (dedicated floor)."""
+        from kiro_crew.session_pid import (
+            _ORPHAN_MIN_AGE_SECONDS,
+            _ORPHAN_WORK_MIN_AGE_SECONDS,
+            _is_sweepable_orphan_work,
+        )
+
+        assert _ORPHAN_WORK_MIN_AGE_SECONDS > _ORPHAN_MIN_AGE_SECONDS
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
+            assert (
+                _is_sweepable_orphan_work(
+                    1234, self._PYTEST_CMDLINE, _ORPHAN_MIN_AGE_SECONDS + 1
+                )
+                is False
+            )
+
+    def test_unmarked_work_process_is_not_sweepable(self) -> None:
+        """No KIROCREW_SPAWNED environ marker — a user's own pytest is safe."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=False):
+            assert _is_sweepable_orphan_work(1234, self._PYTEST_CMDLINE, 700.0) is False
+
+    def test_managed_agent_basename_is_not_sweepable(self) -> None:
+        """kiro-cli/claude runtimes stay owned by their tracked-PID lifecycle."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
+            assert (
+                _is_sweepable_orphan_work(
+                    1234, b"/usr/local/bin/kiro-cli\x00chat\x00--acp", 700.0
+                )
+                is False
+            )
+            assert _is_sweepable_orphan_work(1234, b"claude\x00--print", 700.0) is False
+
+    def test_gateway_entrypoint_is_not_sweepable(self) -> None:
+        """Agent-launched peer gateways (e.g. dev pods) are never swept."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
+            assert (
+                _is_sweepable_orphan_work(
+                    1234, b"python3\x00-m\x00kiro_crew.mcp_gateway.gatewayd", 700.0
+                )
+                is False
+            )
+
+    def test_empty_cmdline_is_not_sweepable(self) -> None:
+        """Kernel threads / zombies (empty cmdline) are never candidates."""
+        from kiro_crew.session_pid import _is_sweepable_orphan_work
+
+        with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
+            assert _is_sweepable_orphan_work(1234, b"", 700.0) is False
+
+
+class TestWorkOrphanSweepIntegration:
+    """find + kill phases honor the work-process positive-ID path."""
+
+    _PYTEST_CMDLINE = b"/usr/bin/python3\x00-m\x00pytest\x00test/\x00-x\x00-q"
+
+    def test_find_includes_marked_old_work_orphan(self) -> None:
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[900]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=self._PYTEST_CMDLINE),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=700.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == [900]
+
+    def test_find_excludes_young_marked_work_orphan(self) -> None:
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[901]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=self._PYTEST_CMDLINE),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=300.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+
+    def test_find_excludes_unmarked_work_orphan(self) -> None:
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[902]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=self._PYTEST_CMDLINE),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=700.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=False),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+
+    def test_find_excludes_marked_kiro_cli_orphan(self) -> None:
+        """Managed agent runtime carrying the marker still isn't work-swept."""
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[903]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(
+                Path, "read_bytes", return_value=b"/usr/local/bin/kiro-cli\x00chat\x00--acp"
+            ),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=700.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+
+    def test_kill_sweeps_whole_subtree_leaf_first(self) -> None:
+        """Descendants (incl. grandchildren) die before parents; root last."""
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+
+        with (
+            patch("os.getpgrp", return_value=1000),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=self._PYTEST_CMDLINE),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=700.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+            # Preorder: 910 -> [911, 912(-> 913)]; 913 is a grandchild.
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[911, 912, 913]),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, _sig: kill_order.append(p),
+            ),
+        ):
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 4
+        # Reversed preorder guarantees each process dies before its parent.
+        assert kill_order == [913, 912, 911, 910]
+
+    def test_kill_reverify_skips_now_young_or_unmarked(self) -> None:
+        """Kill-phase re-verify fails closed when the marker is gone (TOCTOU)."""
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        with (
+            patch("os.getpgrp", return_value=1000),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=self._PYTEST_CMDLINE),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=700.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=False),
+            patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill,
+        ):
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([920])
+
+        assert killed == 0
+        mock_kill.assert_not_called()
+
+    def test_subtree_kill_respects_global_cap(self) -> None:
+        """The _ORPHAN_SWEEP_MAX_KILLS cap bounds subtree members too."""
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+
+        with (
+            patch("kiro_crew.session_pid._ORPHAN_SWEEP_MAX_KILLS", 3),
+            patch("os.getpgrp", return_value=1000),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=self._PYTEST_CMDLINE),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=700.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch(
+                "kiro_crew.session_pid._work_orphan_session_leader_alive",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.acp.client._get_child_pids",
+                return_value=[931, 932, 933, 934, 935],
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, _sig: kill_order.append(p),
+            ),
+        ):
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([930])
+
+        assert killed == 3
+        # Deepest three descendants reaped; root survives to the next cycle.
+        assert kill_order == [935, 934, 933]
+        assert 930 not in kill_order
 
 
 class TestSpawnedMarkerInjection:
@@ -1530,6 +1929,7 @@ class TestPidStartTokenIdentityGuard:
         # Entry retained so the next sweep can retry.
         assert entry in session_pid_file.read_text(encoding="utf-8")
 
+    @_POSIX_ONLY
     def test_matching_token_still_killed(self, session_pid_file: Path) -> None:
         """A genuine orphan (token matches) is still reaped — no regression."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions
@@ -1561,6 +1961,7 @@ class TestPidStartTokenIdentityGuard:
 
         assert (99998, platform_compat.SIGKILL) in kills
 
+    @_POSIX_ONLY
     def test_legacy_entry_without_token_still_swept(self, session_pid_file: Path) -> None:
         """Back-compat: a 2-field entry keeps its old cmdline+grace behavior."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions
@@ -1591,6 +1992,7 @@ class TestPidStartTokenIdentityGuard:
 
         assert (99998, platform_compat.SIGKILL) in kills
 
+    @_POSIX_ONLY
     def test_session_roots_sweep_parses_token_entry(self, session_pid_file: Path) -> None:
         """cleanup_orphaned_session_roots must not mis-prune 3-field entries.
 
@@ -1648,6 +2050,7 @@ class TestPidStartTokenIdentityGuard:
 
 
 class TestSpawnGraceCrossPlatform:
+    @_POSIX_ONLY
     def test_grace_applies_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Regression: the grace window was Linux-only, so macOS never got it."""
         import kiro_crew.session_pid as sp
@@ -1663,6 +2066,7 @@ class TestSpawnGraceCrossPlatform:
         monkeypatch.setattr(sp, "_pid_age_seconds", lambda p: sp.SWEEP_SPAWN_GRACE_SECONDS + 1)
         assert sp._pid_in_spawn_grace(4242) is False
 
+    @_POSIX_ONLY
     def test_unknown_age_treated_as_young(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Unreadable age → safe direction (skip the kill)."""
         import kiro_crew.session_pid as sp

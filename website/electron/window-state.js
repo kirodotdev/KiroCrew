@@ -66,6 +66,8 @@ function sanitizeWindowState(saved, opts = {}) {
   const displays = Array.isArray(opts.displays) ? opts.displays : [];
 
   const fullScreen = !!(saved && saved.fullScreen);
+  // Legacy saved states predate the key; !! coerces missing/odd values to false.
+  const alwaysOnTop = !!(saved && saved.alwaysOnTop);
 
   let width = isFiniteNum(saved && saved.width) ? saved.width : null;
   let height = isFiniteNum(saved && saved.height) ? saved.height : null;
@@ -76,7 +78,7 @@ function sanitizeWindowState(saved, opts = {}) {
     height = defaults.height;
   }
 
-  const result = { width, height, fullScreen };
+  const result = { width, height, fullScreen, alwaysOnTop };
 
   const x = isFiniteNum(saved && saved.x) ? saved.x : null;
   const y = isFiniteNum(saved && saved.y) ? saved.y : null;
@@ -101,6 +103,7 @@ function sanitizeWindowState(saved, opts = {}) {
 function captureWindowState(win) {
   if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return null;
   const fullScreen = typeof win.isFullScreen === "function" ? win.isFullScreen() : false;
+  const alwaysOnTop = typeof win.isAlwaysOnTop === "function" ? win.isAlwaysOnTop() : false;
   const b =
     (typeof win.getNormalBounds === "function"
       ? win.getNormalBounds()
@@ -108,7 +111,7 @@ function captureWindowState(win) {
         ? win.getBounds()
         : null) || {};
   if (!isFiniteNum(b.width) || !isFiniteNum(b.height)) return null;
-  return { x: b.x, y: b.y, width: b.width, height: b.height, fullScreen };
+  return { x: b.x, y: b.y, width: b.width, height: b.height, fullScreen, alwaysOnTop };
 }
 
 module.exports = {

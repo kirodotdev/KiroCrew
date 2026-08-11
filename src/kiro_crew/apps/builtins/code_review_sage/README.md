@@ -8,6 +8,51 @@ app**, next to the pull request they came from — nothing is written to the pul
 request unless you turn on `review.auto_post`, which publishes them as a PENDING
 (draft) review for you to submit.
 
+## Ask the reviewer
+
+A report states conclusions; "why did you decide that?" is answerable only by the
+session that decided it. After a deep review the reviewer's session is kept alive
+for a bounded while (idle TTL plus an absolute cap, see `sage_lib/chat_session.py`)
+so the Focus Report can offer a chat panel against that same session. Once it is
+reclaimed the transcript stays readable and the composer disappears, because an
+input that cannot send is worse than none.
+
+Asking requires the safety override (YOLO) to be active, with enough remaining
+runway to cover the whole turn. Without it the panel explains why instead of
+offering a composer: the reviewer's session carries pre-approved tools, and a
+turn that is not authorized to use tools at all must not start.
+
+### Known limitation: pre-approved tools are gated after they run
+
+Authorization is enforced in two places, and for one class of tool the second is
+POST-HOC. An agent spec's `allowedTools` pre-approves tools, which then execute
+with **no permission request** — there is nothing to reject, and by the time
+`EVENT_TOOL_CALL` arrives the call has already been made. So the per-tool checks
+applied there (operator denied-commands, the `~/.aws` / `~/.ssh` sensitive-path
+blocks, the enterprise profile ceiling) cannot prevent the FIRST pre-approved
+call. They still abort the turn, which stops every subsequent tool and withholds
+the answer, and they remain a genuine pre-execution gate for any tool that does
+raise a permission event.
+
+This matters here specifically because the session's context is
+attacker-influenced: it was built by reviewing a pull request whose diff and
+description come from an outsider, and this feature then lets a human keep
+prompting that same session. An instruction planted in a diff could steer a
+follow-up answer into a pre-approved read of a credential file.
+
+Scope: the reviewer agent pre-approves one MCP server; the fallback `kirocrew`
+agent pre-approves roughly thirty entries. The session's spec cannot be narrowed
+after the fact — it is the review's own session, which is the point of keeping
+it — so moving the check cannot close this. Closing it requires either a session
+with no pre-approved tools, or routing every tool call through the same
+`HookManager` the dashboard and Slack paths use, with the turn-level override
+kept as an additional restriction on top.
+
+Until then this is an accepted limitation, bounded by three conditions holding at
+once: the reviewed pull request is authored by an untrusted party, an operator has
+turned the safety override on, and someone asks a follow-up question. With the
+override off the chat surface does not exist.
+
 ## Architecture (V1)
 
 - **Deterministic shell** (`sage_lib/`): data store + self-heal layout, GitHub

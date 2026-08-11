@@ -4145,6 +4145,30 @@ class TestRebuildReconcileRetainsEnabledAppServers:
 
 
 class TestMcpMergePriority:
+    def test_the_authorship_marker_never_reaches_the_rendered_spec(self, tmp_path: Path):
+        """A shared-file marker is provenance, not configuration.
+
+        The marker records that Kiro Crew wrote an entry into a file it does NOT
+        own. The rendered spec is ours, so carrying the key through would put a
+        field in front of the runtime that says nothing to it -- and would change
+        the emitted spec for every managed remote, which nothing about recording
+        authorship needs to do.
+        """
+        from kiro_crew.mcp_provenance import MARKER_KEY, stamp
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        kiro_cmd = _make_exec(tmp_path, "marked-srv")
+        cc_cmd = _make_exec(tmp_path, "cc-marked-srv")
+        config = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={"cc-srv": stamp({"command": cc_cmd})},
+            kiro_servers={"kiro-srv": stamp({"command": kiro_cmd})},
+        )
+        for name in ("kiro-srv", "cc-srv"):
+            assert name in config["mcpServers"], f"{name} must still be merged"
+            assert MARKER_KEY not in config["mcpServers"][name]
+
     def test_kiro_global_outranks_cc_global(self, tmp_path: Path):
         """Same server in both globals → Kiro-global command wins (CC down-ranked)."""
         cfg_dir = _bundled_defaults(tmp_path)

@@ -1,4 +1,5 @@
 import { safeSetItem } from '../utils/safeStorage'
+import { hasCommandModifier } from '../utils/commandModifier'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
@@ -234,7 +235,7 @@ const MonacoDiffEditor = lazy(async () => {
  * path-backed `.svg` to `image` and never returns `svg` here. `svg` is kept in the
  * list for the content-string SVG that artifacts render.
  */
-const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw']
+const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw', 'office']
 
 /** Comment hint banner — shown once per session for markdown files */
 function CommentHint({ onDismiss }: { onDismiss: () => void }) {
@@ -1030,7 +1031,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // region; otherwise we let it bubble (chat-find) or let Monaco handle it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'f') return
+      if (!hasCommandModifier(e) || e.key.toLowerCase() !== 'f') return
       if (editing || diffMode || !isMarkdown) return       // Monaco/edit owns it; non-markdown skip
       if (!findActiveRef.current) return                    // cursor is in chat → let chat-find handle
       e.preventDefault()

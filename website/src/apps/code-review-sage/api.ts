@@ -5,6 +5,8 @@
 // dashboard session cookie — no tokens are added here.
 import type {
   AddRepoResponse,
+  ChatAskResponse,
+  ChatState,
   ConsolidateResponse,
   LearningsResponse,
   NamespacesResponse,
@@ -23,20 +25,37 @@ const API = '/api/apps/code-review-sage'
 
 interface ApiError {
   error?: string
+  code?: string
 }
 
-async function parseErrorBody(r: Response): Promise<string> {
+/** A failed request, carrying the backend's machine-readable `code`.
+ *
+ *  The prose in `message` is English produced in Python and is advisory only —
+ *  rendering it inside a localized page is what the error-code contract exists to
+ *  stop. Callers that show copy to the user switch on `code` and supply their own
+ *  translated string; `message` is for logs and for codes nobody has mapped yet. */
+export class SageApiError extends Error {
+  code: string
+
+  constructor(message: string, code: string) {
+    super(message)
+    this.name = 'SageApiError'
+    this.code = code
+  }
+}
+
+async function parseErrorBody(r: Response): Promise<SageApiError> {
   try {
     const body = (await r.json()) as ApiError
-    return body.error || `HTTP ${r.status}`
+    return new SageApiError(body.error || `HTTP ${r.status}`, body.code || '')
   } catch {
-    return `HTTP ${r.status}`
+    return new SageApiError(`HTTP ${r.status}`, '')
   }
 }
 
 async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(`${API}${path}`, { credentials: 'same-origin' })
-  if (!r.ok) throw new Error(await parseErrorBody(r))
+  if (!r.ok) throw await parseErrorBody(r)
   return r.json() as Promise<T>
 }
 
@@ -47,11 +66,30 @@ async function sendJSON<T>(path: string, method: string, body?: unknown): Promis
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(await parseErrorBody(r))
+  if (!r.ok) throw await parseErrorBody(r)
   return r.json() as Promise<T>
 }
 
 export const sageApi = {
+  // --- Post-review chat ---
+  /** Transcript for one reviewed change, plus whether it can still be asked.
+   *  History comes from disk, so an archived run still shows what was discussed. */
+  chatState: (runId: string, changeId: string): Promise<ChatState> =>
+    getJSON(`/chat?run_id=${encodeURIComponent(runId)}`
+      + `&change_id=${encodeURIComponent(changeId)}`),
+
+  /** Ask the reviewer one thing. Rejects with a `SageApiError` whose `code` is
+   *  `chat_expired` / `chat_busy` / `chat_message_too_long` / ... */
+  chatAsk: (runId: string, changeId: string, message: string):
+  Promise<ChatAskResponse> =>
+    sendJSON('/chat', 'POST',
+      { run_id: runId, change_id: changeId, message }),
+
+  /** End the conversation, releasing the reviewer subprocess it was holding. */
+  chatClose: (runId: string, changeId: string):
+  Promise<{ ok: boolean; closed: boolean }> =>
+    sendJSON('/chat-close', 'POST', { run_id: runId, change_id: changeId }),
+
   // --- Runs (threads) ---
   runs: (): Promise<RunsResponse> => getJSON('/runs'),
 

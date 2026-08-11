@@ -81,7 +81,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
-from kiro_crew.dashboard import start_dashboard
+from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _run_chat
 from kiro_crew.dashboard.chat_utils import (
@@ -2073,7 +2073,7 @@ class GatewayOrchestrator:
                             )
                             job.record_failure()
                         return None  # no output = no delivery
-                    job.last_result = redact(output)
+                    job.set_run_result(redact(output))
                     job.last_error = ""
                     if result.get("status") == "ok":
                         job.last_status = "ok"
@@ -2195,7 +2195,7 @@ class GatewayOrchestrator:
                         # bookkeeping/history — no failure counting, no delivery.
                         return None
                     if status == "ok":
-                        job.last_result = "ok"
+                        job.set_run_result("ok")
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
@@ -2224,12 +2224,13 @@ class GatewayOrchestrator:
                         return None
                     elif status == "done":
                         msg = result.get("message", "")
-                        job.last_result = redact(msg) if msg else ""
+                        script_msg = redact(msg) if msg else ""
+                        job.set_run_result(script_msg)
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
                         # Deliver Done message and remove job
-                        await _deliver_script_result(job, job.last_result, remove=True)
+                        await _deliver_script_result(job, script_msg, remove=True)
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}",
@@ -2241,15 +2242,16 @@ class GatewayOrchestrator:
                             logger.debug(
                                 "SEL logging failed in cron script done path", exc_info=True
                             )
-                        return job.last_result or "done"
+                        return script_msg or "done"
                     elif status == "report":
                         msg = result.get("message", "")
-                        job.last_result = redact(msg) if msg else ""
+                        script_msg = redact(msg) if msg else ""
+                        job.set_run_result(script_msg)
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
                         # Deliver Report message (keep job running)
-                        await _deliver_script_result(job, job.last_result)
+                        await _deliver_script_result(job, script_msg)
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}",
@@ -2261,7 +2263,7 @@ class GatewayOrchestrator:
                             logger.debug(
                                 "SEL logging failed in cron script report path", exc_info=True
                             )
-                        return job.last_result or "report"
+                        return script_msg or "report"
                     else:
                         err = result.get("error", "unknown error")
                         raise RuntimeError(err)
@@ -2543,7 +2545,7 @@ class GatewayOrchestrator:
                                     self.cron_svc.clear_active_session_key(job.id)
                 if _seq_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
-                job.last_result = result_text
+                job.set_run_result(result_text)
                 return result_text
 
             # ── Single-agent path (existing behavior) ──
@@ -2605,7 +2607,7 @@ class GatewayOrchestrator:
                 if _model_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
 
-                job.last_result = result_text
+                job.set_run_result(result_text)
 
                 # Context-meter reading for the dashboard slot, captured NOW:
                 # the finally block below resets this session, so the open
@@ -2872,7 +2874,16 @@ class GatewayOrchestrator:
                 fh = _result_hash(exc_summary)
                 is_dup = fh == job.last_failure_hash
                 if is_dup and time.time() - job.last_failure_at < _FAILURE_REMINDER_SECS:
-                    job.consecutive_failures += 1
+                    # record_failure() is the counter's sole owner: a suppressed
+                    # duplicate is still a failed run, so it must count toward
+                    # the auto-pause threshold like every other failure path.
+                    job.record_failure()
+                    if job.auto_paused:
+                        logger.warning(
+                            "Cron '%s' auto-paused after %d consecutive failures",
+                            job.name,
+                            job.consecutive_failures,
+                        )
                     logger.info(
                         "Cron '%s': duplicate failure #%d — suppressing Slack",
                         job.name,
@@ -2924,9 +2935,6 @@ class GatewayOrchestrator:
                     logger.debug(
                         "Dashboard notify failed in cron failure alert path", exc_info=True
                     )
-                # Compute the count this alert represents (including itself) so
-                # the re-alert message can call out persistence.
-                new_count = job.consecutive_failures + 1 if is_dup else 1
                 # Include the machine hostname so multi-gateway setups (e.g. a
                 # laptop + a cloud desktop both running KiroCrew) can tell which
                 # machine's session failed. This is framework-level: the ❌ DM
@@ -2935,9 +2943,12 @@ class GatewayOrchestrator:
                 # not from inside the cron prompt.
                 host = socket.gethostname().split(".")[0]
                 if is_dup:
+                    # +1: this run's failure is recorded below, after the
+                    # awaited Slack attempt, so the display count must include
+                    # it explicitly.
                     fail_msg = (
                         f"⏰ *Cron: {job.name}* ❌ _Job still failing on {host}"
-                        f" ({new_count} consecutive identical failures)"
+                        f" ({job.consecutive_failures + 1} consecutive failures)"
                         f" — check logs._"
                     )
                 else:
@@ -2948,9 +2959,9 @@ class GatewayOrchestrator:
                 fail_msg, _ = redact_exfiltration_urls(fail_msg)
                 fail_msg, _ = redact_credentials(fail_msg)
                 # Silent jobs still execute but suppress notifications (UI bells
-                # AND Slack DMs). We still log the failure at warning level above,
-                # and consecutive_failures still increments for the SEL event below
-                # — we just skip user-facing noise.
+                # AND Slack DMs). The failure is still logged at warning level
+                # and counted toward auto-pause above — we just skip
+                # user-facing noise.
                 slack_failed = False  # track real delivery exceptions only
                 if self.slack and not job.silent:
 
@@ -2975,14 +2986,31 @@ class GatewayOrchestrator:
                             job.name,
                             exc_info=True,
                         )
+                # record_failure() is the counter's sole owner: it continues an
+                # accumulation another writer (gate verdict, timeout) already
+                # built up instead of restarting at 1, and it is deliberately
+                # NOT gated on the alert's Slack delivery above — the run
+                # failed either way, and a job whose failure alerts also fail
+                # must still reach the auto-pause threshold. It runs AFTER the
+                # awaited Slack attempt so a timeout cancelling this handler
+                # mid-alert cannot leave the run counted here AND again by the
+                # timeout handler.
+                job.record_failure()
+                if job.auto_paused:
+                    logger.warning(
+                        "Cron '%s' auto-paused after %d consecutive failures",
+                        job.name,
+                        job.consecutive_failures,
+                    )
                 # Advance dedup state unless Slack delivery raised. "No channel
                 # available" is treated as a skip (not a failure), so dedup still
                 # advances — otherwise every identical failure re-notifies the
-                # dashboard, which is what dedup is supposed to prevent.
+                # dashboard, which is what dedup is supposed to prevent. Only the
+                # dedup fields are gated here; the failure count was already
+                # recorded above.
                 if not slack_failed:
                     job.last_failure_hash = fh
                     job.last_failure_at = time.time()
-                    job.consecutive_failures = new_count
                     # SEL logging is best-effort — never mask the original
                     # exception if audit logging itself fails.
                     try:
@@ -3487,9 +3515,22 @@ class GatewayOrchestrator:
         # silently abandoned the PR it was watching.
         #
         # Rehydration deliberately does NOT resurrect a session the user
-        # dismissed with ✕ (closed=true in the history metadata) — that is the
-        # documented "respect the close" rule, and returning None for it is
-        # correct. Only a genuinely unreachable session retires the loop.
+        # dismissed with ✕ — that is the documented "respect the close" rule.
+        # It is now enforced where the user acts: api_chat_slot_delete removes
+        # this loop as part of the close, so a loop that is still armed was
+        # never user-dismissed. Only a genuinely unreachable session retires
+        # the loop.
+        #
+        # FIX 3: hence adopt_closed=True. ``closed`` in the metadata is written
+        # by TWO producers, and only one of them is the user: idle archival
+        # (POST /api/chat/slots/cleanup, default 3 days) also marks a slot
+        # closed. An unattended worker is idle by nature between cycles, so it
+        # was archived, became unreachable to this exact call, and the loop was
+        # REMOVED below — terminally, with no way back. Adopting the closed
+        # session is what makes archival survivable; the companion change in
+        # api_chat_slots_cleanup exempts loop-owning slots so it should not
+        # happen in the first place, and this is the backstop for a slot
+        # archived before that landed (or by any other automatic closer).
         slot = self.dashboard_state.get_slot(loop.slot_key)
         if slot is None:
             # Rehydration reads the session's persisted transcript and replays
@@ -3501,12 +3542,12 @@ class GatewayOrchestrator:
             # construction broadcasts through asyncio primitives that are not
             # thread-safe.
             slot = await rehydrate_slot_from_history_async(
-                self.dashboard_state, loop.slot_key
+                self.dashboard_state, loop.slot_key, adopt_closed=True
             )
             if slot is None:
                 logger.warning(
-                    "AutoNudge: session %s unreachable (no history, deleted, or "
-                    "closed by the user) — removing loop %s",
+                    "AutoNudge: session %s unreachable (no history or deleted) "
+                    "— removing loop %s",
                     loop.slot_key,
                     loop.id,
                 )
@@ -3554,10 +3595,17 @@ class GatewayOrchestrator:
                 }
             },
         )
+        # FIX 2: an unattended app-owned nudge turn runs under the background
+        # concurrency cap. This is the fleet's hot path — N armed loops fire
+        # independently and would otherwise put N turns on the runtime at once.
+        # An attended slot (any user session with a monitor loop) is passed
+        # straight through, so babysit loops on human sessions are unaffected.
         task = spawn_guarded_turn(
             self.dashboard_state,
             slot,
-            _run_chat(self.dashboard_state, slot, tagged),
+            self.dashboard_state.run_background_turn(
+                slot, _run_chat(self.dashboard_state, slot, tagged)
+            ),
         )
         # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
         # shows the "turn active" three-dots indicator immediately.
@@ -5599,12 +5647,15 @@ class GatewayOrchestrator:
     async def _init_mcp_gateway(self) -> None:
         """Start the MCP gateway sidecar and populate the agent-JSON overlay.
 
-        Gated on ``config.mcp_gateway.enabled``.  Any failure downgrades to
-        today's per-session MCP path — the stub's graceful fallback keeps
-        kiro-cli sessions working even when the broker is unreachable.
+        Runs when ``mcp_gateway.enabled`` OR ``mcp_gateway.apps_enabled`` is set:
+        the stub is the addressing layer MCP Apps routes its callbacks through,
+        so it is needed even with pooling off, where every connection simply gets
+        its own backend. Any failure downgrades to today's per-session MCP path —
+        the stub's graceful fallback keeps kiro-cli sessions working even when
+        the broker is unreachable.
         """
         cfg_gw = self._cfg.mcp_gateway
-        if not cfg_gw.enabled:
+        if not (cfg_gw.enabled or cfg_gw.apps_enabled):
             return
         # Runs on every platform the transport layer covers -- an AF_UNIX socket
         # on POSIX, a named pipe on Windows. Stub delivery is ACP session/new
@@ -5633,6 +5684,7 @@ class GatewayOrchestrator:
                     sandbox_mode=self._cfg.agent.sandbox,
                     approval_mode=self._cfg.agent.approval_mode,
                     poolable_servers=frozenset(cfg_gw.poolable_servers),
+                    pooling_enabled=cfg_gw.enabled,
                 ),
             )
         except Exception:
@@ -5650,7 +5702,19 @@ class GatewayOrchestrator:
         )
         if await manager.start():
             self._mcp_gateway_manager = manager
-            logger.info("mcp-gateway: broker ready (socket=%s)", socket_path)
+            # Name the switch that started it. Two independent flags can, and
+            # "Share MCP Backends: off" beside a live daemon is otherwise a
+            # contradiction an operator has to read a design note to resolve.
+            reasons = []
+            if cfg_gw.enabled:
+                reasons.append("backend sharing")
+            if cfg_gw.apps_enabled:
+                reasons.append("mcp-apps")
+            logger.info(
+                "mcp-gateway: broker ready (socket=%s) for %s",
+                socket_path,
+                " + ".join(reasons) or "no switch (unexpected)",
+            )
 
     async def _stop_mcp_broker(self) -> None:
         """Stop the MCP gateway broker if running and clear the handle."""
@@ -5668,15 +5732,24 @@ class GatewayOrchestrator:
 
         Reloads config so it acts on the value the handler just wrote.
         Returns ``{enabled, running, ping_ok}``.
+
+        The flag governs backend SHARING, not the broker's existence: MCP Apps
+        needs the stub either way. So turning sharing off restarts the broker
+        rather than stopping it whenever Apps is still on — a plain stop would
+        leave ``_mcp_apps_enabled()`` reporting a feature whose render and
+        callback paths just went away. The restart is required, not incidental:
+        the rewriter reads the sharing flag when the broker starts, so re-running
+        it is what re-emits every stub WITHOUT ``--poolable`` and actually stops
+        the sharing the operator just turned off.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
         self._cfg = KiroCrewConfig.load()
-        if enabled:
-            if self._mcp_gateway_manager is None:
-                await self._init_mcp_gateway()
-        else:
+        cfg_gw = self._cfg.mcp_gateway
+        if self._mcp_gateway_manager is not None:
             await self._stop_mcp_broker()
+        if cfg_gw.enabled or cfg_gw.apps_enabled:
+            await self._init_mcp_gateway()
         mgr = self._mcp_gateway_manager
         if self.dashboard_state is not None:
             self.dashboard_state._mcp_gateway_manager = mgr
@@ -6313,6 +6386,13 @@ class GatewayOrchestrator:
         from kiro_crew.slack.events import SeenCache, init_socket_mode
         from kiro_crew.slack.interactions import init as init_interactions
 
+        # Cautious boot: decide ONCE — off-loop — whether the previous instance
+        # left a recent loop-stall crash dump. If it did, the pause_before()
+        # calls below (and in start_dashboard) stagger the startup battery so
+        # a host that is possibly still under the same memory pressure is not
+        # hit with everything at once. Fails open: any error means normal boot.
+        await cautious_boot.initialize()
+
         seen = SeenCache()
         self._init_services()
 
@@ -6331,8 +6411,13 @@ class GatewayOrchestrator:
         # rewriter writes the agent-JSON overlay first so kiro-cli picks up
         # the broker-wired MCP entries the moment a session starts.  No-op
         # when ``mcp_gateway.enabled`` is False.
+        await cautious_boot.pause_before("MCP gateway sidecar")
         await self._init_mcp_gateway()
 
+        # Arming the cron scheduler fires any overdue jobs immediately, so
+        # under cautious boot this pause also defers the post-restart cron
+        # catch-up burst out of the app/MCP launch window.
+        await cautious_boot.pause_before("cron scheduler")
         await self._init_cron()
         await self._init_heartbeat()
         self._init_mcp_discovery()

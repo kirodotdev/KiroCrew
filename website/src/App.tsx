@@ -8,7 +8,7 @@ import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeAppro
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendMessage, setSlotRunning, switchSlot } from './store/chatSlice'
+import { createSlot, appendMessage, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
@@ -302,19 +302,17 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
     : <span className="absolute right-2 top-1/2 -translate-y-1/2 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" aria-label={ariaLabel}>{count}</span>
 }
 
-/** Live-activity dot for a nav item — distinct from the unread BadgeIndicator:
- *  a small pulsing accent ring rather than a count, so "3 unread" and "agents
- *  working" never overwrite each other on the same row. Positioned left of the
- *  badge when expanded, and offset from the collapsed dot. */
+/** Sub-agent activity belongs in the expanded rail, where the bot icon and
+ *  count communicate what is active. The collapsed rail omits it: a second
+ *  anonymous dot competes with the unread badge without identifying a session,
+ *  while the Sessions list provides the actionable per-session status. */
 function ActivityIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
-  if (count <= 0) return null
+  if (count <= 0 || collapsed) return null
   const ariaLabel = `${count} ${label}`
-  return collapsed
-    ? <span className="absolute bottom-1 right-1 w-2 h-2 bg-accent rounded-full animate-pulse z-10" role="status" aria-label={ariaLabel} />
-    : <span className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-accent" role="status" aria-label={ariaLabel}>
-        <Bot size={11} className="animate-pulse" aria-hidden />
-        {count}
-      </span>
+  return <span className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-accent" role="status" aria-label={ariaLabel}>
+    <Bot size={11} className="animate-pulse" aria-hidden />
+    {count}
+  </span>
 }
 
 /**
@@ -827,7 +825,10 @@ export default function App() {
   // in-window navigation back to this frame instead of escaping to '/'.
   const initialPopoutPath = useRef(window.location.pathname + window.location.search).current
   const dispatch = useAppDispatch()
-  const { connected, updateProgress } = useAppSelector(s => s.dashboard)
+  // The slice also carries the slot list and the subagent maps, so selecting all of
+  // it would re-render the root on dashboard traffic neither of these fields reads.
+  const connected = useAppSelector(s => s.dashboard.connected)
+  const updateProgress = useAppSelector(s => s.dashboard.updateProgress)
   // Gateway (web) update flag OR desktop updater availability (mirrored from
   // Electron update-state by useUpdateSubscription) -- both light the same
   // Settings nav dot below.
@@ -896,6 +897,9 @@ export default function App() {
   // every mousemove during a grip-drag, and a primitive snapshot lets
   // useSyncExternalStore's Object.is check skip those re-renders of App.
   const bottomTerminalOpen = useBottomTerminalOpen()
+  // Selected session's project directory: a terminal opened from the nav row
+  // starts there (server default when no session is selected or it has none).
+  const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const navigate = useNavigate()
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
@@ -1044,12 +1048,33 @@ export default function App() {
   useRumPageView()
   useNotificationSound()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
-  // Preview focus (expand) mode from the Web Preview tab: force the left nav
-  // collapsed while active (restored automatically when it turns off, since we
-  // OR a transient flag rather than mutating navCollapsed).
-  const [previewFocused, setPreviewFocused] = useState(false)
+  const navCollapsedRef = useRef(navCollapsed)
+  navCollapsedRef.current = navCollapsed
+  // Preview focus (expand) mode from the Web Preview tab collapses the left nav
+  // as a STARTING layout, not a lock — the brand toggle keeps its standard
+  // behavior while focus mode is on, so the rail can be brought back without
+  // leaving the preview. This ref holds the pre-focus state to restore on exit,
+  // and is cleared the moment the user toggles the rail themselves so their
+  // choice is not undone. `navCollapsed` is driven directly rather than ORed
+  // with a transient flag, because an OR makes the toggle look broken.
+  //
+  // The ref is read and cleared HERE, in the handler, and only plain values are
+  // passed to the setter: a state updater must be pure, and React invokes one
+  // twice under StrictMode, which would make the second pass read an
+  // already-cleared ref and lose the restore value.
+  const navAutoCollapsed = useRef<boolean | null>(null)
   useEffect(() => {
-    const onFocus = (e: Event) => setPreviewFocused(!!(e as CustomEvent<{ focused?: boolean }>).detail?.focused)
+    const onFocus = (e: Event) => {
+      const focused = !!(e as CustomEvent<{ focused?: boolean }>).detail?.focused
+      if (focused) {
+        if (navAutoCollapsed.current === null) navAutoCollapsed.current = navCollapsedRef.current
+        setNavCollapsed(true)
+        return
+      }
+      const prior = navAutoCollapsed.current
+      navAutoCollapsed.current = null
+      if (prior !== null) setNavCollapsed(prior)
+    }
     window.addEventListener(PREVIEW_FOCUS_EVENT, onFocus)
     return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
   }, [])
@@ -1429,7 +1454,7 @@ export default function App() {
   // separate strip inset to relay to Electron — positionTrafficLights centers on
   // the header height directly. Remote panes get their own inset via `macInset`.
   const macInset = isMacElectron && !macFullscreen
-  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb })), refetchInterval: metricsOpen ? 30_000 : false, enabled: metricsOpen })
+  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen ? 30_000 : 60_000, enabled: true })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
   useEffect(() => {
@@ -1577,6 +1602,9 @@ export default function App() {
   const toggleNav = () => {
     if (isMobile) { setMobileNavOpen(p => !p) }
     else {
+      // The user has taken ownership of the rail: leaving preview focus mode
+      // must not overwrite this with the pre-focus state.
+      navAutoCollapsed.current = null
       setNavCollapsed(prev => { const next = !prev; safeSetItem('mc-nav', next ? '1' : '0'); return next })
     }
   }
@@ -1584,7 +1612,7 @@ export default function App() {
   useEffect(() => { if (isMobile) setMobileNavOpen(false) }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
   // Reset mobile nav state when leaving mobile viewport
   useEffect(() => { if (!isMobile) setMobileNavOpen(false) }, [isMobile])
-  const effectiveCollapsed = (navCollapsed || previewFocused) && !isMobile
+  const effectiveCollapsed = navCollapsed && !isMobile
   // Publish the rail track so consumers outside the shell can size against the
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
@@ -1801,6 +1829,22 @@ export default function App() {
                 <span role="status" className="sr-only">{connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}</span>
               </button>
             )
+            // Resource pressure indicator — always visible when tight/critical
+            if (sysMetrics?.posture && sysMetrics.posture !== 'ample' && sysMetrics.posture !== 'unknown') {
+              segments.push(
+                <span
+                  key="resource-health"
+                  className={`${seg} flex items-center gap-1 text-[11px] ${sysMetrics.posture === 'critical' ? 'text-danger' : 'text-warn'}`}
+                  title={sysMetrics.posture === 'critical'
+                    ? i18nT('app.resource_posture_tooltip_critical', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })
+                    : i18nT('app.resource_posture_tooltip_tight', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })}
+                >
+                  <span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full animate-pulse motion-reduce:animate-none ${sysMetrics.posture === 'critical' ? 'bg-danger' : 'bg-warn'}`} />
+                  {!isMobile && <span className="font-medium">{sysMetrics.posture === 'critical' ? i18nT('app.resource_critical') : i18nT('app.resource_tight')}</span>}
+                  {!isMobile && sysMetrics.subagentCap != null && <span className="text-muted text-[10px]">· {i18nT('app.subagent_cap', { cap: String(sysMetrics.subagentCap) })}</span>}
+                </span>
+              )
+            }
             if (!capsuleCollapsed) {
             if (!isMobile) {
               if (!metricsOpen) {
@@ -2340,7 +2384,7 @@ export default function App() {
                   /* While popped out: focus only (a refused programmatic
                      focus is a harmless no-op). Explicit re-dock lives in the
                      TerminalDetachedBar below -- never a timing heuristic. */
-                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal() }}
+                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
                 />
               )}
               <div>{renderNavRow(cap)}</div>

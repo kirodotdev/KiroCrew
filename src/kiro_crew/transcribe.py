@@ -573,6 +573,96 @@ def _collect_whisper_output(
     return txt_files[0].read_text().strip() or None
 
 
+#: Ceiling on the derived thread count (see :func:`_whisper_thread_count`). The
+#: count itself is host-derived; this only bounds EXTRAPOLATION above the widths
+#: that were measured. Decode-heavy models stop benefiting early — in-process
+#: ``base``, an 11s clip: 8 threads 0.96s, 16 1.13s, 24 1.18s, i.e. flat-to-worse
+#: — while encoder-heavy ``turbo`` keeps gaining to 24 (6.26s / 5.13s / 4.81s).
+#: 16 is where both model shapes sit within 7% of their own best, so a 64- or
+#: 128-core host gets 16 rather than an untested 32+.
+_WHISPER_THREAD_CEILING = 16
+
+#: Vars that bound the subprocess's intra-op parallelism. ``OMP_NUM_THREADS``
+#: governs torch's own thread pool plus any OpenMP-threaded BLAS (and MKL, which
+#: falls back to it). A pthread-built OpenBLAS — what the aarch64 torch wheels
+#: link — reads ``OPENBLAS_NUM_THREADS`` instead and ignores the OpenMP one, so
+#: both are required to cover the wheel matrix rather than just the common case.
+#:
+#: torch and OpenBLAS keep SEPARATE pools (measured peak OS threads: omp=8/blas=8
+#: -> 16, omp=32/blas=32 -> 64, omp=32/blas=1 -> 33), so these two values add
+#: rather than multiply. Setting both to the same count — rather than handing the
+#: whole budget to one pool — is deliberate: omp=16/blas=1 and omp=16/blas=16
+#: measured within 3-5% of each other, while omp=31/blas=1 was 30-50% WORSE than
+#: omp=16/blas=16 at the same 32 total threads. Pool width, not thread total, is
+#: what costs.
+_THREAD_ENV_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS")
+
+
+def _available_cpus() -> int:
+    """Return the core count this process may actually run on.
+
+    ``os.sched_getaffinity`` rather than ``os.cpu_count``: under a CPU-set
+    restriction (containers, cgroups, ``taskset``) the latter reports the whole
+    machine, which is exactly the environment that over-threads worst. Falls back
+    to ``os.cpu_count`` where affinity is unavailable (macOS, Windows).
+    """
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            return len(os.sched_getaffinity(0)) or 1
+        except OSError:
+            pass
+    return os.cpu_count() or 1
+
+
+def _whisper_thread_count() -> int:
+    """Derive the Whisper subprocess's intra-op thread count from the host.
+
+    Half the available cores, bounded by :data:`_WHISPER_THREAD_CEILING`.
+
+    Whisper decoding is autoregressive: thousands of tiny parallel regions, each
+    ending in a barrier that completes only when its slowest worker arrives. Wide
+    pools therefore cost latency per step rather than buying throughput, and on a
+    host with other work (a Kiro Crew host runs the gateway and agent sessions
+    alongside) the workers are time-sliced, so a barrier waits on threads the
+    scheduler has not run yet.
+
+    Half the cores is measured, not assumed, at two widths on this 32-core
+    Graviton3 host: at 32 visible cores 16 threads beat 31 (base 4.9s vs 7.3s,
+    turbo 20.8s vs 26.9s), and under ``taskset`` to 16 visible cores 8 threads
+    beat 16 (5s vs 7s). Taking every core also destabilises the runtime far more
+    than it slows it: 8 threads measured 4.9-5.0s across repeats while 32 threads
+    ranged 8.1-68.4s depending on background load. The headroom buys
+    predictability first and mean latency second.
+    """
+    return max(1, min(_WHISPER_THREAD_CEILING, _available_cpus() // 2))
+
+
+def _thread_capped_env() -> dict[str, str]:
+    """Return the subprocess environment with intra-op threads bounded.
+
+    Also strips ``PYTHONPATH``/``PYTHONHOME``: the Whisper CLIs are installed
+    out-of-band and run under their own interpreter, so Kiro Crew's bundled
+    packages (numpy, torch) must not leak into their runtime.
+
+    An operator who has set ANY of :data:`_THREAD_ENV_VARS` is left completely
+    alone — all of them, not just the one they set. Someone who pins
+    ``OPENBLAS_NUM_THREADS=32`` for a reason has expressed an intent about this
+    process's threading, and silently capping the sibling var would half-honour
+    it in a way that is worse than either choice. That deliberately gives up the
+    speedup for those hosts in exchange for never overriding an explicit
+    setting.
+    """
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    if any(env.get(var) for var in _THREAD_ENV_VARS):
+        return env
+    threads = str(_whisper_thread_count())
+    for var in _THREAD_ENV_VARS:
+        env[var] = threads
+    return env
+
+
 async def _run_whisper_cli(
     binary: str,
     build_args,  # Callable[[str], list[str]]: out_dir -> CLI args (excluding binary)
@@ -582,19 +672,16 @@ async def _run_whisper_cli(
     """Run a Whisper-style CLI in an isolated subprocess and read its transcript.
 
     Shared by ``_transcribe_native`` (openai-whisper) and ``_transcribe_mlx``
-    (mlx_whisper). Both CLIs are installed out-of-band and run under their own
-    Python interpreter, so we strip ``PYTHONPATH``/``PYTHONHOME`` to stop
-    KiroCrew's bundled packages (numpy, torch) from leaking into their runtime.
-    Each writes a ``.txt`` transcript into a temp ``out_dir`` we own and clean
-    up. ``build_args`` lets callers express their differing flags (the two CLIs
-    use hyphenated vs underscored option names).
+    (mlx_whisper). The environment comes from :func:`_thread_capped_env`, which
+    isolates the CLI from Kiro Crew's own Python packages and bounds its intra-op
+    parallelism. Each writes a ``.txt`` transcript into a temp ``out_dir`` we own
+    and clean up. ``build_args`` lets callers express their differing flags (the
+    two CLIs use hyphenated vs underscored option names).
     """
     out_dir = await asyncio.to_thread(tempfile.mkdtemp)
     proc = None
     try:
-        clean_env = os.environ.copy()
-        clean_env.pop("PYTHONPATH", None)
-        clean_env.pop("PYTHONHOME", None)
+        clean_env = _thread_capped_env()
         proc = await asyncio.create_subprocess_exec(
             binary,
             *build_args(out_dir),

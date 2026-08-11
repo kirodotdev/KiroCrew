@@ -1,13 +1,14 @@
 /**
- * Screenshot harness for Agent Capabilities > Crews (the renamed first tab).
+ * Screenshot harness for Agent Capabilities > Agents (the first tab).
  *
  * Runs the REAL built SPA (website/dist) behind the shared in-process static
  * server and answers every /api/** call from fixtures via Playwright route
  * interception — gateway-free, no kiro-cli, no dashboard auth.
  *
- * Proves the two things the rename touches: the side-nav tab label ("Crews")
+ * Proves the two things the rename touches: the side-nav tab label ("Agents")
  * and the tab description under the content header. Fixtures seed a few crews
- * so the roster is populated rather than an empty state.
+ * so the roster is populated rather than an empty state. Both label spellings
+ * are accepted so a `before` run against an older build still captures.
  *
  * Usage: node scripts/capture-crews-tab.mjs [outDir] [prefix]
  *   Run against the branch (after) and against a main build (before).
@@ -45,9 +46,9 @@ async function main() {
 
   await page.goto(base + '/capabilities', { waitUntil: 'domcontentloaded' })
   // The tab label is the assertion, so fail loudly rather than shoot a blank page.
-  const tab = page.locator('#main-content nav').getByRole('button', { name: 'Crews', exact: true })
+  const tab = page.locator('#main-content nav').getByRole('button', { name: /^(Agents|Crews)$/ })
   await tab.waitFor({ state: 'visible', timeout: 15000 })
-  await page.locator('#main-content').getByText('Crews you chat with', { exact: false })
+  await page.locator('#main-content').getByText(/(Agents|Crews) you chat with/)
     .first().waitFor({ state: 'visible', timeout: 15000 })
   // Roster content, in whichever DOM the build under test uses: the redesign's
   // cards or main's table rows. Matching both is deliberate -- the `before` run

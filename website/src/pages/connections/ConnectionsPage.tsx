@@ -133,7 +133,15 @@ export function connectionStateFor(
   return 'waiting-for-approval'
 }
 
-function latestOAuthByServer(
+/**
+ * The card's approval-URL feed: the newest mcp_oauth chat message per server.
+ *
+ * Exported for test. `card_owned` is deliberately NOT consulted — that flag is a
+ * hint to the CHAT renderer that this card already shows the same prompt, and the
+ * card is the surface it points at. Filtering on it here would leave the card
+ * with no URL at all.
+ */
+export function latestOAuthByServer(
   activeMessages: readonly ChatMessage[],
   slotMessages: Record<string, ChatMessage[]>,
 ): Record<string, OAuthState> {

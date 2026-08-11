@@ -2300,3 +2300,36 @@ class TestRegistriesConfigFailures:
             body = await resp.json()
         assert body["ok"] is True
         assert body["newlyTrustedHosts"] == ["git.example"]
+
+
+def test_on_disable_hook_resolves_hyphenated_builtin_names():
+    """`on_disable` must be reachable for multi-word builtins.
+
+    The disable route receives the MANIFEST name (`code-review-sage`), while
+    `BUILTIN_NAMES` and the package dirs use underscores. Without normalizing,
+    the membership test fails and the documented hook silently never fires — for
+    every builtin whose name has more than one word, which is nearly all of them.
+    """
+    import importlib
+
+    from kiro_crew.apps.builtins import BUILTIN_NAMES
+
+    hyphenated = [n for n in BUILTIN_NAMES if "_" in n]
+    assert hyphenated, "expected multi-word builtins to exist"
+    for module_name in hyphenated:
+        manifest_name = module_name.replace("_", "-")
+        # What the route computes from the manifest name must land on the package.
+        assert manifest_name.replace("-", "_") == module_name
+        importlib.import_module(f"kiro_crew.apps.builtins.{module_name}")
+
+
+def test_disable_route_normalizes_the_name_before_the_builtin_lookup():
+    """Pins the normalization in the route itself, not just the name algebra."""
+    import inspect
+
+    from kiro_crew.apps import routes
+
+    src = inspect.getsource(routes.handle_disable_app)
+    assert 'name.replace("-", "_")' in src, (
+        "the disable handler must normalize the manifest name before testing "
+        "membership in BUILTIN_NAMES / importing the package")

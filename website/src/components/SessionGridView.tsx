@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import SessionGridLayout from './SessionGridLayout'
 import ChatPane from './ChatPane'
 import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
+import { emitSlotFocused } from '../hooks/useWebSocket'
 
 import { i18nT } from '../i18n/t'
 type Slot = {
@@ -103,6 +104,16 @@ export default function SessionGridView({
 
   // Fork source = the focused session pane, else the first session pane in the grid.
   const focusedLeaf = grid.leaves.find((l) => l.id === grid.focusedId)
+  // Split view keeps its own local focus model (pane focus never routes
+  // through Redux activeSlot), so pane focus must report the slot-focused
+  // intent signal itself for resume prefetch to cover already-mounted panes.
+  const focusedPaneSlot = focusedLeaf?.kind === 'session' ? (focusedLeaf.slot ?? null) : null
+  useEffect(() => {
+    // Unconditional: a placeholder pane taking focus must emit the null
+    // (blur) frame so the server cancels this connection's pending prefetch,
+    // matching the visibilitychange blur semantics.
+    emitSlotFocused(focusedPaneSlot)
+  }, [focusedPaneSlot])
   const forkSourceSlot =
     focusedLeaf?.kind === 'session' && focusedLeaf.slot
       ? focusedLeaf.slot

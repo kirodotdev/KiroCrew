@@ -20,7 +20,12 @@ const MAX_HEIGHT = 1200
 // MCP Apps UI-channel JSON-RPC method names (SEP-1865). The `ui/` namespace is
 // disjoint from the MCP tools namespace, carried over postMessage between the
 // host (this component) and the app iframe.
-const PROTOCOL_VERSION = '2025-11-21'
+/** The SEP-1865 revision this host speaks, returned in the `ui/initialize`
+ *  result. Must be a PUBLISHED revision id — the spec's own handshake examples
+ *  use the revision, and an app comparing against a value that was never
+ *  published cannot negotiate. Revisions live at
+ *  github.com/modelcontextprotocol/ext-apps/tree/main/specification. */
+const PROTOCOL_VERSION = '2026-01-26'
 const M_INITIALIZE = 'ui/initialize'
 const M_TOOLS_CALL = 'tools/call'
 const M_REQUEST_DISPLAY_MODE = 'ui/request-display-mode'

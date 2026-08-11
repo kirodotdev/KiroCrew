@@ -25,32 +25,51 @@ KEEPALIVE = "/api/session-keepalive"
 
 
 class _Clock:
-    """Monotonic clock advanced only by the loop's own sleeps.
+    """Monotonic clock advanced only by the wait loop's own sleeps.
 
     Modelled as an object rather than an iterator of timestamps so that an
     unrelated ``time.monotonic()`` call from the audit path cannot consume a
     value the loop needed and silently change the ping cadence under test.
 
-    Thread-scoped: only the thread recorded at construction advances and reads
-    the fake clock. Any other thread (background timers, pytest internals) falls
-    through to the real ``time.monotonic`` / ``time.sleep``, so their activity
-    cannot pollute the deterministic timeline.
+    Thread-scoped via object identity (``is``) so no other live thread can
+    satisfy the check.
+
+    Additionally, the clock checks the *immediate caller's module* to
+    distinguish calls originating from the code-under-test (``mcp_core``) from
+    infrastructure calls that happen to share the same thread (e.g.
+    pytest-xdist worker heartbeats that issue process-global
+    ``time.sleep(0.001)`` between test iterations). Only calls whose immediate
+    caller resides in ``mcp_core`` advance the fake timeline; all others fall
+    through to the real implementation.
     """
 
     def __init__(self) -> None:
         self.t = 0.0
-        self._owner = threading.current_thread().ident
+        # Store the thread object, not its numeric ident.  Object identity
+        # (``is``) guarantees that only the constructing thread can advance
+        # the clock — no other live thread can satisfy the check.
+        self._owner = threading.current_thread()
         # Capture the real functions before patching replaces them on _time.
         self._real_monotonic = _time.monotonic
         self._real_sleep = _time.sleep
 
+    @staticmethod
+    def _caller_is_mcp_core() -> bool:
+        """True when the immediate caller of sleep/monotonic is mcp_core."""
+        import sys
+
+        # frame 0 = this method, frame 1 = sleep/monotonic, frame 2 = actual caller
+        frame = sys._getframe(2)
+        filename = frame.f_code.co_filename
+        return "mcp_core" in filename
+
     def monotonic(self) -> float:
-        if threading.current_thread().ident != self._owner:
+        if threading.current_thread() is not self._owner or not self._caller_is_mcp_core():
             return self._real_monotonic()
         return self.t
 
     def sleep(self, secs: float) -> None:
-        if threading.current_thread().ident != self._owner:
+        if threading.current_thread() is not self._owner or not self._caller_is_mcp_core():
             self._real_sleep(secs)
             return
         self.t += max(0.0, float(secs))
@@ -214,6 +233,32 @@ class TestWaitLoopEarlyEnd:
 
         assert result == f"Waited {MIN_WAIT}s. Resuming: test"
         assert clock.t == float(MIN_WAIT)
+
+    def test_other_thread_never_advances_fake_clock(self):
+        """Pin the object-identity guard: a different thread calling
+        clock.sleep must fall through to the real sleep, leaving the fake
+        timeline untouched.  This holds regardless of ident values because
+        the check uses ``is not`` on the thread object itself."""
+        clock = _Clock()
+        # Neutralize the real-sleep fallback so the test finishes instantly.
+        clock._real_sleep = lambda secs: None
+
+        leaked: list[float] = []
+
+        def _impostor():
+            """A different thread that calls clock.sleep directly."""
+            clock.sleep(999.0)
+            leaked.append(clock.t)
+
+        t = threading.Thread(target=_impostor)
+        t.start()
+        t.join(timeout=5)
+        assert t.is_alive() is False, "impostor thread did not complete"
+
+        # The fake clock must NOT have been advanced by the impostor thread.
+        assert clock.t == 0.0
+        # The impostor saw the unadvanced clock too.
+        assert leaked == [0.0]
 
 
 class TestUnauthoritativeIdentityGate:

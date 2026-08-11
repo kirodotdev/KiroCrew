@@ -7,15 +7,17 @@ import json
 import logging
 import os
 import platform as _plat
+import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
-from kiro_crew import diagnostics, platform_compat
+from kiro_crew import diagnostics, platform_compat, sandbox
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.agent import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
@@ -61,6 +63,9 @@ from kiro_crew.platform import (
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import sel
+from kiro_crew.service import apparmor
+from kiro_crew.service import linux as service_linux
+from kiro_crew.session_pid_sig import signing_health
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
 
 logger = logging.getLogger(__name__)
@@ -348,6 +353,219 @@ def _doctor_data_home() -> None:
             )
 
 
+def _doctor_trust_root() -> None:
+    """Report whether session identities can be signed, and from which file.
+
+    A gateway whose SEL trust root stops resolving keeps signing its audit
+    chain from bytes cached at init, so nothing looks wrong — while every
+    ``session_pid`` mapping goes out unsigned and the MCP tools that need a
+    verified session are refused. Publication logs that once per process, but
+    only once a session is actually claimed; asking here needs no claim.
+
+    Read-only on purpose: it never constructs ``SecurityEventLog``, so a
+    missing key is reported rather than created as a side effect of the
+    question.
+    """
+    ok, key_path = signing_health()
+    if ok:
+        print(f"  trust root:  ✅ {key_path}")
+        return
+    if not key_path.parent.is_dir():
+        # The trust dir and the key are created together, on the first
+        # SecurityEventLog init. Neither present means no instance has ever run
+        # against this home — a fresh install, not a broken one.
+        print(f"  trust root:  ⏹ {key_path} not created yet (the gateway writes it on first start)")
+        return
+    print(f"  ⚠ trust root: {key_path} is unreadable or shorter than 32 bytes.")
+    print(
+        "               Session identities go out unsigned, so sub-agent "
+        "dispatch and memory"
+    )
+    print(
+        "               writes are refused in sandboxed sessions. Restore the "
+        "key file, or"
+    )
+    print("               restart the gateway if another process relocated it.")
+
+
+_INDENT = "               "
+
+
+def _print_wrapped(text: str) -> None:
+    """Print ``text`` wrapped to the doctor's detail indent."""
+    for line in textwrap.wrap(text, width=80):
+        print(f"{_INDENT}{line}")
+
+
+def _process_apparmor_confinement() -> str:
+    """AppArmor confinement label of THIS process, ``""`` when unreadable.
+
+    Reads the kernel's own answer, e.g. ``unconfined`` or
+    ``kirocrew-userns (enforce)``. The per-LSM path is tried first; the bare
+    ``attr/current`` covers older kernels (where it may also carry an SELinux
+    context — which is fine, since callers only compare against a profile name).
+    """
+    for attr in ("/proc/self/attr/apparmor/current", "/proc/self/attr/current"):
+        try:
+            raw = Path(attr).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        return raw.replace("\x00", "").strip()
+    return ""
+
+
+def _service_unit_applies_profile(unit_path: Path, profile_name: str) -> bool:
+    """True when the installed systemd unit transitions the service into the profile.
+
+    The unit is rendered with ``AppArmorProfile=-<name>`` (the leading dash keeps
+    the unit startable while the profile is temporarily unloaded); the dashless
+    form is accepted too so a hand-edited unit still counts.
+    """
+    try:
+        text = unit_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("AppArmorProfile="):
+            value = stripped.split("=", 1)[1].strip().lstrip("-")
+            if value == profile_name:
+                return True
+    return False
+
+
+def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
+    """Verdict for the Ubuntu AppArmor userns-restriction denial (EPERM on NEWNS).
+
+    Three honest verdicts, decided from real signals rather than the happy path:
+
+    * profile absent → broken, with the install command;
+    * profile installed but nothing applies it, or the probe failed even though
+      THIS process is confined by the profile → broken, with the repair command;
+    * profile installed, the service unit applies it, and this process is
+      unconfined → the probe's failure says nothing about the service, so the
+      verdict is "cannot be verified from this shell" plus how to verify — NOT
+      a claim that the sandbox works, and NOT counted as an issue.
+    """
+    if not apparmor.PROFILE_PATH.is_file():
+        print(f"  backend:     ❌ none — {reason}")
+        _print_wrapped(
+            f"This host restricts unprivileged user namespaces and the "
+            f"{apparmor.PROFILE_NAME} AppArmor profile is not installed, so no context "
+            f"on this host can build the sandbox. Run `kirocrew service install` to "
+            f"install the profile and confine the gateway service with it."
+        )
+        issues.append("sandbox: AppArmor profile not installed")
+        return
+
+    confinement = _process_apparmor_confinement()
+    if confinement and confinement.split(" ")[0] == apparmor.PROFILE_NAME:
+        # The one context that SHOULD be able to build the sandbox refused to:
+        # this is a genuine fault, not a vantage-point artifact.
+        print(f"  backend:     ❌ broken — {reason}")
+        _print_wrapped(
+            f"This process already runs confined by {apparmor.PROFILE_NAME}, which "
+            f"should grant user namespaces, yet the probe still failed. Re-run "
+            f"`kirocrew service install` to re-render and reload the profile."
+        )
+        issues.append("sandbox: probe failed under the AppArmor profile")
+        return
+
+    if not _service_unit_applies_profile(service_linux.UNIT_PATH, apparmor.PROFILE_NAME):
+        print(f"  backend:     ❌ none — {reason}")
+        _print_wrapped(
+            f"The {apparmor.PROFILE_NAME} AppArmor profile is installed, but no systemd "
+            f"unit applies it, so nothing on this host runs confined by it. Run "
+            f"`kirocrew service install` to (re)install the gateway service with the "
+            f"profile applied."
+        )
+        issues.append("sandbox: AppArmor profile installed but not applied")
+        return
+
+    # Unverifiable from here — deliberately NOT an issue, and deliberately NOT a
+    # success claim either.
+    print("  backend:     ⏭  cannot be verified from this shell")
+    _print_wrapped(
+        f"The {apparmor.PROFILE_NAME} AppArmor profile is installed and the gateway "
+        f"service unit is configured to run under it, but this shell is unconfined "
+        f"and aa_change_onexec() into a named profile is not permitted for an "
+        f"unconfined user — so this probe cannot succeed here no matter how healthy "
+        f"the service's sandbox is. To verify the sandbox in the confined context "
+        f"the service uses, run:"
+    )
+    # The interpreter path is quoted for the shell: the recipe is meant to be
+    # pasted, so an install path containing spaces or shell metacharacters must
+    # arrive as one argument, not execute.
+    quoted_python = shlex.quote(sys.executable)
+    print(f"{_INDENT}  sudo systemd-run --pipe --unit=kirocrew-sandbox-test \\")
+    print(f"{_INDENT}    --property=AppArmorProfile=-{apparmor.PROFILE_NAME} \\")
+    print(f"{_INDENT}    --uid=$(id -u) --gid=$(id -g) \\")
+    print(f'{_INDENT}    {quoted_python} -c "import kiro_crew.sandbox as sb; \\')
+    print(f'{_INDENT}      sb.reset_backend(); print(sb.detect_backend())"')
+    _print_wrapped("A healthy sandbox prints: namespace")
+
+
+def _doctor_sandbox(issues: list[str]) -> None:
+    """Render the ``Sandbox`` section — an honest verdict about the agent sandbox.
+
+    The hard rule: report only what THIS process can observe.
+    :func:`sandbox.detect_backend` answers for the probing process, not for the
+    gateway service — on a host that restricts unprivileged user namespaces the
+    profile is applied by systemd to the SERVICE, so from an interactive shell
+    the probe fails with EPERM no matter how healthy the service's sandbox is.
+    Reporting that failure as the sandbox being broken is a false negative; the
+    fix must not swing to the false positive of claiming the sandbox works when
+    all that is known is that it cannot be checked from here.
+    """
+    print("\nSandbox")
+    try:
+        # ONE probe decision: ``unavailable_kind()`` probes internally and
+        # returns "" for a working backend. Probing twice (a detect_backend
+        # read followed by a classifying call) would let a transient failure
+        # heal between the two reads and report a now-working backend as
+        # broken.
+        kind = sandbox.unavailable_kind()
+    except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
+        print(f"  backend:     ⚠️  could not probe ({exc})")
+        return
+    if not kind:
+        # The probe just succeeded, so this read serves the cached positive
+        # result rather than probing again.
+        print(f"  backend:     ✅ {sandbox.detect_backend()}")
+        return
+
+    reason = sandbox.unavailable_reason() or "no probe detail recorded"
+    if kind == "transient":
+        print("  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes")
+        print(f"{_INDENT}({reason})")
+        return
+    if kind == "foreign_sandbox":
+        print("  backend:     ⚠️  an outer sandbox already confines this process")
+        _print_wrapped(
+            "Kiro Crew cannot nest its own sandbox inside it. Launch the gateway "
+            "outside that sandbox to hand isolation back to Kiro Crew's own profile."
+        )
+        return
+
+    remedy = sandbox.unavailable_remedy()
+    if remedy == sandbox.REMEDY_APPARMOR_USERNS:
+        _doctor_sandbox_apparmor(reason, issues)
+        return
+    if sys.platform.startswith("linux"):
+        # A permanent, named kernel refusal (user.max_user_namespaces=0, a kernel
+        # without CONFIG_USER_NS, ...) — genuinely broken, with the mechanism's
+        # own guidance when the probe identified one.
+        print(f"  backend:     ❌ none — {reason}")
+        guidance = sandbox.remedy_guidance(remedy)
+        if guidance:
+            _print_wrapped(guidance)
+        issues.append("sandbox backend")
+        return
+    # Platforms with no OS-level backend to offer (Windows; macOS builds without
+    # sandbox-exec) — a fact about the platform, not a fault of this install.
+    print("  backend:     ⏭  no OS-level sandbox backend on this platform")
+
+
 def _linger_enabled(user: str) -> bool | None:
     """Whether ``user``'s systemd instance lingers past logout.
 
@@ -476,8 +694,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Diagnostics bundle (--bundle) ──
     # Short-circuit: collect logs + crash reports into a redacted zip and print
-    # the local path plus a pre-filled GitHub issue URL, then exit. Shares the
-    # exact collector the dashboard "Report a Problem" button uses.
+    # the local path plus a GitHub issue URL, then exit. Shares the exact
+    # collector the dashboard "Report a Problem" button uses, but prints the
+    # short link variant: the dashboard's pre-filled URL carries a ~600-char
+    # query that the exfil query-length heuristic redacts on any surface that
+    # scans printed output.
     if bundle:
         print("Collecting diagnostics bundle (secrets are redacted)...\n")
         # The collector touches the filesystem in several places that can fail for
@@ -498,8 +719,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         )
         if result.skipped:
             print(f"     skipped (not found): {', '.join(result.skipped)}")
-        print("\n  Open a pre-filled GitHub issue (then drag the zip in):")
-        print(f"  {result.github_issue_url}")
+        print("\n  Open a GitHub issue (then drag the zip in):")
+        print(f"  {diagnostics.terminal_issue_url(result)}")
         return
 
     # ── Platform edition ──
@@ -694,9 +915,15 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Data Home (+ leftover migration archive) ──
     _doctor_data_home()
+    _doctor_trust_root()
 
     # ── Pods (systemd --user session bus) ──
     _doctor_pod_session_bus(issues)
+
+    # ── Sandbox ──
+    # Ahead of MCP Tools: the probes below spawn through the sandbox chokepoint,
+    # so this verdict is the context for any probe failure they report.
+    _doctor_sandbox(issues)
 
     # ── MCP Tools ──
     print("\nMCP Tools")
@@ -960,7 +1187,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             if _age_s < 7 * 86400:  # Less than 7 days old
                 _age_h = _age_s / 3600
                 print(f"  last dump:   ⚠️  {_latest.name} ({_age_h:.1f}h ago)")
-                _stack = dump_first_stack_lines(_latest, max_lines=5)
+                # 8 lines = preamble + thread header + ~6 frames: enough to
+                # reach past the asyncio plumbing into the Kiro Crew frame
+                # that identifies WHERE the loop wedged.
+                _stack = dump_first_stack_lines(_latest, max_lines=8)
                 if _stack:
                     print("  MainThread stuck at:")
                     for _line in _stack:

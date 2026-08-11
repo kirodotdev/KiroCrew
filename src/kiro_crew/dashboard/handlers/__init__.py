@@ -390,6 +390,7 @@ from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401
 )
 from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_beacon_status,
+    api_collection_status,
     api_context_trace,
     api_telemetry_startup,
 )
@@ -426,6 +427,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     _update_info,
     _version_key,
     api_changelog,
+    api_gateway_restart,
     api_log_level,
     api_log_level_get,
     api_logs,
@@ -434,6 +436,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     api_update_apply,
     api_update_auto,
     api_update_cancel,
+    api_update_channel,
     api_update_check,
     api_update_simulate,
     get_update_info,

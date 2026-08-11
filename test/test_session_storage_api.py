@@ -23,6 +23,12 @@ from kiro_crew.dashboard.handlers import session_storage as handler
 _DAY = 86400.0
 
 
+@pytest.fixture(autouse=True)
+def _fresh_scan_cache() -> None:
+    """No cached filesystem pass leaks between tests. See test_session_storage.py."""
+    session_storage_module.invalidate_scan_cache()
+
+
 @pytest.fixture()
 def stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     # Nested, not sibling: reclaim_block_reason() refuses an isolated data home
@@ -555,6 +561,93 @@ class TestWhyAReclaimIsRefused:
         rows = {row["uid"]: row for row in json.loads(resp.body)["sessions"]}
         assert rows[sid]["active"] is True, "recorded, so still refused"
         assert rows[sid]["live"] is False, "nothing is running, so it is not in use"
+
+
+class TestTheListDoesNotShipTheWholeStore:
+    """Six figures of replay-only rows render as one collapsed line.
+
+    Sending them all was 35MB of JSON on the measured machine and most of why the
+    screen took tens of seconds to open. The cap is only safe because the group's
+    real size and total still travel, and because the sessions below the cut stay
+    reachable by age — so these tests pin both halves of that bargain.
+    """
+
+    @pytest.mark.asyncio
+    async def test_only_the_largest_replay_only_sessions_are_listed(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, kiro_home = stores
+        monkeypatch.setattr(handler, "_BACKGROUND_ROW_LIMIT", 2)
+        for i, size in enumerate((10, 5000, 200, 900)):
+            _retired(kiro_home, f"aaaaaaaa-0000-4000-8000-00000000000{i}", log_bytes=size)
+
+        req = _request("GET", "/api/system/session-storage/sessions")
+        state = req.app["state"]
+        state.running_session_keys.return_value = frozenset()
+        state.conversation_log.list_sessions.return_value = []
+        body = json.loads((await handler.api_session_inventory(req)).body)
+
+        listed = [row["bytes"] for row in body["sessions"]]
+        assert len(listed) == 2, "the cap must bound the response, not just the display"
+        assert listed == sorted(listed, reverse=True), "the largest are the ones worth listing"
+        assert listed[0] > 5000, "the biggest session must survive the cut"
+
+    @pytest.mark.asyncio
+    async def test_the_group_reports_its_true_size_not_the_listed_sample(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A client that filtered the rows would under-report by six figures."""
+        _, kiro_home = stores
+        monkeypatch.setattr(handler, "_BACKGROUND_ROW_LIMIT", 1)
+        total = sum(
+            _retired(kiro_home, f"aaaaaaaa-0000-4000-8000-00000000000{i}", log_bytes=100 * (i + 1))
+            for i in range(4)
+        )
+
+        req = _request("GET", "/api/system/session-storage/sessions")
+        state = req.app["state"]
+        state.running_session_keys.return_value = frozenset()
+        state.conversation_log.list_sessions.return_value = []
+        body = json.loads((await handler.api_session_inventory(req)).body)
+
+        assert body["background"]["sessions"] == 4
+        assert body["background"]["bytes"] == total
+        assert body["background"]["listed"] == 1
+        assert len(body["sessions"]) == 1, "the sample the summary is describing"
+
+    @pytest.mark.asyncio
+    async def test_age_options_are_cumulative_and_exclude_sessions_in_use(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The options label a sweep, and a sweep takes everything OLDER than N.
+
+        Disjoint bands would make a client sum them and infer the boundaries from
+        their labels, and a label it mis-parsed would understate what is about to
+        move.
+        """
+        crew_home, kiro_home = stores
+        _retired(kiro_home, "aaaaaaaa-0000-4000-8000-000000000001", age_days=10)
+        _retired(kiro_home, "aaaaaaaa-0000-4000-8000-000000000002", age_days=200)
+        # Mapped, so refused however old it is — and therefore not offered.
+        held = "aaaaaaaa-0000-4000-8000-000000000003"
+        _retired(kiro_home, held, age_days=500)
+        (crew_home / "session_map.json").write_text(
+            json.dumps({"dashboard:chat-1": {"sid": held}}), encoding="utf-8"
+        )
+
+        req = _request("GET", "/api/system/session-storage/sessions")
+        state = req.app["state"]
+        state.running_session_keys.return_value = frozenset()
+        state.conversation_log.list_sessions.return_value = []
+        body = json.loads((await handler.api_session_inventory(req)).body)
+
+        counts = {opt["days"]: opt["sessions"] for opt in body["age_options"]}
+        assert counts[7] == 2, "both retired sessions are older than a week"
+        assert counts[30] == 1, "only the 200-day one is older than a month"
+        assert counts[90] == 1
+        assert all(
+            opt["sessions"] <= 2 for opt in body["age_options"]
+        ), "a session the server would refuse must never be counted into an offer"
 
 
 class TestTranscriptContentIsRedacted:

@@ -45,6 +45,7 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     resolve_agent_bindings,
 )
+from kiro_crew.connections import get_visible_providers
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -160,6 +161,7 @@ from kiro_crew.llm_helpers import (
     run_bg_oneliner,
     transient_retry_delay,
 )
+from kiro_crew.mcp_discovery import kirocrew_managed_names
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import SLACK_NAMESPACE, telemetry_channel_of
 from kiro_crew.messaging.renderer import chunk_text
@@ -179,6 +181,7 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_RESULT,
     LLMEvent,
 )
+from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     _EXFIL_PATTERNS,
     StreamRedactor,
@@ -1083,7 +1086,11 @@ def _oauth_url_contains_credential(url: str) -> bool:
 
 
 def _emit_mcp_oauth_request(
-    state: "DashboardState", slot: "_ChatSlot", server_name: str, oauth_url: str
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    server_name: str,
+    oauth_url: str,
+    card_owned: bool = False,
 ) -> None:
     """Append an mcp_oauth banner so the user can authorize an MCP server.
 
@@ -1091,6 +1098,17 @@ def _emit_mcp_oauth_request(
     pattern, surface a *rejected* banner explaining why instead of silently
     dropping.  Otherwise the user has no idea their MCP server failed to
     authenticate, and they can't escalate to whoever owns that server.
+
+    ``card_owned`` records that some other surface owns this request's consent
+    flow end to end — see :func:`_connections_managed_mcp_names`. It is an
+    annotation, not a filter: the message is appended either way, because it is
+    also the data feed that surface reads its approval URL out of. Only the
+    render layer may act on it. Left off, the meta key is absent and the message
+    is byte-identical to an unannotated one.
+
+    Deliberately annotates the authorize banner only. A rejected URL is a
+    security notice rather than a consent prompt — no card can act on it — so it
+    stays unconditionally visible wherever banners render.
     """
     safe_name = _redact_acp_string(server_name)
     label = safe_name or "MCP server"
@@ -1130,12 +1148,106 @@ def _emit_mcp_oauth_request(
         )
         return
     content = f"🔐 {label} requires authentication."
+    meta: dict[str, Any] = {"server_name": safe_name, "oauth_url": oauth_url}
+    if card_owned:
+        meta["card_owned"] = True
     slot.append(
         "mcp_oauth",
         content,
         "msg msg-info",
-        meta={"server_name": safe_name, "oauth_url": oauth_url},
+        meta=meta,
     )
+
+
+def _connections_managed_mcp_names() -> frozenset[str]:
+    """Servers whose OAuth consent a rendered Connections card owns end to end.
+
+    Membership is an ownership FACT, not a decision about what the user sees: it
+    only tells the caller that a card surface drives this server's consent flow,
+    so a request for it can be tagged ``card_owned`` and the render layer given
+    something to act on. Nothing here suppresses anything.
+
+    Two conditions, both required, each consumed from the facility that already
+    decides it rather than re-derived here:
+
+    * :func:`kirocrew_managed_names` -- our own MCP store wrote the entry. This is
+      the single ownership discriminator, shared with the agent-spec emit path and
+      the config-sync gate, so ownership means one thing everywhere.
+    * :func:`get_visible_providers` -- the name is a Connections provider with a
+      rendered card. Connect keys the store by provider slug and the card reads it
+      back by slug, so the slug is the join between the two.
+
+    Ownership ALONE is not enough. The dashboard's add-custom-server API writes to
+    the same store, so a hand-added remote is every bit as "ours" while having no
+    card anywhere. A provider whose launch gate is closed has no card either.
+    Requiring a card keeps the annotation on servers that genuinely have a second
+    surface, so the render layer never has to second-guess it.
+
+    Registry slugs are slash-free, so ``mcp_server_alias`` is the identity on this
+    set and kiro-cli's ``serverName`` is the slug verbatim -- no alias widening is
+    needed. What remains open is an exact-slug collision: a server hand-added
+    under a real slug is annotated, though it still renders on that provider's
+    card, so a surface survives.
+
+    Does blocking file I/O (store read + registry read) -- callers on the event
+    loop must hand it to a worker thread.
+
+    FAILS OPEN to the empty set on any error: nothing is annotated and every
+    surface renders every banner, which is exactly today's behavior.
+    """
+    try:
+        managed = kirocrew_managed_names()
+        carded = {provider["slug"] for provider in get_visible_providers()}
+    except Exception:
+        logger.warning("Cannot resolve Connections-owned MCP names", exc_info=True)
+        return frozenset()
+    return frozenset(managed & carded)
+
+
+async def _drain_session_init_oauth_requests(
+    state: "DashboardState", slot: "_ChatSlot", client: Any
+) -> None:
+    """Surface the MCP OAuth requests kiro-cli buffered during session init.
+
+    kiro-cli emits ``_kiro.dev/mcp/oauth_request`` while bringing MCP servers up;
+    ``AcpClient`` collects them into ``pending_oauth_requests``. EVERY one is
+    emitted as an ``mcp_oauth`` message, with no exceptions — that message is not
+    just a banner, it is the state feed the Connections card reads its approval
+    URL out of, so dropping one costs the user their only way to authorize.
+
+    Requests for a server a Connections card owns are tagged ``card_owned`` (see
+    :func:`_connections_managed_mcp_names`) purely so the render layer can decide
+    whether chat needs to repeat a prompt the card already shows. That is a
+    presentation question and it is answered where the flag that governs the card
+    is known — not here.
+
+    Async because resolving ownership reads files; the lookup runs in a worker
+    thread and only when there is something to tag.
+    """
+    acp_client = getattr(client, "client", None)
+    pop_pending = getattr(acp_client, "pop_pending_oauth_requests", None)
+    if not callable(pop_pending):
+        return
+    pending = pop_pending() or []
+    if not pending:
+        # Resolve ownership only when there is something to tag — this runs on
+        # every session init and the common case is zero requests.
+        return
+    managed = await asyncio.to_thread(_connections_managed_mcp_names)
+    for req in pending:
+        if not isinstance(req, dict):
+            continue
+        server_name = req.get("serverName") or ""
+        # Raw (unredacted) name on purpose: store keys are raw and this is a
+        # set-membership test, so an untrusted value can only miss. Redaction
+        # happens inside _emit_mcp_oauth_request.
+        _emit_mcp_oauth_request(
+            state,
+            slot,
+            server_name,
+            req.get("oauthUrl") or "",
+            card_owned=bool(server_name) and server_name in managed,
+        )
 
 
 def _mark_mcp_oauth_completed(
@@ -1581,6 +1693,81 @@ def _retain_terminal_native(
     return {sid: info for sid, info in terminal}
 
 
+def _slot_is_trusted(slot: Any) -> bool:
+    """True when this slot's tool calls are auto-approved. TWO representations.
+
+    * ``slot._trust`` — the interactive "trust this session" grant. A human clicked
+      it, so it does not expire and the click is its own audit record.
+    * ``slot._trust_scope`` — a ``SafetyOverride`` SCOPED grant, for an unattended
+      app worker where there is no human to click anything. It is SEL-audited
+      fail-closed at activation, TTL-bounded, and re-checked HERE on every approval
+      via ``is_scope_active`` — so the grant lapsing is what revokes trust, with no
+      cooperation required from whatever armed it.
+
+    Strictly additive: the scope is consulted only when the slot actually carries a
+    key, so a slot without the attribute — which is every ordinary chat session —
+    takes exactly the decision it took before this existed.
+
+    Deliberately does NOT renew the grant. The task runner slides its grant forward
+    on tool activity because the run's own progress is the liveness signal; a crew's
+    signal is its watchdog, and renewing here would let a crew whose watchdog died
+    keep its grant alive off its own tool calls — which is the bound this is for.
+    """
+    if getattr(slot, "_trust", False):
+        return True
+    scope = str(getattr(slot, "_trust_scope", "") or "")
+    if not scope:
+        return False
+    return bool(safety_override().is_scope_active(scope))
+
+
+def _auto_approve_reason(slot: Any, yolo_active: bool) -> str:
+    """SEL provenance for an auto-approval: yolo, session trust, or a scoped grant.
+
+    Yolo first because it is process-wide and outranks anything per-slot, then the
+    human's session flag, then the scoped grant — the same precedence
+    :func:`_slot_is_trusted` decides by. Purely descriptive; it authorises nothing.
+    """
+    if yolo_active:
+        return "yolo"
+    if getattr(slot, "_trust", False):
+        return "trust"
+    if str(getattr(slot, "_trust_scope", "") or ""):
+        return "trust_scope"
+    return "trust"
+
+
+def _persistable_session_policy(slot: Any, yolo_active: bool) -> str:
+    """The session-level approval policy to STORE for this slot: ``"auto"`` or ``""``.
+
+    Deliberately NOT :func:`_slot_is_trusted`, and that difference is the whole
+    point of this function. Everything else on the trust path decides ONE approval
+    and re-decides the next one; this value is written into the session store and
+    read LATER — by the subagent spawn gate and by each subagent's own approval
+    policy — at a point where nothing re-checks whether the grant still holds.
+
+    So only a grant that cannot lapse may be cached here:
+
+    * ``slot._trust`` — a human clicked "trust this session". It does not expire,
+      and the click is its own audit record, so caching it changes nothing.
+    * yolo — process-wide, and revoking it deactivates the override for everyone.
+
+    A ``SafetyOverride`` SCOPED grant (``slot._trust_scope``) must NOT reach here.
+    Its entire value is being re-checked on every approval, so a cached ``"auto"``
+    would outlive it: pause or retire the crew, or disable the app, and a turn
+    already in flight would keep auto-approving subagent tool calls off a policy
+    written before the revocation — exactly the property the scoped grant exists to
+    provide, defeated by caching it.
+
+    A scope-trusted worker is not left stalling: its own tool approvals never
+    consult this value. They go through :func:`_slot_is_trusted` per event, which
+    re-checks the scope each time.
+    """
+    if yolo_active or getattr(slot, "_trust", False):
+        return "auto"
+    return ""
+
+
 def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     """Return True only when a native crew subagent is ACTIVE *and* an
     auto-approve condition holds — otherwise deny (CWE-1188 secure default).
@@ -1588,7 +1775,7 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     Active-crew is a NECESSARY precondition: with no live native subagent the
     parent turn is not blocked on a crew tool, so this path must never
     auto-approve — regardless of the ``auto_approve_subagent_tools`` hook,
-    ``slot._trust``, or yolo. Only when a crew is active do those signals grant
+    the slot's trust, or yolo. Only when a crew is active do those signals grant
     approval; with all three false the tool still falls through to the normal
     interactive/trust gate rather than being silently approved here.
     """
@@ -1599,7 +1786,7 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
         return False
     return bool(
         (state.context_builder and state.context_builder.hooks.auto_approve_subagent_tools)
-        or getattr(slot, "_trust", False)
+        or _slot_is_trusted(slot)
         or state.is_yolo_active()
     )
 
@@ -2241,8 +2428,54 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 _EAGER_SPAWN_MAX_CONCURRENT = 2
 _eager_spawn_sem = asyncio.Semaphore(_EAGER_SPAWN_MAX_CONCURRENT)
 
+# How long a speculatively RESUMED session may sit unclaimed before it is
+# torn down. A resumed session holds kiro-cli's native per-session lock, so
+# a prefetch the user walked away from must release it cleanly rather than
+# wait out the 30-minute idle sweep. Fresh (non-resumed) eager sessions keep
+# the idle-sweep-only behavior — they hold no prior transcript's lock.
+_RESUME_PREFETCH_TTL_SECS = 600.0
 
-def schedule_eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
+# Population cap on live-but-unclaimed prefetched sessions. The spawn
+# semaphore bounds concurrent SPAWNS, not accumulated LIVE processes: after a
+# gateway restart restores many resumable tabs, flipping through them could
+# stack one full kiro-cli process (RSS + native session lock) per dwelled tab
+# for the whole TTL. Arming a new prefetch beyond the cap evicts the OLDEST
+# unclaimed one via the conditional remove_if_unclaimed — a claimed session is
+# never touched, it just falls out of the accounting.
+_RESUME_PREFETCH_MAX_LIVE = 3
+# Insertion-ordered arm registry (loop-owned, like all chat_runner state):
+# session_key -> None. Entries leave on TTL fire, on eviction, or lazily when
+# an eviction attempt finds the session already claimed/gone.
+_armed_prefetches: "dict[str, None]" = {}
+
+
+async def _cap_armed_prefetches(sessions: Any, new_key: str) -> None:
+    """Register *new_key* as armed and evict oldest unclaimed beyond the cap."""
+    _armed_prefetches.pop(new_key, None)  # re-arm moves the key to newest
+    _armed_prefetches[new_key] = None
+    while len(_armed_prefetches) > _RESUME_PREFETCH_MAX_LIVE:
+        oldest = next(iter(_armed_prefetches))
+        _armed_prefetches.pop(oldest, None)
+        try:
+            # Shielded for the same reason as the TTL removal: an interrupted
+            # removal leaks the process holding the native lock.
+            if await asyncio.shield(sessions.remove_if_unclaimed(oldest)):
+                logger.info(
+                    "Resume prefetch: evicted oldest unclaimed %s (cap %d)",
+                    oldest,
+                    _RESUME_PREFETCH_MAX_LIVE,
+                )
+            # False = claimed or already gone — either way it no longer
+            # counts against the cap; dropping the registry entry suffices.
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Resume prefetch: eviction failed for %s", oldest, exc_info=True)
+
+
+def schedule_eager_spawn(
+    state: "DashboardState", slot: "_ChatSlot", *, allow_resume: bool = False
+) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
     Fire-and-forget: called from the slot-create and project-set handlers so
@@ -2252,20 +2485,31 @@ def schedule_eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
 
     At most one pending task per slot: a newer signal cancels the older task,
     so the spawn always reflects the slot's settled agent/model/project.
+
+    ``allow_resume`` opts this spawn into resume prefetch (the slot-focused
+    intent signal): a resumable key performs the speculative ``session/load``
+    instead of skipping, with the ``resumed=True`` observation armed for the
+    first real turn and a TTL teardown if no turn ever claims it. The other
+    intent signals keep the refusal — slot create has no mapping, and the
+    agent/project switch handlers reset the session themselves.
     """
     try:
         cfg = KiroCrewConfig.load()
         if not cfg.session.eager_spawn:
-            return
+            return None
     except Exception:
-        return
+        return None
     prev = getattr(slot, "_eager_spawn_task", None)
     if prev is not None and not prev.done():
         prev.cancel()
-    slot._eager_spawn_task = asyncio.create_task(_eager_spawn(state, slot))
+    task = asyncio.create_task(_eager_spawn(state, slot, allow_resume=allow_resume))
+    slot._eager_spawn_task = task
+    return task
 
 
-async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
+async def _eager_spawn(
+    state: "DashboardState", slot: "_ChatSlot", *, allow_resume: bool = False
+) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
     Ordering is load-bearing:
@@ -2298,6 +2542,18 @@ async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
         async with _eager_spawn_sem:
             await _consume_pending_reset(state, slot)
             session_key = effective_session_key(slot)
+            if allow_resume:
+                # The focus signal only ever adds the RESUME case; fresh eager
+                # spawn stays owned by the create/project/agent signals. This
+                # probe is the in-memory hint (no disk, no pruning): SessionMap
+                # is loop-owned and unlocked, so the pruning ``resumable_sid``
+                # lookup must not run in a worker thread — a prune there would
+                # race concurrent loop-side map writes. The authoritative
+                # pruning lookup happens inside get_or_create's resume path,
+                # on the loop, where it always ran; a false-positive hint just
+                # means the speculative load falls back and is torn down below.
+                if not sessions.resumable_hint(session_key):
+                    return
             # Snapshot the bindings the handshake is about to bake in. A
             # switch handler (workspace, model, reasoning effort) that fires
             # mid-handshake resets the session key — but the reset no-ops
@@ -2325,18 +2581,27 @@ async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
             try:
                 # speculative=True keeps the one-shot first-turn flag armed for
                 # the real first message (atomically, at registration) and
-                # refuses resumable keys — the real turn must be the one that
-                # observes resumed=True. See get_or_create's docstring.
+                # refuses resumable keys — unless allow_resume opted in, in
+                # which case the speculative session/load runs here and the
+                # resumed=True observation is armed for the real turn. See
+                # get_or_create's docstring.
                 _, is_new, resumed = await sessions.get_or_create(
                     session_key,
                     agent=kiro_agent or slot.agent or None,
                     model=slot.model or agent_model or None,
                     cwd=slot.project or None,
                     speculative=True,
+                    speculative_resume=allow_resume,
                     reasoning_effort_override=slot.reasoning_effort or None,
                 )
             except SpeculativeResumeRefused:
-                logger.info("Eager spawn: %s is resumable, leaving to first turn", session_key)
+                # Two sources: the entry gate (resumable key, resume not
+                # opted in — fresh eager spawn leaves it to the first turn)
+                # or a failed speculative LOAD (allow_resume path: F2 fell
+                # back / mapping vanished / provider switch), rejected before
+                # registration so no claimable fallback session exists. Both
+                # end the same way: the first real message handles it.
+                logger.info("Eager spawn: %s left to first turn (refused)", session_key)
                 return
             sessions.release(session_key)
             # The cleanup below may only tear down a session THIS task created.
@@ -2382,10 +2647,81 @@ async def _eager_spawn(state: "DashboardState", slot: "_ChatSlot") -> None:
                 is_new,
                 resumed,
             )
+            if allow_resume and resumed:
+                _schedule_prefetch_ttl(state, slot, session_key)
+                await _cap_armed_prefetches(sessions, session_key)
+            # allow_resume and not resumed cannot happen: a speculative
+            # resume whose load fell back is rejected BEFORE registration
+            # (SpeculativeResumeRefused, caught above) precisely so no
+            # claimable fallback session ever exists — a real turn queued
+            # during the load would otherwise claim it and strand its
+            # exchanges behind the preserved old sid.
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
+
+
+def _schedule_prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> None:
+    """Arm the unclaimed-prefetch teardown for a speculatively RESUMED session.
+
+    One pending TTL per slot: a newer prefetch cancels the older timer, so the
+    countdown always covers the most recent load. The teardown itself is
+    conditional — ``remove_if_unclaimed`` no-ops once a real turn consumed the
+    one-shot markers or a claimant holds the semaphore — so a TTL that fires
+    after the user came back does nothing.
+    """
+    prev = getattr(slot, "_prefetch_ttl_task", None)
+    if prev is not None and not prev.done():
+        prev.cancel()
+    slot._prefetch_ttl_task = asyncio.create_task(_prefetch_ttl(state, slot, session_key))
+
+
+async def _prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> None:
+    """Tear down a resume-prefetched session no real turn claimed in time.
+
+    A resumed session pins kiro-cli's native per-session lock; leaving an
+    abandoned prefetch to the 30-minute idle sweep holds that lock (and the
+    process's RSS) far longer than the speculation was worth. The removal
+    preserves the session map, so the next focus or first message resumes
+    again normally.
+    """
+    try:
+        await asyncio.sleep(_RESUME_PREFETCH_TTL_SECS)
+        _armed_prefetches.pop(session_key, None)  # arm window over either way
+        sessions = getattr(state, "sessions", None)
+        if sessions is None:
+            return
+        _current = state.get_slot(slot.key)
+        if _current is not None and _current is not slot:
+            return  # slot replaced — the new occupant owns this key now
+        if _current is None:
+            # Slot DELETED — do not assume the delete handler cleaned up this
+            # session: it removes the slot-key-derived history session, while
+            # a channel-born slot's prefetch registered under its LINKED
+            # session key (effective_session_key). Returning here would leak
+            # that process holding kiro-cli's native lock. Fall through to the
+            # conditional removal — it no-ops on an already-removed key and
+            # never touches a claimed session (e.g. the channel side using
+            # the linked session).
+            pass
+        elif slot.running:
+            return  # a real turn claimed (or is claiming) the session
+        # Shielded: a cancel landing after remove_if_unclaimed has popped the
+        # registry entry but before provider.shutdown() finishes would leak
+        # the process holding kiro-cli's native lock — nothing else can find
+        # it anymore. The shield lets the removal run to completion while the
+        # cancel still propagates to this task.
+        if await asyncio.shield(sessions.remove_if_unclaimed(session_key)):
+            logger.info(
+                "Resume prefetch: unclaimed session %s expired after %.0fs",
+                session_key,
+                _RESUME_PREFETCH_TTL_SECS,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Prefetch TTL failed for slot %s", slot.key, exc_info=True)
 
 
 async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
@@ -2491,9 +2827,7 @@ def _settle_consumed_steers(slot: "_ChatSlot", snapshot: str) -> None:
     # echo is no evidence, so keep entries pending and let the requeue show a
     # cancellable card); whether the main chat should follow is a separate
     # change, because its requeue is not exercised here.
-    remaining = settle_consumed_steers(
-        slot._pending_steers, snapshot, settle_all_on_empty=True
-    )
+    remaining = settle_consumed_steers(slot._pending_steers, snapshot, settle_all_on_empty=True)
     logger.debug(
         "Steer consumed for slot %s (%d settled, %d still pending)",
         slot.key,
@@ -3373,24 +3707,21 @@ async def _run_chat(
             )
 
         # Propagate trust/YOLO to session so subagents inherit auto-approve.
-        if slot._trust or state.is_yolo_active():
-            state.sessions.set_approval_policy(session_key, "auto")
-        else:
-            state.sessions.set_approval_policy(session_key, "")
+        # A scoped grant is excluded on purpose — see _persistable_session_policy.
+        # Assigned unconditionally (not only when granting) so a turn that starts
+        # after a grant went away clears any policy an earlier turn stored.
+        state.sessions.set_approval_policy(
+            session_key, _persistable_session_policy(slot, state.is_yolo_active())
+        )
 
         # Drain MCP OAuth requests captured during session init. kiro-cli
         # buffers `_kiro.dev/mcp/oauth_request` notifications during MCP
         # server bring-up; the AcpClient collected them into
-        # `pending_oauth_requests`. Surface each as an inline banner so the
-        # user can authorize the affected MCP server.
+        # `pending_oauth_requests`. Every one is emitted; the ones a
+        # Connections card owns are tagged so the render layer can avoid
+        # repeating a prompt that card already shows.
         try:
-            acp_client = getattr(client, "client", None)
-            pop_pending = getattr(acp_client, "pop_pending_oauth_requests", None)
-            if callable(pop_pending):
-                for req in pop_pending():
-                    _emit_mcp_oauth_request(
-                        state, slot, req.get("serverName", ""), req.get("oauthUrl", "")
-                    )
+            await _drain_session_init_oauth_requests(state, slot, client)
         except Exception:  # pragma: no cover — never let UI surfacing kill chat init
             logger.warning("Failed to surface pending MCP OAuth requests", exc_info=True)
 
@@ -3535,7 +3866,12 @@ async def _run_chat(
                 # and the periodic flush_loop may have already written it to
                 # disk during the kiro-cli cold spawn (~5s flush vs ≥15s spawn).
                 # Scale the replay budget to the model window (client is live here).
-                compressed = build_session_replay(
+                # Offloaded: resolving this chat's tab id globs and opens every
+                # session file sharing it to rebuild an index, then reads each
+                # chained file in full — unbounded file IO on the hottest path in
+                # the gateway, where it would block every other request.
+                compressed = await asyncio.to_thread(
+                    build_session_replay,
                     state.context_builder.conversation_log,
                     session_key,
                     exclude_last_n=1,
@@ -4714,7 +5050,12 @@ async def _run_chat(
                 # Detect bash tools by tool_input content (title is human-readable)
                 cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
                 yolo_active = state.is_yolo_active()
-                if slot._trust_reads and not slot._trust and not yolo_active and cmd:
+                # Evaluated ONCE for both branches below. Two separate calls could
+                # straddle a scoped grant's expiry and disagree with each other, and
+                # a scope check is not a pure read — it retires a lapsed grant and
+                # logs that, which must happen once per event, not twice.
+                slot_trusted = _slot_is_trusted(slot)
+                if slot._trust_reads and not slot_trusted and not yolo_active and cmd:
                     if is_read_only_bash(cmd):
                         try:
                             validated_tool = _validate_tool_name(
@@ -4750,7 +5091,7 @@ async def _run_chat(
                         )
                         continue
                 # Trust mode (per-slot) or YOLO mode (global) — auto-approve
-                if slot._trust or yolo_active:
+                if slot_trusted or yolo_active:
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:
@@ -4801,7 +5142,9 @@ async def _run_chat(
                         tool_kind=event.tool_kind,
                         outcome="auto_approved",
                         request_id=event.request_id,
-                        metadata={"reason": "yolo" if yolo_active else "trust"},
+                        # Provenance, so an auditor can separate a human's session
+                        # trust from an unattended worker's expiring scoped grant.
+                        metadata={"reason": _auto_approve_reason(slot, yolo_active)},
                     )
                     continue
                 # Auto-reject remaining tools after one rejection in a batch
@@ -4936,7 +5279,26 @@ async def _run_chat(
                 # "rejected" is the correct reading: a cancelled turn never
                 # obtained consent.
                 outcome = "rejected"
-                _approval_window = tool_approval_timeout_secs()
+                # Per-SLOT, not the global config: `approval_timeout_for` is what
+                # gives an app-owned worker with no human responder the background
+                # deny-fast instead of parking for the attended window and being
+                # denied anyway. See DashboardState.approval_timeout_for.
+                #
+                # But it is only ONE of the two bounds. `approval_timeout_for`
+                # returns a flat constant, so on its own it can outlive the turn
+                # it belongs to: the attended 7200s dwarfs the configurable
+                # `tool_approval_timeout_secs()` (600s by default), and neither is
+                # clamped to what is LEFT of a long agentic turn. The outer
+                # `_bounded_turn` then cancels first and the timeout branch below
+                # never runs — no card, no decline line, just a turn that dies
+                # mid-prompt. Taking the MINIMUM keeps both properties: the
+                # unattended deny-fast, and the double bound (ceiling and
+                # remaining budget) that `tool_approval_timeout_secs` applies —
+                # including its 0.0, which is what the no-budget branch reads.
+                _approval_window = min(
+                    state.approval_timeout_for(slot), tool_approval_timeout_secs()
+                )
+                _unattended_wait = slot.unattended
                 _approval_card: str | None = None
                 try:
                     if _approval_window <= 0:
@@ -4963,6 +5325,19 @@ async def _run_chat(
                         _approval_window,
                     )
                     _approval_card = format_approval_timeout_card(_approval_window)
+                    if _unattended_wait:
+                        # The card is for the human; this line is for the AGENT.
+                        # A denial it cannot read makes it retry the same tool
+                        # forever, because nothing in its transcript explains the
+                        # refusal.
+                        slot.append(
+                            "assistant",
+                            "\u26a0\ufe0f A tool needed approval and no one answered within "
+                            f"{int(_approval_window)}s, so it was declined. This session is "
+                            "running unattended — ask for the permission you need instead of "
+                            "retrying the same call.",
+                            "msg msg-a",
+                        )
                 finally:
                     if _approval_card is not None:
                         try:
@@ -4978,7 +5353,8 @@ async def _run_chat(
                     # and record richer decisions like "trust"/"yolo", so only
                     # write when still pending. This is the sole marker for the
                     # paths that resolve the future in-process: the approval
-                    # timeout above and the Slack-delivery auto-reject branches.
+                    # timeout above (2h attended / 180s unattended) and the
+                    # Slack-delivery auto-reject branches.
                     _approved = outcome in ("approved", "approved_trust_reads")
                     if _mark_permission_resolved(
                         slot.messages,

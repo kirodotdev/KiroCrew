@@ -219,6 +219,60 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(runCalls).toBeGreaterThan(0), { timeout: 3000 })
   })
 
+  it('reattaches to in-flight sync when syncMain gets "already running" with run_id', async () => {
+    let runPolls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url, opts) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      // POST /sync returns "already running" with the in-flight run_id
+      if (u.includes('/sync') && opts?.method?.toUpperCase() === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'sync already running', run_id: 'run-inflight-99' }), { status: 200 }))
+      }
+      if (u.includes('/run?id=run-inflight-99')) {
+        runPolls++
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'running', output: ['npm ci...'], started: Date.now() / 1000 - 10,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    // Click Pull+Build confirm
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    fireEvent.click(trigger)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    fireEvent.click(start)
+    // Should reattach and start polling the in-flight run
+    await waitFor(() => expect(runPolls).toBeGreaterThan(0), { timeout: 3000 })
+  })
+
+  it('reattaches to completed sync on page load showing result', async () => {
+    const FLEET_WITH_DONE_SYNC = {
+      ...FLEET,
+      sync_run_id: 'run-done-456',
+      build_pending: true,
+    }
+    let runCalls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_DONE_SYNC), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/run?id=run-done-456')) {
+        runCalls++
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'done', exit_code: 0, output: ['All steps complete'], started: Date.now() / 1000 - 120,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+    // Should fetch and display the completed run result
+    await waitFor(() => expect(runCalls).toBeGreaterThan(0), { timeout: 3000 })
+  })
+
   it('renders sort dropdown with all 4 options', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
       const u = typeof url === 'string' ? url : (url as Request).url
@@ -400,12 +454,23 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
     const btn = screen.getByText('Prune merged').closest('button') as HTMLButtonElement
     expect(btn.querySelector('.animate-spin')).toBeNull()
+    // Idle: destructive affordance is on.
+    expect(btn.className).toContain('hover:text-danger')
     fireEvent.click(btn)
     await waitFor(() => expect(btn.getAttribute('aria-busy')).toBe('true'))
     expect(btn.querySelector('.animate-spin')).not.toBeNull()
+    // In flight the label names the read-only action, not the destructive one:
+    // a spinner on a danger-styled "Prune merged" reads as "deletion running".
+    expect(btn.textContent).toContain('Scanning for merged…')
+    expect(screen.queryByText('Prune merged')).toBeNull()
+    // …and the danger variant is suppressed for the scan's whole window.
+    expect(btn.className).not.toContain('hover:text-danger')
     release!()
     await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument(), { timeout: 3000 })
     expect(btn.querySelector('.animate-spin')).toBeNull()
+    // Scan over: label and destructive affordance are restored.
+    expect(btn.textContent).toContain('Prune merged')
+    expect(btn.className).toContain('hover:text-danger')
   })
 
   it('prune dialog renders with candidates and kept rows', async () => {

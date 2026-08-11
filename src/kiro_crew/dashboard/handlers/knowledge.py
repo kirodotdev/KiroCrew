@@ -51,6 +51,7 @@ from kiro_crew.knowledge.ingestion import (
 from kiro_crew.knowledge.llm_pool import LLMPool
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
+from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
 from kiro_crew.security import is_sensitive_path
@@ -137,10 +138,12 @@ async def _start_artifact_ingest_async(app: web.Application) -> None:
     create / content-update / delete (from the agent's MCP tools, the CLI, the
     dashboard, bookmarks, and provider pull/clone -- all of which funnel
     through the store in the gateway process) ingests or removes that
-    artifact's item group in the aggregate "Artifacts" Knowledge source. On the
-    first run that creates the source row, a one-time backfill ingests
-    pre-existing artifacts. Gated on ``knowledge.auto_ingest_artifacts`` (off by
-    default). See ``kiro_crew.knowledge.artifact_ingest`` for the full design.
+    artifact's item group in the aggregate "Artifacts" Knowledge source. Every
+    start also runs a reconcile pass that ingests what the store has and the
+    Library lacks and drops state for artifacts that are gone, so drift from the
+    window in which this was switched off is repaired rather than left permanent.
+    Gated on ``knowledge.auto_ingest_artifacts`` (off by default). See
+    ``kiro_crew.knowledge.artifact_ingest`` for the full design.
     """
     cfg = KiroCrewConfig.load()
     if not cfg.knowledge.auto_ingest_artifacts:
@@ -613,7 +616,14 @@ async def source_counts(request: web.Request) -> web.Response:
 
 
 async def list_sources(request: web.Request) -> web.Response:
-    """GET /api/knowledge/sources."""
+    """GET /api/knowledge/sources.
+
+    Each source carries a ``spend`` block: how far its indexing has got and how
+    many Kiro requests it still owes -- one model call is one billed request, so
+    the figure is directly comparable to a bill. Indexing draws those requests
+    sweep after sweep at idle, so without them here the only place the ongoing
+    cost surfaces is a credit balance after the fact.
+    """
     store = _store(request)
     uri_filter = request.query.get("uri")
     if uri_filter:
@@ -630,7 +640,14 @@ async def list_sources(request: web.Request) -> web.Response:
             "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
             "ON s.id = c.source_id ORDER BY s.updated_at DESC"
         ).fetchall()
-    return web.json_response([dict(r) for r in rows])
+    sources = [dict(r) for r in rows]
+    # Aggregate scans plus a size stat per outstanding file, and the dashboard polls
+    # this list while a source is syncing -- offloaded so a large folder cannot stall
+    # chat and heartbeat processing on the event loop.
+    spend = await asyncio.to_thread(source_spend, store, sources)
+    for source in sources:
+        source["spend"] = spend.get(source["id"], {})
+    return web.json_response(sources)
 
 
 # Max wall-clock the native folder dialog may stay open before we give up.

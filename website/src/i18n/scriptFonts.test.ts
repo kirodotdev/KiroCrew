@@ -19,12 +19,12 @@
  *     to cover Latin, every stack in the app silently switches its Latin face.
  *     This is the assertion that matters most.
  *  2. **Every declaration site must reference the alias token.** The stacks are
- *     declared in TWELVE places across three files — nine `--font-body`/`--mono`
- *     declarations (`index.css` 4, `hooks/useTheme.tsx` 5) plus the three
- *     `FAMILY_MAP` entries in `hooks/useZoom.ts` that are written into `--font-body`
- *     at runtime. A thirteenth added later without the aliases would silently lose
- *     script coverage on whichever path it feeds, so the check globs the tree rather
- *     than naming files.
+ *     declared across `index.css`, `hooks/themeCss.ts` (the built-in defaults plus
+ *     the `--theme-font-sans` / `--theme-font-mono` role tokens an installed pack
+ *     fills) and the three `FAMILY_MAP` entries in `hooks/useZoom.ts` that are
+ *     written into `--font-body` at runtime. One added later without the aliases
+ *     would silently lose script coverage on whichever path it feeds, so the check
+ *     globs the tree rather than naming files.
  *  3. **Each alias needs a REAL bold face.** Weight matching happens *within* the
  *     selected family, so an alias backed by one Regular face makes every
  *     `font-semibold` in these scripts render as Chromium's synthetic bold — worse
@@ -208,9 +208,12 @@ function declarationSites(): Array<{ file: string; line: number; text: string }>
       readFileSync(full, 'utf8')
         .split('\n')
         .forEach((text, i) => {
-          // A declaration, not a read: `--font-body:` / `--mono:` with a value, and
-          // the FAMILY_MAP entries that are written into --font-body at runtime.
-          const declares = /--(?:font-body|mono)\s*:/.test(text)
+          // A declaration, not a read: `--font-body:` / `--mono:` / a role token
+          // with a value, and the FAMILY_MAP entries that are written into
+          // --font-body at runtime. The role tokens count because a pack's stack
+          // is built from them, so one declared without the aliases loses script
+          // coverage for every user of that pack.
+          const declares = /--(?:font-body|mono|theme-font-sans|theme-font-mono)\s*:/.test(text)
           const familyMap = /^\s*(?:sans|mono|system):\s*"/.test(text)
           if (declares || familyMap) out.push({ file: relative(SRC, full), line: i + 1, text })
         })

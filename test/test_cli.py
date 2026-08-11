@@ -118,6 +118,17 @@ class TestDoctor:
         monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
         monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
 
+    @pytest.fixture(autouse=True)
+    def _hermetic_sandbox(self, monkeypatch):
+        """Pin the Sandbox section host-independently: a CI runner can restrict
+        user namespaces with no profile installed, which is a genuine issue on
+        that HOST (doctor exits 1 for it) but not the subject of these tests."""
+        import kiro_crew.cli_doctor as _doc
+
+        monkeypatch.setattr(
+            _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
+        )
+
     def test_doctor_with_kiro(self, tmp_path):
         agent_file = tmp_path / "kirocrew.json"
         # A minimally healthy agent config so doctor walks the whole MCP
@@ -1406,10 +1417,14 @@ class TestManifest:
     def _patch_template(
         self, content="name: KiroCrew-{{ALIAS}}\ndisplay_name: KiroCrew-{{ALIAS}}\n"
     ):
-        """Patch importlib.resources.files to return a fake template."""
+        """Patch importlib.resources.files to return a fake template.
+
+        Patched on ``slack_manifest`` — the single module that reads the packaged
+        template for the CLI, the dashboard handler, and the exfil validator.
+        """
         mock_resource = MagicMock()
         mock_resource.joinpath.return_value.read_text.return_value = content
-        return patch("kiro_crew.cli_setup._pkg_files", return_value=mock_resource)
+        return patch("kiro_crew.slack_manifest._pkg_files", return_value=mock_resource)
 
     def test_renders_alias_to_stdout(self, capsys):
         with self._patch_template():
@@ -1440,7 +1455,7 @@ class TestManifest:
     def test_exits_when_template_missing(self):
         mock_resource = MagicMock()
         mock_resource.joinpath.return_value.read_text.side_effect = FileNotFoundError
-        with patch("kiro_crew.cli_setup._pkg_files", return_value=mock_resource):
+        with patch("kiro_crew.slack_manifest._pkg_files", return_value=mock_resource):
             from kiro_crew.cli_setup import _manifest
 
             try:
@@ -1746,6 +1761,13 @@ class TestArgsLookLikeKirocrew:
             "python3 -m kiro_crew gateway",
             "python -m kiro_crew dashboard",
             "python3.10 -m kiro_crew start",
+            # macOS framework build: the vendored interpreter's basename is
+            # "Python" (capital P) — a case-sensitive startswith("python") missed
+            # it, so stop/restart no-oped on macOS framework-build installs
+            # (Toolbox being the common one).
+            "/Library/Frameworks/Python.framework/Versions/3.10/Resources/"
+            "Python.app/Contents/MacOS/Python -m kiro_crew gateway --no-open",
+            "Python -m kiro_crew gateway",
             # Subcommand followed by trailing flags.
             "python -m kiro_crew gateway --no-open --port 7777",
             # Legacy dotted-submodule form.
@@ -3800,6 +3822,25 @@ class TestSetupChannelGating:
         """--slack runs the guided Slack credential + slash-command steps in order."""
         calls = self._run_setup(monkeypatch, tmp_path, slack=True)
         assert calls == ["slack_tokens", "slash_command"]
+
+    def test_agent_only_with_slack_warns_and_skips_slack_steps(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--agent-only --slack: no Slack steps run, but a notice explains why."""
+        calls = self._run_setup(monkeypatch, tmp_path, agent_only=True, slack=True)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "--slack is ignored with --agent-only" in out
+        assert "setup --slack" in out
+
+    def test_agent_only_without_slack_prints_no_notice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--agent-only alone: the guided-setup pointer is not printed."""
+        calls = self._run_setup(monkeypatch, tmp_path, agent_only=True)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "--slack is ignored" not in out
 
 
 class TestSpawnCliAuth:

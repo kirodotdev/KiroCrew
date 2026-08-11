@@ -114,6 +114,7 @@ from kiro_crew.hooks import (
 from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
+from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     cgroup_scope_argv,
@@ -2402,6 +2403,14 @@ class AcpClient:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Memory-aware cap for pytest-xdist's ``-n auto``: xdist sizes auto to
+        # the CPU count, ignoring memory, so a full-suite run in an agent turn
+        # can spawn cpu_count workers x ~1 GB each and exhaust the host. xdist
+        # honors PYTEST_XDIST_AUTO_NUM_WORKERS when resolving auto, so seeding
+        # it here bounds ONLY auto resolution — explicit ``-n N``, non-xdist
+        # runs, and venvs without xdist are unaffected. Respects a value
+        # already present in the env; see resource_status.inject_xdist_auto_cap.
+        inject_xdist_auto_cap(env)
 
         # Process-group isolation for clean tree-kill. Pass both flags explicitly
         # (NOT via **dict unpack — that breaks mypy's Popen overload resolution on

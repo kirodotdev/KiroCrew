@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { CrewSettings, RepoRef } from '../apps/issue-radar/api'
 
 const api = {
   labels: vi.fn(),
@@ -10,6 +11,8 @@ const api = {
   issues: vi.fn(),
   members: vi.fn(),
   disconnect: vi.fn(),
+  getCrewSettings: vi.fn(),
+  putCrewSettings: vi.fn(),
 }
 class SettingsConflictError extends Error {
   current: Record<string, unknown>
@@ -49,6 +52,23 @@ function setCtx(active: { owner: string; repo: string }) {
   }
 }
 
+/** The repo-wide crew protocol, one document per SCOPE. The two differ in every
+ *  field, so a value on screen names the repository it came from. */
+const PROTOCOL: Record<string, CrewSettings> = {
+  github: {
+    schema: 1,
+    claim_ttl_hours: 48,
+    needs_human_label: 'crew: needs human',
+    commit_trailer: 'Crew: {name}',
+  },
+  gitlab: {
+    schema: 1,
+    claim_ttl_hours: 12,
+    needs_human_label: 'crew: ask a human',
+    commit_trailer: 'Crew: {name} <{id}>',
+  },
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   api.labels.mockResolvedValue({ owner: 'o', repo: 'other-one', labels: [], from_cache: true })
@@ -61,6 +81,14 @@ beforeEach(() => {
   })
   api.issues.mockResolvedValue({ owner: 'o', repo: 'other-one', issues: [], from_cache: true })
   api.members.mockResolvedValue({ owner: 'o', repo: 'other-one', members: [], source: 'derived', from_cache: true })
+  // Per-ref, not a fixed document: the crew protocol card is asserted to pick up
+  // the settings of the repo it is currently mounted for.
+  api.getCrewSettings.mockImplementation(async (ref: RepoRef) => ({
+    settings: PROTOCOL[ref.provider ?? 'github'],
+  }))
+  api.putCrewSettings.mockImplementation(async (ref: RepoRef, patch: Partial<CrewSettings>) => ({
+    settings: { ...PROTOCOL[ref.provider ?? 'github'], ...patch },
+  }))
 })
 
 function renderFor(repo: string) {
@@ -325,5 +353,114 @@ describe('RepoSettings — Open Tagging', () => {
 
     expect(switchRepo).not.toHaveBeenCalled()
     expect(openDashboard).toHaveBeenCalledWith('tagging')
+  })
+})
+
+/**
+ * The crew protocol card is identified by the repo SCOPE, not by the slug.
+ *
+ * That card holds an uncommitted draft until the server answers, and KEEPS the
+ * text when a write fails — which is what makes an unkeyed instance dangerous
+ * rather than merely untidy. `SettingsView` routes to this page with a key of
+ * `owner/repo`, so opening the same slug on a different provider or host
+ * re-renders THIS page instead of mounting a new one: with no scope key on the
+ * card, a retained draft survives that navigation and the next retry writes one
+ * repository's typed value into another repository's settings.
+ *
+ * `rerender` with a new ref at the same tree position is exactly that navigation.
+ * The card's input is re-queried after every navigation, never captured before
+ * one: a remount replaces the node, and a stale reference reports the old
+ * instance's value forever.
+ */
+describe('RepoSettings — the crew protocol card is keyed by scope', () => {
+  const GITHUB: RepoRef = { owner: 'o', repo: 'widget', provider: 'github', host: 'github.com' }
+  const GITLAB: RepoRef = { owner: 'o', repo: 'widget', provider: 'gitlab', host: 'gitlab.example.com' }
+
+  const ttl = () => screen.getByTestId('crew-desk-claim-ttl') as HTMLInputElement
+  const state = () => screen.getByTestId('crew-desk-protocol-status').getAttribute('data-state')
+
+  /** Render the page for one ref, and return the navigation the rail performs. */
+  function open(ref: RepoRef) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={qc}><RepoSettings repoRef={ref} /></QueryClientProvider>,
+    )
+    return (next: RepoRef) => view.rerender(
+      <QueryClientProvider client={qc}><RepoSettings repoRef={next} /></QueryClientProvider>,
+    )
+  }
+
+  /** Set the claim TTL and commit it, the way a blur does. `fireEvent`, matching
+   *  the card's own tests: user-event enforces a number input's validity as it
+   *  types, so an intermediate value cannot be set. */
+  const commitTtl = (value: string) => {
+    fireEvent.change(ttl(), { target: { value } })
+    fireEvent.blur(ttl())
+  }
+
+  /** A REFUSED write of `24` on the GitHub scope, leaving the draft on screen. */
+  async function failedDraft() {
+    api.putCrewSettings.mockRejectedValue(new Error('403 forbidden'))
+    const navigate = open(GITHUB)
+    await waitFor(() => expect(ttl().value).toBe('48'))
+    commitTtl('24')
+    await waitFor(() => expect(state()).toBe('failed'))
+    // Retained — the precondition that makes the missing key reachable.
+    expect(ttl().value).toBe('24')
+    return navigate
+  }
+
+  it('drops a retained draft when the scope changes', async () => {
+    const navigate = await failedDraft()
+
+    // The same slug on another provider and host: a different repository.
+    navigate(GITLAB)
+
+    // This repo's saved value, never the draft typed against the other one. A
+    // reused instance still shows '24', and blurring the field then writes that
+    // number to a repository the user never typed it for.
+    await waitFor(() => expect(ttl().value).toBe('12'))
+    // And the only write attempted is still the original one, addressed to the
+    // repo it was typed for.
+    expect(api.putCrewSettings).toHaveBeenCalledTimes(1)
+    expect(api.putCrewSettings).toHaveBeenCalledWith(GITHUB, { claim_ttl_hours: 24 })
+  })
+
+  it('keeps a retained draft across a re-render that is not a scope change', async () => {
+    const navigate = await failedDraft()
+
+    // A new ref OBJECT for the same repository — a parent re-render, not a
+    // navigation. The draft is the only copy of what was typed, so it has to
+    // survive: a key that changes per render, or per ref identity, discards it
+    // here and the failed value is gone.
+    navigate({ ...GITHUB })
+
+    await waitFor(() => expect(ttl().value).toBe('24'))
+  })
+
+  it('clears a stale failure when the scope changes', async () => {
+    const navigate = await failedDraft()
+    navigate(GITLAB)
+
+    // The failure described a write to the repository just navigated away from.
+    // Left standing, it reads as this repository refusing an edit nobody made
+    // here.
+    await waitFor(() => expect(state()).toBe('idle'))
+  })
+
+  it('clears an in-flight save indicator when the scope changes', async () => {
+    // A write that never answers. The indicator belongs to the old repository, so
+    // the new one must not open underneath a spinner for a write it has no part
+    // in.
+    api.putCrewSettings.mockImplementation(() => new Promise(() => {}))
+    const navigate = open(GITHUB)
+    await waitFor(() => expect(ttl().value).toBe('48'))
+    commitTtl('24')
+    await waitFor(() => expect(state()).toBe('saving'))
+
+    navigate(GITLAB)
+
+    await waitFor(() => expect(state()).toBe('idle'))
+    await waitFor(() => expect(ttl().value).toBe('12'))
   })
 })

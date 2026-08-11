@@ -46,7 +46,7 @@ _TagTolerantLoader.add_multi_constructor(None, _construct_intrinsic)
 
 
 def _load(text):
-    return yaml.load(text, Loader=_TagTolerantLoader)
+    return yaml.load(text, Loader=_TagTolerantLoader)  # noqa: S506 — tag-blind CFN parse
 
 
 class TestPartAApiGwThrottling:

@@ -9,6 +9,8 @@ import { api, type SlackConfigData, type SlackConfigSave } from '../../api/clien
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+/** Brand name — do-not-translate, so it lives here rather than in the catalog. */
+const CHANNEL_NAME = "Slack"
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
 
 type Draft = {
@@ -17,6 +19,10 @@ type Draft = {
   allowed_enterprise_ids: string[]
   reactions_enabled: boolean
   show_thinking: boolean
+  /** Whether Slack files its sessions in a folder at all (off = unfiled). */
+  session_folder_on: boolean
+  /** Folder name, kept while the toggle is off so turning it back on restores it. */
+  session_folder: string
 }
 
 function draftFrom(c: SlackConfigData): Draft {
@@ -26,6 +32,10 @@ function draftFrom(c: SlackConfigData): Draft {
     allowed_enterprise_ids: [...c.allowed_enterprise_ids],
     reactions_enabled: c.reactions_enabled,
     show_thinking: c.show_thinking,
+    // A configured name IS the on-state — the backend has one field, where ""
+    // means off, so the toggle is derived rather than separately persisted.
+    session_folder_on: !!c.session_folder,
+    session_folder: c.session_folder ?? '',
   }
 }
 
@@ -203,6 +213,9 @@ export function SlackPanel() {
       allowed_enterprise_ids: draft.allowed_enterprise_ids,
       reactions_enabled: draft.reactions_enabled,
       show_thinking: draft.show_thinking,
+      // Off sends "" (the field's off-state); on with a blank name falls back
+      // to "Slack", which is what the toggle's description promises.
+      session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
     }
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
@@ -359,6 +372,29 @@ export function SlackPanel() {
             onChange={v => upd({ show_thinking: v })}
             disabled={ro}
           />
+          {/* Optional per-channel session filing. Off by default: Slack
+              conversations stay unfiled in the sidebar, as before. */}
+          <div className="border-t border-border mt-4 pt-4">
+            <SettingsToggle
+              label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
+              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              checked={draft.session_folder_on}
+              onChange={v => upd({ session_folder_on: v })}
+              disabled={ro}
+            />
+            {draft.session_folder_on && (
+              <div className="mt-4">
+                <SettingsInput
+                  label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
+                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  value={draft.session_folder}
+                  onChange={v => upd({ session_folder: v })}
+                  placeholder={CHANNEL_NAME}
+                  disabled={ro}
+                />
+              </div>
+            )}
+          </div>
         </SettingsCard>
       </SettingsSection>
 

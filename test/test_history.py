@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from windows_sim import builtin_open_sharing_violation
 
+from kiro_crew import history
 from kiro_crew.history import (
     _CONSOLIDATION_THRESHOLD,
     _SESSION_KEEP_LINES,
@@ -876,6 +877,177 @@ class TestSearchSessions:
         assert "apollo" in hits[0]["snippet"]
         assert calls == [], "the search path must not enter _read_messages"
         assert len(log._msg_cache) == 0, "searching must not pin a parsed transcript"
+
+    def test_multi_word_query_matches_scattered_tokens(self, tmp_path):
+        """A multi-word query matches when its words appear APART, not adjacent.
+
+        Regression: the query was matched as one whole-phrase substring, so a
+        natural query like "ack contention hypotheses" silently returned nothing
+        even though the session discussed all three — the exact phrase never
+        occurs. Silent zero results are the worst failure mode for search: the
+        caller cannot tell "not in history" from "phrased it wrong".
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "the ack path shows contention under load")
+        log.append("hit", "assistant", "ranked the hypotheses by expected effect")
+        log.append("miss", "user", "unrelated disk cleanup chatter")
+
+        results = log.search_sessions("ack contention hypotheses")
+
+        assert [s["key"] for s in results] == ["hit"]
+
+    def test_multi_word_query_requires_every_token(self, tmp_path):
+        """AND, not OR: a session missing one token must not surface.
+
+        OR semantics would make a common word drag in the whole corpus, which is
+        a different way of being useless than the phrase bug.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("both", "user", "contention in the hypotheses list")
+        log.append("partial", "user", "contention everywhere but no hypothesis list")
+
+        results = log.search_sessions("contention hypotheses")
+
+        assert [s["key"] for s in results] == ["both"]
+
+    def test_exact_phrase_outranks_same_words_apart(self, tmp_path):
+        """At comparable token frequency, words appearing TOGETHER rank first.
+
+        This is what ``_PHRASE_BOOST`` buys, and all it buys: adjacency wins the
+        tie. It is not an override of term frequency — a session repeating one
+        token far more often still ranks higher on raw count, which is the
+        behaviour this ranker already had for single-token queries.
+
+        Titles are written explicitly because ``list_sessions`` otherwise
+        derives a title from the first message, which would hand a
+        content-heavy session a ``_TITLE_BOOST`` and mask what is being tested.
+        """
+        (tmp_path / "apart.jsonl").write_text(
+            '{"_type": "metadata", "title": "session one"}\n'
+            '{"role": "user", "content": "ping at the start and pong at the end"}\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "together.jsonl").write_text(
+            '{"_type": "metadata", "title": "session two"}\n'
+            '{"role": "user", "content": "the ping pong bench numbers"}\n',
+            encoding="utf-8",
+        )
+        log = ConversationLog(base_dir=tmp_path)
+
+        results = log.search_sessions("ping pong")
+
+        assert {s["key"] for s in results} == {"apart", "together"}
+        assert results[0]["key"] == "together"
+
+    def test_multi_word_scattered_match_still_gets_a_snippet(self, tmp_path):
+        """A scattered multi-word match must show WHY it surfaced.
+
+        The snippet builder searched for the whole phrase, so every session that
+        newly matches on scattered tokens would otherwise come back with no
+        snippet — surfacing rows a caller cannot evaluate.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "the ack path shows contention under load")
+        log.append("hit", "assistant", "ranked the hypotheses by expected effect")
+
+        results = log.search_sessions("ack contention hypotheses")
+
+        assert results[0]["snippet"], "expected a non-empty snippet"
+        assert "contention" in results[0]["snippet"].casefold()
+
+    def test_whitespace_only_query_matches_nothing_and_reads_no_file(self, tmp_path):
+        """A whitespace-only query returns [] *and* reads no session file.
+
+        It tokenizes to an empty list. Asserting only on the empty result would
+        pass with or without the early return, because a tokenless loop scores
+        nothing anyway — so this pins the I/O too: without the guard every
+        session in the scan window still gets read and folded to reach a
+        foregone conclusion.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("alpha", "user", "some content here")
+        reads: list[str] = []
+        real = log._folded_content
+
+        def counting(key: str) -> tuple[int, str]:
+            reads.append(key)
+            return real(key)
+
+        log._folded_content = counting  # type: ignore[assignment]
+
+        assert log.search_sessions("   ") == []
+        assert log.search_sessions("\t\n") == []
+        assert reads == [], "a tokenless query must not read any session file"
+
+    def test_single_token_query_behaviour_is_unchanged(self, tmp_path):
+        """One token IS the phrase — substring matching must still apply.
+
+        Guards the search-as-you-type path: a partial word has to keep matching
+        the longer word it prefixes.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("alpha", "user", "deep contention analysis")
+
+        assert [s["key"] for s in log.search_sessions("cont")] == ["alpha"]
+        assert [s["key"] for s in log.search_sessions("contention")] == ["alpha"]
+
+
+class TestSearchQueryTokens:
+    """Bounds on the tokenizer shared by the matcher and the snippet builders.
+
+    Every token costs one full scan of a session's text, so the token list is
+    the knob that multiplies search cost on a user-supplied string.
+    """
+
+    def test_repeated_terms_collapse_to_one_token(self):
+        """A repeated term must not buy extra scans — it cannot change an AND match.
+
+        Regression: a 256-char query of repeated "a " tokenized to 128 terms and
+        drove 128 full scans per session instead of 1, stalling a keystroke-driven
+        search.
+        """
+        tokens, phrase = history.search_query_tokens("a " * 128)
+
+        assert tokens == ["a"], "duplicates must collapse"
+        assert phrase == " ".join(["a"] * 128), "the phrase keeps the query as typed"
+
+    def test_distinct_terms_are_capped(self):
+        """Dedup cannot bound the distinct case, so the cap does.
+
+        Truncation keeps the FIRST terms, making the query looser rather than
+        wrong — it can admit extra results but never hide a matching session.
+        """
+        query = " ".join(f"t{i}" for i in range(history.SEARCH_MAX_TOKENS + 25))
+
+        tokens, _ = history.search_query_tokens(query)
+
+        assert len(tokens) == history.SEARCH_MAX_TOKENS
+        assert tokens[0] == "t0", "the cap keeps the first terms, in order"
+
+    def test_whitespace_only_query_yields_no_tokens(self):
+        """No tokens, so an all-tokens-present check cannot be vacuously true."""
+        assert history.search_query_tokens("   \t\n") == ([], "")
+
+    def test_order_is_first_seen(self):
+        """Token order is stable and first-seen, so the snippet fallback is predictable."""
+        tokens, _ = history.search_query_tokens("beta alpha beta gamma")
+
+        assert tokens == ["beta", "alpha", "gamma"]
+
+    def test_deduped_query_still_gets_phrase_treatment(self, tmp_path):
+        """"a a" dedups to ONE token but its phrase is still two words.
+
+        Keyed off `tokens != [phrase]` rather than `len(tokens) > 1`, so the
+        session matched on the single token still resolves a snippet instead of
+        searching only for a phrase it may not contain.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "the letter a stands alone here")
+
+        results = log.search_sessions("a a")
+
+        assert [s["key"] for s in results] == ["hit"]
+        assert results[0]["snippet"], "a deduped multi-word query must still snippet"
 
 
 class TestArchive:

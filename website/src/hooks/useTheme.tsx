@@ -45,6 +45,12 @@ export interface ThemeFontFace {
   src: string
   weight?: number
   style?: string
+  /**
+   * Which Font Family option this face feeds: `sans` fills `--theme-font-sans`,
+   * `mono` fills `--theme-font-mono`. Absent means proportional, which is the
+   * only role a pack without this field can mean.
+   */
+  role?: 'sans' | 'mono'
 }
 
 export interface ThemeBranding {
@@ -211,7 +217,7 @@ function removeCustomThemeCSS(slug: string) {
 // The stylesheet TEXT every step below injects is built in `./themeCss`; this
 // file keeps the DOM side (which tag, when, and when to revert it).
 
-/** Inject @font-face rules + a --font-body override for an installed theme. */
+/** Inject @font-face rules + the --theme-font-sans / --theme-font-mono role tokens. */
 function injectThemeFonts(theme: CustomThemeData) {
   const slug = safeSlug(theme.slug)
   if (!slug) return
@@ -248,8 +254,12 @@ function applyThemeOverrides(theme: CustomThemeData | undefined): Promise<void> 
       if (myToken !== _overridesToken || !raw) return // superseded or empty
       const { css, dropped } = scopeOverridesCss(raw)
       if (dropped) {
+        // warn, not debug: a dropped rule means the pack asked for something the
+        // contract does not allow and the user sees a theme that does not match
+        // its author's intent. Chrome filters `debug` out of the default console
+        // level, so that channel reaches nobody.
         // eslint-disable-next-line no-console -- intentional theme-scoper diagnostic
-        console.debug(`[theme] overrides.css: dropped ${dropped} disallowed rule(s)`)
+        console.warn(`[theme] overrides.css: dropped ${dropped} disallowed rule(s)`)
       }
       if (!css.trim()) return
       // Rewrite pack-relative url() refs → absolute asset-route URLs (the inline

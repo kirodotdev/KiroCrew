@@ -353,6 +353,7 @@ class KnowledgeStore:
                 name TEXT,
                 status TEXT DEFAULT 'active',
                 merged_into_source_id TEXT,
+                kind TEXT,
                 PRIMARY KEY (source_id, slug)
             );
 
@@ -499,6 +500,7 @@ class KnowledgeStore:
                     updated_at TEXT NOT NULL,
                     name TEXT,
                     merged_into_source_id TEXT,
+                    kind TEXT,
                     PRIMARY KEY (source_id, slug)
                 )
             """)
@@ -513,6 +515,14 @@ class KnowledgeStore:
             if "merged_into_source_id" not in ais_cols:
                 self.db.execute(
                     "ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
+            # The artifact kind AS INGESTED. Reconcile needs it to tell an
+            # artifact whose kind changed while sync was off (stale chunks, must
+            # be reaped) from one the user merely excluded by narrowing
+            # `auto_ingest_artifact_kinds` (still live, must NOT be reaped).
+            # Legacy rows carry NULL, which reconcile treats as "cannot tell"
+            # and leaves alone; the next ingest of that artifact backfills it.
+            if "kind" not in ais_cols:
+                self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN kind TEXT")
         # Migrate: agent_item_state table -- per-document item-group tracking for
         # the aggregate "Auto-added" KB source the agent writes to.
         if "agent_item_state" not in tables:
@@ -899,14 +909,21 @@ class KnowledgeStore:
         self.db.execute("DELETE FROM dismissed_auto_sources WHERE uri = ?", (uri,))
         self.db.commit()
 
+    def source_count(self) -> int:
+        """Total number of registered sources (all types)."""
+        row = self.db.execute("SELECT COUNT(*) AS cnt FROM sources").fetchone()
+        return int(row["cnt"]) if row else 0
+
     def create_auto_source_unless_dismissed(
         self, name: str, source_type: str, uri: str, properties: dict,
+        *, max_sources: int = 0,
     ) -> tuple[str | None, bool]:
         """Atomically: reuse, refuse-if-dismissed, or insert an auto source.
 
         Returns ``(source_id, created)``, or ``(None, False)`` when ``uri`` is
-        tombstoned. The tombstone check, the existing-row check and the INSERT
-        all happen inside ONE ``BEGIN IMMEDIATE`` transaction so a concurrent
+        tombstoned or the ``max_sources`` cap is reached. The tombstone check,
+        the existing-row check, the cap check and the INSERT all happen inside
+        ONE ``BEGIN IMMEDIATE`` transaction so a concurrent
         ``delete_source_cascade(..., dismiss_uri=uri)`` cannot interleave: either
         the delete's tombstone is visible here and nothing is created, or this
         insert lands first and the delete then removes it and tombstones the URI.
@@ -928,6 +945,14 @@ class KnowledgeStore:
                 sid = existing["id"]
                 self.db.execute("COMMIT")
                 return sid, False
+            # Enforce max_sources cap (0 = unbounded).
+            if max_sources > 0:
+                count = self.db.execute(
+                    "SELECT COUNT(*) AS cnt FROM sources"
+                ).fetchone()
+                if count and int(count["cnt"]) >= max_sources:
+                    self.db.execute("COMMIT")
+                    return None, False
             sid = str(uuid4())
             now = datetime.now().isoformat()
             self.db.execute(

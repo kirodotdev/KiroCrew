@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _is_valid_mcp_name,
     _replace_kirocrew_spec,
 )
+from kiro_crew.mcp_provenance import MARKER_KEY
 from kiro_crew.mcp_utils import (
     INTERNAL_CLIENT_ID_KEY,
     INTERNAL_SCOPES_KEY,
@@ -405,6 +406,15 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
     on-disk values are preserved verbatim.  They cannot be edited or
     removed through this endpoint — dropping ``disabledTools`` on a save
     would silently widen the agent's tool surface.
+
+    The authorship marker is the one exception: it records that Kiro Crew
+    wrote an entry into a file it does NOT own, so it has no meaning in the
+    store.  An unmodified round trip still SAVES with it present — refusing
+    would strand the entry — but it is dropped rather than written back.  That
+    keeps "the editor never writes the marker" structurally true: a hand-added
+    marker in the store cannot ride a save back out and volunteer the entry
+    for management on a shared surface.  A FRESH add carries no tolerated
+    keys, so a pasted block naming it is still rejected outright.
     """
     name = request.match_info.get("name", "")
     if not _is_valid_mcp_name(name):
@@ -430,10 +440,11 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
             for k, v in existing.items()
             if k not in _ALLOWED_SPEC_KEYS
             and k != "disabled"
+            and k != MARKER_KEY
             and k not in (KIRO_SCOPES_KEY, KIRO_OAUTH_KEY)
         }
         err = _validate_spec(
-            submitted, frozenset(carried) | {KIRO_SCOPES_KEY, KIRO_OAUTH_KEY}
+            submitted, frozenset(carried) | {KIRO_SCOPES_KEY, KIRO_OAUTH_KEY, MARKER_KEY}
         )
         if err:
             return web.json_response({"error": err}, status=400)

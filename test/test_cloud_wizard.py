@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from kiro_crew.cloud import aws
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, ssm, wizard
@@ -56,6 +58,92 @@ def _patch_post_launch(monkeypatch, *, logged_in: bool = True) -> dict[str, list
     monkeypatch.setattr(ec2, "_instance_state", lambda *_a, **_k: "running")
     monkeypatch.setattr(ssm, "instance_is_managed", lambda *_a, **_k: True)
     return calls
+
+
+class TestLaunchSubnetFlag:
+    def test_malformed_subnet_fails_before_any_aws_call(self, monkeypatch, capsys):
+        # Validation runs before the wizard's first AWS reachability check, so a
+        # typo'd --subnet renders one clean line instead of a traceback later.
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="")
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: pytest.fail("must not reach AWS on a malformed subnet id"),
+        )
+
+        assert wizard.launch(profile="dev", region="us-west-2", subnet_id="subnet-XYZ") == 1
+        assert "subnet_id" in capsys.readouterr().out
+
+    def test_subnet_with_existing_stack_fails_under_yes(self, monkeypatch, capsys):
+        # Non-interactive: an explicitly requested pin that would be silently
+        # ignored must exit early, not warn-and-proceed into the wrong network.
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: {
+                "reachable": True,
+                "account": "1",
+                "ec2_reachable": True,
+                "cloudformation_reachable": True,
+                "ssm_reachable": True,
+            },
+        )
+        monkeypatch.setattr(wizard, "_ensure_session_manager_plugin", lambda **k: True)
+        monkeypatch.setattr(wizard, "_select_existing_launch", lambda *a, **k: object())
+
+        rc = wizard.launch(
+            profile="dev",
+            region="us-west-2",
+            subnet_id="subnet-0123456789abcdef0",
+            assume_yes=True,
+        )
+        assert rc == 1
+        assert "--subnet cannot apply" in capsys.readouterr().out
+
+    def test_subnet_threads_through_to_deploy(self, monkeypatch):
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="")
+        _patch_post_launch(monkeypatch)
+        captured = {}
+
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.CloudConfig, "save", lambda self, *a: None)
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: {
+                "reachable": True,
+                "account": "1",
+                "ec2_reachable": True,
+                "cloudformation_reachable": True,
+                "ssm_reachable": True,
+            },
+        )
+        monkeypatch.setattr(wizard, "_ensure_session_manager_plugin", lambda **k: True)
+        monkeypatch.setattr(wizard, "_select_existing_launch", lambda *a, **k: None)
+
+        def fake_deploy_with_progress(**kwargs):
+            captured.update(kwargs)
+            return ec2.DeployResult(
+                tag=kwargs["tag"],
+                stack_name=ec2.stack_name(kwargs["tag"]),
+                region="us-west-2",
+                instance_id="i-new",
+                status="CREATE_COMPLETE",
+            )
+
+        monkeypatch.setattr(wizard, "_deploy_with_progress", fake_deploy_with_progress)
+
+        rc = wizard.launch(
+            profile="dev",
+            region="us-west-2",
+            subnet_id="subnet-0123456789abcdef0",
+            assume_yes=True,
+        )
+        assert rc == 0
+        assert captured["subnet_id"] == "subnet-0123456789abcdef0"
 
 
 class TestLaunchResume:

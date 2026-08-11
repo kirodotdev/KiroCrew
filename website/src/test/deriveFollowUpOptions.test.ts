@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { ChatMessage } from '../types'
-import { deriveFollowUpOptions } from '../utils/deriveFollowUpOptions'
+import { deriveFollowUpOptions } from '../app-sdk/protocol'
 
 const user = (content: string): ChatMessage => ({ role: 'user', content, cls: 'msg msg-u' })
 const assistant = (content: string): ChatMessage => ({ role: 'assistant', content, cls: 'msg msg-a' })
@@ -53,5 +53,19 @@ describe('deriveFollowUpOptions', () => {
 
   it('returns no options when there is no assistant turn', () => {
     expect(deriveFollowUpOptions([user('hi')], false).followUpOptions).toEqual([])
+  })
+
+  // Regression: Quick Send while the slot is busy appends a 'queued' bubble
+  // instead of an optimistic 'user' bubble. Options must still vanish.
+  it('clears options when a queued message follows the options turn', () => {
+    const queued: ChatMessage = { role: 'queued', content: 'Alpha', cls: 'msg msg-queued', meta: { queueId: 'q1' } }
+    const msgs = [user('go'), assistant(OPTIONS_MSG), queued]
+    expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+  })
+
+  it('clears options when a queued message follows a compaction notice after options', () => {
+    const queued: ChatMessage = { role: 'queued', content: 'Beta', cls: 'msg msg-queued', meta: { queueId: 'q2' } }
+    const msgs = [user('go'), assistant(OPTIONS_MSG), compactionLive(), queued]
+    expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
   })
 })

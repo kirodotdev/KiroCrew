@@ -18,22 +18,23 @@ name: Publish Linux Desktop (reusable)
 # on GitHub Releases.
 #
 # Key properties:
-#   - The versioned key desktop/<channel>/<version>/KiroCrew-x86_64.AppImage
+#   - The versioned key desktop/<channel>/<version>/KiroCrew-<arch>.AppImage
 #     is immutable-cached by CloudFront and is never republished with
 #     different bytes (--if-none-match conditional write; a 412 on a job
 #     re-run keeps the existing object and continues idempotently).
-#   - The mutable alias desktop/<channel>/latest/KiroCrew-x86_64.AppImage
+#   - The mutable alias desktop/<channel>/latest/KiroCrew-<arch>.AppImage
 #     (max-age=300) is written AFTER the versioned key so it never points
 #     at bytes that are not yet live.
 #   - Arch-qualified filename: Linux has no universal binary, so per-arch
-#     filenames are the contract (per-arch, never per-distro). A future
-#     arm64 lane publishes KiroCrew-aarch64.AppImage beside this one.
-#   - Writes feed/<channel>/latest-linux.yml (electron-updater channel
-#     metadata) AFTER the versioned AppImage is live and BEFORE the latest
-#     alias, mirroring the mac lane's go-live order: a feed must never
-#     advertise bytes that are not downloadable yet, and the convenience
-#     alias must never point ahead of the go-live switch. This is what
-#     gives the Linux desktop an auto-updater for the first time.
+#     filenames are the contract (per-arch, never per-distro). One
+#     invocation of this workflow publishes exactly one arch, so x86_64 and
+#     aarch64 never share a key, a feed, or an alias.
+#   - Writes feed/<channel>/latest-linux[-arm64].yml (electron-updater
+#     channel metadata) AFTER the versioned AppImage is live and BEFORE the
+#     latest alias, mirroring the mac lane's go-live order: a feed must
+#     never advertise bytes that are not downloadable yet, and the
+#     convenience alias must never point ahead of the go-live switch. This
+#     is what gives the Linux desktop an auto-updater.
 
 on:
   workflow_call:
@@ -44,6 +45,10 @@ on:
         type: string
       version:
         description: "Version label used in S3 keys"
+        required: true
+        type: string
+      arch:
+        description: "Desktop CPU architecture this invocation publishes: x64 | arm64"
         required: true
         type: string
       publish:
@@ -63,7 +68,7 @@ permissions:
 
 jobs:
   publish-linux:
-    name: Publish Linux AppImage (${{ inputs.channel }})
+    name: Publish Linux AppImage (${{ inputs.channel }} · ${{ inputs.arch }})
     # Public-distribution gates: skipped when the caller runs publish-less
     # or the CDN is not configured (fork). BOTH variables are required --
     # the bucket receives the upload and the CDN base is baked into the
@@ -82,12 +87,41 @@ jobs:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
-      # Pinned published basename, arch-qualified: Linux has no universal
-      # binary, so per-arch filenames are the contract (per-arch, never
-      # per-distro). A future arm64 lane publishes KiroCrew-aarch64.AppImage
-      # beside this one.
-      LINUX_BASENAME: KiroCrew-x86_64
+      ARCH: ${{ inputs.arch }}
     steps:
+      # Resolve every arch-dependent name in ONE fail-closed place: the
+      # published basename, the electron-updater channel file, and the ELF
+      # machine string the artifact must actually be.
+      #
+      # Unknown arch ABORTS rather than defaulting to x86_64. A silent default
+      # would publish arm64 bytes under the x86_64 key, and because the
+      # versioned key is immutable that mistake cannot be corrected in place --
+      # the version string is burned.
+      #
+      # FEED_FILE mirrors electron-updater's own rule (getChannelFilePrefix):
+      # x64 resolves latest-linux.yml, every other arch latest-linux-<arch>.yml.
+      # Diverging here strands the arch that gets the wrong filename with an
+      # updater that 404s forever.
+      - name: Resolve arch-dependent names
+        run: |
+          set -euo pipefail
+          case "${ARCH}" in
+            x64)
+              echo "LINUX_BASENAME=KiroCrew-x86_64" >> "$GITHUB_ENV"
+              echo "FEED_FILE=latest-linux.yml" >> "$GITHUB_ENV"
+              echo "EXPECT_ELF_MACHINE=x86-64" >> "$GITHUB_ENV"
+              ;;
+            arm64)
+              echo "LINUX_BASENAME=KiroCrew-aarch64" >> "$GITHUB_ENV"
+              echo "FEED_FILE=latest-linux-arm64.yml" >> "$GITHUB_ENV"
+              echo "EXPECT_ELF_MACHINE=aarch64" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "::error::unsupported arch '${ARCH}' (expected x64 or arm64)"
+              exit 1
+              ;;
+          esac
+
       - name: Configure AWS credentials
         if: env.HAS_SIGNING_SECRETS
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -115,6 +149,24 @@ jobs:
           fi
           echo "APPIMAGE_PATH=${APPIMAGES[0]}" >> "$GITHUB_ENV"
           ls -la "${APPIMAGES[0]}"
+
+      # The artifact NAME is caller-supplied, so nothing upstream proves the
+      # bytes are the arch this invocation publishes them as. Verify it against
+      # the ELF header before the immutable key is written: a wrong-arch publish
+      # passes every checksum the updater applies (sha512 matches the bytes that
+      # were uploaded) and only fails on the user's machine as "cannot execute
+      # binary file", after the key is already burned.
+      - name: Verify AppImage architecture
+        if: env.HAS_SIGNING_SECRETS
+        run: |
+          set -euo pipefail
+          FILE_OUT="$(file -b "${APPIMAGE_PATH}")"
+          echo "${FILE_OUT}"
+          if ! printf '%s' "${FILE_OUT}" | grep -qi -- "${EXPECT_ELF_MACHINE}"; then
+            echo "::error::artifact ${{ inputs.appimage_artifact }} is not ${ARCH} (expected ELF machine '${EXPECT_ELF_MACHINE}'): ${FILE_OUT}"
+            exit 1
+          fi
+          echo "Architecture verified: ${ARCH} (${EXPECT_ELF_MACHINE})"
 
       # Signed SLSA provenance for the EXACT bytes this lane uploads,
       # attested before anything reaches S3. This closes the decoupling
@@ -203,7 +255,8 @@ jobs:
       #     against feed/<channel>/ and 404.
       # Filename is arch-coupled on Linux: electron-updater resolves
       # latest-linux.yml for x64 and latest-linux-<arch>.yml otherwise, so
-      # a future arm64 lane writes latest-linux-arm64.yml beside this one.
+      # each arch writes its own channel file and they never overwrite each
+      # other. FEED_FILE is resolved fail-closed in the first step.
       - name: Write update feed
         if: env.HAS_SIGNING_SECRETS
         run: |
@@ -228,7 +281,7 @@ jobs:
             exit 1
           fi
           echo "Verified published AppImage matches the feed digest."
-          cat > /tmp/latest-linux.yml <<EOF
+          cat > /tmp/"${FEED_FILE}" <<EOF
           version: ${VERSION}
           files:
             - url: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}
@@ -238,11 +291,11 @@ jobs:
           sha512: '${APPIMAGE_SHA512}'
           releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
           EOF
-          aws s3 cp /tmp/latest-linux.yml \
-            "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/latest-linux.yml" \
+          aws s3 cp /tmp/"${FEED_FILE}" \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/${FEED_FILE}" \
             --content-type text/yaml \
             --cache-control "public, max-age=300"
-          echo "Feed written: feed/${CHANNEL}/latest-linux.yml -> ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
+          echo "Feed written: feed/${CHANNEL}/${FEED_FILE} -> ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
 
       # Human-clickable permalink to the current AppImage:
       #   <CDN>/desktop/<channel>/latest/KiroCrew-x86_64.AppImage
@@ -268,9 +321,9 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         run: |
           {
-            echo "## Publish Linux (${CHANNEL})"
+            echo "## Publish Linux (${CHANNEL} · ${ARCH})"
             echo "- Version: ${VERSION}"
             echo "- Public AppImage: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
-            echo "- Feed: \`feed/${CHANNEL}/latest-linux.yml\`"
+            echo "- Feed: \`feed/${CHANNEL}/${FEED_FILE}\`"
             echo "- Latest AppImage alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_APPIMAGE_KEY}"
           } >> "$GITHUB_STEP_SUMMARY"

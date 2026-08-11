@@ -1135,8 +1135,13 @@ class TestRunProbe:
         sandbox_injected = {"KIROCREW_HOST_PID", "KIROCREW_SANDBOX_ACTIVE",
                             "KIROCREW_SANDBOX_LEVEL", "KIROCREW_SPAWNED", "GIT_SSH_COMMAND"}
         shell_added = {"PWD", "SHLVL", "_"}
+        # macOS injects __CF_USER_TEXT_ENCODING into every spawned process
+        # unconditionally (CoreFoundation per-user encoding preference). This is
+        # not ours and not a leak — it is injected by the kernel/dyld, not
+        # inherited from the parent environment.
+        os_injected = {"__CF_USER_TEXT_ENCODING"} if sys.platform == "darwin" else set()
         names = {line.split("=", 1)[0] for line in out.splitlines() if "=" in line}
-        assert names <= ours | sandbox_injected | shell_added, names
+        assert names <= ours | sandbox_injected | shell_added | os_injected, names
 
     @pytest.mark.asyncio
     async def test_the_child_path_is_the_sanitized_one(self, monkeypatch):

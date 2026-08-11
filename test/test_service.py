@@ -2715,6 +2715,10 @@ class TestProfileLoadsBeforeTheServiceStarts:
             "_systemctl",
             lambda *args: (order.append(args[0]), MagicMock(returncode=0))[1],
         )
+        # _seed_env_file calls _sudo_run("test", "-e", ...) which blocks for a
+        # sudo password on non-Linux hosts (macOS). The function is best-effort
+        # and not under test here — patch it to a no-op.
+        monkeypatch.setattr(svc_linux, "_seed_env_file", lambda: None)
 
         outcome = svc_linux.install()
 

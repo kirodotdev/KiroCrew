@@ -664,6 +664,33 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     atomic_write(path, json.dumps(data, indent=2) + "\n", fsync=fsync, mode=mode)
 
 
+def stamp_config_meta(data: dict) -> dict:
+    """Return *data* with a freshly stamped ``meta`` block in front.
+
+    ``meta.lastTouchedVersion`` names the build that wrote the bytes now on
+    disk, which is the first thing to check when a ``config.json`` looks like
+    it came from an older schema. An existing stamp is therefore replaced
+    rather than merged.
+
+    Every writer that rebuilds the whole file from a dataclass round-trip has
+    to stamp through here: ``to_dict()`` models only the schema, so such a
+    write drops any top-level key the dataclass does not carry — ``meta``
+    among them. Writers that mutate the raw dict they read keep the block
+    without help.
+
+    Only ``config.json`` carries the block. ``config.local.json``, agent
+    specs, and the other JSON that shares :func:`write_config_atomically` do
+    not, so the stamping is deliberately separate from that function.
+    """
+    return {
+        "meta": {
+            "lastTouchedVersion": __version__,
+            "lastTouchedAt": datetime.now(timezone.utc).isoformat(),
+        },
+        **{k: v for k, v in data.items() if k != "meta"},
+    }
+
+
 def workspace_dir_for(workspace: str | None = None) -> Path:
     """Resolve a named workspace to its directory path.
 
@@ -1689,6 +1716,57 @@ class KnowledgeConfig:
             "reads on.",
         ),
     )
+    sweep_chunk_budget: int = field(
+        default=500,
+        metadata=_meta(
+            "Global Sweep Chunk Budget",
+            "Maximum chunks ingested across ALL sources in a single watcher "
+            "sweep. Each chunk costs one LLM extraction call, so this is the "
+            "primary global cost control. Once reached, remaining sources are "
+            "deferred to the next sweep. "
+            "0 removes the bound.",
+        ),
+    )
+    max_sources: int = field(
+        default=50,
+        metadata=_meta(
+            "Max Sources",
+            "Maximum number of Knowledge sources that may be registered. "
+            "Prevents unbounded auto-discovery from registering hundreds of "
+            "sources when many projects are open. Registration attempts past "
+            "the cap are skipped (auto) or rejected (manual). 0 removes the "
+            "bound.",
+        ),
+    )
+    embed_rate_limit: int = field(
+        default=120,
+        metadata=_meta(
+            "Embedding Rate Limit (items/min)",
+            "Maximum embedding generations per minute across all sources. "
+            "Back-pressures the ingestion pipeline when a large backlog builds "
+            "up, preventing memory/CPU saturation from parallel embed batches. "
+            "0 removes the bound.",
+        ),
+    )
+    extraction_model: str = field(
+        default="",
+        metadata=_meta(
+            "Extraction Model",
+            "LLM model used for document extraction and summarization. Empty "
+            "uses the default model (agent.model). Set to a specific model id "
+            "(e.g. 'claude-haiku-4.5') to use a cheaper model for extraction "
+            "without changing your chat default.",
+        ),
+    )
+    extraction_pool_size: int = field(
+        default=3,
+        metadata=_meta(
+            "Extraction Pool Size",
+            "Number of concurrent LLM workers for document extraction. More "
+            "workers = faster ingestion but higher peak cost. Each worker holds "
+            "a long-lived session. Requires restart to take effect.",
+        ),
+    )
     auto_discover_folder: bool = field(
         default=False,
         metadata=_meta(
@@ -1827,6 +1905,18 @@ class SlackConfig:
             "use the tunnel URL if one is active. When false (default), "
             "Slack links always use the configured dashboard origin or host:port. "
             "Disabled by default until the tunnel mechanism is scaled for general use.",
+            tags=["slack"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
             tags=["slack"],
         ),
     )
@@ -2060,6 +2150,18 @@ class DashboardConfig:
             "liveness probe kills at roughly 20s independently, so a value "
             "above that only takes effect for a headless gateway — the desktop "
             "probe wins first and the stack dump is lost.",
+        ),
+    )
+    cautious_boot: bool = field(
+        default=True,
+        metadata=_meta(
+            "Cautious Boot After Crash",
+            "When the gateway starts and finds a recent loop-stall crash dump "
+            "(under 30 minutes old) from the previous instance, stagger the "
+            "startup burst — MCP servers, cron scheduler, app backends, "
+            "session restores — with short pauses instead of launching "
+            "everything at once, so a host still under memory pressure is "
+            "not pushed straight back into the same collapse.",
         ),
     )
     widget_density: str = field(
@@ -3458,8 +3560,13 @@ class McpGatewayConfig:
     enabled: bool = field(
         default=False,
         metadata=_meta(
-            "Enabled",
-            "Route MCP traffic through the shared sidecar broker. Default False — opt-in.",
+            "Share MCP Backends",
+            "Let sessions with an identical server configuration share one MCP "
+            "server process instead of each getting its own. Off, every session "
+            "gets its own backend — the same process topology as running without "
+            "the broker. Either this or MCP Apps starts the broker; see "
+            "docs/architecture/design-notes/mcp-stub-decoupling.md. "
+            "Default False — opt-in.",
         ),
     )
     apps_enabled: bool = field(
@@ -3467,10 +3574,13 @@ class McpGatewayConfig:
         metadata=_meta(
             "MCP Apps",
             "Render interactive HTML returned by an MCP server (the MCP Apps "
-            "extension) in chat, and accept callbacks from it. Requires the broker: "
-            "the render and callback paths live inside it, so this grants nothing "
-            "while Enabled is off. Default True — turning it off keeps pooling and "
-            "suppresses only server-authored UI.",
+            "extension) in chat, and accept callbacks from it. Independent of "
+            "backend sharing: the broker starts for either, and callbacks are "
+            "routed by a stub that is interposed on every stdio server whether or "
+            "not its backend is shared. Either this or backend sharing starts the "
+            "broker; see docs/architecture/design-notes/mcp-stub-decoupling.md. "
+            "Default True — turning it off suppresses "
+            "server-authored UI and leaves sharing untouched.",
         ),
     )
     forward_declared_env: bool = field(
@@ -3866,6 +3976,18 @@ class WeComConfig:
             tags=["wecom"],
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["wecom"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         # Clamp thresholds to [0, 100] and guarantee soft <= hard so a misconfig
@@ -4080,6 +4202,33 @@ def _coerce_int(raw: object, default: int) -> int:
         return default
 
 
+#: Longest accepted channel session-folder name — matches the 100-char cap the
+#: folder CRUD endpoint applies, so a name that round-trips through config can
+#: never be longer than one created in the sidebar.
+SESSION_FOLDER_NAME_MAX = 100
+
+
+def _coerce_session_folder(raw: object) -> str:
+    """Coerce a channel's ``session_folder`` value to a usable folder name.
+
+    Empty string means the feature is off (the default) — sessions from the
+    channel stay unfiled. Anything else is the name of the sidebar folder they
+    are filed into. Non-strings, control characters, path separators, and
+    over-long values all fail closed to off rather than producing a folder the
+    user did not ask for: truncating an over-long hand-edited value would file
+    conversations into a real folder whose name nobody chose, which is worse
+    than leaving them where they already were.
+    """
+    if not isinstance(raw, str):
+        return ""
+    name = raw.strip()
+    if len(name) > SESSION_FOLDER_NAME_MAX:
+        return ""
+    if any(ch in name for ch in ("/", "\\")) or any(ord(ch) < 0x20 for ch in name):
+        return ""
+    return name
+
+
 @dataclass
 class TelegramAccountConfig:
     """A single named Telegram bot account, retained only to preserve config.
@@ -4207,6 +4356,18 @@ class TelegramConfig:
             deprecated=True,
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["telegram"],
+        ),
+    )
 
 
 @dataclass
@@ -4289,6 +4450,18 @@ class WeixinConfig:
             tags=["weixin"],
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["weixin"],
+        ),
+    )
 
 
 @dataclass
@@ -4339,6 +4512,18 @@ class DiscordConfig:
             tags=["discord"],
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["discord"],
+        ),
+    )
 
 
 @dataclass
@@ -4386,6 +4571,18 @@ class WebexConfig:
             "Hard Context Threshold %",
             "Force a compaction when context reaches this, even without a user "
             "decision, so the window never overflows.",
+            tags=["webex"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
             tags=["webex"],
         ),
     )
@@ -4469,6 +4666,18 @@ class TeamsConfig:
             "Hard Context Threshold %",
             "Force a compaction when context reaches this, even without a user "
             "decision, so the window never overflows.",
+            tags=["teams"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
             tags=["teams"],
         ),
     )
@@ -5181,8 +5390,19 @@ class KiroCrewConfig:
                 auto_discover_dirname=str(
                     knowledge_data.get("auto_discover_dirname", "knowledge-docs")
                 ).strip()[:128],
+                sweep_chunk_budget=_safe_nonnegative_int(
+                    knowledge_data.get("sweep_chunk_budget", 500), 500),
+                max_sources=_safe_nonnegative_int(
+                    knowledge_data.get("max_sources", 50), 50),
+                embed_rate_limit=_safe_nonnegative_int(
+                    knowledge_data.get("embed_rate_limit", 120), 120),
+                extraction_model=str(
+                    knowledge_data.get("extraction_model", "")).strip(),
+                extraction_pool_size=max(1, min(10, _safe_nonnegative_int(
+                    knowledge_data.get("extraction_pool_size", 3), 3))),
             ),
             telegram=TelegramConfig(
+                session_folder=_coerce_session_folder(telegram_data.get("session_folder")),
                 enabled=bool(telegram_data.get("enabled", False)),
                 bot_token=str(telegram_data.get("bot_token", "")),
                 allowed_user_ids=_coerce_int_ids(telegram_data.get("allowed_user_ids")),
@@ -5194,6 +5414,7 @@ class KiroCrewConfig:
                 accounts=_parse_telegram_accounts(telegram_data.get("accounts")),
             ),
             weixin=WeixinConfig(
+                session_folder=_coerce_session_folder(weixin_data.get("session_folder")),
                 enabled=bool(weixin_data.get("enabled", False)),
                 token=str(weixin_data.get("token", "")),
                 account_id=str(weixin_data.get("account_id", "")),
@@ -5208,6 +5429,7 @@ class KiroCrewConfig:
                 ),
             ),
             discord=DiscordConfig(
+                session_folder=_coerce_session_folder(discord_data.get("session_folder")),
                 enabled=bool(discord_data.get("enabled", False)),
                 bot_token=str(discord_data.get("bot_token", "")),
                 # Discord user IDs are numeric snowflakes that exceed 2^53 —
@@ -5220,6 +5442,7 @@ class KiroCrewConfig:
                 ),
             ),
             webex=WebexConfig(
+                session_folder=_coerce_session_folder(webex_data.get("session_folder")),
                 enabled=bool(webex_data.get("enabled", False)),
                 bot_token=str(webex_data.get("bot_token", "")),
                 allowed_emails=(
@@ -5231,6 +5454,7 @@ class KiroCrewConfig:
                 hard_threshold_pct=_coerce_int(webex_data.get("hard_threshold_pct"), 95),
             ),
             teams=TeamsConfig(
+                session_folder=_coerce_session_folder(teams_data.get("session_folder")),
                 enabled=bool(teams_data.get("enabled", False)),
                 app_id=str(teams_data.get("app_id", "")),
                 # Secret is env-only (MICROSOFT_APP_PASSWORD). Never sourced from
@@ -5247,6 +5471,7 @@ class KiroCrewConfig:
                 hard_threshold_pct=_coerce_int(teams_data.get("hard_threshold_pct"), 95),
             ),
             slack=SlackConfig(
+                session_folder=_coerce_session_folder(slack_data.get("session_folder")),
                 allowed_users=[
                     u
                     for u in slack_data.get("allowed_users", [])
@@ -5292,6 +5517,7 @@ class KiroCrewConfig:
                 ],
             ),
             wecom=WeComConfig(
+                session_folder=_coerce_session_folder(wecom_data.get("session_folder")),
                 enabled=bool(wecom_data.get("enabled", False)),
                 allowed_users=[
                     u
@@ -5321,6 +5547,7 @@ class KiroCrewConfig:
                     LOOP_STALL_EXIT_AFTER_MIN,
                     LOOP_STALL_EXIT_AFTER_MAX,
                 ),
+                cautious_boot=_safe_bool(dashboard_data.get("cautious_boot"), True),
                 auto_open_browser=dashboard_data.get("auto_open_browser", True),
                 prevent_sleep=_safe_bool(dashboard_data.get("prevent_sleep"), False),
                 quick_send=dashboard_data.get("quick_send", False),
@@ -5730,10 +5957,6 @@ class KiroCrewConfig:
         output to prevent overlay settings from leaking into the base file.
         """
 
-        meta = {
-            "lastTouchedVersion": __version__,
-            "lastTouchedAt": datetime.now(timezone.utc).isoformat(),
-        }
         d = self.to_dict()
 
         # Strip overlay-owned values so they don't leak into config.json
@@ -5746,11 +5969,10 @@ class KiroCrewConfig:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        d = {"meta": meta, **d}
         # Atomic + mode-preserving: a concurrent reader must never observe a
         # half-written config, and the write must not widen who can read a file
         # that may hold inline credentials. See write_config_atomically.
-        write_config_atomically(config_path(), d)
+        write_config_atomically(config_path(), stamp_config_meta(d))
         # Drop the validated-data cache so the next load() re-reads this write.
         # mtime-keying already detects the change; this makes it immediate even
         # if the filesystem mtime resolution is coarse.
@@ -5838,9 +6060,17 @@ class KiroCrewConfig:
         # via Popen's default env=os.environ.copy() — even when their view of
         # ~/.kiro/crew/.env is a bind-mounted empty file. setdefault() preserves
         # any value the caller already set explicitly.
-        for k, v in creds.items():
-            if v:
-                os.environ.setdefault(k, v)
+        #
+        # EXCEPTION: when the Docker entrypoint has deliberately scrubbed
+        # credentials from the process environ (setting _KIROCREW_CREDS_SCRUBBED=1),
+        # re-injecting them here would leak into /proc/<pid>/environ — the exact
+        # attack surface the entrypoint closed. In that case, children that need
+        # credentials get them via their own .env read or via an explicit env=
+        # kwarg on Popen (the sandbox and ACP spawners already do this).
+        if not os.environ.get("_KIROCREW_CREDS_SCRUBBED"):
+            for k, v in creds.items():
+                if v:
+                    os.environ.setdefault(k, v)
 
         return creds
 
@@ -5867,10 +6097,14 @@ class KiroCrewConfig:
         # configured default instead of the provider/model default.
         default_effort = self.agent.reasoning_effort
 
-        # MCP gateway: resolve overlay + socket once when enabled. None when
-        # the feature flag is off -> AcpClient falls through to per-session MCP.
+        # MCP gateway: resolve overlay + socket once when the stub layer is
+        # needed. The stub is the addressing layer MCP Apps routes callbacks
+        # through, so it is required whenever EITHER pooling or MCP Apps is on —
+        # with pooling off the stubs are still emitted, each connection just
+        # gets its own backend. None only when neither is on -> AcpClient falls
+        # through to per-session MCP with no gateway in the path at all.
         _gw = self.mcp_gateway
-        if _gw.enabled:
+        if _gw.enabled or _gw.apps_enabled:
             _gw_overlay = _gw.overlay_dir or str(default_overlay_dir())
             _gw_socket = _gw.socket_path or str(default_socket_path())
             _gw_settings = str(Path(_gw_overlay).parent / "settings" / "mcp.json")

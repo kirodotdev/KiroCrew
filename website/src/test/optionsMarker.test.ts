@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { OPTION_MARKER_RE, stripPartialOptionMarker } from '../utils/optionsMarker'
+import { stripPartialOptionMarker } from '../app-sdk/protocol'
+// The pattern is in-tree only — the barrel deliberately withholds it from the app surface.
+import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
 
 /** What the reader sees for a given stream prefix: the finished-marker strip
  *  (OPTION_MARKER_RE, what parseOptions does) followed by the partial-marker

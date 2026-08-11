@@ -554,6 +554,8 @@ def _rehydrate_slot_from_history(
             slot.mode = meta["mode"]
         if meta.get("folder_id"):
             slot.folder_id = meta["folder_id"]
+        if meta.get("channel_folder_filed"):
+            slot._channel_folder_filed = True
         if meta.get("app"):
             slot._app = meta["app"]
         # Re-validate the companion binding against the slug grammar on restore
@@ -584,6 +586,11 @@ def _rehydrate_slot_from_history(
                 slot.tags = [t for t in slot.tags if t in known]
         if meta.get("auto_tagged"):
             slot._auto_tagged = True
+        if meta.get("human_seen"):
+            # Attendance survives the restart, so an app-owned tab a person has
+            # been working in keeps the full approval window instead of silently
+            # dropping to the unattended deny-fast (state._ChatSlot.unattended).
+            slot._human_seen = True
         mm = meta.get("memory_mode", "persistent")
         slot.memory_mode = mm
         if mm != "persistent":
@@ -905,6 +912,8 @@ def _restore_recent_sessions_steps(
             slot.mode = meta["mode"]
         if meta.get("folder_id"):
             slot.folder_id = meta["folder_id"]
+        if meta.get("channel_folder_filed"):
+            slot._channel_folder_filed = True
         if meta.get("app"):
             slot._app = meta["app"]
         # Same tamper gate as _rehydrate_slot_from_history: re-validate the
@@ -936,6 +945,11 @@ def _restore_recent_sessions_steps(
                 slot.tags = [t for t in slot.tags if t in known]
         if meta.get("auto_tagged"):
             slot._auto_tagged = True
+        if meta.get("human_seen"):
+            # Attendance survives the restart, so an app-owned tab a person has
+            # been working in keeps the full approval window instead of silently
+            # dropping to the unattended deny-fast (state._ChatSlot.unattended).
+            slot._human_seen = True
         mm = meta.get("memory_mode", "persistent")
         slot.memory_mode = mm
         if mm != "persistent":
@@ -1642,6 +1656,15 @@ def _save_slot_to_history(
                 meta_line["project"] = slot.project
             if slot.folder_id:
                 meta_line["folder_id"] = slot.folder_id
+            if slot._channel_folder_filed or existing_meta.get("channel_folder_filed"):
+                # Sticky, and carried forward from disk rather than only from the
+                # slot: this function rebuilds the metadata line from scratch, so
+                # a restore path that failed to set the in-memory flag would
+                # otherwise ERASE the marker on the next save and the
+                # conversation would be re-filed. Preserving the on-disk value
+                # makes that whole class of omission harmless — same reason
+                # rotation_generation is carried forward above.
+                meta_line["channel_folder_filed"] = True
             if slot._app:
                 meta_line["app"] = slot._app
             # Artifact companion binding — persisted so a bound
@@ -1662,6 +1685,16 @@ def _save_slot_to_history(
                 # re-runs maybe_auto_tag and silently re-adds a tag the user
                 # removed (see chat_auto_tag.maybe_auto_tag).
                 meta_line["auto_tagged"] = True
+            if getattr(slot, "_human_seen", False):
+                # Once-flag for attendance (state._ChatSlot.unattended). Without
+                # it a restart drops an app-owned tab a person is working in from
+                # the 2h approval window to the 180s deny-fast — a gateway
+                # restart happens on every upgrade and is not evidence the person
+                # left. Monotonic like auto_tagged above, so it is written when
+                # set and never cleared; both are therefore absent from
+                # SLOT_OWNED_META_KEYS and survive via carry_unowned_metadata
+                # even on a save by a slot that has not learned the flag yet.
+                meta_line["human_seen"] = True
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
             if slot.linked_session_key:

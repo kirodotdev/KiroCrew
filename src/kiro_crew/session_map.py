@@ -24,7 +24,12 @@ from kiro_crew.messaging.link import (
 
 logger = logging.getLogger(__name__)
 
-_SESSION_MAP_FILE = "session_map.json"
+# Public because another instance's map is read by file path, not through this
+# class: :func:`kiro_crew.session_storage.cotenant_sids` opens the map belonging
+# to a pod that shares the replay store. A second literal there would be a silent
+# hazard rather than a duplicate — a rename would turn that read into "no file",
+# which reads as "that instance owns nothing" and withdraws the protection.
+SESSION_MAP_FILENAME = "session_map.json"
 
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
@@ -74,7 +79,7 @@ class SessionMap:
     """
 
     def __init__(self) -> None:
-        self._path = config_dir() / _SESSION_MAP_FILE
+        self._path = config_dir() / SESSION_MAP_FILENAME
         self._data: dict[str, dict] = {}  # key → {"sid", "slack_thread_ts", "slack_channel_id"}
         self._thread_to_session: dict[str, str] = {}  # slack_thread_ts → session_key
         self._load()
@@ -204,6 +209,32 @@ class SessionMap:
                 pass
             raise
 
+    def _resolve_alias(self, key: str) -> "tuple[str, dict | None]":
+        """Resolve *key* through the map's alias folds; return (matched_key, entry).
+
+        The ONE place the key-alias rules live, shared by the pruning
+        :meth:`get` and the read-only :meth:`has_hint` so they cannot drift:
+        1. exact key;
+        2. bidirectional bare <-> ``slack:`` shim (a not-yet-updated caller
+           may pass a bare thread_ts; resolve to the namespaced entry);
+        3. dashboard history round-trip (``dashboard:dashboard_X`` -> the
+           original ``dashboard:X`` written via ``_safe_key``).
+        Pure lookup: no disk I/O, no pruning, no save.
+        """
+        entry = self._data.get(key)
+        if not entry:
+            canon = canonical_key(key)
+            if canon != key:
+                entry = self._data.get(canon)
+                if entry:
+                    key = canon
+        if not entry and key.startswith("dashboard:dashboard_"):
+            canonical = "dashboard:" + key[len("dashboard:dashboard_") :]
+            entry = self._data.get(canonical)
+            if entry:
+                key = canonical
+        return key, entry
+
     def get(self, key: str) -> str | None:
         """Return kiro-cli session ID if mapping exists and .json file is present.
 
@@ -213,22 +244,7 @@ class SessionMap:
         ``dashboard_chat-1-xxx``, producing session key
         ``dashboard:dashboard_chat-1-xxx``.  We try the canonical form too.
         """
-        entry = self._data.get(key)
-        # Bidirectional bare <-> slack: shim: a not-yet-updated caller may pass
-        # a bare thread_ts; resolve it to the namespaced entry written at load.
-        if not entry:
-            canon = canonical_key(key)
-            if canon != key:
-                entry = self._data.get(canon)
-                if entry:
-                    key = canon
-        # Fallback: dashboard history round-trip (dashboard:dashboard_X → dashboard:X)
-        matched_key = key
-        if not entry and key.startswith("dashboard:dashboard_"):
-            canonical = "dashboard:" + key[len("dashboard:dashboard_") :]
-            entry = self._data.get(canonical)
-            if entry:
-                matched_key = canonical
+        matched_key, entry = self._resolve_alias(key)
         if not entry:
             return None
         sid = entry["sid"]
@@ -249,6 +265,19 @@ class SessionMap:
         if sid:
             self._remove_entry(matched_key)
         return None
+
+    def has_hint(self, key: str) -> bool:
+        """Read-only, in-memory probe: does an entry exist for *key*?
+
+        Unlike :meth:`get`, this never touches disk and never mutates the map
+        (no stale-entry pruning, no ``_save``), so it is safe to call from the
+        event loop and carries no cross-thread hazard. It can return a false
+        positive for an entry whose session files are gone — callers that act
+        on the hint must treat the pruning :meth:`get` inside the actual
+        resume path as the authority and tolerate the resume falling back.
+        Alias folding is shared with :meth:`get` via ``_resolve_alias``.
+        """
+        return self._resolve_alias(key)[1] is not None
 
     def _remove_entry(self, key: str) -> None:
         """Remove an entry and update reverse index."""

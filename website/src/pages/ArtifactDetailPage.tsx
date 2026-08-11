@@ -1088,6 +1088,17 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         running: false,
         artifact: artifact.slug,
       } as ChatSlot))
+      // Activate the bound slot NOW — back-to-back with writePrefill, mirroring
+      // ChatPage's follow-up worktree handler — so activeSlot is already this
+      // slot BEFORE boundSlot resolves and ArtifactChatPanel mounts the embedded
+      // ChatPage. Otherwise the switch lands in the same commit as that mount,
+      // where ChatPage's mount-only slot re-fetch effect (StrictMode
+      // double-invoked, empty deps → stale activeSlot capture) re-asserts the
+      // PRIOR active slot as the last write. activeSlot then never becomes this
+      // slot on first open, so the per-slot draft-restore effect can't consume
+      // the staged prefill and the composer opens empty (correct only on the
+      // second open). Idempotent once active === res.key.
+      dispatch(switchSlot(res.key))
       api.chatSlotContext(res.key, buildCompanionContext(), {
         source: 'artifact-companion', ephemeral: true,
       }).catch(() => undefined)
@@ -1328,7 +1339,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const msg = detailQuery.error instanceof Error ? detailQuery.error.message : String(detailQuery.error)
     return (
       <>
-        <PageHeader title={i18nT('pages.artifactDetailPage.artifact')} subtitle={slug} />
+        <div className="sticky top-0 z-10 bg-bg border-b border-border">
+          <PageHeader title={i18nT('pages.artifactDetailPage.artifact')} subtitle={slug} />
+        </div>
         <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
           <Card>
             <div className="flex items-start gap-3">
@@ -1370,35 +1383,35 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 
   return (
     <>
-      <PageHeader
-        title={renaming ? (
-          <Input
-            autoFocus
-            value={nameDraft}
-            aria-label={i18nT('pages.artifactDetailPage.artifact_name')}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); void commitRename() }
-              else if (e.key === 'Escape') { e.preventDefault(); setRenaming(false) }
-            }}
-            className="px-2 py-0.5 text-2xl font-bold tracking-tight text-text-strong w-full max-w-[36rem]"
-          />
-        ) : (
-          <Btn
-            ref={titleButtonRef}
-            onClick={startRenaming}
-            title={i18nT('pages.artifactDetailPage.rename_this_artifact')}
-            className="group gap-2 bg-transparent border-none p-0 text-2xl font-bold tracking-tight text-text-strong cursor-text hover:bg-transparent hover:border-none"
-          >
-            {artifact.name}
-            <Pencil size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" aria-hidden="true" />
-          </Btn>
-        )}
-        subtitle={i18nT('pages.artifactDetailPage.artifact_slug', { slug: artifact.slug })}
-      />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-        <div className="flex flex-wrap items-center gap-2 mb-4">
+      <div className="sticky top-0 z-10 bg-bg border-b border-border">
+        <PageHeader
+          title={renaming ? (
+            <Input
+              autoFocus
+              value={nameDraft}
+              aria-label={i18nT('pages.artifactDetailPage.artifact_name')}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); void commitRename() }
+                else if (e.key === 'Escape') { e.preventDefault(); setRenaming(false) }
+              }}
+              className="px-2 py-0.5 text-2xl font-bold tracking-tight text-text-strong w-full max-w-[36rem]"
+            />
+          ) : (
+            <Btn
+              ref={titleButtonRef}
+              onClick={startRenaming}
+              title={i18nT('pages.artifactDetailPage.rename_this_artifact')}
+              className="group gap-2 bg-transparent border-none p-0 text-2xl font-bold tracking-tight text-text-strong cursor-text hover:bg-transparent hover:border-none"
+            >
+              {artifact.name}
+              <Pencil size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" aria-hidden="true" />
+            </Btn>
+          )}
+          subtitle={i18nT('pages.artifactDetailPage.artifact_slug', { slug: artifact.slug })}
+        />
+        <div className="px-6 py-2 flex flex-wrap items-center gap-2">
           {!popout && (
             <Btn onClick={() => {
               if (dirty && !window.confirm(i18nT('pages.artifactDetailPage.discard_unsaved_changes'))) return
@@ -1680,7 +1693,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             </Btn>
           </span>
         </div>
+      </div>
 
+      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {artifact.description && (
           <div className="mb-3 text-sm text-muted italic">{artifact.description}</div>
         )}

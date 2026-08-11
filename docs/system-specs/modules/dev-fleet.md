@@ -34,7 +34,7 @@ verification. Route names below are relative to that prefix.
 
 | Route | Description |
 |-------|-------------|
-| `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (or `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. (The bare `/health` carries the same body but is HMAC-exempt and reached only by the gateway's own internal liveness poll.) |
+| `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (launchd: job PID; foreground last resort: run-marker pid; `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. (The bare `/health` carries the same body but is HMAC-exempt and reached only by the gateway's own internal liveness poll.) |
 | `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s). `?fresh=1` forces cache bypass. |
 | `/apps/dev-fleet/api/worktree?name=` | Lazy per-branch detail: PR, commits, disk usage |
 | `/apps/dev-fleet/api/pod/logs?name=&n=` | Pod journal tail (recent N lines, default 120) |
@@ -170,20 +170,29 @@ step needs before using them, so provisioning a **fresh** worktree (no
   it skips (fast idempotent path). Without this, a fresh worktree's `npm run
   build` dies with `tsc: command not found` (issue #229).
 
-### Pod Unit ExecStart Self-Heal
+### Pod Unit Self-Heal
 
-On `pod up`, if the installed systemd unit template's `ExecStart` binary no longer exists
-(typically because the worktree it resolved into was pruned), the pod CLI:
+The unit template is written once by `pod install`, so a machine keeps whatever it
+installed. On `pod up`, the pod CLI re-renders it when the installed unit is one this
+build will not boot:
 
-1. Detects the dangling binary via `unit.unit_exec_ok(cfg)` (reads the unit file, checks
-   `os.access(exe, os.X_OK)` on the baked path)
+1. Detects a stale unit via `unit.unit_is_current(cfg)`, which fails on either of two
+   triggers:
+   - the baked `ExecStart` binary no longer exists — `unit.unit_exec_ok(cfg)` reads the
+     unit file and checks `os.access(exe, os.X_OK)` on the baked path (typically the
+     worktree it resolved into was pruned)
+   - the unit carries a directive this build has removed (`unit._REMOVED_DIRECTIVES`,
+     currently `ExecStopPost=` — see the pod module's teardown section)
 2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
 3. Runs `daemon-reload`
 4. Audits the self-heal event
 5. Proceeds to start the pod normally
 
-This prevents the permanent EXEC 203 failure loop that occurs when worktrees are pruned
-after the unit was installed.
+The first trigger prevents the permanent EXEC 203 failure loop that occurs when
+worktrees are pruned after the unit was installed. The second is the upgrade path: a
+unit installed by an older build would otherwise keep a teardown hook that races the
+pod's own subprocesses and wipes the HOME on the stop half of a `Restart=`, and it
+would keep doing so until someone reinstalled by hand.
 
 ## Background Tasks
 
@@ -314,7 +323,11 @@ scheduling the restart and hands it to the frontend:
 
 - **Identity is manager-specific.** systemd uses
   `ExecMainStartTimestampMonotonic`; launchd uses the loaded job PID. Both change
-  when the replacement main process starts.
+  when the replacement main process starts. On a host with NO drivable manager
+  (the foreground last resort below) the identity is the pid the gateway records
+  in its `run/gateway-<port>.pid` sidecar — written before readiness is
+  published, rewritten by the replacement, and consumed by the same
+  changed-identity comparison unchanged.
 - The current identity is reported by extending the existing **`/health`**
   surface (`{status, start_id}`). Because the gateway proxies only
   `/apps/dev-fleet/api/*` to the backend, the same handler is registered at
@@ -504,7 +517,7 @@ On a `write_failed` / `restart_failed` refusal the response includes
 `rolled_back: true|false` — whether the pre-cutover pointer state (prior
 content, or absence) was successfully restored on disk.
 
-### Two outcomes: automatic vs staged-only
+### Three outcomes: automatic, foreground last resort, staged-only
 
 The cutover writes the pointer on every platform. What differs is whether Dev
 Fleet can also bounce the gateway:
@@ -515,10 +528,33 @@ Fleet can also bounce the gateway:
   on Linux, bounded graceful `launchctl stop` on macOS), sets the
   `_MAKE_LIVE_COMMITTED` latch, and returns `start_id` for the restart handshake.
   The next gateway process reads the pointer and execs into the target checkout.
-- **Staged only** (`can_restart = False`): no drivable service manager is
-  available (system unit via `kirocrew service install`, macOS without a launchd
-  agent or with a legacy restart contract, terminal-launched gateway, or another
-  unsupported manager). The pointer is still
+- **Foreground last resort**: when the manager probe reports one of
+  `no_systemd` / `no_user_unit` / `no_launchd` / `no_agent` — nothing to drive at
+  all, e.g. a terminal-launched gateway on a host whose per-user systemd cannot
+  be used — `gateway_service.ForegroundBackend` finishes the cutover by
+  establishing a **detached `kirocrew restart --port <port>`** (new session, so
+  it survives the gateway it kills), reusing the CLI's whole kill-and-respawn
+  path instead of reimplementing it. Selection is strictly
+  systemd > launchd > foreground, POSIX-only, and requires: an UNCONFINED
+  backend (no `KIROCREW_SANDBOX_ACTIVE` marker, not inside
+  `kirocrew-agents.slice` — a replacement spawned from inside the sandbox or
+  cgroup scope would inherit that confinement for the gateway's whole life);
+  exactly ONE run-marker whose recorded pid is alive; and the marker's own
+  recorded `kirocrew` launcher (keystone-fenced `run/` dir — there is
+  deliberately NO `PATH` fallback, which an agent-planted `~/.local/bin/kirocrew`
+  could poison). The mis-set-up manager codes (`user_unit_inactive`,
+  `agent_not_indirected`, `agent_restart_contract_outdated`,
+  `live_program_missing`) keep their named remedies and are never bounced
+  behind the manager's back. On success the response looks exactly like an
+  automatic cutover (`start_id` = pre-restart marker pid, latch set). **Fail
+  safe:** the backend never signals any process itself — if any requirement
+  above fails or the detached spawn cannot be established, nothing has been
+  killed and the request degrades to the staged-only outcome below, pointer
+  intact.
+- **Staged only** (`can_restart = False`, no usable foreground gateway): no
+  drivable service manager is available (system unit via `kirocrew service
+  install`, macOS without a launchd agent or with a legacy restart contract, or
+  another unsupported manager). The pointer is still
   written and the cutover is reported as a success carrying `staged_only: true`,
   plus `manual_restart` (the shell command that finishes it) and a human-readable
   `notice`. The latch is deliberately NOT set — no restart is pending, so a

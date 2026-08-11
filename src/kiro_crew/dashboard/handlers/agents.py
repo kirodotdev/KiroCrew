@@ -38,6 +38,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.schema import SCHEMA_REGISTRY, config_entry_to_dict
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
 from kiro_crew.dashboard.chat_utils import (
+    _BLOCKED_SLASH_COMMANDS,
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
     _history_key_for,
@@ -1147,14 +1148,19 @@ async def api_slash_commands(request: web.Request) -> web.Response:
         result = [
             {"name": f"/{c}", "description": SLASH_COMMAND_DESCRIPTIONS.get(f"/{c}", "")}
             for c in cc_commands
+            if f"/{c}" not in _BLOCKED_SLASH_COMMANDS
         ]
         result.append({"name": "/side", "description": SLASH_COMMAND_DESCRIPTIONS.get("/side", "")})
         return web.json_response(result)
 
+    # Blocked commands stay in _SLASH_COMMANDS (typing one still gets the
+    # explicit "not available in the dashboard" rejection in chat_runner), but
+    # the suggestion payload must not advertise them: a menu entry that only
+    # ever produces a warning is an inert affordance.
     return web.json_response(
         [
             {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")}
-            for c in sorted(_SLASH_COMMANDS)
+            for c in sorted(_SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS)
         ]
     )
 
@@ -1301,6 +1307,7 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 f,
                                 state,
                                 list(patch_body["skills"]),
+                                _read_session_key(request),
                             )
                             if unknown:
                                 return web.json_response(
@@ -1309,7 +1316,12 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 )
                         else:
                             mapped = await loop.run_in_executor(
-                                discovery_executor(), agent_skill_keys, data, f, state
+                                discovery_executor(),
+                                agent_skill_keys,
+                                data,
+                                f,
+                                state,
+                                _read_session_key(request),
                             )
                         if "model" in patch_body:
                             # Stored verbatim (canonical key); translated to a
@@ -1341,7 +1353,12 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                 # (kiro-cli rejects unknown fields and drops the agent). One
                 # catalog walk for both, off the event loop (filesystem-heavy).
                 keys, unmanaged_uris = await asyncio.get_running_loop().run_in_executor(
-                    discovery_executor(), agent_skill_views, data, f, state
+                    discovery_executor(),
+                    agent_skill_views,
+                    data,
+                    f,
+                    state,
+                    _read_session_key(request),
                 )
                 return web.json_response(
                     {

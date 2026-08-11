@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,19 @@ _REVOCATION_FILE = "token_revocation.gen"
 # concurrent first reads / bumps agree on one value.
 _gen: int | None = None
 _gen_lock = threading.Lock()
+
+
+def _warn_unreadable_counter(path: Path, reason: str, *, exc_info: bool = False) -> None:
+    """Log the fail-closed recovery action without hiding its security cost."""
+    logger.warning(  # nosemgrep: python-logger-credential-disclosure
+        "token revocation counter file %s %s; authentication is fail-closed. "
+        "To reset revocation state and restore access, delete only %s "
+        "(this re-enables unexpired sessions revoked by kirocrew logout)",
+        path,
+        reason,
+        path,
+        exc_info=exc_info,
+    )
 
 
 def _load_revocation_gen_or_none() -> int | None:
@@ -51,6 +65,7 @@ def _load_revocation_gen_or_none() -> int | None:
     # a cycle. Matches the config_dir() call sites in token_secret.py.
     from kiro_crew.config.loader import config_dir
 
+    p = Path(_REVOCATION_FILE)
     try:
         p = config_dir() / _REVOCATION_FILE
         try:
@@ -62,15 +77,11 @@ def _load_revocation_gen_or_none() -> int | None:
             # Logs the counter file PATH only, never any token or secret value;
             # the Semgrep rule fires on the credential-adjacent wording in the
             # static message string.
-            logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                "token revocation counter file %s is empty (interrupted write?); "
-                "treating as unreadable",
-                p,
-            )
+            _warn_unreadable_counter(p, "is empty (interrupted write?)")
             return None
         return int(stripped)
     except (OSError, ValueError):
-        logger.warning("could not read token revocation counter", exc_info=True)
+        _warn_unreadable_counter(p, "could not be read", exc_info=True)
         return None
 
 

@@ -33,9 +33,35 @@ a pack may ship. Validation is tier-scaled to payload trust.
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
 Constants (`dashboard/theme_validate.py`): `_THEME_MAX_LEVEL=2`,
-`_THEME_MAX_FONTS=3`, `_THEME_MAX_OVERLAYS=5`, `_THEME_PERSONA_MAX_CHARS=2000`,
+`_THEME_MAX_FONTS=6`, `_THEME_MAX_OVERLAYS=5`, `_THEME_PERSONA_MAX_CHARS=2000`,
 plus per-file byte caps (`_THEME_FILE_CAPS`) and per-level entry-count + total
 uncompressed byte ceilings.
+
+### Fonts are role-tagged
+
+Each entry in `theme.json`'s `fonts` list carries a `role` of `sans` or `mono`
+(absent ⇒ `sans`, so pre-role packs keep their meaning). A role fills a CSS token
+— `--theme-font-sans` / `--theme-font-mono` — that the Font Family preference
+reads through, which is what routes a pack's proportional face to the Sans option
+and its monospace face to Mono while System stays on the OS face. `--mono` reads
+the mono token as well, so code surfaces follow a pack's monospace face.
+
+The indirection is load-bearing: the preference applies `--font-body` as an inline
+style on `<html>`, and an inline declaration outranks every selector, so a pack
+declaring `--font-body` on its own `[data-theme=…]` block would never win.
+`_THEME_MAX_FONTS` covers both roles at once, so shipping a mono face does not
+cost a sans weight. Declaring any font token — or `font` / `font-family` on a
+whole-UI surface — in `overrides.css` is rejected **at install**
+(`_overrides_font_violation`, which decodes CSS escapes and matches the `font`
+shorthand as well as the longhand) and dropped by the runtime scoper, keeping the
+manifest the single route and the preference honest for every pack.
+
+The font layer is gated behind `_validate_theme_dir(..., installing=True)` rather
+than applied on every call, because that function also runs when the theme-detail
+route re-reads an installed pack — and that route answers 500 on a validation
+failure, which the dashboard fetches for every theme at boot. Enforcing it there
+would drop a pre-rule pack out of the theme map entirely, colours included. The
+runtime scoper still removes the pin, so the preference is protected either way.
 
 ## Install Pipeline
 
@@ -48,7 +74,7 @@ uncompressed byte ceilings.
    attacker-writable throughout, so nothing read from it is trusted twice:
    the copy enforces a hard cumulative byte ceiling, and everything after
    this step operates on the snapshot only.
-3. **Validate** — `_validate_theme_dir(stage)` runs on the immutable staging
+3. **Validate** — `_validate_theme_dir(stage, installing=True)` runs on the immutable staging
    snapshot and returns `(record | None, error)`: tier-gated category
    allowlist, filename allowlist, per-file/total size caps, symlink rejection,
    path-traversal rejection (`_safe_slug`), CSS/HTML denylists, audio

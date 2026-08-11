@@ -38,6 +38,14 @@ ENFORCED = {
     # whether the slot row reports ``direction: both``. Only a transport whose
     # inbound path resolves the mirror binding may declare it.
     "supports_session_resume",
+    # TOTAL interactive choices per [OPTIONS:] prompt. Widget-capable
+    # renderers (slack/discord/telegram) route the parsed list through
+    # messaging.renderer.apply_options_cap / cap_choices; overflow degrades
+    # to a numbered text list instead of being silently dropped. Pinned per
+    # channel by test_options_cap_contract.py. Channels declaring 0 render
+    # no widget (trailer stripped; their text fallback is the
+    # approval-ladder work).
+    "max_buttons",
 }
 
 #: Declared honestly, read by nothing yet. The capability-gated interface
@@ -51,7 +59,6 @@ ASPIRATIONAL = {
     "files_outbound",
     "rich_blocks",
     "threads",
-    "max_buttons",
 }
 
 
@@ -120,6 +127,24 @@ class TestCorrectedDeclarations:
         assert DISCORD_CAPABILITIES.files_outbound is False
         assert SLACK_CAPABILITIES.files_inbound is True
         assert SLACK_CAPABILITIES.files_outbound is True
+
+    def test_max_buttons_declares_totals_the_renderers_ship(self) -> None:
+        # The field is TOTAL choices, not a per-row layout number. The old
+        # values mixed the two: slack declared 5 (a buttons-per-actions-row
+        # limit that does not govern its checkboxes widget) while shipping
+        # 10; discord declared 5 (per row) while shipping 25 total; telegram
+        # declared 8 (a mislabeled per-row number) while enforcing nothing.
+        # Declare what ships: slack/discord keep their shipped maxima, and
+        # telegram gets the same platform-practical 25 so previously-working
+        # 9-25 choice keyboards keep working — only the genuinely unbounded
+        # tail (the API-400 defect) degrades to text.
+        from kiro_crew.discord.transport import DISCORD_CAPABILITIES
+        from kiro_crew.slack.transport import SLACK_CAPABILITIES
+        from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+
+        assert SLACK_CAPABILITIES.max_buttons == 10  # checkboxes options[] cap
+        assert DISCORD_CAPABILITIES.max_buttons == 25  # 5 rows x 5 buttons
+        assert TELEGRAM_CAPABILITIES.max_buttons == 25  # 2/row, parity with discord
 
 
 class TestSessionResumeIsDeclaredOnlyWhereItIsHonoured:

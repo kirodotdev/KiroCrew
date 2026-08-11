@@ -1576,6 +1576,15 @@ function windowForWebContents(wc) {
   return null;
 }
 
+// Persist the main window's state (geometry + fullscreen + Keep on Top) to the
+// store. Module-level so both createWindow()'s geometry listeners and the View
+// menu's Keep on Top toggle can trigger a save. No-op while mainWindow is
+// absent/destroyed (captureWindowState returns null).
+function persistMainWindowState() {
+  const s = captureWindowState(mainWindow);
+  if (s) store.set("windowState", s);
+}
+
 function createWindow() {
   // Restore the saved geometry so quitting from native fullscreen (or any size)
   // comes back correctly. Without this the window is always rebuilt at the
@@ -1628,6 +1637,10 @@ function createWindow() {
   // fullscreen when we quit in fullscreen. The width/height above become the
   // normal frame to return to on exit.
   if (state.fullScreen) opts.fullscreen = true;
+  // Restore the Keep on Top preference (View menu checkbox). Constructor
+  // option, not a post-create setAlwaysOnTop(), so the window never flashes
+  // at normal z-order first.
+  if (state.alwaysOnTop) opts.alwaysOnTop = true;
   if (typeof state.x === "number" && typeof state.y === "number") {
     opts.x = state.x;
     opts.y = state.y;
@@ -1640,10 +1653,7 @@ function createWindow() {
   // keeps the last good size + fullscreen flag. captureWindowState() uses
   // getNormalBounds(), so we store the restore size, never the fullscreen frame.
   let saveTimer = null;
-  const persist = () => {
-    const s = captureWindowState(mainWindow);
-    if (s) store.set("windowState", s);
-  };
+  const persist = persistMainWindowState;
   const persistDebounced = () => {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(persist, 400);
@@ -2695,10 +2705,16 @@ app.whenReady().then(async () => {
   // from the dock/tray-only state; surfaces the window before navigating.
   // `_mcView` marks every window that hosts a dashboard (setupWindowContents),
   // which skips modal prompt BrowserWindows that have no SPA to navigate.
-  const openSettingsPage = (tab) => {
-    const win = [BaseWindow.getFocusedWindow(), mainWindow].find(
+  // Resolve the dashboard WINDOW (not WebContents): the focused one, falling
+  // back to the main window so menu items still work from the dock/tray-only
+  // state. `_mcView` marks every window that hosts a dashboard
+  // (setupWindowContents), which skips modal prompt BrowserWindows.
+  const focusedDashboardWindow = () =>
+    [BaseWindow.getFocusedWindow(), mainWindow].find(
       (w) => w && !w.isDestroyed() && w._mcView
     );
+  const openSettingsPage = (tab) => {
+    const win = focusedDashboardWindow();
     if (!win) return;
     if (win.isMinimized()) win.restore();
     win.show();
@@ -2707,6 +2723,21 @@ app.whenReady().then(async () => {
     if (wc && !wc.isDestroyed()) {
       wc.send("navigate", tab ? `/settings?tab=${tab}` : "/settings");
     }
+  };
+  // View > Keep on Top: flip always-on-top on the focused dashboard window,
+  // then reconcile the checkbox with the window's ACTUAL state (read back) so
+  // the checkmark cannot drift if the platform refuses or another code path
+  // changes it. Persisted so the pinned window survives a relaunch.
+  const toggleAlwaysOnTop = () => {
+    const win = focusedDashboardWindow();
+    if (!win) return;
+    try {
+      win.setAlwaysOnTop(!win.isAlwaysOnTop());
+      const menu = Menu.getApplicationMenu();
+      const item = menu && menu.getMenuItemById("keep-on-top");
+      if (item) item.checked = win.isAlwaysOnTop();
+    } catch { /* window mid-teardown */ }
+    persistMainWindowState();
   };
   const appMenu = Menu.buildFromTemplate(
     buildMenuTemplate({
@@ -2720,6 +2751,10 @@ app.whenReady().then(async () => {
       zoomActualSize: zoomItem((wc) => wc.setZoomFactor(1)),
       zoomIn: zoomItem((wc) => wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), +1))),
       zoomOut: zoomItem((wc) => wc.setZoomFactor(stepZoomFactor(wc.getZoomFactor(), -1))),
+      // Menu is built before createWindow(), so seed the checkbox from the
+      // same persisted state createWindow() restores from.
+      alwaysOnTop: !!(store.get("windowState") || {}).alwaysOnTop,
+      toggleAlwaysOnTop,
       openNewConnectionWindow: () => openNewConnectionWindow(),
       renameCurrentWindow: () => renameCurrentWindow(),
       promptRemoteHost: () => promptRemoteHost(),

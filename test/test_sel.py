@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1455,3 +1456,103 @@ class TestHmacKeyTrustDirMigration:
         (tmp_path / "sel_hmac.key").write_bytes(b"x" * 8)
         with pytest.raises(RuntimeError, match="too short"):
             SecurityEventLog(base_dir=tmp_path, sync=True)
+
+    def test_key_bytes_accessor_returns_the_live_signing_key(
+        self, tmp_path: Path
+    ) -> None:
+        """The recovery path for the dependent protocol: SEL caches the
+        validated bytes at init, so they stay available when the file behind the
+        frozen resolved path no longer loads."""
+        from kiro_crew.sel import _sel_hmac_key_bytes
+
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert _sel_hmac_key_bytes() == log._hmac_key
+        # Still available after the file is gone — that is the whole point.
+        (tmp_path / "trust" / "sel_hmac.key").unlink()
+        assert _sel_hmac_key_bytes() == log._hmac_key
+
+    def test_key_bytes_accessor_is_none_without_a_live_singleton(self) -> None:
+        """The verifying MCP process has no singleton; it must get None rather
+        than a partially-constructed instance's attribute."""
+        from kiro_crew.sel import _sel_hmac_key_bytes
+
+        self._reset()
+        assert _sel_hmac_key_bytes() is None
+
+    def test_key_bytes_accessor_is_none_mid_construction(self) -> None:
+        """``__new__`` publishes the instance to ``_instance`` BEFORE ``__init__``
+        loads the key, so a concurrent reader can see an instance whose
+        ``_hmac_key`` does not exist yet. ``_initialized`` is the barrier that
+        makes that window return None instead of raising or yielding garbage."""
+        from kiro_crew.sel import SecurityEventLog as _SEL
+        from kiro_crew.sel import _sel_hmac_key_bytes
+
+        self._reset()
+        try:
+            _SEL.__new__(_SEL)  # publishes _instance, leaves _initialized False
+            assert _SEL._instance is not None
+            assert not getattr(_SEL._instance, "_initialized", False)
+            assert _sel_hmac_key_bytes() is None
+        finally:
+            self._reset()
+
+    def test_key_bytes_accessor_has_exactly_one_production_caller(self) -> None:
+        """Handing out raw trust-root bytes is safe only under the file-first
+        ordering its ONE caller enforces; a second caller would inherit none of
+        it. Pin the caller set rather than trusting the underscore."""
+        root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        callers = {
+            path
+            for path in root.rglob("*.py")
+            if path.name != "sel.py"
+            # encoding is explicit: the default is cp1252 on Windows, which
+            # cannot decode the non-ASCII bytes several sources contain.
+            and "_sel_hmac_key_bytes" in path.read_text(encoding="utf-8")
+        }
+        assert callers == {root / "session_pid_sig.py"}, (
+            f"_sel_hmac_key_bytes gained a caller outside session_pid_sig: {callers}"
+        )
+
+    def test_concurrent_first_construction_initializes_once(self, tmp_path: Path) -> None:
+        """``__new__`` publishes the instance BEFORE ``__init__`` runs, so two
+        threads arriving in between both see ``_initialized`` False. Unserialized,
+        both run the construction body and each can mint a fresh key — one wins
+        on disk while the other signs from different bytes in memory, splitting
+        the audit chain from the file every other process resolves.
+
+        Reachable because SEL is now constructed from worker threads (the
+        middleware deny audits offload via ``asyncio.to_thread``), where the
+        event loop no longer serializes callers for free.
+        """
+        self._reset()
+        calls: list[int] = []
+        real = SecurityEventLog._load_or_create_hmac_key
+
+        def counting(inst):
+            calls.append(1)
+            # Widen the window a real race would need, so an unlocked body
+            # reliably interleaves instead of passing by luck.
+            time.sleep(0.05)
+            return real(inst)
+
+        barrier = threading.Barrier(8)
+
+        def build():
+            barrier.wait()
+            SecurityEventLog(base_dir=tmp_path, sync=True)
+
+        with patch.object(SecurityEventLog, "_load_or_create_hmac_key", counting):
+            threads = [threading.Thread(target=build) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert len(calls) == 1, (
+            f"construction body ran {len(calls)} times; concurrent first "
+            "denials can mint competing trust-root keys"
+        )
+        inst = SecurityEventLog._instance
+        assert inst is not None and inst._initialized
+        assert inst._hmac_key == (tmp_path / "trust" / "sel_hmac.key").read_bytes()
+        self._reset()

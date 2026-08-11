@@ -1443,21 +1443,29 @@ def test_tr_u_35_bump_persist_failure_leaves_counter_unchanged(
     assert rg.current_revocation_gen() == 3
 
 
-def test_tr_u_36_empty_counter_file_fails_closed(tmp_path: Path, monkeypatch):
-    """An existing-but-empty counter file is unreadable, not gen 0.
+@pytest.mark.parametrize("contents", ["", "not-an-integer"])
+def test_tr_u_36_unreadable_counter_file_logs_recovery(
+    tmp_path: Path, monkeypatch, caplog, contents: str
+):
+    """An empty or malformed counter is unreadable and explains recovery.
 
-    A write torn by process termination leaves an empty file; interpreting it
-    as 0 would resurrect every revoked session on the next boot. The loader
-    reports it unreadable and validators reject until the state is repaired
-    (or the next successful bump atomically replaces it).
+    Interpreting either form as 0 would resurrect every revoked session on the
+    next boot. The loader reports it unreadable, explains the reset cost, and
+    validators reject until the state is repaired.
     """
     import kiro_crew.dashboard.revocation_gen as rg
 
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
-    (tmp_path / rg._REVOCATION_FILE).write_text("", encoding="utf-8")
+    counter = tmp_path / rg._REVOCATION_FILE
+    counter.write_text(contents, encoding="utf-8")
     monkeypatch.setattr(rg, "_gen", None)
 
-    assert rg._load_revocation_gen_or_none() is None
+    with caplog.at_level("WARNING", logger=rg.__name__):
+        assert rg._load_revocation_gen_or_none() is None
+
+    assert str(counter) in caplog.text
+    assert "delete only" in caplog.text
+    assert "re-enables unexpired sessions revoked by kirocrew logout" in caplog.text
 
     token, _cid, _jti, _exp = generate_refresh_token("alice")  # mint degrades to gen 0
     valid, _, reason, _, _, _ = validate_refresh_token(token)

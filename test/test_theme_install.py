@@ -37,6 +37,7 @@ from kiro_crew.dashboard.handlers.themes import (
     _copy_installed_theme,
 )
 from kiro_crew.dashboard.theme_validate import (
+    _THEME_MAX_FONTS,
     _THEME_OVERLAY_DEFAULT_POSITION,
     _THEME_OVERLAY_DEFAULT_ZINDEX,
     _classify_theme_file,
@@ -555,10 +556,12 @@ class TestCopyInstalledTheme:
         seen: list[Path] = []
         real_validate = th_mod._validate_theme_dir
 
-        def _spy(path: Path):  # type: ignore[no-untyped-def]
+        def _spy(path: Path, **kwargs):  # type: ignore[no-untyped-def]
             seen.append(Path(path))
-            return real_validate(path)
+            seen_kwargs.append(dict(kwargs))
+            return real_validate(path, **kwargs)
 
+        seen_kwargs: list[dict] = []
         monkeypatch.setattr(th_mod, "_validate_theme_dir", _spy)
         theme, err, status = th_mod._do_install("local", {"path": str(src)})
         assert err is None and status == 200 and theme is not None
@@ -567,6 +570,10 @@ class TestCopyInstalledTheme:
         # never the caller-supplied source.
         assert seen[0] != src
         assert seen[0].name.startswith(".install-staging-")
+        # The install path must opt into the font-pin refusal; the read path is
+        # the one that tolerates a legacy pin, so losing this flag here would
+        # silently let a pinning pack install.
+        assert seen_kwargs[0].get("installing") is True
         # The promoted install came from that snapshot.
         assert (tmp_path / "cfg" / "themes" / theme["slug"] / "theme.json").is_file()
 
@@ -649,7 +656,12 @@ class TestValidateThemeDirL1:
         assert err is not None and "forbidden selector" in err
 
     def test_too_many_fonts_rejected(self, tmp_path: Path) -> None:
-        assets = {f"styles/fonts/f{i}.woff2": b"wOF2" + b"\x00" * 8 for i in range(4)}
+        # Derived from the constant, not a literal: the cap covers both font roles
+        # (a sans set plus a mono pair), so a literal drifts the moment it moves.
+        assets = {
+            f"styles/fonts/f{i}.woff2": b"wOF2" + b"\x00" * 8
+            for i in range(_THEME_MAX_FONTS + 1)
+        }
         summary, err = _validate_theme_dir(_make_tiered(tmp_path, level=1, extra=assets))
         assert summary is None
         assert err is not None and "too many fonts" in err
@@ -1306,6 +1318,192 @@ class TestThemeAssetDescriptor:
         assert desc["overlays"][0]["zIndex"] == _THEME_OVERLAY_DEFAULT_ZINDEX
 
 
+_TTF = b"\x00\x01\x00\x00" + b"\x00" * 16
+
+
+class TestFontRoles:
+    """A face carries the Font Family option it feeds, so a pack can ship a
+    proportional AND a monospace font and each reaches its own option."""
+
+    @staticmethod
+    def _pack(tmp_path: Path, fonts: list[dict]) -> tuple[Path, dict]:
+        files = {f"styles/fonts/{f['file']}": _TTF for f in fonts if "file" in f}
+        return _decl_pack(tmp_path, files), {"level": 1, "name": "F", "fonts": fonts}
+
+    def test_role_round_trips_for_both_roles(self, tmp_path: Path) -> None:
+        d, manifest = self._pack(
+            tmp_path,
+            [
+                {"family": "Manrope", "file": "sans.ttf", "role": "sans"},
+                {"family": "Plex Mono", "file": "mono.ttf", "role": "mono"},
+            ],
+        )
+        fonts = _theme_asset_descriptor(d, manifest, 1)["fonts"]
+        assert [(f["family"], f["role"]) for f in fonts] == [
+            ("Manrope", "sans"),
+            ("Plex Mono", "mono"),
+        ]
+
+    def test_absent_role_defaults_to_sans(self, tmp_path: Path) -> None:
+        # A pack authored before roles existed must keep its meaning: its face is
+        # the proportional one, which is the only thing the old shape could be.
+        d, manifest = self._pack(tmp_path, [{"family": "Manrope", "file": "sans.ttf"}])
+        assert _theme_asset_descriptor(d, manifest, 1)["fonts"][0]["role"] == "sans"
+
+    def test_unknown_role_falls_back_to_sans(self, tmp_path: Path) -> None:
+        # Lenient like weight/style: a typo downgrades one face rather than
+        # failing the whole install.
+        d, manifest = self._pack(
+            tmp_path, [{"family": "Manrope", "file": "sans.ttf", "role": "cursive"}]
+        )
+        assert _theme_asset_descriptor(d, manifest, 1)["fonts"][0]["role"] == "sans"
+
+    @pytest.mark.parametrize("bad_role", [[], {}, 7, None, True, ["sans"]])
+    def test_non_string_role_does_not_crash_the_descriptor(
+        self, tmp_path: Path, bad_role: object
+    ) -> None:
+        # `role` is untrusted manifest JSON. An unhashable value tested against a
+        # frozenset raises TypeError, and the descriptor is built by the
+        # theme-detail route the dashboard calls for EVERY installed pack at boot
+        # — so one malformed pack would take the whole theme list down, not just
+        # itself. It must degrade to the default role instead.
+        d, manifest = self._pack(
+            tmp_path, [{"family": "Manrope", "file": "sans.ttf", "role": bad_role}]
+        )
+        assert _theme_asset_descriptor(d, manifest, 1)["fonts"][0]["role"] == "sans"
+
+    def test_cap_admits_a_full_sans_set_plus_a_mono_pair(self, tmp_path: Path) -> None:
+        # The cap has to clear both roles at once, or shipping a mono font costs a
+        # sans weight and the type hierarchy silently loses a step.
+        fonts = [
+            {"family": "S", "file": f"s{w}.ttf", "weight": w, "role": "sans"}
+            for w in (400, 500, 600, 700)
+        ] + [
+            {"family": "M", "file": f"m{w}.ttf", "weight": w, "role": "mono"}
+            for w in (400, 500)
+        ]
+        d, manifest = self._pack(tmp_path, fonts)
+        assert len(_theme_asset_descriptor(d, manifest, 1)["fonts"]) == 6
+
+
+class TestOverridesFontPin:
+    """overrides.css must not pin the UI font: a pin lands below where the Font
+    Family preference is applied, so Mono/System would stop working with nothing
+    on screen explaining why. theme.json's role-tagged ``fonts`` list is the route."""
+
+    @pytest.mark.parametrize(
+        "css",
+        [
+            "body{--font-body:'X',sans-serif}",
+            "body{--mono:'X',monospace}",
+            "body{--theme-font-sans:'X',sans-serif}",
+            "body{--theme-font-mono:'X',monospace}",
+            "body{font-family:'X',sans-serif}",
+            "body{font:400 .875rem/1.55 'X',sans-serif}",
+            "body:lang(ja){font-family:'X',sans-serif}",
+            'html{font-family:"X",sans-serif}',
+            ':root{font-family:"X",sans-serif}',
+            '[data-theme="custom-x-dark"] body{font-family:"X",sans-serif}',
+            "BODY{FONT-FAMILY:'X',sans-serif}",
+            # Escaped property names: a browser decodes these while tokenizing.
+            "body{--font-b\\6f dy:'X',sans-serif}",
+            "body{f\\6f nt:400 .875rem/1.55 'X',sans-serif}",
+            # Uppercase escape: \\4F decodes to 'O', and standard property names
+            # are ASCII case-insensitive, so the browser still applies `font`.
+            "body{f\\4F nt:400 .875rem/1.55 'X',sans-serif}",
+            # Escaped SELECTOR: a browser resolves b\\6f dy to body. The uppercase
+            # form also exercises the lowercase pass — selectors arrive already
+            # case-folded, so only an uppercase-producing escape reaches it.
+            "b\\6f dy{font-family:'X',sans-serif}",
+            "b\\4F dy{font-family:'X',sans-serif}",
+        ],
+    )
+    def test_pins_are_rejected(self, css: str) -> None:
+        err = _validate_overrides_css(css, enforce_font_pins=True)
+        assert err is not None
+        assert "theme.json" in err
+
+    @pytest.mark.parametrize(
+        "css",
+        [
+            "body{--font-body:'X',sans-serif}",
+            "body{font:400 .875rem/1.55 'X',sans-serif}",
+            "body{font-family:'X',sans-serif}",
+        ],
+    )
+    def test_pins_are_tolerated_when_not_installing(self, css: str) -> None:
+        # The read path re-validates an ALREADY-INSTALLED pack. A pack that
+        # predates the font-pin rule installed legitimately, so failing it here
+        # would turn the theme-detail route into a 500 and drop the pack out of
+        # the theme map — losing its colours as well as its font. The runtime
+        # scoper still drops the pin, so the preference stays protected.
+        assert _validate_overrides_css(css) is None
+
+    @pytest.mark.parametrize(
+        "css",
+        [
+            ".topbar{font-family:'X',sans-serif}",
+            ".topbar{font:600 12px/1.2 'X',sans-serif}",
+            ".code-block{font-family:'X',monospace}",
+            "button.primary{font-family:'X',sans-serif}",
+            "body{background:#101010;color:#eee}",
+            # The shorthand match must not swallow the other font-* longhands.
+            "body{font-weight:500}",
+            "body{font-size:15px}",
+            "body{font-feature-settings:'ss01'}",
+            # The word `font:` appearing inside a VALUE is not a declaration. The
+            # check reads property names, so neither the decoded string nor a
+            # semicolon inside one may fake one.
+            'body{--label:" \\66 ont:"}',
+            'body{content:"x;font:y";color:#eee}',
+            "body::before{content:\"\";position:fixed;inset:0;pointer-events:none}",
+        ],
+    )
+    def test_narrow_surfaces_and_non_font_rules_still_pass(self, css: str) -> None:
+        # The rule must not over-reach: a face on ONE surface is legitimate
+        # theming, and an unrelated body rule is untouched.
+        assert _validate_overrides_css(css, enforce_font_pins=True) is None
+
+
+class TestLegacyPinnedPackStillLoads:
+    """A pack installed BEFORE the font-pin rule must keep loading.
+
+    The theme-detail route re-runs ``_validate_theme_dir`` on every read of an
+    installed pack and answers 500 when it fails, and the dashboard fetches that
+    route for every installed theme at boot. Enforcing the font-pin rule on that
+    path would therefore not merely revert such a pack's font — it would drop the
+    pack out of the theme map entirely, colours included.
+    """
+
+    PIN = "body{--font-body:'Legacy',sans-serif}"
+
+    def test_install_refuses_the_pin(self, tmp_path: Path) -> None:
+        d = _make_tiered(tmp_path, level=1, extra={"styles/overrides.css": self.PIN})
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert summary is None
+        assert err is not None and "theme.json" in err
+
+    def test_reading_the_same_pack_succeeds(self, tmp_path: Path) -> None:
+        d = _make_tiered(tmp_path, level=1, extra={"styles/overrides.css": self.PIN})
+        summary, err = _validate_theme_dir(d)
+        assert err is None, f"read path must not reject a legacy pack: {err}"
+        assert summary is not None
+        # The colours still resolve, which is the part a 500 would have taken away.
+        assert summary["dark"]["--bg"] == "#000000"
+
+    def test_structural_checks_still_apply_on_the_read_path(self, tmp_path: Path) -> None:
+        # Relaxing the font layer must not relax the security/layout layers: an
+        # external url() in an installed pack stays a hard failure on every path.
+        d = _make_tiered(
+            tmp_path,
+            level=1,
+            extra={"styles/overrides.css": ".topbar{background:url('https://evil.example/x.png')}"},
+        )
+        summary, err = _validate_theme_dir(d)
+        assert summary is None
+        assert err is not None and "forbidden pattern" in err
+
+
 class TestDeleteLock:
     """DELETE of an installed theme dir must serialize against a concurrent
     reinstall by acquiring the same per-slug install lock before rmtree
@@ -1504,7 +1702,7 @@ class TestCssParserCorpus:
 
         mismatches = []
         for case in self._corpus():
-            err = _validate_overrides_css(case["css"])
+            err = _validate_overrides_css(case["css"], enforce_font_pins=True)
             accepted = err is None
             if accepted != case["installAccepts"]:
                 mismatches.append(f"{case['name']}: expected installAccepts={case['installAccepts']}, got {accepted} (err={err})")

@@ -1066,7 +1066,7 @@ class TestInitCron:
                 result = await callback(job)
 
         assert result == "cron result"
-        assert job.last_result == "cron result"
+        job.set_run_result.assert_called_once_with("cron result")
 
     @pytest.mark.asyncio
     async def test_cron_callback_publishes_turn_identity(self):
@@ -2100,6 +2100,7 @@ class TestCronFailurePaths:
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
+        job.auto_paused = False
         job._acp_retried = False
 
         with patch(
@@ -2114,7 +2115,9 @@ class TestCronFailurePaths:
                         await callback(job)
 
         orch.slack.post_message.assert_awaited()
-        assert job.consecutive_failures == 1
+        # Failure accounting is single-owned by CronJob.record_failure() so the
+        # auto-pause threshold stays reachable from the delivery path.
+        job.record_failure.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_cron_callback_failure_dedup_suppresses(self):
@@ -2165,6 +2168,7 @@ class TestCronFailurePaths:
         job.last_failure_hash = _result_hash("RuntimeError: boom")
         job.last_failure_at = time.time()
         job.consecutive_failures = 1
+        job.auto_paused = False
         job._acp_retried = False
 
         with patch(
@@ -2180,7 +2184,9 @@ class TestCronFailurePaths:
 
         # Slack should NOT be called (suppressed)
         orch.slack.post_message.assert_not_awaited()
-        assert job.consecutive_failures == 2
+        # A suppressed duplicate still counts toward auto-pause via the
+        # counter's single owner.
+        job.record_failure.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_cron_multi_agent_sequence(self):
@@ -2238,7 +2244,7 @@ class TestCronFailurePaths:
                 result = await callback(job)
 
         assert result == "agent result"
-        assert job.last_result == "agent result"
+        job.set_run_result.assert_called_once_with("agent result")
         # get_or_create called twice (once per agent)
         assert orch.sessions.get_or_create.await_count == 2
 
@@ -3863,7 +3869,15 @@ class TestAutonudgeFire:
 
     @pytest.mark.asyncio
     async def test_fire_slot_missing(self):
-        """Fire with missing slot → removes loop."""
+        """Fire with missing slot → removes loop.
+
+        The rehydrate fallback is stubbed to a miss because that is what "slot
+        missing" means here. It used to be produced incidentally: the mock
+        dashboard state's MagicMock metadata read as ``closed``, and the
+        rehydrate helper's closed-guard bailed. The fire path now passes
+        ``adopt_closed=True`` (idle archival must not destroy a loop), so that
+        accident no longer stops the walk.
+        """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         ds._slots = {}
@@ -3884,7 +3898,11 @@ class TestAutonudgeFire:
         loop.message = "nudge"
         loop.stop_sentinel_path = None
         loop.cycle_count = 0
-        result = await on_fire(loop)
+        with patch(
+            "kiro_crew.slack.gateway.rehydrate_slot_from_history_async",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await on_fire(loop)
         assert result is False
 
     @pytest.mark.asyncio

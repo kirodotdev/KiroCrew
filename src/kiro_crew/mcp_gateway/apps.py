@@ -35,7 +35,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.mcp_apps_render import MAX_SPOOL_BYTES, SPOOL_SCHEMA_VERSION
@@ -213,6 +213,98 @@ def extract_ui_resource_uri(result: dict) -> Optional[str]:
     if isinstance(uri, str) and uri.startswith(_UI_SCHEME):
         return uri
     return None
+
+
+class WithheldTools(NamedTuple):
+    """Tool names withheld from the agent's listing, split by WHY.
+
+    The split exists so the caller can log the two cases at different levels.
+    ``declared`` is the server doing exactly what SEP-1865 provides for and
+    needs no operator attention; ``unreadable`` means this host could not parse
+    a ``visibility`` the server did set, so a tool disappeared on a judgement
+    call and somebody should see it.
+    """
+
+    declared: list[str]
+    unreadable: list[str]
+
+    @property
+    def names(self) -> list[str]:
+        return [*self.declared, *self.unreadable]
+
+    def __bool__(self) -> bool:
+        return bool(self.declared or self.unreadable)
+
+
+def strip_model_hidden_tools(result: dict) -> WithheldTools:
+    """Remove tools the agent may not see from a ``tools/list`` result IN PLACE.
+
+    SEP-1865: the host MUST NOT include a tool in the agent's tool list when its
+    ``_meta.ui.visibility`` does not include ``"model"``. Returns the withheld
+    names split by cause, so the caller can log an unreadable declaration more
+    loudly than a well-formed one.
+
+    How each shape of ``visibility`` is read:
+
+    ==========================  ==========================================
+    ``visibility``              Verdict
+    ==========================  ==========================================
+    absent                      KEEP — spec default is ``["model", "app"]``
+    ``["model", ...]``          KEEP
+    ``["app"]`` / ``[]``        DROP — explicit list without "model"
+    ``"model"`` (bare string)   KEEP — read as ``["model"]``
+    ``"app"`` (bare string)     DROP — read as ``["app"]``
+    present, uninterpretable    DROP
+    ==========================  ==========================================
+
+    Only ABSENCE gets the permissive default. A present-but-unreadable value is
+    an attempt to restrict the tool that this host cannot parse, and the two
+    errors are not symmetric: an over-drop is loud (the name is logged and the
+    tool simply does not appear) while a leak silently hands the model a tool
+    the server withheld, which it may then execute.
+
+    Bare strings are coerced rather than lumped in with the unreadable values,
+    because the realistic typo for this field is a scalar instead of a
+    one-element list — and blanket-dropping every malformed value would discard
+    a tool whose author wrote ``"model"`` meaning to expose it.
+
+    Note this is the OPPOSITE default from the app-call direction in
+    :mod:`kiro_crew.mcp_gateway.app_call`, which denies unless ``"app"`` is
+    explicitly present.
+    """
+    tools = result.get("tools")
+    if not isinstance(tools, list):
+        return WithheldTools([], [])
+    kept: list[Any] = []
+    declared: list[str] = []
+    unreadable: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            kept.append(tool)
+            continue
+        meta = tool.get("_meta")
+        ui = meta.get("ui") if isinstance(meta, dict) else None
+        # Absence is the ONLY permissive case, so it is tested by key presence
+        # rather than by value — an explicit ``"visibility": null`` is a
+        # declaration this host cannot read, not an omission.
+        if not isinstance(ui, dict) or "visibility" not in ui:
+            kept.append(tool)
+            continue
+        raw = ui["visibility"]
+        vis = [raw] if isinstance(raw, str) else raw
+        if isinstance(vis, list):
+            if "model" in vis:
+                kept.append(tool)
+                continue
+            bucket = declared
+        else:
+            bucket = unreadable
+        name = tool.get("name")
+        bucket.append(name if isinstance(name, str) else "<unnamed>")
+    withheld = WithheldTools(declared, unreadable)
+    if withheld:
+        result["tools"] = kept
+    return withheld
 
 
 def extract_declared_ui_uris(result: dict) -> dict[str, str]:

@@ -1414,7 +1414,12 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 )
                 continue
         try:
-            await sdk.add_job_async(
+            # Atomic add-if-absent: the name check and the append happen under
+            # one store lock (fresh _sync first), so a CLI enable racing the
+            # gateway's own registration cannot persist duplicate jobs. The
+            # existing_names snapshot above remains only a cheap fast path to
+            # skip vetting for jobs already seen; this call is the authority.
+            job = await sdk.add_job_if_absent_async(
                 name=name,
                 message=d.get("message", ""),
                 every_secs=d.get("every"),  # JSON "every" → Python "every_secs"
@@ -1428,6 +1433,10 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 silent=bool(d.get("silent", False)),
                 enabled=bool(d.get("enabled", True)),
             )
+            if job is None:
+                # Lost the race (or already present): another registrar
+                # persisted this name first. Correct outcome — not "new".
+                continue
             newly_registered.append(name)
             sel().log_api_access(
                 caller="app_bridge",

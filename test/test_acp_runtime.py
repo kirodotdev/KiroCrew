@@ -51,8 +51,24 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 
-
 # ── Harness ──
+
+
+@pytest.fixture(autouse=True)
+def _fast_no_report_ceiling(monkeypatch):
+    """Shrink drain_init()'s no-report ceiling for every test in this module.
+
+    Many tests drive the real create_session()/load_session() path against a
+    fake backend that never emits MCP registration frames; at the production
+    ceiling each would stall drain_init() for seconds. drain_init() resolves
+    the module constant at call time precisely so this patch takes effect.
+    Tests that exercise the ceiling itself pass an explicit value instead.
+    """
+    import kiro_crew.acp.session_handle as sh
+
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05, raising=False)
+
+
 def _make_runtime():
     """An initialized AcpRuntime wired to a fake subprocess.
 
@@ -3683,6 +3699,226 @@ async def test_drain_init_repoisons_on_dead_runtime():
     q["sA"].put_nowait(None)
     await handle.drain_init(duration=0.5, idle_exit=0.05)
     assert q["sA"].get_nowait() is None  # sentinel preserved
+
+
+def _mcp_initialized_frame(session_id: str, server: str) -> JsonRpcMessage:
+    return JsonRpcMessage.from_dict(
+        {
+            "method": "_kiro.dev/mcp/server_initialized",
+            "params": {"sessionId": session_id, "serverName": server},
+        }
+    )
+
+
+def _metadata_frame(session_id: str) -> JsonRpcMessage:
+    return JsonRpcMessage.from_dict(
+        {
+            "method": "_kiro.dev/metadata",
+            "params": {"sessionId": session_id, "contextUsagePercentage": 1.0},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_drain_init_waits_past_idle_window_for_first_mcp_report(monkeypatch):
+    """#2627: the idle shortcut is not eligible before the first MCP
+    registration frame. A server that stays silent past the idle window and
+    THEN reports is still observed — non-MCP frames (metadata) that arrive
+    immediately after set_mode must not arm the shortcut either."""
+    import kiro_crew.acp.session_handle as sh
+
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 5.0, raising=False)
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    # A non-MCP frame is already queued (kiro-cli emits metadata right after
+    # set_mode); it must be consumed without arming the idle exit.
+    q["sA"].put_nowait(_metadata_frame("sA"))
+
+    async def _late_report() -> None:
+        # Many idle windows of silence before the server finally reports.
+        await asyncio.sleep(0.15)
+        q["sA"].put_nowait(_mcp_initialized_frame("sA", "slow-npx"))
+
+    feeder = asyncio.create_task(_late_report())
+    try:
+        await handle.drain_init(duration=0.2, idle_exit=0.01)
+    finally:
+        await feeder
+    # The late report was drained rather than left to race into the first turn.
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_drain_init_no_reports_returns_at_ceiling():
+    """#2627: a drain that never sees an MCP report returns at the no-report
+    ceiling instead of hanging (bounded even when servers are dead or absent)."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(_metadata_frame("sA"))  # non-MCP traffic doesn't extend it
+    # The outer wait_for is the hang guard: generous vs the 0.2s ceiling so a
+    # loaded shard can't flake it, tiny vs a genuine unbounded wait.
+    await asyncio.wait_for(
+        handle.drain_init(duration=0.05, idle_exit=0.01, no_report_ceiling=0.2),
+        timeout=5.0,
+    )
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_drain_init_idle_exit_stays_prompt_after_first_report():
+    """#2627: once a report has been seen, a subsequent idle gap still exits
+    promptly — the warm path must not degrade into full-ceiling waits. The
+    ceilings are deliberately huge relative to the outer bound, so completing
+    inside it proves the idle shortcut (not a ceiling) ended the drain."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(_mcp_initialized_frame("sA", "fast-server"))
+    await asyncio.wait_for(
+        handle.drain_init(duration=30.0, idle_exit=0.02, no_report_ceiling=30.0),
+        timeout=5.0,
+    )
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_drain_init_zero_ceiling_keeps_idle_exit_active_from_start():
+    """#2627: no_report_ceiling=0.0 (MCP-free runtime opt-out) restores the
+    pre-fix behavior — idle exit is active before any report, so an empty
+    queue exits after one idle window instead of holding for a first report."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(_metadata_frame("sA"))
+    # duration is deliberately huge relative to the outer bound: completing
+    # inside it proves the idle shortcut ended the drain despite zero reports.
+    await asyncio.wait_for(
+        handle.drain_init(duration=30.0, idle_exit=0.02, no_report_ceiling=0.0),
+        timeout=5.0,
+    )
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_mcp_free_runtime_skips_no_report_ceiling(monkeypatch):
+    """#2627: a runtime constructed with expect_mcp_reports=False passes the
+    zero ceiling to drain_init, so its sessions never hold for a report."""
+    rt = AcpRuntime(work_dir="/tmp", expect_mcp_reports=False)
+    rt._initialized = True
+    proc = MagicMock()
+    proc.returncode = None
+    proc.pid = 4242
+    rt._process = proc
+    rt._pid = 4242
+
+    async def _fake_send(method, params):
+        if method == METHOD_SESSION_NEW:
+            return {"sessionId": "sid-lite"}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    seen: dict = {}
+    orig = AcpSessionHandle.drain_init
+
+    async def _spy(self, *args, **kwargs):
+        seen.update(kwargs)
+        await orig(self, *args, **kwargs)
+
+    with patch.object(AcpSessionHandle, "drain_init", _spy):
+        await rt.create_session(cwd="/w", agent="kirocrew-lite", mcp_servers=[])
+    assert seen.get("no_report_ceiling") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_drain_init_ignores_pre_switch_reports_still_waits_for_new_agent(monkeypatch):
+    """#2627 (review): on a shared runtime, session/new initializes the
+    PARENT mode's servers; their staged registration frames must not arm the
+    idle shortcut for a session that was then mode-SWITCHED — the switched-to
+    agent's own slow server, reporting after set_mode, must still be observed."""
+    import kiro_crew.acp.session_handle as sh
+
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 5.0, raising=False)
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    # Staged during session/new: the pre-switch agent's roster.
+    q["sA"].put_nowait(_mcp_initialized_frame("sA", "parent-mode-server"))
+    q["sA"].put_nowait(_metadata_frame("sA"))
+
+    async def _late_report() -> None:
+        # The switched-to agent's server reports well past the idle window.
+        await asyncio.sleep(0.15)
+        q["sA"].put_nowait(_mcp_initialized_frame("sA", "subagent-slow-npx"))
+
+    feeder = asyncio.create_task(_late_report())
+    try:
+        await handle.drain_init(duration=0.2, idle_exit=0.01, ignore_queued_reports=True)
+    finally:
+        await feeder
+    # Without the stale-backlog gate, the staged parent report arms the idle
+    # exit and the drain returns before the late report — leaving it queued.
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_reader_retains_mcp_registration_frames_during_init():
+    """#2627: server_initialized / init_failure emitted before the session/new
+    response are staged (like OAuth) and handed to the new session's queue, so
+    drain_init() sees warm servers' reports and arms its idle shortcut."""
+    rt, reader, _ = _make_runtime()
+    task = asyncio.create_task(rt._reader_loop())
+    try:
+
+        async def _fake_send(method, params):
+            if method == METHOD_SESSION_NEW:
+                # Frames arrive while session/new is in flight — before the
+                # queue can be registered under the not-yet-known session id.
+                _feed(
+                    reader,
+                    {
+                        "method": "_kiro.dev/mcp/server_initialized",
+                        "params": {"sessionId": "sid-warm", "serverName": "core"},
+                    },
+                )
+                _feed(
+                    reader,
+                    {
+                        "method": "_kiro.dev/mcp/server_init_failure",
+                        "params": {"sessionId": "sid-warm", "serverName": "broken"},
+                    },
+                )
+                await asyncio.sleep(0.05)  # let the reader route them
+                return {"sessionId": "sid-warm"}
+            return {}
+
+        with patch.object(rt, "_send_and_await", _fake_send):
+            with patch.object(
+                AcpSessionHandle, "drain_init", AsyncMock()
+            ) as mock_drain:
+                handle = await rt.create_session(cwd="/w", agent="kirocrew", mcp_servers=[])
+        assert handle.session_id == "sid-warm"
+        mock_drain.assert_awaited_once()
+        # Both registration frames were transferred into the session queue
+        # (this is what drain_init would consume to arm its idle shortcut).
+        methods = []
+        while not handle._queue.empty():
+            frame = handle._queue.get_nowait()
+            assert frame is not None
+            methods.append(frame.method)
+        assert methods == [
+            "_kiro.dev/mcp/server_initialized",
+            "_kiro.dev/mcp/server_init_failure",
+        ]
+        # Staging area was emptied by the transfer.
+        assert not rt._pending_init_notifications
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def test_backfill_context_window_from_pct(monkeypatch):

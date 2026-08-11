@@ -197,6 +197,24 @@ SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
 SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
 
 
+# Windows reserved device names, lowercase stems. Windows resolves these inside
+# EVERY directory, so no file OR directory may be named after one — the rule is
+# part of the documented Win32 file-naming contract, not a quirk of one build,
+# and it applies to any host the identifier might travel to.
+#
+# ONE definition on purpose. Every Kiro Crew identifier that becomes a path
+# component on disk — a git branch (a loose ref FILE under `.git/refs/heads/`),
+# an app name (a directory under the apps root) — has to refuse the same set,
+# and two copies would drift. Callers lowercase before testing; a caller whose
+# own grammar already forces lowercase can test membership directly.
+#
+# Only `com1`-`com9` and `lpt1`-`lpt9` are reserved: `com10` is an ordinary name.
+WINDOWS_DEVICE_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{n}" for n in range(1, 10)}
+    | {f"lpt{n}" for n in range(1, 10)}
+)
+
 # The product wordmark, figlet `small`. ONE definition on purpose: copy-pasting
 # it into cli.py and cli_chat.py risks a rename leaving a stale product name in
 # the two most-seen surfaces (bare `kirocrew`, the chat REPL). Import it; never

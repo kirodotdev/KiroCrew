@@ -282,6 +282,57 @@ the same and the difference is the whole security story:
   internet, you get TLS and a stable MagicDNS hostname, and who can reach it is
   governed by your tailnet ACLs. This is the better answer for the phone case:
   ```bash
+  kirocrew config set dashboard.tailscale.enabled true   # once per machine
+  kirocrew tailnet up
+  kirocrew restart
+  ```
+  `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on 443 in front of
+  the dashboard's loopback port — and prints the URL to open on your phone. That is
+  the half that used to be an undocumented command you had to know and type.
+
+  It **checks** `dashboard.tailscale.enabled` rather than setting it, and refuses
+  when the flag is off. Two reasons. Publishing a dashboard the gateway will not
+  trust only puts a URL on your tailnet that answers 403, which is the confusing
+  state this command exists to remove — so the check comes before the publish, not
+  after it. And writing that flag from a second process means a read-modify-write of
+  your config file that can silently drop a settings change the dashboard saved a
+  moment earlier; the flag is one-time setup, so paying for it once with an explicit
+  `config set` is cheaper than carrying that risk on every run.
+
+  `tailnet up` also needs to know which port to publish, and it will not guess: it
+  takes `--port`, `KIROCREW_PORT`, or the run marker of a gateway that is actually
+  listening. With none of those it refuses rather than publishing whatever happens to
+  hold the configured port, because `tailscale serve` will expose an unrelated local
+  service to every device on your tailnet just as readily as the dashboard.
+
+  Changing serve configuration is daemon state, so on Linux it usually needs root
+  or a one-time grant: `sudo tailscale set --operator=$USER`. If the publish is
+  refused, the command prints what Tailscale itself said rather than a generic
+  failure.
+
+  `kirocrew tailnet status` shows the three things that are independently
+  required — whether the setting is on, whether a MagicDNS name resolves right
+  now, and whether serve is actually pointing at this dashboard. Any one of them
+  being wrong looks identical from your phone. `kirocrew tailnet down` stops
+  publishing and leaves the setting alone, since the trusted origin is unreachable
+  without serve anyway.
+
+  Both directions refuse rather than clobber: `tailscale serve` **replaces**
+  whatever handler is at `443/`, and `off` removes it — so if you published
+  something else there by hand, `up` and `down` both stop and print the command
+  instead of overwriting or deleting your mapping.
+
+  The setting reads your own MagicDNS name from the local Tailscale daemon once at
+  startup and trusts `https://<that name>` as an origin, so you do **not** have to
+  look the name up and hand-write `dashboard.url`. Because it is resolved once, a
+  restart is needed after publishing — and if the daemon comes up *after* the
+  gateway, nothing is trusted until you restart again. If Tailscale is absent,
+  stopped, or MagicDNS is off it contributes nothing and the dashboard starts
+  exactly as before. It does not widen the network bind and does not change
+  authentication — every request still needs a dashboard session.
+
+  If you would rather do it by hand, the equivalent is:
+  ```bash
   tailscale serve --bg --https 443 http://127.0.0.1:5476
   kirocrew config set dashboard.tailscale.enabled true
   kirocrew restart

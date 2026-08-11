@@ -777,8 +777,12 @@ class TestEmphasisDelimiterRedaction:
         before failing, which is quadratic in attacker-supplied text on the egress
         path (CodeQL ``py/polynomial-redos``). Excluding those delimiters makes a
         doomed start fail in constant time.
+
+        The patterns live in ``messaging.display_safety`` rather than here: the
+        hazard is not Slack-specific (Telegram and Discord collapse the same
+        syntax), and the shared overflow sink needs the canonicaliser too.
         """
-        from kiro_crew.slack import format as fmt
+        from kiro_crew.messaging import display_safety as fmt
 
         classes = re.findall(r"\[\^((?:\\.|[^\]\\])*)\]", getattr(fmt, pattern_name).pattern)
         assert len(classes) == len(required), (

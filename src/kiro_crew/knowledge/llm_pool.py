@@ -163,6 +163,22 @@ def _get_idle_ttl(config: Optional[dict] = None) -> float:
     return DEFAULT_IDLE_TTL_SECS
 
 
+def _get_pool_size(config: Optional[dict] = None) -> int:
+    """Configured extraction pool size; defaults to ``DEFAULT_POOL_SIZE``.
+
+    Reads ``knowledge.extraction_pool_size`` (default 3, clamped 1–10).
+    """
+    data = _read_config() if config is None else config
+    value = _section(data, "knowledge").get(
+        "extraction_pool_size", DEFAULT_POOL_SIZE
+    )
+    if isinstance(value, bool):
+        return DEFAULT_POOL_SIZE
+    if isinstance(value, int) and 1 <= value <= 10:
+        return value
+    return DEFAULT_POOL_SIZE
+
+
 class Worker(ABC):
     """Abstract base for a long-lived LLM worker."""
 
@@ -488,6 +504,16 @@ class LLMPool:
             config = await asyncio.to_thread(_read_config)
             self._provider_type = _get_provider_type(config)
             self._sandbox_mode = _get_sandbox_mode(config)
+            # Allow config to override pool size (knowledge.extraction_pool_size).
+            # Only applies when the key is explicitly set in config (not the
+            # fallback default), so callers that pass a specific pool_size to the
+            # constructor are not overridden.
+            configured_size = _get_pool_size(config)
+            explicit = "extraction_pool_size" in (_section(
+                config, "knowledge") if config else {})
+            if explicit and configured_size != self._pool_size:
+                self._pool_size = configured_size
+                self._semaphore = asyncio.Semaphore(configured_size)
             self._idle_ttl = _get_idle_ttl(config)
             self._config = config
             try:

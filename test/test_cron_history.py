@@ -327,3 +327,229 @@ async def test_run_job_stores_manual_trigger_meta() -> None:
 
     assert "j1" in svc._job_run_meta
     assert svc._job_run_meta["j1"][1] == "manual"
+
+
+# ── Run-result freshness (stale-summary fabrication regression) ──────────
+#
+# ``job.last_result`` is a cross-run context-carry field: failure paths
+# (timeout, callback exception, no-output command) and script Skip end the
+# run WITHOUT assigning it. The history recorder must not attribute the
+# carried-over previous result to the current run — a timed-out run was
+# observed recording the prior success's summary verbatim.
+
+
+def _read_history_rows(tmp_path: Path, job_id: str) -> list[dict]:
+    job_file = tmp_path / "cron-history" / f"{job_id}.jsonl"
+    assert job_file.exists(), "history record was not written"
+    return [
+        json.loads(line)
+        for line in job_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _freshness_job(**kw):
+    from kiro_crew.cron import CronJob, CronSchedule
+
+    return CronJob(
+        id=kw.pop("id", "j1"),
+        name=kw.pop("name", "test"),
+        message=kw.pop("message", "go"),
+        schedule=kw.pop("schedule", CronSchedule(kind="every", every_secs=60)),
+        **kw,
+    )
+
+
+class TestRunResultFreshness:
+    def test_timeout_does_not_inherit_previous_result(self, tmp_path: Path) -> None:
+        """A timed-out run must record its own error, not the prior run's summary."""
+        import asyncio
+
+        from kiro_crew.cron import CronService
+
+        async def _hang(*args, **kwargs):
+            await asyncio.sleep(9999)
+
+        svc = CronService(base_dir=tmp_path)
+        job = _freshness_job(last_result="prior run success summary", timeout_secs=0)
+        svc._jobs = [job]
+        svc._save()
+        with patch.object(svc, "_execute", side_effect=_hang), patch(
+            "kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05
+        ):
+            asyncio.run(svc._run_job_isolated(job))
+
+        (row,) = _read_history_rows(tmp_path, job.id)
+        assert row["status"] == "failure"
+        assert row["summary"].startswith("Timed out")
+        assert row["trace"] == ""
+        assert row["error"].startswith("Timed out")
+        assert "prior run success summary" not in json.dumps(row)
+        # Context-carry is preserved: the next run's prompt still sees the
+        # last produced result (value-equal; the run itself made no new one).
+        assert job.last_result == "prior run success summary"
+
+    def test_first_run_timeout_with_no_prior_result(self, tmp_path: Path) -> None:
+        """None snapshot branch: first-ever run timing out records its error."""
+        import asyncio
+
+        from kiro_crew.cron import CronService
+
+        async def _hang(*args, **kwargs):
+            await asyncio.sleep(9999)
+
+        svc = CronService(base_dir=tmp_path)
+        job = _freshness_job(timeout_secs=0)
+        assert job.last_result is None
+        svc._jobs = [job]
+        svc._save()
+        with patch.object(svc, "_execute", side_effect=_hang), patch(
+            "kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05
+        ):
+            asyncio.run(svc._run_job_isolated(job))
+
+        (row,) = _read_history_rows(tmp_path, job.id)
+        assert row["status"] == "failure"
+        assert row["summary"].startswith("Timed out")
+        assert row["trace"] == ""
+
+    def test_fresh_result_still_attributed(self, tmp_path: Path) -> None:
+        """A run that produces a new result records it as summary and trace."""
+        import asyncio
+
+        from kiro_crew.cron import CronService
+
+        async def _produce(job):
+            job.set_run_result("new run output")
+            job.last_status = "ok"
+            job.last_error = None
+
+        svc = CronService(base_dir=tmp_path)
+        job = _freshness_job(last_result="prior run output")
+        svc._jobs = [job]
+        svc._save()
+        with patch.object(svc, "_execute", side_effect=_produce):
+            asyncio.run(svc._run_job_isolated(job))
+
+        (row,) = _read_history_rows(tmp_path, job.id)
+        assert row["status"] == "success"
+        assert row["summary"] == "new run output"
+        assert row["trace"] == "new run output"
+
+    def test_reassigning_identical_interned_literal_counts_as_fresh(
+        self, tmp_path: Path
+    ) -> None:
+        """Re-producing the interned literal "ok" (script-ok path) is fresh.
+
+        String identity/equality cannot distinguish this from a result-less
+        run — CPython interns the literal — which is why freshness comes
+        from the ``result_produced`` marker set by ``set_run_result``.
+        """
+        import asyncio
+
+        from kiro_crew.cron import CronService
+
+        async def _script_ok(job):
+            job.set_run_result("ok")  # interned literal, same object every run
+            job.last_status = "ok"
+            job.last_error = None
+
+        svc = CronService(base_dir=tmp_path)
+        job = _freshness_job(last_result="ok")
+        svc._jobs = [job]
+        svc._save()
+        with patch.object(svc, "_execute", side_effect=_script_ok):
+            asyncio.run(svc._run_job_isolated(job))
+
+        (row,) = _read_history_rows(tmp_path, job.id)
+        assert row["status"] == "success"
+        assert row["summary"] == "ok"
+
+    def test_repeated_single_char_result_counts_as_fresh(self, tmp_path: Path) -> None:
+        """Re-producing a single-char result (e.g. "y") is fresh.
+
+        CPython caches single-character latin-1 strings as singletons, so
+        even a re-boxed snapshot ``(s + " ")[:-1]`` collapses back to the
+        cached object — the case that broke the identity-snapshot approach.
+        The ``result_produced`` marker is immune to it.
+        """
+        import asyncio
+
+        from kiro_crew.cron import CronService
+
+        async def _one_char(job):
+            job.set_run_result("y")
+            job.last_status = "ok"
+            job.last_error = None
+
+        svc = CronService(base_dir=tmp_path)
+        job = _freshness_job(last_result="y")
+        svc._jobs = [job]
+        svc._save()
+        with patch.object(svc, "_execute", side_effect=_one_char):
+            asyncio.run(svc._run_job_isolated(job))
+
+        (row,) = _read_history_rows(tmp_path, job.id)
+        assert row["status"] == "success"
+        assert row["summary"] == "y"
+        assert row["trace"] == "y"
+
+    def test_successful_run_without_result_records_empty_summary(
+        self, tmp_path: Path
+    ) -> None:
+        """A run ending ok without producing output (e.g. script Skip, command
+        with empty output) must not surface the previous run's result."""
+        import asyncio
+
+        from kiro_crew.cron import CronService
+
+        async def _no_output(job):
+            job.last_status = "ok"
+            job.last_error = None
+
+        svc = CronService(base_dir=tmp_path)
+        job = _freshness_job(last_result="prior run output")
+        svc._jobs = [job]
+        svc._save()
+        with patch.object(svc, "_execute", side_effect=_no_output):
+            asyncio.run(svc._run_job_isolated(job))
+
+        (row,) = _read_history_rows(tmp_path, job.id)
+        assert row["status"] == "success"
+        assert row["summary"] == ""
+        assert row["trace"] == ""
+        # Carried-over context is untouched for the next prompt build.
+        assert job.last_result == "prior run output"
+
+    def test_freshness_marker_resets_between_runs(self, tmp_path: Path) -> None:
+        """A producing run followed by a result-less run on the SAME job
+        object must not leak run 1's freshness marker into run 2's history."""
+        import asyncio
+
+        from kiro_crew.cron import CronService
+
+        async def _produce(job):
+            job.set_run_result("run one output")
+            job.last_status = "ok"
+            job.last_error = None
+
+        async def _no_output(job):
+            job.last_status = "ok"
+            job.last_error = None
+
+        svc = CronService(base_dir=tmp_path)
+        job = _freshness_job()
+        svc._jobs = [job]
+        svc._save()
+        with patch.object(svc, "_execute", side_effect=_produce):
+            asyncio.run(svc._run_job_isolated(job))
+        with patch.object(svc, "_execute", side_effect=_no_output):
+            asyncio.run(svc._run_job_isolated(job))
+
+        row1, row2 = _read_history_rows(tmp_path, job.id)
+        assert row1["summary"] == "run one output"
+        assert row2["status"] == "success"
+        assert row2["summary"] == ""
+        assert row2["trace"] == ""
+        # Context-carry for the next prompt still holds run 1's value.
+        assert job.last_result == "run one output"

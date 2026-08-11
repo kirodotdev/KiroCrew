@@ -45,6 +45,101 @@ paths your `app.json` declares. The host injects auth automatically.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 
+## Chat Marker Protocol
+
+An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
+has to interpret them, because the backend deliberately leaves the complete marker in the stream for
+a frontend consumer to extract:
+
+| Marker | Meaning |
+|---|---|
+| `[OPTIONS: a \| b]` | follow-up choices, several may be picked |
+| `[OPTION: a \| b]` | follow-up choices, one only |
+| `[STEERING steer-<id>: …]` | the agent acknowledging a mid-turn steer |
+
+Two failure modes matter, and both are the consumer's responsibility. Render the text unparsed and
+the user reads machine syntax. Strip the marker without offering the choices and the user's options
+are **deleted** — worse than leaving them visible, because the text is gone too.
+
+The parsers live in one React-free module so every surface reads the protocol from the same place:
+
+```
+website/src/app-sdk/protocol/
+  optionMarker.ts   the marker pattern (in-tree only) + stripPartialOptionMarker
+  options.ts        parseOptions, deriveFollowUpOptions
+  steering.ts       extractSteeringAcks
+```
+
+### Using it from an app
+
+Apps resolve `@kirocrew/app-sdk` through the host import map, the same way they get the hooks:
+
+```tsx
+import { parseOptions, extractSteeringAcks, deriveFollowUpOptions } from '@kirocrew/app-sdk'
+import type { ChatMessage, ParsedOptions } from '@kirocrew/app-sdk'
+
+function AgentTurn({ message }: { message: ChatMessage }) {
+  // Strip the steer acknowledgement first, then the option marker: the text you render is
+  // whatever is left, and the pieces you pulled out become your own affordances.
+  const { cleaned, acks } = extractSteeringAcks(message.content ?? '')
+  const { text, options, multi }: ParsedOptions = parseOptions(cleaned)
+
+  return (
+    <>
+      <p>{text}</p>
+      {acks.map(a => <SteeredChip key={a} summary={a} />)}
+      {options.length > 0 && <MyChoiceButtons options={options} multi={multi} />}
+    </>
+  )
+}
+```
+
+To decide whether choices still apply to the *conversation* rather than to one message, use
+`deriveFollowUpOptions(messages, isStreaming)`. It walks back to the most recent real assistant turn
+and returns none while streaming, after a user reply, or after a queued send — so stale buttons do
+not linger:
+
+```tsx
+const { followUpOptions } = deriveFollowUpOptions(messages, running)
+```
+
+The module imports no React and no dashboard component, so it is also usable from a worker, a test,
+or a non-React renderer.
+
+### Using it from a core dashboard page
+
+A page inside `website/src/` imports the same barrel by relative path — there is no second
+implementation and no dashboard-only variant:
+
+```tsx
+import { parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
+```
+
+`stripPartialOptionMarker` exists for the streaming case: mid-stream the text can end with a
+half-arrived `[OPTIONS: …` that the full-marker regex cannot match yet, and showing it would let raw
+syntax type itself out in front of the user. Apply it to the parsed text while a turn is streaming.
+
+The regex itself is **not** part of the app surface. It carries the global-flag `lastIndex` state, so
+handing it out lets an app's `.test()` call make this module's own scan start mid-string and miss the
+marker — the exact failure the module exists to prevent. Apps get functions; the pattern stays in-tree.
+
+### Exports
+
+| Export | Kind | Purpose |
+|---|---|---|
+| `parseOptions(content)` | function | split prose from choices; returns `ParsedOptions` |
+| `deriveFollowUpOptions(messages, isStreaming)` | function | the choices that still apply to the conversation |
+| `extractSteeringAcks(content)` | function | pull `[STEERING …]` out, returning `{ cleaned, acks }` |
+| `stripPartialOptionMarker(text)` | function | hide a half-streamed marker |
+| `ParsedOptions` | type | `{ text, options, multi, isPlan }` |
+| `FollowUpDerivation` | type | `{ followUpOptions, followUpIsPlan }` |
+| `ChatMessage` | type | the message shape `deriveFollowUpOptions` consumes |
+
+The module must stay free of React and of anything under `pages/` or `components/`: a parser that
+lives in a component is only available to surfaces that render that component, which is what made a
+transcript print raw marker text. `website/src/test/chatProtocolBoundary.test.ts` asserts that, and
+also that no other non-test source defines the markers a second time.
+
 ## Gateway API Surface
 
 The sections below document the canonical Gateway API surface as exposed by the

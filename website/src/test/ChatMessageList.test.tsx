@@ -335,4 +335,35 @@ describe('ChatMessageList', () => {
       expect(userMsgs[1].textContent).toBe('Second')
     })
   })
+
+  /**
+   * A card-owned OAuth request is annotated by the backend, never dropped — the
+   * Connections card reads its approval URL out of that message. Hiding it is
+   * this component's call, and only when its host actually renders those cards.
+   * The default must stay "render everything": the embed SDK has no cards, and
+   * neither does an install with the gallery flag off.
+   */
+  describe('card-owned OAuth banners', () => {
+    const cardOwned = msg('mcp_oauth', '🔐 notion requires authentication.', {
+      meta: { server_name: 'notion', oauth_url: 'https://mcp.notion.com/authorize', card_owned: true },
+    })
+
+    it('renders a card-owned banner by default', () => {
+      render(<ChatMessageList messages={[cardOwned]} running={false} />)
+      expect(screen.getByRole('link', { name: /Authorize notion/i })).toBeInTheDocument()
+    })
+
+    it('hides a card-owned banner when the host renders the cards', () => {
+      render(<ChatMessageList messages={[cardOwned]} running={false} hideCardOwnedOAuth />)
+      expect(screen.queryByRole('link', { name: /Authorize notion/i })).toBeNull()
+    })
+
+    it('still renders an unannotated banner when the host renders the cards', () => {
+      const handAdded = msg('mcp_oauth', '🔐 my-remote requires authentication.', {
+        meta: { server_name: 'my-remote', oauth_url: 'https://mine.example.com/authorize' },
+      })
+      render(<ChatMessageList messages={[handAdded]} running={false} hideCardOwnedOAuth />)
+      expect(screen.getByRole('link', { name: /Authorize my-remote/i })).toBeInTheDocument()
+    })
+  })
 })

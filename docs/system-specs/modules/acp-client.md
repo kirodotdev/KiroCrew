@@ -206,15 +206,33 @@ Step 5 drains MCP server init notifications (both after `session/load` and
 `_mcp_notifications` instead of discarding them. `_drain_notifications()`
 processes buffered notifications first, then reads any remaining from stdout.
 
-The multiplexed `AcpRuntime` has the same guarantee for session-scoped OAuth
-requests even though it cannot register the session queue until `session/new`
+The multiplexed `AcpRuntime` has the same guarantee for session-scoped init
+frames even though it cannot register the session queue until `session/new`
 or `session/load` returns the session id. While either request is in flight, the
-runtime stages matching `_kiro.dev/mcp/oauth_request` notifications in a bounded
-buffer, transfers them into the new handle's queue once the id is known, and
-`AcpSessionHandle.drain_init()` retains them for
-`pop_pending_oauth_requests()`. Staging is cleared when the last concurrent init
+runtime stages matching `_kiro.dev/mcp/oauth_request`,
+`_kiro.dev/mcp/server_initialized`, and `_kiro.dev/mcp/server_init_failure`
+notifications in a bounded buffer and transfers them into the new handle's
+queue once the id is known. `AcpSessionHandle.drain_init()` retains OAuth
+requests for `pop_pending_oauth_requests()`; the registration frames are what
+arm its idle shortcut (below). Staging is cleared when the last concurrent init
 finishes, including failure paths, so a stale approval URL cannot leak into a
 later session.
+
+`drain_init()`'s idle shortcut means "quiet **after** the servers reported",
+not "quiet, therefore done": until the first MCP registration frame
+(`server_initialized` / `server_init_failure` / `oauth_request`) is observed,
+queue silence is treated as a server still booting — an npx-based stdio server
+spends seconds on npm resolution plus a Node boot before emitting anything —
+and the drain keeps waiting, bounded by `_MCP_DRAIN_NO_REPORT_CEILING`. Once a
+report has been seen it allows up to `_MCP_DRAIN_DURATION` more and exits
+after `_MCP_DRAIN_IDLE_EXIT` of silence, so warm sessions (whose registration
+frames were staged during `session/new`) arm immediately and pay no extra
+latency. A session with no MCP servers at all is the one case that pays the
+full no-report ceiling; a runtime whose agent is KNOWN to be MCP-free — the
+`kirocrew-lite` background runtime, whose config Kiro Crew itself writes with
+an empty `mcpServers` map — opts out via
+`AcpRuntime(expect_mcp_reports=False)`, which passes a zero ceiling and keeps
+the idle shortcut active from the start (the pre-ceiling behavior).
 
 ## Key APIs
 
@@ -324,6 +342,12 @@ While a turn is dispatching, both ACP transports run a watchdog over a turn gone
 **The turn's park is readable from outside the turn.** `parked_for_secs()`, `parked_since`, and `awaiting_permission` exist because this arm cannot report on itself: it only advances when a consumer pulls the generator, so a consumer-side await freezes it and it never executes again for that turn. `session.md`'s `stuck_turn` hook reads those accessors from a loop with its own timer. Answering a permission calls `_end_human_wait()`, which banks the human's thinking time into `_parked_total` and restarts `_parked_since`, so the in-band correction stays exact while the external reading counts only what the consumer itself has spent since the answer.
 
 Both transports offload the oracle consult to `subprocess_executor()`, so both carry the same two obligations, and `AcpSessionHandle` discharges them the same way `AcpClient` does. **One outstanding walk per liveness generation:** `_consult_oracle_offloaded()` tracks the submitted future and answers `UNKNOWN`/`"prior consult still in flight"` on any tick that finds it unfinished, so a `/proc` read wedged on a stuck fd no longer adds a blocked worker every `check_after_secs` to the pool teardown's `_get_child_pids` also draws from. The no-in-flight-tool answer is resolved *before* that guard, because it is pure handle state and needs no worker. Its exception is retrieved via a callback attached at submission — not in an `except Exception` arm, which `CancelledError` (a `BaseException`) would skip — so a probe that fails after its awaiter left is not recorded as an unhandled-asyncio crash. **Retire, don't `reset()`:** turn start in `prompt()` and every new tool dispatch call `_retire_liveness_state()`, releasing the tracked future *together with* the oracle (`LivenessOracle.fresh()`, so the per-session `wellness_sample_secs` survives). Splitting them either way is a defect: clearing the oracle in place leaves a detached walk writing into the live baseline (samples are keyed without a PID, and any nonzero delta counts as movement), while replacing only the oracle leaves a walk wedged in the previous generation answering every later tick "still in flight" so the new generation never samples its own process. The tool path has a sharper version of the first hazard than the capture path does: a walk carrying the *previous* tool's `ToolCallState` matches a descendant of the previous command and stores it as `_tracked_child`, after which `_check_shell_child` reports `WORKING "shell child N alive"` for the new tool against an unrelated process. Retirement is not a change to the cross-tick tracked-child contract itself — `fresh()` starts in exactly the state `reset()` produced, and the consult binds `self._oracle` at submission, so ticks after a boundary accumulate on the new instance as before.
+
+**Before adding an await to a consumer branch**, read
+`../../architecture/design-notes/tool-stall-watchdog-placement.md`. Both
+watchdogs above are inside the generator, so a new consumer-side await silently
+widens the class of failure neither of them can see; the note records which
+failure classes are detectable here and which must be judged out of band.
 
 ### Model-substitution advisory
 

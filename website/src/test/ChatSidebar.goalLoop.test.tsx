@@ -8,7 +8,8 @@
  * Progress comes from chat.goalLoops, keyed by the BARE slot key (autonudge.py
  * `binding_key_for` strips the `dashboard:` prefix). Presence in the map IS
  * "looping": inactive loops are dropped on the way into the store, so a loop
- * that hit max_cycles leaves no residue here.
+ * that hit max_cycles leaves no residue here. An actively-looping slot also
+ * counts as "In progress" for the session filter, like a live workflow run.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render } from '@testing-library/react'
@@ -176,5 +177,23 @@ describe('chat sidebar — goal-loop progress subtitle', () => {
     expect(queryByTitle(UNREAD_DOT_TITLE)).toBeTruthy()
     expect(getByText('final answer')).toBeTruthy()
     expect(queryByText(/^Loop/)).toBeNull()
+  })
+
+  it('a looping slot passes the "In progress" session filter despite running=false', () => {
+    // A loop spends its idle gaps with running=false (turn ended, waiting for
+    // the next nudge). The row still says "Loop N/M", so the filter — and its
+    // count — must keep surfacing it, mirroring the dynamic-workflow rule.
+    // Pre-activate the filter via its persisted toggle (read at mount).
+    localStorage.setItem('mc-session-running-only', '1')
+    const slots = [
+      { key: 'k-loop', title: 'loop session', running: false, messages: 5 },
+      { key: 'k-idle', title: 'idle session', running: false, messages: 2 },
+    ]
+    const { getByText, queryByText } = renderSidebar(
+      slots,
+      { goalLoops: { 'k-loop': { cycle_count: 10, max_cycles: 40 } } },
+    )
+    expect(getByText('loop session')).toBeTruthy() // kept: active loop counts as in-progress
+    expect(queryByText('idle session')).toBeNull() // filtered out: genuinely idle
   })
 })

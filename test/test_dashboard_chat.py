@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -1583,6 +1584,33 @@ class TestHistorySaveOnClose:
         assert roles == ["user", "tool", "assistant"]
 
     @pytest.mark.asyncio
+    async def test_resume_restores_the_channel_filing_marker(self, tmp_path, monkeypatch):
+        """Resuming from History must carry the channel-filing marker into memory.
+
+        Four paths rebuild a slot from history. This one (the History page's
+        resume endpoint) is the one that reaches a channel conversation the user
+        opens by hand. Without the marker in memory the slot reports itself as
+        never-filed to every in-memory reader, and the save path would have to
+        rescue it from disk.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:filed1", "user", "hello")
+        log.update_metadata("dashboard:filed1", {"channel_folder_filed": True})
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/filed1/resume", json={"key": "dashboard:filed1"}
+            )
+            assert resp.status == 200
+
+        assert state._slots["filed1"]._channel_folder_filed is True, (
+            "resume dropped the filing marker; the slot now claims it was never "
+            "filed and a later save would re-file the conversation"
+        )
+
+    @pytest.mark.asyncio
     async def test_no_save_for_unchanged_resumed_session(self, tmp_path, monkeypatch):
         """Resumed session closed without new messages should not re-save."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -2657,6 +2685,13 @@ class TestBlockedSlashCommands:
         from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
 
         assert "/reply" in _BLOCKED_SLASH_COMMANDS
+
+    def test_tangent_is_blocked(self):
+        # kiro-cli's terminal checkpoint toggle (Ctrl+T); the dashboard's
+        # session model and /side cover its purpose, so it is inert here.
+        from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
+
+        assert "/tangent" in _BLOCKED_SLASH_COMMANDS
 
     def test_compact_is_not_blocked(self):
         from kiro_crew.dashboard.chat import _BLOCKED_SLASH_COMMANDS
@@ -7783,6 +7818,74 @@ class TestFolderCRUD:
             assert data["name"] == "New"
 
     @pytest.mark.asyncio
+    async def test_a_failed_folder_write_restores_the_slots_it_unfiled(
+        self, tmp_path, monkeypatch
+    ):
+        """Delete must not half-land: unfiled slots go back if the store write fails.
+
+        The handler unfiles the folder's slots first, then commits the folder
+        removal. If that commit fails, leaving the slots unfiled strands
+        conversations outside a folder that still exists. Restoring them is
+        deliberately order-neutral — the reverse order strands a dangling
+        folder_id instead, so undoing whichever half landed is what closes both.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            folder = await (await client.post("/api/chat/folders", json={"name": "Work"})).json()
+            slot = state.get_or_create_slot("in-folder")
+            slot.folder_id = folder["id"]
+
+            def boom(path, data):
+                raise OSError("disk full")
+
+            monkeypatch.setattr(state, "_atomic_write_json", boom)
+            resp = await client.delete(f"/api/chat/folders/{folder['id']}")
+            assert resp.status >= 500
+
+        assert slot.folder_id == folder["id"], (
+            "the slot stayed unfiled after the folder removal failed; the delete "
+            "half-landed and the conversation left a folder that still exists"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_parent_deleted_under_the_lock_rejects_the_create(
+        self, tmp_path, monkeypatch
+    ):
+        """A child must not land with a dangling parent_id.
+
+        Parent existence is validated before the store lock is taken, so a
+        concurrent delete of that parent would otherwise persist an orphan. Both
+        the sidebar and the folder picker surface orphans at the top level rather
+        than hiding them, so this is a tree-shape defect rather than a
+        disappearance — but still a folder nobody asked to put at the root.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            parent = await (await client.post("/api/chat/folders", json={"name": "P"})).json()
+
+            real = state.mutate_folders
+
+            async def delete_parent_then_apply(mutate):
+                # Stand in for a concurrent DELETE landing while this create
+                # waits for the store lock.
+                state._folders[:] = [f for f in state._folders if f["id"] != parent["id"]]
+                return await real(mutate)
+
+            monkeypatch.setattr(state, "mutate_folders", delete_parent_then_apply)
+            resp = await client.post(
+                "/api/chat/folders", json={"name": "Child", "parent_id": parent["id"]}
+            )
+            assert resp.status == 400, (
+                f"create was accepted with a deleted parent (status {resp.status}); "
+                "the folder persists as an orphan"
+            )
+        assert not any(f.get("name") == "Child" for f in state._folders)
+
+    @pytest.mark.asyncio
     async def test_update_folder_collapse(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -7826,6 +7929,80 @@ class TestFolderCRUD:
             resp = await client.patch(f"/api/chat/folders/{b['id']}", json={"parent_id": None})
             assert resp.status == 200
             assert (await resp.json())["parent_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_opposite_reparents_cannot_persist_a_cycle(
+        self, tmp_path, monkeypatch
+    ):
+        """Two opposite reparents must not both apply and orphan the pair.
+
+        The tree-shape rules (parent exists, target is not a descendant) are
+        checked once before the store lock as a fast reject, but a folder write
+        is serialized and off-loop, so while one is in flight BOTH requests can
+        validate against the same pre-state. If the winner's mutation were not
+        re-tested under the lock, `A -> B` and `B -> A` would both persist and
+        neither folder would be reachable from the root any more.
+
+        The lock is held deliberately here so both handlers are provably queued
+        on it before either applies -- the window is opened, not raced for.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/folders", json={"name": "A"})).json()
+            b = await (await client.post("/api/chat/folders", json={"name": "B"})).json()
+
+            gate = asyncio.Event()
+
+            async def _hold_the_store() -> None:
+                async with state._folders_lock:
+                    await gate.wait()
+
+            holder = asyncio.create_task(_hold_the_store())
+            while not state._folders_lock.locked():
+                await asyncio.sleep(0)
+
+            t1 = asyncio.create_task(
+                client.patch(f"/api/chat/folders/{a['id']}", json={"parent_id": b["id"]})
+            )
+            t2 = asyncio.create_task(
+                client.patch(f"/api/chat/folders/{b['id']}", json={"parent_id": a["id"]})
+            )
+
+            async def _both_queued() -> None:
+                while len(getattr(state._folders_lock, "_waiters", None) or ()) < 2:
+                    await asyncio.sleep(0.01)
+
+            # Both requests have passed their pre-lock validation against the
+            # SAME pre-state and are now waiting on the store.
+            await asyncio.wait_for(_both_queued(), timeout=5)
+            gate.set()
+            r1, r2 = await asyncio.gather(t1, t2)
+            await holder
+
+            assert sorted([r1.status, r2.status]) == [200, 409], (
+                "both opposite reparents were accepted; the tree-shape rules are "
+                "not being re-tested under the store lock"
+            )
+
+            parents = {f["id"]: f.get("parent_id", "") for f in state._folders}
+
+            def _reaches_root(fid: str) -> bool:
+                seen: set[str] = set()
+                cur = fid
+                while cur:
+                    if cur in seen:
+                        return False
+                    seen.add(cur)
+                    cur = parents.get(cur, "")
+                return True
+
+            assert all(_reaches_root(fid) for fid in parents), (
+                f"a parent cycle was persisted: {parents}"
+            )
+            stored = json.loads((tmp_path / state._FOLDERS_FILE).read_text(encoding="utf-8"))
+            assert {f["id"]: f.get("parent_id", "") for f in stored} == parents
 
     @pytest.mark.asyncio
     async def test_update_folder_reparent_self_rejected(self, tmp_path, monkeypatch):
@@ -8325,7 +8502,6 @@ class TestGenerateEmojiForName:
         mock_client = AsyncMock()
         mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
         state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
         state.push_slots_update = MagicMock()
 
         with (

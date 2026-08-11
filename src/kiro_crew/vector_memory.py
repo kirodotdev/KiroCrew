@@ -253,6 +253,43 @@ def _lesson_slug(rule: str) -> str:
     return hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
+def _lesson_display_text(decoded: object) -> str:
+    """Render a decoded lesson value as the prose that goes into the prompt.
+
+    Two writers produce two shapes, and only one of them is a string. ``learn_add``
+    stores the value as ``"<rule>"`` or ``"<rule><sep><negative>"``
+    (see ``_LESSON_NEGATIVE_SEP``), while the onboarding import stores a mapping —
+    ``{"rule": ..., "category": ..., "negative": ...}`` — because it carries fields
+    the string form has nowhere to put. Interpolating the decoded value directly
+    therefore pasted a Python ``dict`` repr into the system prompt for every
+    imported lesson: the model was handed ``{'rule': 'Prefer dark mode',
+    'category': 'preference', 'negative': None}`` instead of the rule, spending
+    tokens on punctuation and field names while burying the instruction it is
+    supposed to follow.
+
+    Normalizing at READ time rather than converting the rows keeps this a pure
+    rendering fix: stored bytes are untouched, so no migration runs, downgrading
+    stays safe, and the dedup/enrichment paths that parse the string form
+    (``_split_stored``) keep seeing exactly what they see today.
+
+    An unrecognized shape yields ``""`` and is skipped by the caller rather than
+    being stringified as a guess. This runs while a session's prompt is being
+    built, where a raise costs the whole turn, so every branch has to produce a
+    string without trusting the value's type.
+    """
+    if isinstance(decoded, str):
+        return decoded.strip()
+    if isinstance(decoded, dict):
+        rule = decoded.get("rule")
+        if not isinstance(rule, str) or not rule.strip():
+            return ""
+        negative = decoded.get("negative")
+        if isinstance(negative, str) and negative.strip():
+            return f"{rule.strip()}{_LESSON_NEGATIVE_SEP}{negative.strip()}"
+        return rule.strip()
+    return ""
+
+
 def _split_stored(existing_val: str, rule_norm: str, existing_key: str) -> tuple[str | None, bool]:
     """Split a stored lesson value against a normalized rule.
 
@@ -2242,7 +2279,9 @@ class VectorMemoryStore:
             "ALWAYS follow these. They override default behavior.]"
         ]
         for e in lessons:
-            lines.append(f"- {json.loads(e['value_json'])}")
+            text = _lesson_display_text(json.loads(e["value_json"]))
+            if text:
+                lines.append(f"- {text}")
         lines.append("[End of learned corrections]\n")
         return "\n".join(lines)
 

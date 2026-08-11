@@ -8,6 +8,7 @@
  * grouping, and aggregation come from `@tanstack/react-table`.
  */
 import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -325,7 +326,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
   }, [])
 
   return (
-    <Card className="mb-6 overflow-hidden">
+    <Card className="mb-6">
       {/* Stale-data notice. Shown when a poll has failed but a previous payload is
           still on screen: the rows below are real, just not current, and saying so
           is what lets the user trust them without mistaking them for live. */}
@@ -370,12 +371,18 @@ export default function SessionsTab({ planeStateRef }: Props) {
             <Columns3 size={13} aria-hidden="true" className="lucide-inline" />
             {i18nT('pages.sessionsTab.columns')}
           </Btn>
-          {pickerOpen && (
+          {pickerOpen && pickerBtnRef.current && createPortal(
             <div
               ref={pickerRef}
               role="dialog"
               aria-label={i18nT('pages.sessionsTab.columns')}
-              className="absolute right-0 z-20 mt-1 min-w-40 rounded border border-border bg-bg-elevated p-1.5 shadow-lg"
+              className="min-w-40 rounded border border-border bg-bg-elevated p-1.5 shadow-lg"
+              style={{
+                position: 'fixed',
+                zIndex: 9999,
+                top: pickerBtnRef.current.getBoundingClientRect().bottom + 4,
+                right: window.innerWidth - pickerBtnRef.current.getBoundingClientRect().right,
+              }}
             >
               {hideable.map(col => (
                 <label key={col.id} className="flex items-center gap-2 px-1.5 py-1 text-[12px] cursor-pointer">
@@ -392,11 +399,13 @@ export default function SessionsTab({ planeStateRef }: Props) {
                   {i18nT('pages.sessionsTab.done')}
                 </Btn>
               </div>
-            </div>
+            </div>,
+            document.body,
           )}
         </div>
       </div>
 
+      <div className="overflow-hidden rounded-b-lg">
       {isPending ? (
         // "No active sessions" is a claim about the machine, and during the first
         // fetch it is one we cannot make — a slow or failing endpoint made the page
@@ -645,6 +654,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
         )}
       </div>
       )}
+      </div>
     </Card>
   )
 }

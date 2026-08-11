@@ -9,7 +9,7 @@
  * ChannelsPanel), the sidebar carries Preferences/System group headers, and
  * legacy ?tab=slack style deep links remap to ?tab=channels&channel=slack.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -23,6 +23,7 @@ vi.mock('../pages/settings/BrowserPanel', () => ({ BrowserPanel: () => <div data
 // set, so an unmocked ComputerUsePanel calling api.getComputerUseConfig() would
 // throw during render.
 vi.mock('../pages/settings/ComputerUsePanel', () => ({ ComputerUsePanel: () => <div data-testid="computer-use-panel" /> }))
+vi.mock('../pages/settings/WebhooksPanel', () => ({ WebhooksPanel: () => <div data-testid="webhooks-panel" /> }))
 vi.mock('../pages/settings/InstancesPanel', () => ({ InstancesPanel: () => <div data-testid="instances-panel" /> }))
 vi.mock('../pages/settings/SecurityPanel', () => ({ SecurityPanel: () => <div data-testid="security-panel" /> }))
 vi.mock('../pages/settings/PrivacyPanel', () => ({ PrivacyPanel: () => <div data-testid="privacy-panel" /> }))
@@ -74,6 +75,13 @@ if (!window.matchMedia) {
 }
 
 import SettingsPage from '../pages/SettingsPage'
+import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+
+// The Webhooks tab is preview-gated and the gate reads real localStorage, so a
+// flag left set by one test would decide another test's roster.
+beforeEach(() => {
+  localStorage.removeItem(PREVIEW_WEBHOOKS)
+})
 
 function renderAt(route: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -112,6 +120,22 @@ describe('SettingsPage tabs', () => {
     cleanup()
     renderAt('/settings?tab=browser')
     expect(screen.getByTestId('browser-panel').parentElement!.className).toContain('pb-8')
+  })
+
+  it('hides the Webhooks tab while its preview flag is off', () => {
+    // Inbound webhooks is preview-gated AND `hiddenFromNav`, so this tab is its
+    // only advertised home. The rail and palette apply the gate via
+    // `getAdvertisedSurfaces()`, which never sees a hiddenFromNav surface — so
+    // without the gate here an unreleased page would be listed for everyone.
+    localStorage.removeItem(PREVIEW_WEBHOOKS)
+    renderAt('/settings')
+    expect(screen.queryByText('Webhooks')).not.toBeInTheDocument()
+  })
+
+  it('lists the Webhooks tab once its preview flag is on', () => {
+    localStorage.setItem(PREVIEW_WEBHOOKS, '1')
+    renderAt('/settings')
+    expect(screen.getByText('Webhooks')).toBeInTheDocument()
   })
 
   it('lists the Computer Use tab', () => {

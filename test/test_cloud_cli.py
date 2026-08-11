@@ -46,6 +46,20 @@ class TestDispatch:
         assert rc == 0
         assert captured["force_new"] is True
 
+    def test_launch_passes_subnet_flag(self, monkeypatch):
+        captured = {}
+
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "ap-southeast-1"))
+        monkeypatch.setattr(
+            cli_cloud.wizard, "launch", lambda **kwargs: captured.update(kwargs) or 0
+        )
+
+        rc = cli_cloud._cloud_launch(
+            _args(profile="", region="", subnet="subnet-0123456789abcdef0", yes=True)
+        )
+        assert rc == 0
+        assert captured["subnet_id"] == "subnet-0123456789abcdef0"
+
     def test_dispatch_keyboard_interrupt_returns_130(self, monkeypatch, capsys):
         def raise_interrupt(_args):
             raise KeyboardInterrupt

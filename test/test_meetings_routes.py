@@ -917,6 +917,29 @@ class TestAgentRoutes:
             body = await resp.json()
             assert body["dispatched"] == 3
             assert "AKIAIOSFODNN7EXAMPLE" not in body["text"]
+            assert body["segment"]["source"] == k.TRANSCRIPT_SOURCE_SPEECH
+            assert "AKIAIOSFODNN7EXAMPLE" not in body["segment"]["text"]
+
+            transcript = await client.get(f"{BASE}/meetings/standup/transcript")
+            assert transcript.status == 200
+            transcript_body = await transcript.json()
+            assert transcript_body["segments"] == [body["segment"]]
+            assert transcript_body["next_cursor"] > 0
+
+            second = await client.post(
+                f"{BASE}/meetings/standup/dispatch",
+                json={"text": "second line"},
+            )
+            assert second.status == 200
+            page = await client.get(
+                f"{BASE}/meetings/standup/transcript",
+                params={"cursor": transcript_body["next_cursor"]},
+            )
+            page_body = await page.json()
+            assert [segment["text"] for segment in page_body["segments"]] == [
+                "second line"
+            ]
+            assert page_body["next_cursor"] > transcript_body["next_cursor"]
 
     @pytest.mark.asyncio
     async def test_dispatch_marks_a_chat_line(self, app, fake_sessions):
@@ -926,7 +949,210 @@ class TestAgentRoutes:
                 f"{BASE}/meetings/standup/dispatch",
                 json={"text": "actually the owner is Bob", "chat": True},
             )
-            assert (await resp.json())["text"].startswith(k.CHAT_PREFIX)
+            body = await resp.json()
+            assert body["text"].startswith(k.CHAT_PREFIX)
+            assert body["segment"]["source"] == k.TRANSCRIPT_SOURCE_TYPED
+            assert body["segment"]["text"] == "actually the owner is Bob"
+
+    @pytest.mark.asyncio
+    async def test_transcript_for_a_legacy_meeting_is_empty(self, app):
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/legacy/init", json={})
+            resp = await client.get(f"{BASE}/meetings/legacy/transcript")
+            assert resp.status == 200
+            assert await resp.json() == {"segments": [], "next_cursor": 0}
+
+    @pytest.mark.asyncio
+    async def test_transcript_for_an_unknown_meeting_is_404(self, app):
+        async with client_for(app) as client:
+            resp = await client.get(f"{BASE}/meetings/missing/transcript")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "meeting_not_found"
+
+    @pytest.mark.asyncio
+    async def test_capacity_failure_happens_before_agent_fanout(
+        self, app, fake_sessions, monkeypatch: pytest.MonkeyPatch
+    ):
+        async with client_for(app) as client:
+            session = await _start_and_get_session(client)
+            broadcasted: list[str] = []
+            monkeypatch.setattr(session, "broadcast", lambda line: broadcasted.append(line))
+            monkeypatch.setattr(store, "append_transcript", lambda *_args: None)
+
+            resp = await client.post(
+                f"{BASE}/meetings/standup/dispatch", json={"text": "must not fan out"}
+            )
+            assert resp.status == 413
+            assert (await resp.json())["code"] == "transcript_too_large"
+            assert broadcasted == []
+
+    @pytest.mark.asyncio
+    async def test_stop_waits_for_an_in_flight_transcript_append(
+        self, app, root: Path, fake_sessions, monkeypatch: pytest.MonkeyPatch
+    ):
+        from kiro_crew.apps.builtins.meetings.backend.routes import (
+            agents,
+            meeting_lifecycle,
+        )
+
+        class ObservedLock:
+            def __init__(self):
+                self.lock = asyncio.Lock()
+                self.waiter = asyncio.Event()
+
+            async def __aenter__(self):
+                if self.lock.locked():
+                    self.waiter.set()
+                await self.lock.acquire()
+                return self
+
+            async def __aexit__(self, *_args):
+                self.lock.release()
+
+        async with client_for(app) as client:
+            await _start(client)
+            observed_lock = ObservedLock()
+            append_entered = threading.Event()
+            release_append = threading.Event()
+            real_append = store.append_transcript
+
+            def blocked_append(*args, **kwargs):
+                append_entered.set()
+                assert release_append.wait(timeout=5)
+                return real_append(*args, **kwargs)
+
+            monkeypatch.setattr(agents, "DISPATCH_LOCK", observed_lock)
+            monkeypatch.setattr(meeting_lifecycle, "DISPATCH_LOCK", observed_lock)
+            monkeypatch.setattr(store, "append_transcript", blocked_append)
+
+            dispatch_request = asyncio.create_task(
+                client.post(f"{BASE}/meetings/standup/dispatch", json={"text": "kept"})
+            )
+            assert await asyncio.to_thread(append_entered.wait, 5)
+
+            stop_request = asyncio.create_task(
+                client.post(f"{BASE}/meetings/standup/stop")
+            )
+            await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
+            release_append.set()
+
+            assert (await dispatch_request).status == 200
+            assert (await stop_request).status == 200
+            assert (await client.delete(f"{BASE}/meetings/standup")).status == 204
+
+        assert not store.meeting_dir("standup", root).exists()
+
+    @pytest.mark.asyncio
+    async def test_review_status_waits_for_an_in_flight_transcript_append(
+        self, app, fake_sessions, monkeypatch: pytest.MonkeyPatch
+    ):
+        from kiro_crew.apps.builtins.meetings.backend.routes import (
+            agents,
+            meeting_lifecycle,
+        )
+
+        class ObservedLock:
+            def __init__(self):
+                self.lock = asyncio.Lock()
+                self.waiter = asyncio.Event()
+
+            async def __aenter__(self):
+                if self.lock.locked():
+                    self.waiter.set()
+                await self.lock.acquire()
+                return self
+
+            async def __aexit__(self, *_args):
+                self.lock.release()
+
+        async with client_for(app) as client:
+            await _start(client)
+            fake_sessions.calls.clear()
+
+            observed_lock = ObservedLock()
+            append_entered = threading.Event()
+            release_append = threading.Event()
+            real_append = store.append_transcript
+
+            def blocked_append(*args, **kwargs):
+                append_entered.set()
+                assert release_append.wait(timeout=5)
+                return real_append(*args, **kwargs)
+
+            monkeypatch.setattr(agents, "DISPATCH_LOCK", observed_lock)
+            monkeypatch.setattr(meeting_lifecycle, "DISPATCH_LOCK", observed_lock)
+            monkeypatch.setattr(store, "append_transcript", blocked_append)
+
+            dispatch_request = asyncio.create_task(
+                client.post(f"{BASE}/meetings/standup/dispatch", json={"text": "kept"})
+            )
+            assert await asyncio.to_thread(append_entered.wait, 5)
+
+            review_request = asyncio.create_task(
+                client.post(
+                    f"{BASE}/meetings/standup/status",
+                    json={"status": k.STATUS_REVIEWING},
+                )
+            )
+            await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
+            release_append.set()
+
+            assert (await dispatch_request).status == 200
+            assert (await review_request).status == 200
+
+        assert any("kept" in message for _key, _agent, message in fake_sessions.calls)
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_dispatch_admission_before_a_slow_agent_flush(
+        self, app, fake_sessions, monkeypatch: pytest.MonkeyPatch
+    ):
+        async with client_for(app) as client:
+            session = await _start_and_get_session(client)
+            flush_entered = asyncio.Event()
+            release_flush = asyncio.Event()
+
+            async def slow_flush() -> None:
+                flush_entered.set()
+                await release_flush.wait()
+
+            monkeypatch.setattr(session, "flush_all", slow_flush)
+            stop_request = asyncio.create_task(
+                client.post(f"{BASE}/meetings/standup/stop")
+            )
+            await asyncio.wait_for(flush_entered.wait(), timeout=5)
+
+            dispatch = await asyncio.wait_for(
+                client.post(
+                    f"{BASE}/meetings/standup/dispatch",
+                    json={"text": "too late"},
+                ),
+                timeout=1,
+            )
+            assert dispatch.status == 409
+            assert (await dispatch.json())["code"] == "no_active_meeting"
+
+            release_flush.set()
+            assert (await stop_request).status == 200
+
+        assert _common.ACTIVE.get() is None
+
+    @pytest.mark.asyncio
+    async def test_stopping_an_inactive_meeting_keeps_active_dispatch_open(
+        self, app, fake_sessions
+    ):
+        async with client_for(app) as client:
+            active = await _start_and_get_session(client, "active")
+            await client.post(f"{BASE}/meetings/stale/init", json={})
+
+            stopped = await client.post(f"{BASE}/meetings/stale/stop")
+            assert stopped.status == 200
+            assert _common.ACTIVE.get("active") is active
+
+            dispatch = await client.post(
+                f"{BASE}/meetings/active/dispatch",
+                json={"text": "still accepted"},
+            )
+            assert dispatch.status == 200
 
     @pytest.mark.asyncio
     async def test_dispatch_without_an_active_meeting_is_409(self, app):

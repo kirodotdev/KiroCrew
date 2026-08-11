@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import AssistantMessage, { parseOptions, fmtTurnElapsed, fmtCredits } from '../pages/chat/AssistantMessage'
+import AssistantMessage, { fmtTurnElapsed, fmtCredits } from '../pages/chat/AssistantMessage'
+import { parseOptions } from '../app-sdk/protocol'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({

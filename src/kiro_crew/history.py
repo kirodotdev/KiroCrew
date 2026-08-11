@@ -586,8 +586,41 @@ def update_metadata_off_loop(
 
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
+SEARCH_MAX_TOKENS = 12  # distinct terms scored per query — see search_query_tokens
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
+_PHRASE_BOOST = 4  # extra weight per exact whole-query hit in a multi-word search
 _SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
+
+
+def search_query_tokens(query: str) -> tuple[list[str], str]:
+    """Return ``(tokens, phrase)`` for a search *query*, casefolded.
+
+    ``tokens`` are the DISTINCT whitespace-separated terms in first-seen order,
+    capped at :data:`SEARCH_MAX_TOKENS`; ``phrase`` is the whole normalized
+    query. Callers requiring every token (:meth:`ConversationLog.search_sessions`)
+    and callers locating one (the snippet builders) share this so the two halves
+    of a query cannot drift apart.
+
+    Both bounds exist because **every token costs one full scan** of a session's
+    text, so token count multiplies search cost on a user-supplied string:
+
+    * Deduplication is free correctness — a repeated term cannot change an AND
+      match, so scanning for it twice buys nothing. A 256-character query of
+      repeated ``"a "`` would otherwise run 128 scans per session instead of 1.
+    * The cap bounds the distinct case, which dedup cannot: 100 distinct short
+      terms is still 100 scans. Truncating makes the query only LOOSER (fewer
+      required terms), so it can admit extra results but never hide a session
+      that would have matched — the safe direction when the alternative is a
+      keystroke-driven search stalling for seconds.
+
+    A whitespace-only query yields ``([], "")``; callers treat that as "matches
+    nothing" rather than "matches everything".
+    """
+    parts = query.casefold().split()
+    if not parts:
+        return ([], "")
+    return (list(dict.fromkeys(parts))[:SEARCH_MAX_TOKENS], " ".join(parts))
+
 
 # Hard ceilings on the memory the two search memos may hold, in real retained
 # bytes as reported by ``str.__sizeof__`` — NOT in characters.
@@ -2544,41 +2577,85 @@ class ConversationLog:
     def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
-        Case-insensitive substring match over each message's ``content``
-        field using full Unicode case folding via :meth:`str.casefold`
-        (so e.g. German ``ß`` folds to ``ss``).  Matching only on parsed
-        ``content`` avoids false positives from JSON structural elements
-        (e.g. the word ``"user"`` matching every ``"role": "user"`` line).
+        The query is split on whitespace into tokens, and a session matches only
+        when **every** token appears somewhere in its title or content — an AND
+        over the whole document, not a single whole-query substring. That is what
+        makes a natural multi-word query work: ``"ack contention hypotheses"``
+        finds a session discussing all three, which a whole-phrase match missed
+        because those exact words never sit adjacent. A single-token query is
+        unchanged by this — one token IS the phrase.
+
+        Each token is matched case-insensitively as a SUBSTRING (so ``"cont"``
+        hits ``"contention"``, which keeps search-as-you-type responsive) using
+        full Unicode case folding via :meth:`str.casefold` (so e.g. German ``ß``
+        folds to ``ss``).  Matching only on parsed ``content`` avoids false
+        positives from JSON structural elements (e.g. the word ``"user"``
+        matching every ``"role": "user"`` line).
 
         Ranking (higher is better)::
 
-            score = (title_matches * _TITLE_BOOST)
-                  + (content_matches / sqrt(1 + doc_chars / 1024))
+            score = (title_hits * _TITLE_BOOST)
+                  + (content_hits / sqrt(1 + doc_chars / 1024))
+
+        where ``*_hits`` sum the per-token counts, plus ``_PHRASE_BOOST`` per
+        occurrence of the exact whole query when it has more than one token.
+        The phrase bonus rewards adjacency: at comparable token frequency, the
+        session containing the words TOGETHER as typed ranks above one that
+        merely mentions them far apart.  It is deliberately a bonus and not an
+        override — a session repeating one token far more often still wins on
+        raw term frequency, exactly as it already did for a single-token query.
+        (Saturating term frequency, BM25-style, would change that; it would also
+        re-rank every existing single-token query, so it is out of scope here.)
 
         Title matches get a strong field boost - titles are short and
         intentional, so a hit there is strong evidence.  Content matches
         are normalized by a sqrt length factor so a long session with a
         casual mention doesn't outrank a short, focused one.  (Simpler
         than BM25's ``(1-b) + b*(dl/avgdl)`` because we avoid the
-        two-pass scan needed for corpus stats.)  Sessions with zero
-        matches are dropped.  Ties break by recency (existing
+        two-pass scan needed for corpus stats.)  Sessions missing any
+        token are dropped.  Ties break by recency (existing
         ``list_sessions`` order - newest first).  Caps results at *limit*.
         Only the ``_SEARCH_SCAN_WINDOW`` most recent files are scored, so
         I/O stays bounded even with hundreds of sessions.
         """
         if not query or limit <= 0 or not self._dir.exists():
             return []
-        needle = query.casefold()
+        tokens, phrase = search_query_tokens(query)
+        if not tokens:
+            # Whitespace-only query: no tokens to require, so nothing can match.
+            # Returning [] keeps this from degenerating into "match everything",
+            # and skips reading every session file to reach that conclusion.
+            return []
+        # True when the phrase carries more than the single token does, so an
+        # exact-phrase bonus is meaningful. Not `len(tokens) > 1`: dedup collapses
+        # "a a" to one token while its phrase is still two words.
+        multi = tokens != [phrase]
         # (score, -rank, meta, needs_snippet)
         scored: list[tuple[float, int, dict, bool]] = []
         window = self.list_sessions()[:_SEARCH_SCAN_WINDOW]
         self._prune_search_memos({m["key"] for m in window})
         for rank, meta in enumerate(window):
             doc_chars, folded = self._folded_content(meta["key"])
-            content_hits = folded.count(needle) if folded else 0
-            title_hits = (meta.get("title") or "").casefold().count(needle)
-            if not title_hits and not content_hits:
+            title_folded = (meta.get("title") or "").casefold()
+            content_hits = 0
+            title_hits = 0
+            for token in tokens:
+                in_content = folded.count(token) if folded else 0
+                in_title = title_folded.count(token)
+                if not in_content and not in_title:
+                    # AND semantics: one absent token disqualifies the session,
+                    # so stop counting the rest.
+                    content_hits = title_hits = 0
+                    break
+                content_hits += in_content
+                title_hits += in_title
+            if not content_hits and not title_hits:
                 continue
+            if multi:
+                # Reward the words appearing together, in order, as typed.
+                if folded:
+                    content_hits += folded.count(phrase) * _PHRASE_BOOST
+                title_hits += title_folded.count(phrase) * _PHRASE_BOOST
             length_norm = math.sqrt(1 + doc_chars / 1024)
             score = title_hits * _TITLE_BOOST + content_hits / length_norm
             # Negate rank so a smaller (newer) rank wins ties after score desc sort.
@@ -2817,23 +2894,34 @@ class ConversationLog:
         an empty snippet despite a nonzero hit count), but folding can change a
         string's length, so the window may be off by a character or two.
 
-        Returns ``''`` when the query is not locatable in any single message, or
+        For a multi-word query the exact phrase is tried first and each token is
+        tried as a fallback, mirroring :meth:`search_sessions`' AND-over-tokens
+        matching — otherwise every session that matched on scattered words would
+        come back with no snippet at all. Needles are tried per message, so the
+        first MESSAGE containing any of them wins rather than the best needle
+        overall; that preserves the streaming early-exit above, and this string
+        is display-only.
+
+        Returns ``''`` when no needle is locatable in any single message, or
         when the file cannot be read (display-only — never raises at the caller).
         """
-        needle = query.casefold()
-        if not needle:
+        tokens, phrase = search_query_tokens(query)
+        if not tokens:
             return ""
+        needles = [phrase] if tokens == [phrase] else [phrase, *tokens]
         try:
             for text in self._snippet_texts(key):
-                pos = text.casefold().find(needle)
-                if pos < 0:
-                    continue
-                start = max(0, pos - self._SNIPPET_LEAD)
-                end = min(len(text), pos + len(query) + self._SNIPPET_TRAIL)
-                frag = " ".join(text[start:end].split())
-                prefix = "…" if start > 0 else ""
-                suffix = "…" if end < len(text) else ""
-                return (prefix + frag + suffix)[: self._SNIPPET_MAX]
+                folded = text.casefold()
+                for needle in needles:
+                    pos = folded.find(needle)
+                    if pos < 0:
+                        continue
+                    start = max(0, pos - self._SNIPPET_LEAD)
+                    end = min(len(text), pos + len(needle) + self._SNIPPET_TRAIL)
+                    frag = " ".join(text[start:end].split())
+                    prefix = "…" if start > 0 else ""
+                    suffix = "…" if end < len(text) else ""
+                    return (prefix + frag + suffix)[: self._SNIPPET_MAX]
         except OSError:
             return ""
         return ""
@@ -3043,6 +3131,39 @@ class ConversationLog:
         # (it only touches in-process state) so the next chained read rebuilds.
         if "tab_id" in fields:
             self.invalidate_tab_id_cache()
+
+    def update_metadata_if(
+        self, key: str, fields: dict, guard: Callable[[dict], bool]
+    ) -> bool:
+        """Merge *fields* only if *guard* still accepts the on-disk metadata.
+
+        ``guard`` is evaluated INSIDE the cross-process lock, against the record
+        as it stands at write time. That is the difference from
+        :meth:`update_metadata`: a caller that decided to write based on a
+        snapshot taken earlier cannot land that write over a change another
+        writer made in the meantime, because the decision is re-made here rather
+        than trusted from before the lock was acquired. Taking the lock can
+        itself mean waiting, so "checked, then wrote" is not the same as "checked
+        at the moment of writing".
+
+        Returns whether the merge was applied, so a caller can tell a skipped
+        write from a completed one and avoid applying it in memory.
+
+        Fails CLOSED on an unreadable record. ``_read_metadata`` cannot tell
+        "genuinely empty" from "could not be read", and an empty dict satisfies
+        most guards — so consulting it would let a failed read look like a blank
+        record and authorise a write over a placement that is actually there.
+        """
+        with self._locked(key):
+            meta, readable = self._read_metadata_status(key)
+            if not readable:
+                return False
+            if not guard(meta):
+                return False
+            self._update_metadata_locked(key, fields)
+        if "tab_id" in fields:
+            self.invalidate_tab_id_cache()
+        return True
 
     def _update_metadata_locked(self, key: str, fields: dict) -> None:
         """Merge *fields* into the session's metadata line and persist.

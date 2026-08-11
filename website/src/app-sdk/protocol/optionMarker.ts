@@ -36,8 +36,10 @@
 // `\]`: the class shares no character with the trailing `[ \t]*`, and the
 // tempered body already admitted `]` via `[^[\n]`.
 //
-// Only use with String#matchAll and String#replace (which don't carry the global
-// regex `lastIndex` hazard); do NOT call `.exec`/`.test` on this shared const.
+// `String#replace` is the only use that is safe on this shared const as-is: it resets `lastIndex`.
+// `String#matchAll` does NOT — it seeds its internal clone from `lastIndex`, so pass a fresh
+// `new RegExp(OPTION_MARKER_RE)` there. Never call `.exec`/`.test` on it: both leave the index
+// advanced, and the next reader silently scans from the wrong offset.
 export const OPTION_MARKER_RE =
   /\[OPTION(S)?:((?:[^[\n]|\[(?!OPTIONS?:))*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[ \t]*$/gim
 

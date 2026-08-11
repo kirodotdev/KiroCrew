@@ -303,5 +303,8 @@ export function AppApiProvider({
 
 export { useChatSession } from './useChatSession'
 export { default as ChatPanel } from './ChatPanel'
+// The marker protocol, so an embedding app can interpret `[OPTIONS:]` /
+// `[STEERING …]` without rendering our transcript components.
+export * from './protocol'
 export { default as ChatEmbed } from './ChatEmbed'
 export { default as ChatMessageList } from './ChatMessageList'

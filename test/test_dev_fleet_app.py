@@ -23,6 +23,17 @@ from aiohttp.test_utils import TestClient, TestServer  # noqa: F401
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew import platform_compat
 
+# These Dev Fleet make-live / cancel / sync / build tests assert POSIX-only
+# behaviour that has no Windows equivalent: os.geteuid, the ``.venv/bin`` layout
+# (vs ``.venv\\Scripts\\kirocrew.exe``), systemctl/launchctl service probing, and
+# ``/``-rooted trusted-binary paths. The production code is correct on Windows;
+# only these fixtures/assertions are POSIX-shaped, so they are skipped under the
+# reduced-scope backend CI that runs on Windows. See issue #2041.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only Dev Fleet make-live/cancel/sync semantics (issue #2041)",
+)
+
 
 # --- worktree porcelain parsing ---
 def test_parse_worktree_porcelain_basic():
@@ -1109,6 +1120,7 @@ async def test_pod_guard_denies_pin_file_without_checkout(monkeypatch, tmp_path)
     assert "ambiguous pod identity" in err
 
 
+@_POSIX_ONLY
 def test_read_pin_strict_propagates_read_errors(tmp_path):
     """_read_pin_strict must raise (not return empty) when the pin file
     exists but cannot be read."""
@@ -1897,6 +1909,73 @@ async def test_discover_worktrees_git_failure_is_bounded(tmp_path):
     assert len(str(exc.value)) <= mod._GIT_ERR_MAX + 200
 
 
+@pytest.mark.asyncio
+async def test_discover_worktrees_unresolved_git_blames_host_not_repo(tmp_path):
+    """No trusted git => the error names the tool + override, not the repo.
+
+    Issue #2530: this failure used to surface as "git worktree discovery
+    failed in <repo>: no trusted executable for 'git' in <PATH>" — blaming a
+    healthy checkout, echoing the whole trusted PATH into the UI, and never
+    naming KIROCREW_DEVFLEET_BIN_GIT, the override that is the actual remedy.
+    """
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    stderr = f"{mod._UNRESOLVED_TOOL_PREFIX}'git' in {mod._TRUSTED_PATH}"
+    with patch.object(mod, "MAIN_REPO", str(repo)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(-1, "", stderr)
+         )):
+        with pytest.raises(RuntimeError) as exc:
+            await mod._discover_worktrees()
+    msg = str(exc.value)
+    assert "'git'" in msg  # names the tool that could not be resolved
+    assert "KIROCREW_DEVFLEET_BIN_GIT" in msg  # names the remedy
+    assert mod._TRUSTED_PATH not in msg  # PATH stays in the log, not the UI
+    assert "worktree discovery failed" not in msg  # not blamed on the repo
+    assert str(repo) not in msg  # the checkout is not implicated at all
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_real_git_error_not_misclassified(tmp_path):
+    """A git failure merely MENTIONING the sentinel text mid-string is not
+    reclassified: only a stderr `_run_cmd` itself synthesized (prefix at
+    position 0) takes the unresolved-tool branch; everything else still
+    surfaces git's own redacted, bounded message."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    with patch.object(mod, "MAIN_REPO", str(repo)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(128, "", f"fatal: {mod._UNRESOLVED_TOOL_PREFIX}'hook'")
+         )):
+        with pytest.raises(RuntimeError, match="worktree discovery failed"):
+            await mod._discover_worktrees()
+
+
+@pytest.mark.asyncio
+async def test_sync_unresolved_git_names_override_not_path(monkeypatch):
+    """/api/sync with no trusted git returns the same remedy-first message."""
+    with patch.object(mod, "_git", new_callable=AsyncMock,
+                      return_value=mod.BASE_BRANCH), \
+         patch.object(mod, "_venv_python",
+                      return_value=Path("/fake/.venv/bin/python")), \
+         patch.object(mod, "_trusted_bin", side_effect=lambda n: None), \
+         patch.object(mod, "_write_locked_console_scripts", return_value=[]):
+        mod._SYNC_RID = None
+        res = await mod._sync()
+    assert res["ok"] is False
+    assert "'git'" in res["error"]
+    assert "KIROCREW_DEVFLEET_BIN_GIT" in res["error"]
+    assert mod._TRUSTED_PATH not in res["error"]
+
+
+def test_bin_override_var_derivation():
+    """The advertised override var matches what _trusted_bin actually reads,
+    including dash-to-underscore mapping for non-git tools."""
+    assert mod._bin_override_var("git") == "KIROCREW_DEVFLEET_BIN_GIT"
+    assert mod._bin_override_var("some-tool") == "KIROCREW_DEVFLEET_BIN_SOME_TOOL"
+    assert "KIROCREW_DEVFLEET_BIN_GIT" in mod._unresolved_tool_message("git")
+
+
 # =============================================================================
 # HMAC middleware tests
 # =============================================================================
@@ -2390,6 +2469,7 @@ def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_dry_run_plan(monkeypatch, tmp_path):
     """dry_run returns the pointer-based plan without writing anything."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
@@ -2453,6 +2533,7 @@ async def test_make_live_missing_venv(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_venv_not_executable(monkeypatch, tmp_path):
     """.venv/bin/kirocrew present but NOT executable -> a distinct, actionable
     error (missing_venv is for the not-a-file case). A non-executable binary
@@ -2483,6 +2564,7 @@ async def test_make_live_missing_dist(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     """A real cutover on a drivable service writes the pointer AND restages the
     service definition, issues a detached restart, and invalidates the
@@ -2530,6 +2612,7 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_staged_only_leaves_service_definition_untouched(
     monkeypatch, tmp_path,
 ):
@@ -2560,6 +2643,7 @@ async def test_make_live_staged_only_leaves_service_definition_untouched(
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_latches_after_cutover(monkeypatch, tmp_path):
     """A successful cutover latches _MAKE_LIVE_COMMITTED. A second request —
     cutover for a DIFFERENT valid target, or even a dry_run — is then refused
@@ -2589,6 +2673,7 @@ async def test_make_live_latches_after_cutover(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_write_failure_does_not_latch(monkeypatch, tmp_path):
     """A cutover that fails during pointer write (before restart scheduling)
     must NOT latch — the restart never happened, so a subsequent cutover
@@ -2738,6 +2823,7 @@ async def test_make_live_pod_indeterminate_fails_closed(monkeypatch, tmp_path):
 
 # --- make-live: staged-only when service not drivable ---
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_stages_only_when_service_not_drivable(monkeypatch, tmp_path):
     """A live gateway installed as a SYSTEM unit (or no service at all) succeeds
     as staged_only: the pointer is written, no restart attempted, and a manual
@@ -2928,6 +3014,7 @@ def test_sd_value_rejects_control_char_paths():
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_escapes_special_char_worktree(monkeypatch, tmp_path):
     """A worktree path with a space yields a valid plan and a real cutover
     writes the resolved path into the pointer file correctly."""
@@ -3215,6 +3302,7 @@ async def test_make_live_refuses_when_prior_pointer_is_unreadable(
 
 # --- make-live: pointer write + failure rollback ---
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_rolls_back_pointer_on_restart_failure(monkeypatch, tmp_path):
     """A restart failure with a prior pointer restores the PRIOR content and
     reports rolled_back. When there was no prior pointer, the file is deleted."""
@@ -3238,6 +3326,7 @@ async def test_make_live_rolls_back_pointer_on_restart_failure(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_rolls_back_pointer_preserves_prior(monkeypatch, tmp_path):
     """When a prior pointer existed, restart failure restores its content."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
@@ -3263,6 +3352,7 @@ async def test_make_live_rolls_back_pointer_preserves_prior(monkeypatch, tmp_pat
 
 # --- make-live: concurrency single-flight lock ---
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
     """While one cutover holds the make-live lock, a concurrent second call is
     refused immediately with ``busy`` (fail-fast, not queued) and the winner
@@ -3313,6 +3403,7 @@ async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_lock_released_after_failure_and_reusable(monkeypatch, tmp_path):
     """The lock is released on the failure-rollback path too, so a subsequent
     cutover proceeds (never wedged on ``busy``)."""
@@ -3345,6 +3436,7 @@ async def test_make_live_lock_released_after_failure_and_reusable(monkeypatch, t
 
 # --- make-live: pointer-based live worktree resolution ---
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_live_worktree_path_prefers_pointer_over_service(monkeypatch, tmp_path):
     """_live_worktree_path returns the pointer target in preference to the
     service definition ONCE THE GATEWAY IS RUNNING IT. A cutover writes the
@@ -3386,6 +3478,7 @@ async def test_live_worktree_path_prefers_pointer_over_service(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_live_worktree_path_reports_running_image_while_staged(monkeypatch, tmp_path):
     """A staged pointer is NOT live: until the gateway restarts it is still
     executing the previous checkout, and reporting the pointer as live would
@@ -3415,6 +3508,7 @@ async def test_live_worktree_path_reports_running_image_while_staged(monkeypatch
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_live_worktree_path_honours_pointer_when_checkout_unknown(monkeypatch, tmp_path):
     """A packaged install is not a checkout, so the running image cannot be
     compared. That is "cannot verify", not a mismatch: the pointer stays
@@ -3440,6 +3534,7 @@ async def test_live_worktree_path_honours_pointer_when_checkout_unknown(monkeypa
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_repointing_at_the_running_checkout_cancels_a_staged_cutover(monkeypatch, tmp_path):
     """While a cutover is staged, naming the checkout that is RUNNING is a cancel.
 
@@ -3498,6 +3593,7 @@ def _stage_a_cutover(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cutover_unwind_runs_off_the_event_loop(monkeypatch, tmp_path):
     """The rollback must not block the loop.
 
@@ -3533,6 +3629,7 @@ async def test_cutover_unwind_runs_off_the_event_loop(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_drivable_host_with_a_stage_pending_refuses(monkeypatch, tmp_path):
     """On a host Dev Fleet CAN drive, this request must do NOTHING destructive.
 
@@ -3570,6 +3667,7 @@ async def test_drivable_host_with_a_stage_pending_refuses(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_keeps_a_pointer_selected_checkout_live(monkeypatch, tmp_path):
     """The scenario that makes deletion wrong.
 
@@ -3596,6 +3694,7 @@ async def test_cancel_keeps_a_pointer_selected_checkout_live(monkeypatch, tmp_pa
     OSError(30, "Read-only file system"),
 ])
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_write_failure_is_a_refusal_not_a_crash(monkeypatch, tmp_path, boom):
     """A full or read-only data home must refuse, not raise into a 500.
 
@@ -3618,6 +3717,7 @@ async def test_cancel_write_failure_is_a_refusal_not_a_crash(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_rolls_the_pointer_back_when_hardening_fails(monkeypatch, tmp_path):
     """write_target can fail AFTER replacing the pointer.
 
@@ -3646,6 +3746,7 @@ async def test_cancel_rolls_the_pointer_back_when_hardening_fails(monkeypatch, t
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_reports_a_failed_rollback(monkeypatch, tmp_path):
     """When the rollback itself fails the operator is told, not left guessing."""
     running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
@@ -3663,6 +3764,7 @@ async def test_cancel_reports_a_failed_rollback(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_invalid_target_is_a_refusal_not_a_crash(monkeypatch, tmp_path):
     """The validation half of the same guard."""
     running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
@@ -3679,6 +3781,7 @@ async def test_cancel_invalid_target_is_a_refusal_not_a_crash(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_dry_run_cancel_reports_the_plan_without_deleting(monkeypatch, tmp_path):
     """`dry_run` must never mutate.
 
@@ -3700,6 +3803,7 @@ async def test_dry_run_cancel_reports_the_plan_without_deleting(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_fails_fast_while_a_cutover_holds_the_lock(monkeypatch, tmp_path):
     """The cancel mutates the same pointer a cutover writes, so it takes the
     same single-flight lock and reports `busy` instead of racing it."""
@@ -3714,6 +3818,7 @@ async def test_cancel_fails_fast_while_a_cutover_holds_the_lock(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_refuses_once_a_cutover_has_committed(monkeypatch, tmp_path):
     """A committed cutover is already restarting; deleting the pointer then would
     land the pending restart somewhere the operator did not choose."""
@@ -3773,6 +3878,7 @@ def test_running_checkout_resolves_this_checkout():
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_staged_only_allows_subsequent_cutover(monkeypatch, tmp_path):
     """A staged_only cutover does NOT latch, so re-pointing to a DIFFERENT
     worktree proceeds without a restart_pending refusal."""
@@ -4066,6 +4172,7 @@ def _is_stage_step(argv: list) -> bool:
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_sync_stages_dist_on_a_stock_checkout(monkeypatch):
     """The staging step is part of the sync on a stock checkout.
 
@@ -4120,6 +4227,7 @@ async def test_sync_never_stages_dist_on_an_edition_checkout(monkeypatch):
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
     """Only the network fetch step carries operator credential helpers;
     worktree-controlled merge/pip/npm steps must not (token minting via
@@ -4179,6 +4287,7 @@ async def test_fetch_pr_head_oid_refuses_non_merged(monkeypatch):
     assert await mod._fetch_pr_head_oid("feature-x") == "b" * 40
 
 
+@_POSIX_ONLY
 def test_trusted_bin_rejects_agent_writable_path(monkeypatch, tmp_path):
     """Bare command names resolve only inside the trusted bin dirs; a planted
     shim in an agent-writable PATH entry is never selected."""
@@ -4225,6 +4334,7 @@ def test_trusted_bin_pins_the_resolved_target_not_the_symlink(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_run_cmd_pins_trusted_path(monkeypatch):
     """_run_cmd rewrites bare names to trusted absolute paths and pins PATH."""
     captured: dict = {}
@@ -4423,6 +4533,7 @@ def test_strict_sandbox_hides_gh_config():
     assert ".config/gh" not in sandbox_mod._STANDARD_DIRS
 
 
+@_POSIX_ONLY
 def test_build_preexec_raises_nofile_ceiling(monkeypatch):
     """Build-class spawns get a 65536 NOFILE ceiling (default 1024 EMFILEs vite)."""
     import kiro_crew.sandbox as sandbox_mod
@@ -4440,6 +4551,7 @@ def test_build_preexec_raises_nofile_ceiling(monkeypatch):
     assert captured["max_open_files"] >= 65536
 
 
+@_POSIX_ONLY
 def test_build_preexec_tolerates_malformed_config(monkeypatch):
     """A junk operator value ("lots") must not raise — the spawn falls back
     to the ceiling instead of leaving Dev Fleet unable to start."""
@@ -5701,6 +5813,7 @@ async def test_api_health_start_id_none_safe():
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_make_live_returns_start_id(monkeypatch, tmp_path):
     """A real cutover captures + returns the pre-restart start identity so the
     dashboard reuses the same restart handshake (issue #639)."""
@@ -6030,6 +6143,7 @@ def test_declared_platforms_all_resolve_to_a_real_sys_platform():
 
 
 @pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_path):
     """Pull+Build must build and stage inside ONE locked step.
 
@@ -7362,3 +7476,304 @@ async def test_dirty_unmerged_message_does_not_promise_force_override():
     assert "use force to override" not in result["error"]
     # Should mention uncommitted changes
     assert "uncommitted changes" in result["error"]
+
+
+# =============================================================================
+# Foreground last-resort restart (issue #2566)
+# =============================================================================
+
+def _mk_kcbin(tmp_path: Path, name: str = "kirocrew") -> Path:
+    """An executable file that passes ForegroundBackend's launcher validation."""
+    d = tmp_path / "bin"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text("#!/bin/sh\n")
+    p.chmod(0o755)
+    return p
+
+
+def _fg(tmp_path: Path, *, port: int = 7777, pid: int = 4242,
+        launcher: "str | None" = None, alive: bool = True, spawn=None,
+        ports: "list[int] | None" = None, pids: "dict[int, int] | None" = None,
+        confined: "str | None" = None):
+    """A ForegroundBackend wired to fakes. Returns (backend, spawned_argvs)."""
+    from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
+
+    spawned: list[list[str]] = []
+
+    def default_spawn(argv):
+        spawned.append(list(argv))
+
+    marker_ports = ports if ports is not None else [port]
+    pid_by_port = pids if pids is not None else {port: pid}
+    backend = gs.ForegroundBackend(
+        marker_ports=lambda: list(marker_ports),
+        read_pid=lambda p: pid_by_port.get(p),
+        read_launcher=lambda p: launcher,
+        pid_exists=lambda p: alive,
+        spawn=spawn if spawn is not None else default_spawn,
+        confinement=lambda: confined,
+    )
+    return backend, spawned
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_ok_and_start_id(tmp_path):
+    """Single live marker + resolvable binary -> ok; start_id is the marker pid."""
+    kc = _mk_kcbin(tmp_path)
+    fg, _ = _fg(tmp_path, launcher=str(kc))
+    assert await fg.status() == "ok"
+    assert await fg.start_id() == "4242"
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_unavailable_cases(tmp_path):
+    """No marker, dead pid, or ambiguous markers -> unavailable, start_id None."""
+    kc = _mk_kcbin(tmp_path)
+    # No marker at all.
+    fg, _ = _fg(tmp_path, ports=[], pids={}, launcher=str(kc))
+    assert await fg.status() == "no_foreground_gateway"
+    assert await fg.start_id() is None
+    # Marker whose pid is dead (crash leftover).
+    fg, _ = _fg(tmp_path, alive=False, launcher=str(kc))
+    assert await fg.status() == "no_foreground_gateway"
+    # Two live markers: ambiguous, never guess which gateway to bounce.
+    fg, _ = _fg(tmp_path, ports=[7777, 7778], pids={7777: 1, 7778: 2},
+                launcher=str(kc))
+    assert await fg.status() == "no_foreground_gateway"
+    assert await fg.start_id() is None
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_binary_resolution(tmp_path):
+    """ONLY the keystone-fenced marker launcher is trusted — no PATH fallback
+    (an agent can plant a `kirocrew` in ~/.local/bin); invalid recorded
+    launchers are refused rather than guessed around."""
+    kc = _mk_kcbin(tmp_path)
+    # Marker launcher used, verbatim.
+    fg, spawned = _fg(tmp_path, launcher=str(kc))
+    ok, err = await fg.restart_detached()
+    assert ok and spawned[0][0] == str(kc)
+    # No recorded launcher (source-tree launch, empty marker): refuse — the
+    # PATH fallback is deliberately absent.
+    fg, spawned = _fg(tmp_path, launcher=None)
+    assert await fg.status() == "no_kirocrew_binary"
+    ok, err = await fg.restart_detached()
+    assert not ok and "resolved" in err and spawned == []
+    # A launcher that is not basenamed kirocrew is refused even when executable
+    # (the _own_console_script rule: exec the entry point it claims to be).
+    impostor = _mk_kcbin(tmp_path / "i", name="systemctl")
+    fg, _ = _fg(tmp_path, launcher=str(impostor))
+    assert await fg.status() == "no_kirocrew_binary"
+    # A non-executable launcher is refused: it could stop the gateway but never
+    # start the replacement.
+    limp = _mk_kcbin(tmp_path / "n")
+    limp.chmod(0o644)
+    fg, _ = _fg(tmp_path, launcher=str(limp))
+    assert await fg.status() == "no_kirocrew_binary"
+    # A relative recorded path is refused (never resolved against a cwd).
+    fg, _ = _fg(tmp_path, launcher="bin/kirocrew")
+    assert await fg.status() == "no_kirocrew_binary"
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_refuses_when_confined(tmp_path):
+    """A confined backend (OS sandbox / agents cgroup scope) never spawns: the
+    replacement would inherit the confinement for the gateway's whole life."""
+    kc = _mk_kcbin(tmp_path)
+    fg, spawned = _fg(tmp_path, launcher=str(kc),
+                      confined="the Dev Fleet backend runs inside the sandbox")
+    assert await fg.status() == "backend_confined"
+    ok, err = await fg.restart_detached()
+    assert not ok and "sandbox" in err
+    assert spawned == []
+
+
+def test_default_confinement_detects_sandbox_marker(monkeypatch):
+    """KIROCREW_SANDBOX_ACTIVE — the launcher-exported in-sandbox marker — is
+    detected as confinement (checked before the cgroup read, so this is
+    deterministic on any host)."""
+    from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
+
+    monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+    reason = gs.default_confinement()
+    assert reason is not None and "sandbox" in reason
+
+
+@pytest.mark.asyncio
+async def test_foreground_restart_detached_pins_port(tmp_path):
+    """The detached command is `<bin> restart --port <marker port>`."""
+    kc = _mk_kcbin(tmp_path)
+    fg, spawned = _fg(tmp_path, port=6776, pid=99, launcher=str(kc))
+    ok, err = await fg.restart_detached()
+    assert ok and err == ""
+    assert spawned == [[str(kc), "restart", "--port", "6776"]]
+
+
+@pytest.mark.asyncio
+async def test_foreground_spawn_failure_signals_nothing(tmp_path, monkeypatch):
+    """A spawn that cannot be established returns (False, why) and the backend
+    never signals any process — the incumbent gateway must stay untouched."""
+    kc = _mk_kcbin(tmp_path)
+
+    def bad_spawn(argv):
+        raise OSError("resource temporarily unavailable")
+
+    kills: list = []
+    monkeypatch.setattr(os, "kill", lambda *a: kills.append(a))
+    fg, _ = _fg(tmp_path, launcher=str(kc), spawn=bad_spawn)
+    ok, err = await fg.restart_detached()
+    assert not ok and "resource temporarily unavailable" in err
+    assert kills == []
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_last_resort_cutover(monkeypatch, tmp_path):
+    """When no manager is drivable but a single live foreground gateway exists,
+    make-live finishes the cutover itself: pointer written, detached
+    `kirocrew restart` established, start_id (the pre-restart pid) returned,
+    and the committed latch set exactly as on a drivable host."""
+    kc = _mk_kcbin(tmp_path)
+    for status in ("no_systemd", "no_user_unit", "no_launchd", "no_agent"):
+        wt = _mk_make_live_wt(tmp_path / status, venv=True, dist=True)
+        ptr_dir = tmp_path / "ptr" / status
+        _stub_make_live(monkeypatch, wt, unit_status=status, pointer_dir=ptr_dir)
+        monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+        fg, spawned = _fg(tmp_path, port=7777, pid=31337, launcher=str(kc))
+        monkeypatch.setattr(mod, "_foreground_backend", lambda fg=fg: fg)
+
+        res = await mod._make_live(str(wt), dry_run=False)
+        assert res["ok"] is True and res["cutover"] is True, f"{status}: {res}"
+        assert "staged_only" not in res
+        assert res["start_id"] == "31337"
+        assert spawned == [[str(kc), "restart", "--port", "7777"]]
+        # Pointer written with the target.
+        data = json.loads((ptr_dir / "live_target.json").read_text())
+        assert Path(data["checkout"]).resolve() == wt.resolve()
+        # A restart IS pending: latched like the drivable path.
+        assert mod._MAKE_LIVE_COMMITTED is True
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_is_strictly_last_resort(monkeypatch, tmp_path):
+    """Ordering is systemd > launchd > foreground: on a drivable host — or one
+    whose manager exists but is mis-set-up (named-remedy codes) — the
+    foreground backend is never even constructed."""
+    factory = MagicMock()
+    monkeypatch.setattr(mod, "_foreground_backend", factory)
+    # Drivable systemd host: full managed cutover, no foreground.
+    wt = _mk_make_live_wt(tmp_path / "ok", venv=True, dist=True)
+    _stub_make_live(monkeypatch, wt, unit_status="ok",
+                    pointer_dir=tmp_path / "ptr-ok")
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True and "staged_only" not in res
+    factory.assert_not_called()
+    # Mis-set-up managers keep their named remedy; foreground must not bounce
+    # a gateway behind a manager's back.
+    for status in ("user_unit_inactive", "agent_not_indirected",
+                   "agent_restart_contract_outdated", "live_program_missing"):
+        wt = _mk_make_live_wt(tmp_path / status, venv=True, dist=True)
+        _stub_make_live(monkeypatch, wt, unit_status=status,
+                        pointer_dir=tmp_path / f"ptr-{status}")
+        monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+        res = await mod._make_live(str(wt), dry_run=False)
+        assert res["ok"] is True and res["staged_only"] is True, f"{status}: {res}"
+        factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_spawn_failure_keeps_advisory(monkeypatch, tmp_path):
+    """FAIL SAFE: when the detached spawn cannot be established the running
+    gateway is untouched, the pointer STAYS staged, the committed latch is not
+    set, and the response is the status-quo manual advisory."""
+    kc = _mk_kcbin(tmp_path)
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, unit_status="no_systemd", pointer_dir=ptr_dir)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    def bad_spawn(argv):
+        raise OSError("spawn refused")
+
+    fg, _ = _fg(tmp_path, launcher=str(kc), spawn=bad_spawn)
+    monkeypatch.setattr(mod, "_foreground_backend", lambda: fg)
+
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True and res["staged_only"] is True
+    assert res["manual_restart"]
+    assert res["manual_restart"] in res["notice"]
+    # The plan must not keep promising an automatic restart that failed.
+    assert res["plan"]["restart"] == "manual"
+    # Pointer written and KEPT: "finish with one command", not "start over".
+    data = json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == wt.resolve()
+    # No restart pending -> not latched; a re-point must stay allowed.
+    assert mod._MAKE_LIVE_COMMITTED is False
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_unavailable_keeps_advisory(monkeypatch, tmp_path):
+    """Eligible codes without a usable foreground gateway (no/ambiguous marker,
+    unresolvable binary, confined backend) keep the pre-existing staged_only
+    behaviour."""
+    kc = _mk_kcbin(tmp_path)
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    for label, fg_kwargs in (
+        ("no_marker", dict(ports=[], pids={}, launcher=None)),
+        ("confined", dict(launcher=str(kc), confined="backend is sandboxed")),
+    ):
+        _stub_make_live(monkeypatch, wt, unit_status="no_systemd",
+                        pointer_dir=ptr_dir / label)
+        monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+        fg, spawned = _fg(tmp_path, **fg_kwargs)
+        monkeypatch.setattr(mod, "_foreground_backend", lambda fg=fg: fg)
+
+        res = await mod._make_live(str(wt), dry_run=False)
+        assert res["ok"] is True and res["staged_only"] is True, f"{label}: {res}"
+        assert res["manual_restart"] in res["notice"]
+        assert spawned == []
+        assert mod._MAKE_LIVE_COMMITTED is False
+
+
+@pytest.mark.asyncio
+async def test_make_live_foreground_dry_run_plan(monkeypatch, tmp_path):
+    """A dry run on a foreground-capable host reports the restart as automatic
+    with the exact command — and mutates nothing, spawns nothing."""
+    kc = _mk_kcbin(tmp_path)
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, unit_status="no_systemd", pointer_dir=ptr_dir)
+    fg, spawned = _fg(tmp_path, port=7777, pid=1, launcher=str(kc))
+    monkeypatch.setattr(mod, "_foreground_backend", lambda: fg)
+
+    res = await mod._make_live(str(wt), dry_run=True)
+    assert res["ok"] is True and res["dry_run"] is True
+    plan = res["plan"]
+    assert plan["restart"] == "automatic"
+    assert plan["restart_backend"] == "foreground"
+    assert plan["restart_command"] == f"{kc} restart --port 7777"
+    assert spawned == []
+    assert not (ptr_dir / "live_target.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_gateway_start_id_foreground_fallback(monkeypatch, tmp_path):
+    """On an eligible host the health handshake identity is the marker pid, so
+    the dashboard can observe a foreground cutover complete; on an ineligible
+    host it stays None (degrade, never wait forever)."""
+    kc = _mk_kcbin(tmp_path)
+    fg, _ = _fg(tmp_path, pid=8080, launcher=str(kc))
+    monkeypatch.setattr(mod, "_foreground_backend", lambda: fg)
+    with patch.object(mod, "sys", MagicMock(platform="linux")), \
+         patch.object(mod, "shutil",
+                      MagicMock(which=MagicMock(return_value=None))):
+        # No systemctl at all -> primary yields None -> foreground pid.
+        assert await mod._gateway_start_id() == "8080"
+    with patch.object(mod, "_live_user_unit_status", new_callable=AsyncMock,
+                      return_value="user_unit_inactive"), \
+         patch.object(mod, "sys", MagicMock(platform="linux")), \
+         patch.object(mod, "shutil",
+                      MagicMock(which=MagicMock(return_value=None))):
+        assert await mod._gateway_start_id() is None

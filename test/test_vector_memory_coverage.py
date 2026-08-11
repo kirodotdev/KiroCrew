@@ -13,6 +13,7 @@ requirement.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import struct
 import time
@@ -1209,6 +1210,67 @@ class TestLessonDedupPaths:
     def test_lessons_context_is_empty_without_lessons(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         assert store.get_lessons_context() == ""
+
+    def test_lessons_context_renders_imported_dict_lesson_as_prose(self, tmp_path: Path) -> None:
+        """An imported lesson is injected as its rule, not as a Python dict repr.
+
+        The onboarding import stores a mapping rather than the string
+        ``learn_add`` writes, and both shapes land in the same prompt block. The
+        formatter used to interpolate the decoded value directly, so an imported
+        row reached the model as ``{'rule': ..., 'category': ...}`` — the
+        instruction buried inside punctuation and field names.
+        """
+        store = _store(tmp_path)
+        store.set_semantic_if_absent(
+            f"lesson.{hashlib.sha256(b'Prefer dark mode').hexdigest()[:16]}",
+            {"rule": "Prefer dark mode", "category": "preference", "negative": None},
+            1.0,
+            "import",
+        )
+        ctx = store.get_lessons_context()
+        assert "- Prefer dark mode" in ctx
+        # The repr's own punctuation is the assertion: no dict may survive into
+        # the prompt, and `category`/`negative` are storage fields the model has
+        # no use for.
+        assert "{'rule'" not in ctx
+        assert "category" not in ctx
+        assert "negative" not in ctx
+
+    def test_lessons_context_renders_an_imported_not_clause(self, tmp_path: Path) -> None:
+        """A dict-form lesson's NOT-clause is joined with the same separator.
+
+        The string form spells a clause as ``<rule> — NOT: <negative>``, so the
+        mapping form has to render identically — otherwise the same lesson reads
+        two different ways depending on which writer stored it.
+        """
+        store = _store(tmp_path)
+        store.set_semantic_if_absent(
+            f"lesson.{hashlib.sha256(b'Pin dependency versions').hexdigest()[:16]}",
+            {
+                "rule": "Pin dependency versions",
+                "category": "preference",
+                "negative": "never use open ranges",
+            },
+            1.0,
+            "import",
+        )
+        ctx = store.get_lessons_context()
+        assert "- Pin dependency versions — NOT: never use open ranges" in ctx
+        assert "{'rule'" not in ctx
+
+    def test_lessons_context_skips_an_unrenderable_row(self, tmp_path: Path) -> None:
+        """A shape with no usable rule is dropped, not stringified as a guess.
+
+        This runs while a session's prompt is being built, where a raise costs
+        the whole turn, so an unexpected value has to degrade to "omit it".
+        """
+        store = _store(tmp_path)
+        store.set_semantic_if_absent("lesson.emptyrule000", {"category": "preference"}, 1.0, "import")
+        store.set_semantic_if_absent("lesson.listshape000", ["not", "a", "lesson"], 1.0, "import")
+        ctx = store.get_lessons_context()
+        assert "category" not in ctx
+        assert "not a lesson" not in ctx
+        assert "['not'" not in ctx
 
 
 class TestContradictionCandidateBanding:

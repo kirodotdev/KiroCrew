@@ -193,6 +193,88 @@ def unresolved_thread_count(number):
     return None  # hit the page cap with more pages left -> uncertain (fail-closed)
 
 
+def decide(
+    state,
+    mergeable,
+    merge_state,
+    decision,
+    draft,
+    readiness_kind,
+    n_running,
+    n_fail,
+    n_checks,
+    readiness_context,
+):
+    """Resolve PR state to (exit_code, status line). Fail-closed.
+
+    Exit codes: 0 = clean, 10 = wait (nothing to do yet), 20 = act.
+
+    Precedence is the load-bearing part, and it is ordered by "can waiting
+    change this answer?" rather than by how the fields arrive:
+
+    1. A non-open PR is terminal, and must be decided BEFORE any wait: GitHub
+       reports mergeable=UNKNOWN for merged/closed PRs forever, so waiting on
+       it returns 10 on every poll and a loop never stops.
+    2. Conditions waiting CANNOT fix outrank "still running". A conflicted PR is
+       the case that matters: the host cannot build a merge ref for it, so it
+       dispatches no pull_request workflows at all and every check visible
+       belongs to the old head. Ranking in-flight checks first reports "running"
+       forever while nothing can complete -- a stall only a human notices.
+       BEHIND, draft and CHANGES_REQUESTED behave the same way: each survives
+       any amount of waiting and needs the author to act.
+    3. Only then is "still running" a wait, and an uncomputed mergeability too.
+    4. Everything left is a check-result verdict.
+    """
+    if state != "OPEN":
+        return 20, "STATUS: BLOCKED - PR state is {} (not OPEN; terminal)".format(state or "?")
+
+    blocked_now = []
+    if mergeable == "CONFLICTING" or merge_state in ("DIRTY", "CONFLICTING"):
+        blocked_now.append("merge conflict / not mergeable")
+    if merge_state == "BEHIND":
+        blocked_now.append("branch is BEHIND base - re-sync onto the latest base")
+    if draft:
+        blocked_now.append("PR is a draft")
+    if decision == "CHANGES_REQUESTED":
+        blocked_now.append("review decision is CHANGES_REQUESTED")
+    if blocked_now:
+        return 20, "STATUS: BLOCKED - " + "; ".join(blocked_now)
+
+    # Once published, the aggregate is authoritative over stale duplicate
+    # checks in the rollup. Legacy PRs without it still use the full rollup.
+    if readiness_kind == "running" or (readiness_kind is None and n_running > 0):
+        return 10, "STATUS: RUNNING (round not complete)"
+    if mergeable not in ("MERGEABLE", "CONFLICTING"):
+        return 10, "STATUS: RUNNING (mergeability not yet computed: {})".format(
+            mergeable or "UNKNOWN"
+        )
+
+    reasons = []
+    if readiness_kind == "fail":
+        reasons.append("{} reported action required".format(readiness_context))
+    elif readiness_kind is None and n_fail > 0:
+        reasons.append("{} check(s) failed".format(n_fail))
+    if n_checks == 0:
+        reasons.append("no CI checks reported - cannot confirm CI (fail-closed)")
+    if merge_state and merge_state not in (
+        "CLEAN",
+        "HAS_HOOKS",
+        "UNSTABLE",
+        "BLOCKED",
+        "DIRTY",
+        "CONFLICTING",
+        "DRAFT",
+        "BEHIND",
+    ):
+        # BLOCKED = pending required review (expected for a review-ready PR);
+        # anything unrecognized is fail-closed.
+        reasons.append("unrecognized merge state '{}' (fail-closed)".format(merge_state))
+
+    if reasons:
+        return 20, "STATUS: BLOCKED - " + "; ".join(reasons)
+    return 0, "STATUS: CLEAN (readiness passed, mergeable, no blocking review decision)"
+
+
 def main(argv):
     if run(["gh", "auth", "status"])[0] != 0:
         err("ERROR: gh not found or not authenticated. Run: gh auth login")
@@ -262,57 +344,20 @@ def main(argv):
     )
     print("=" * 54)
 
-    # ---- Decision (fail-closed) --------------------------------------------
-    # A non-open PR is terminal, and must be decided BEFORE the mergeability
-    # wait: GitHub reports mergeable=UNKNOWN for merged/closed PRs forever, so
-    # waiting on it would return 10 on every poll and a loop would never stop.
-    if state != "OPEN":
-        print("STATUS: BLOCKED - PR state is {} (not OPEN; terminal)".format(state or "?"))
-        return 20
-    # Once published, the aggregate is authoritative over stale duplicate
-    # checks in the rollup. Legacy PRs without it still use the full rollup.
-    if readiness_kind == "running" or (readiness_kind is None and n_running > 0):
-        print("STATUS: RUNNING (round not complete)")
-        return 10
-    # Mergeability not yet computed by GitHub -> unknown -> wait, don't pass.
-    if mergeable not in ("MERGEABLE", "CONFLICTING"):
-        print("STATUS: RUNNING (mergeability not yet computed: {})".format(mergeable or "UNKNOWN"))
-        return 10
-
-    reasons = []
-    if readiness_kind == "fail":
-        reasons.append("{} reported action required".format(readiness_context))
-    elif readiness_kind is None and n_fail > 0:
-        reasons.append("{} check(s) failed".format(n_fail))
-    if len(rollup) == 0:
-        reasons.append("no CI checks reported - cannot confirm CI (fail-closed)")
-    if draft:
-        reasons.append("PR is a draft")
-    if mergeable == "CONFLICTING" or merge_state in ("DIRTY", "CONFLICTING"):
-        reasons.append("merge conflict / not mergeable")
-    if merge_state == "BEHIND":
-        reasons.append("branch is BEHIND base - re-sync onto the latest base")
-    elif merge_state and merge_state not in (
-        "CLEAN",
-        "HAS_HOOKS",
-        "UNSTABLE",
-        "BLOCKED",
-        "DIRTY",
-        "CONFLICTING",
-        "DRAFT",
-    ):
-        # BLOCKED = pending required review (expected for a review-ready PR);
-        # anything unrecognized is fail-closed.
-        reasons.append("unrecognized merge state '{}' (fail-closed)".format(merge_state))
-    if decision == "CHANGES_REQUESTED":
-        reasons.append("review decision is CHANGES_REQUESTED")
-
-    if reasons:
-        print("STATUS: BLOCKED - " + "; ".join(reasons))
-        return 20
-
-    print("STATUS: CLEAN (readiness passed, mergeable, no blocking review decision)")
-    return 0
+    code, status = decide(
+        state=state,
+        mergeable=mergeable,
+        merge_state=merge_state,
+        decision=decision,
+        draft=draft,
+        readiness_kind=readiness_kind,
+        n_running=n_running,
+        n_fail=n_fail,
+        n_checks=len(rollup),
+        readiness_context=readiness_context,
+    )
+    print(status)
+    return code
 
 
 if __name__ == "__main__":

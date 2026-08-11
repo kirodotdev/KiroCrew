@@ -363,38 +363,47 @@ class SafetyOverride:
         Succeeds if the override is currently active OR if it expired within
         the ``_RENEW_GRACE_SECS`` grace window.
 
+        A renewal extends auto-approval authority, so it follows the same
+        fail-closed discipline as ``_commit_activation``: the SEL event is
+        written with ``critical=True`` BEFORE the deadline moves, and an audit
+        failure leaves the grant untouched. The SEL write must not run under
+        ``_lock`` (it is I/O and would stall every concurrent ``is_active()``),
+        so eligibility is re-verified under the lock before committing — a
+        grant deactivated during the audit window must not be resurrected.
+
         Returns:
             RenewResult.renewed=True on success, False otherwise.
         """
         now_mono = time.monotonic()
-        ttl = 0
         # Resolved BEFORE taking the lock: the resolver reads config from disk,
         # and holding the state lock across that I/O would stall every concurrent
         # is_active() check.
         renew_ttl = min(self.current_adhoc_duration()[0], self._MAX_TTL)
 
-        denied = False
+        def _arms(at: float) -> tuple[bool, bool]:
+            # (currently_active, in_grace). Caller must hold ``_lock``. A
+            # deactivate() on a LIVE grant zeroes ``_expires_at``, so both arms
+            # go false; a lapsed grant keeps its past deadline and stays
+            # renewable within the grace window.
+            currently_active = self._active and self._expires_at > at
+            in_grace = (
+                not currently_active
+                and self._expires_at > 0
+                and (at - self._expires_at) <= self._RENEW_GRACE_SECS
+            )
+            return currently_active, in_grace
+
         with self._lock:
             # A permanent grant has nothing to extend and must never be
             # downgraded to a finite deadline by a renew.
             if self._active and self._permanent:
                 return RenewResult(renewed=True, ttl=-1, source=source)
-            currently_active = self._active and self._expires_at > now_mono
-            in_grace = (
-                not currently_active
-                and self._expires_at > 0
-                and (now_mono - self._expires_at) <= self._RENEW_GRACE_SECS
-            )
-            if currently_active or in_grace:
-                ttl = renew_ttl
-                self._active = True
-                self._expires_at = now_mono + ttl
-                self._last_renewed_at = now_mono
-                self._last_renewed_by = source
-            else:
-                denied = True
+            began_active, began_in_grace = _arms(now_mono)
+            # Every activation bumps the count, so an unchanged count proves no
+            # new grant was installed while the audit ran with the lock released.
+            count_snapshot = self._activation_count
 
-        if denied:
+        if not (began_active or began_in_grace):
             self._log_sel(
                 caller="safety_override",
                 operation="safety_override:renew",
@@ -403,28 +412,123 @@ class SafetyOverride:
             )
             return RenewResult(renewed=False, ttl=0, source=source, reason="not_active")
 
-        self._log_sel(
-            caller="safety_override",
-            operation="safety_override:renew",
-            outcome="renewed",
-            resources=f"source:{source}, new_ttl:{ttl}s",
-        )
+        ttl = renew_ttl
+        # Audit BEFORE committing — fail-closed with no unrecorded extension:
+        # a renewal that cannot be written to the SEL must not move the deadline.
+        try:
+            self._log_sel(
+                caller="safety_override",
+                operation="safety_override:renew",
+                outcome="renewed",
+                resources=f"source:{source}, new_ttl:{ttl}s",
+                critical=True,
+            )
+        except Exception:
+            logger.error("SEL audit failed; refusing safety override renewal", exc_info=True)
+            return RenewResult(renewed=False, ttl=0, source=source, reason="audit_failed")
+
+        # The audit ran with the lock released, so re-verify before committing:
+        # a concurrent deactivate() during that window must not be undone here,
+        # and a concurrent activate() (which re-audits its own grant) must not
+        # have its fresh deadline overwritten by this stale renewal.
+        commit_mono = time.monotonic()
+        commit_refused = False
+        refusal_reason = ""
+        with self._lock:
+            still_active, still_in_grace = _arms(commit_mono)
+            # The commit must hold on the ARM the renewal began on. A renewal
+            # that began active may not slide into the grace arm: a grant that
+            # went from active to lapsed during the audit window either expired
+            # naturally near its deadline or was explicitly deactivated (an
+            # explicit deactivate of an already-LAPSED grant leaves
+            # ``_expires_at`` intact, so lapsed-plus-in-grace cannot distinguish
+            # "expired" from "operator said off") — refuse rather than risk
+            # undoing an operator's explicit off. A renewal that began in grace
+            # may still commit from grace: nothing new lapsed in the window.
+            arm_holds = still_active if began_active else (still_active or still_in_grace)
+            # Every activation bumps the count, and a permanent grant can only
+            # appear via an activation, so this one guard also covers a
+            # permanent grant installed during the audit window — the refusal
+            # below keeps it untouched.
+            if self._activation_count != count_snapshot:
+                commit_refused = True
+                refusal_reason = "superseded_by_activation"
+            elif arm_holds:
+                self._active = True
+                self._expires_at = commit_mono + ttl
+                self._last_renewed_at = commit_mono
+                self._last_renewed_by = source
+            else:
+                commit_refused = True
+                refusal_reason = "not_active_at_commit"
+
+        if commit_refused:
+            # The "renewed" event above is already persisted; record that the
+            # commit was refused so an auditor does not read a renewal that
+            # never took effect. Non-critical: audited-but-not-extended is the
+            # safe direction.
+            self._log_sel(
+                caller="safety_override",
+                operation="safety_override:renew",
+                outcome="denied",
+                resources=f"reason:{refusal_reason}",
+            )
+            return RenewResult(renewed=False, ttl=0, source=source, reason="not_active")
+
         return RenewResult(renewed=True, ttl=ttl, source=source)
 
     def deactivate(self, source: str) -> None:
-        """Deactivate the override immediately.  No-op if already inactive."""
+        """Deactivate the override immediately.
+
+        Emits a ``safety_override:deactivate`` SEL event whenever a grant
+        exists in ANY form — live, or already lapsed via lazy expiry. Lazy
+        expiry (``is_active``) clears only ``_active`` and leaves the rest of
+        the grant's state in place, so ``_expires_at`` still holding a nonzero
+        deadline is what distinguishes "lapsed" from "never activated": the
+        0.0 sentinel means no grant ever existed (or it was already explicitly
+        deactivated), and only that case stays silent. The SEL stream is the
+        durable record of who changed the auto-approval posture, so an
+        operator's explicit decision to switch back to normal mode must be
+        recorded even when the TTL happened to elapse first.
+
+        Zeroing ``_expires_at`` here also closes the renew grace window, so a
+        grant the operator explicitly revoked cannot be resurrected by a
+        subsequent ``renew()`` — regardless of whether it was live or lapsed
+        at the time of the call.
+        """
+        now_mono = time.monotonic()
         with self._lock:
-            if not self._active:
+            if not self._active and self._expires_at <= 0.0:
                 return
+            # _active alone can overstate liveness: a lapsed TTL is only
+            # reconciled when is_active() polls, so derive liveness the same
+            # way renew() does — permanence or an unexpired deadline.
+            was_active = self._active and (self._permanent or self._expires_at > now_mono)
+            was_permanent = was_active and self._permanent
+            prior_source = self._source
+            remaining = (
+                -1
+                if was_permanent
+                else (max(0, int(self._expires_at - now_mono)) if was_active else 0)
+            )
             self._active = False
             self._permanent = False
             self._expires_at = 0.0
 
+        # SEL write happens OUTSIDE the lock (same rule as renew(): never hold
+        # the state lock across I/O). This is a REVOCATION, not a grant, so it
+        # is deliberately NOT fail-closed like _commit_activation: refusing to
+        # deactivate because an audit write failed would leave auto-approval
+        # ON, which is strictly worse. The state change above is unconditional.
         self._log_sel(
             caller="safety_override",
             operation="safety_override:deactivate",
             outcome="disabled",
-            resources=f"source:{source}",
+            resources=(
+                f"source:{source}, was_active:{was_active}, "
+                f"was_permanent:{was_permanent}, remaining:{remaining}s, "
+                f"prior_source:{prior_source}"
+            ),
         )
 
     # ── Task-scoped grants ───────────────────────────────────────────────────

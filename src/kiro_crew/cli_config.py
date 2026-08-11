@@ -15,6 +15,7 @@ from kiro_crew.config.loader import (
     _subtract_overlay,
     config_local_path,
     config_path,
+    stamp_config_meta,
     write_config_atomically,
 )
 from kiro_crew.hooks import safe_read_file
@@ -63,7 +64,17 @@ def _config_cmd(args: argparse.Namespace) -> None:
             except (json.JSONDecodeError, OSError) as e:
                 print(f"❌ Invalid JSON: {e}", file=sys.stderr)
                 sys.exit(1)
-            write_config_atomically(config_path(), data)
+            if not isinstance(data, dict):
+                # A JSON array or scalar parses fine but is not a config. Refusing
+                # here keeps the file untouched; writing it through would leave a
+                # config.json that every reader rejects.
+                print(
+                    f"❌ Not a config object: {fp} holds a JSON "
+                    f"{type(data).__name__}, expected an object",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            write_config_atomically(config_path(), stamp_config_meta(data))
             sel().log_api_access(
                 caller="cli",
                 operation="config_set_file",
@@ -174,7 +185,7 @@ def _config_cmd(args: argparse.Namespace) -> None:
                             d = _subtract_overlay(d, raw_local)
                     except (json.JSONDecodeError, OSError):
                         pass
-                write_config_atomically(config_path(), d)
+                write_config_atomically(config_path(), stamp_config_meta(d))
                 sel().log_api_access(
                     caller="cli",
                     operation="config_set",

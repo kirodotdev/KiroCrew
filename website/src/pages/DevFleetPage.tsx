@@ -204,7 +204,7 @@ function ProvLogPre({ lines, streaming }: { lines: string[]; streaming: boolean 
     if (streaming && ref.current) ref.current.scrollTop = ref.current.scrollHeight
   }, [lines, streaming])
   return (
-    <pre ref={ref} style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } as CSSProperties}>{lines.join('\n') || '(no output yet)'}</pre>
+    <pre ref={ref} style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', minWidth: 640 } as CSSProperties}>{lines.join('\n') || '(no output yet)'}</pre>
   )
 }
 
@@ -331,7 +331,7 @@ interface ConfirmBtnProps { title: string; desc: string; confirmLabel?: string; 
 // keep the popover inside the viewport even when a locale's `desc` wraps to
 // more lines than assumed here.
 const CONFIRM_W = 264
-const CONFIRM_EST_H = 140
+const CONFIRM_EST_H = 180
 function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: ConfirmBtnProps) {
   const [open, setOpen] = useState(false)
   // Trigger rect captured on open; drives the portaled popover's fixed
@@ -559,6 +559,7 @@ export default function DevFleetPage() {
     queryKey: ['dev-fleet', 'fleet'],
     queryFn: () => api.get<FleetData>('/fleet'),
     refetchInterval: POLL_MS,
+    refetchOnMount: 'always',
   })
 
   /* ─── react-query: disk data ─── */
@@ -661,14 +662,22 @@ export default function DevFleetPage() {
   /* ─── Sync reattach on page load ─── */
   useEffect(() => {
     if (!fleet?.sync_run_id || syncAttachedRef.current) return
+    if (syncRun?.rid === fleet.sync_run_id) return // already tracking this run
     syncAttachedRef.current = true
     const rid = fleet.sync_run_id
-    api.get<{ status?: string; output?: string[]; started?: number; step_label?: string }>('/run?id=' + rid)
+    api.get<{ status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string }>('/run?id=' + rid)
       .then((run) => {
-        if (run?.status === 'running') {
-          const t0 = run.started ? run.started * 1000 : Date.now()
-          setSyncRun({ rid, status: 'running', lines: run.output || [], startedAt: t0, stepLabel: run.step_label })
+        if (!run) return
+        const t0 = run.started ? run.started * 1000 : Date.now()
+        const out = run.output || []
+        const last = [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l)) || ''
+        if (run.status === 'running') {
+          setSyncRun({ rid, status: 'running', lines: out, startedAt: t0, stepLabel: run.step_label })
           pollSyncRun(rid, t0)
+        } else if (run.status === 'done' || run.status === 'timeout') {
+          // Show the completed/failed result so user sees it on revisit
+          const okRun = run.exit_code === 0
+          setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last })
         }
       })
       .catch(() => { /* run endpoint unreachable — nothing to reattach */ })
@@ -862,6 +871,12 @@ export default function DevFleetPage() {
     setFlag('__syncmain', true)
     try {
       const r = await api.post<{ ok?: boolean; run_id?: string; error?: string }>('/sync', {})
+      if (!r?.ok && r?.run_id) {
+        // Sync already running — reattach to the in-flight run instead of erroring
+        setSyncRun({ rid: r.run_id, status: 'running', lines: [], startedAt: Date.now() })
+        pollSyncRun(r.run_id, Date.now())
+        return
+      }
       if (!r?.ok || !r.run_id) { notify(r?.error || i18nT('pages.devFleetPage.pull_build_failed_to_start'), { type: 'error' }); setFlag('__syncmain', false); return }
       setSyncRun({ rid: r.run_id, status: 'running', lines: [], startedAt: Date.now() })
       pollSyncRun(r.run_id, Date.now())
@@ -1314,7 +1329,7 @@ export default function DevFleetPage() {
   }
 
   const columnHeader = (
-    <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '2px 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)' } as CSSProperties}>
+    <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '2px 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)', minWidth: 640 } as CSSProperties}>
       <span /><span>{i18nT('pages.devFleetPage.pod_2')}</span><span>{i18nT('pages.devFleetPage.worktree')}</span><span>{i18nT('pages.devFleetPage.pr_2')}</span><span title={i18nT('pages.devFleetPage.commits_behind_main')}>{i18nT('pages.devFleetPage.behind')}</span><span title={i18nT('pages.devFleetPage.last_commit_activity')}>{i18nT('pages.devFleetPage.updated')}</span><span style={{ textAlign: 'right' }}>{i18nT('pages.devFleetPage.actions')}</span>
     </div>
   )
@@ -1328,7 +1343,7 @@ export default function DevFleetPage() {
     const provActive = !w.is_main && !!pr
     return (
       <div key={w.name}>
-        <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30 } as CSSProperties}>
+        <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30, minWidth: 640 } as CSSProperties}>
           {w.is_main
             ? <span style={{ width: 15 }} />
             : <Clickable aria-label={open ? i18nT('pages.devFleetPage.collapse') : i18nT('pages.devFleetPage.expand')} aria-expanded={open} onClick={() => toggleExpand(w.name)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 0, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } as CSSProperties}><ChevronRight size={15} className="lucide-inline" /></Clickable>}
@@ -1364,14 +1379,14 @@ export default function DevFleetPage() {
           )}
         </div>
         {w.is_main && syncRun && syncLogOpen ? (
-          <pre style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } as CSSProperties}>{filterStepMarkers(syncRun.lines || []).join('\n') || '(no output yet)'}</pre>
+          <pre style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', minWidth: 640 } as CSSProperties}>{filterStepMarkers(syncRun.lines || []).join('\n') || '(no output yet)'}</pre>
         ) : null}
         {provActive && provLogOpen[w.name] && pr ? (
           <ProvLogPre lines={pr.lines || []} streaming={pr.status === 'running' || pr.status === 'starting'} />
         ) : null}
         {open && detailLoading[w.name] ? <ContentSkeleton rows={3} /> : null}
         {open && detail[w.name] ? (
-          <div style={{ padding: '4px 0 14px 30px', fontSize: 12 }}>
+          <div style={{ padding: '4px 0 14px 30px', fontSize: 12, minWidth: 640 }}>
             {detail[w.name].error
               ? <span style={{ color: 'var(--danger)' }}>{detail[w.name].error}</span>
               : <DetailPanel w={w} d={detail[w.name]} busy={busy} onRemove={() => removeWorktree(w.name, { ...w, ...detail[w.name] })} onLoadLogs={() => loadPodLogs(w.name)} logs={podLogs[w.name]} logsLoading={podLogsLoading[w.name]} />}
@@ -1382,7 +1397,7 @@ export default function DevFleetPage() {
   }
 
   const legacyToggle = legacyAll.length > 0 ? (
-    <Btn onClick={() => setShowLegacy((v) => !v)} style={{ display: 'block', width: '100%', textAlign: 'left', marginTop: 4, fontSize: 11.5, color: 'var(--muted)', background: 'transparent', border: '1px dashed var(--border)' }} title={i18nT('pages.devFleetPage.worktrees_created_under_a_previous_repository_na')}>
+    <Btn onClick={() => setShowLegacy((v) => !v)} style={{ display: 'block', width: '100%', textAlign: 'left', marginTop: 4, fontSize: 11.5, color: 'var(--muted)', background: 'transparent', border: '1px dashed var(--border)', minWidth: 640 }} title={i18nT('pages.devFleetPage.worktrees_created_under_a_previous_repository_na')}>
       {showLegacy ? i18nT('pages.devFleetPage.hide_legacy_worktrees', { n: legacyAll.length }) : i18nT('pages.devFleetPage.legacy_worktrees_hidden_show', { n: legacyAll.length })}
     </Btn>
   ) : null
@@ -1561,7 +1576,7 @@ export default function DevFleetPage() {
                 </div>
               </div>
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, margin: '14px 0' } as CSSProperties}>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-3.5">
               <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={running} accent />
               <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={wts.length} />
               <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={needsProv} />
@@ -1569,8 +1584,8 @@ export default function DevFleetPage() {
             </div>
             <Card>
               <CardTitle><span className="flex items-center gap-1.5">{i18nT('pages.devFleetPage.worktrees_count', { count: wts.length })}<InfoTip text={i18nT('pages.devFleetPage.every_git_worktree_of_the_main_checkout_pull_bui')} /></span></CardTitle>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '12px 0 4px' } as CSSProperties}>
-                <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap gap-2.5 items-center mt-3 mb-1">
+                <div className="flex-1 min-w-[140px]">
                   <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />
                 </div>
                 <span style={{ fontSize: 11.5, color: 'var(--muted)', flexShrink: 0 }}>{ql ? others.length + ' / ' : ''}{wts.length} {i18nT('pages.devFleetPage.rows')}</span>
@@ -1592,11 +1607,18 @@ export default function DevFleetPage() {
                 {/* The merged-scan runs git per worktree, so a large fleet keeps
                     the button pressed for seconds with no other surface to
                     report on: the trash glyph becomes a spinner in place so the
-                    click is visibly still working rather than merely disabled. */}
-                <Btn danger onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.prune_merged'))}</Btn>
+                    click is visibly still working rather than merely disabled.
+                    While the scan runs the label names the read-only action and
+                    the `danger` variant is suppressed: a spinner on a
+                    destructive-styled "Prune merged" reads as "deletion in
+                    progress", but nothing is deleted until the review dialog is
+                    confirmed. `aria-busy` stays as-is for assistive tech. */}
+                <Btn danger={!busy['__prune']} onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT(busy['__prune'] ? 'pages.devFleetPage.scanning_merged' : 'pages.devFleetPage.prune_merged'))}</Btn>
                 <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
               </div>
-              {body}
+              <div className="overflow-x-auto -mx-1 px-1">
+                {body}
+              </div>
             </Card>
           </div>
         </div>

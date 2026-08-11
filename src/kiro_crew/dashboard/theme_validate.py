@@ -238,7 +238,25 @@ _THEME_ALLOWED_DIRS = {
 # Per-level ceilings (entry count + total uncompressed bytes, §6.2).
 _THEME_ENTRIES_BY_LEVEL = {0: 32, 1: 64, 2: 160}
 _THEME_TOTAL_BYTES_BY_LEVEL = {0: 256 * 1024, 1: 2 * 1024 * 1024, 2: 5 * 1024 * 1024}
-_THEME_MAX_FONTS = 3
+# A pack may ship faces for two ROLES (proportional + monospace), so the cap
+# covers both: three sans weights plus a mono pair is a realistic set. The
+# binding limit stays the per-level total-byte ceiling, not this count.
+_THEME_MAX_FONTS = 6
+# Which Font Family option a face feeds. An entry with no (or an unknown) role
+# is proportional, so a pack written before roles existed keeps its meaning.
+_THEME_FONT_ROLES = frozenset({"sans", "mono"})
+_THEME_FONT_DEFAULT_ROLE = "sans"
+# Font tokens a pack must NOT declare in overrides.css. Declaring them there
+# lands the font on <body>, below where the Font Family preference is applied,
+# which silently swallows the user's Mono/System choice. The supported route is
+# the role-tagged ``fonts`` list in theme.json, which the preference respects.
+_THEME_FONT_PIN_PROPS = frozenset(
+    {"--font-body", "--mono", "--theme-font-sans", "--theme-font-mono"}
+)
+# Selectors broad enough that a font-family on them shadows the whole UI, so a
+# font-family declaration on one is a pin. Narrower surfaces (.topbar, a
+# .code-block, button.primary) stay free to set their own face.
+_THEME_FONT_PIN_SELECTORS = frozenset({"body", "html", "*", ":root"})
 _THEME_MAX_OVERLAYS = 5
 _THEME_PERSONA_MAX_CHARS = 2000
 _THEME_BOTNAME_MAX = 48  # branding bot-name display cap (plain text)
@@ -727,16 +745,76 @@ def _overrides_layout_violation(
     return None
 
 
-def _validate_overrides_css(text: str) -> str | None:
-    """Install-time denylist for ``overrides.css`` (§4.2).
+def _overrides_font_violation(
+    selectors: list[str], decls: list[tuple[str, str]]
+) -> str | None:
+    """Return an error if an overrides.css rule pins the UI font.
 
-    Two layers: (1) the injection denylist (@import / external url() /
+    Fonts are declared in theme.json's role-tagged ``fonts`` list, which routes a
+    face to the matching Font Family option (Sans / Mono) and leaves System on the
+    OS face. A pin here would instead land the font on a surface *below* where the
+    preference is applied, so the user's Mono/System choice would stop working with
+    nothing on screen explaining why. Rejecting it keeps the manifest the single
+    route, so the preference holds for every pack.
+    """
+    # Decode CSS escapes, THEN lowercase. A browser resolves `--font-b\6f dy` to
+    # `--font-body` while tokenizing, and property names are ASCII
+    # case-insensitive, so `f\4F nt` is `font` to the browser too. Lowercasing
+    # only before the decode leaves `fOnt` unmatched and the pin walks through.
+    names = [_decode_css_escapes(prop).lower() for prop, _val in decls]
+    for name in names:
+        if name in _THEME_FONT_PIN_PROPS:
+            return (
+                f"overrides.css declares {name}; declare fonts in theme.json's "
+                "'fonts' list (with a role of sans or mono) so the user's Font "
+                "Family preference keeps working"
+            )
+    # The `font` shorthand sets the family too, so gating only the longhand would
+    # leave the whole guarantee one keyword away from being bypassed.
+    if any(name in ("font-family", "font") for name in names):
+        for sel in selectors:
+            # Decode the selector for the same reason as the property name: a
+            # browser resolves `b\6f dy` to `body`, so comparing the raw text
+            # would accept at install a pin the runtime layer then drops — the
+            # author gets no error and the two layers disagree.
+            sel_decoded = _decode_css_escapes(sel).lower()
+            # Strip one leading [data-theme=…] scoping prefix and any pseudo tail
+            # so `[data-theme="custom-x-dark"] body` and `body:lang(ja)` are both
+            # recognized as the broad surface they are. The pseudo strip only
+            # applies when something remains in front of it — otherwise it would
+            # consume a bare `:root`, which IS one of the broad surfaces.
+            base = re.sub(r'^(?:html)?\s*\[data-theme[^\]]*\]\s*', "", sel_decoded).strip()
+            without_pseudo = re.sub(r"::?[a-z-]+(?:\([^)]*\))?$", "", base).strip()
+            if without_pseudo:
+                base = without_pseudo
+            if base in _THEME_FONT_PIN_SELECTORS:
+                return (
+                    f"overrides.css sets a font on '{sel}'; declare fonts in "
+                    "theme.json's 'fonts' list so the user's Font Family preference "
+                    "keeps working (a narrower surface such as .topbar is still fine)"
+                )
+    return None
+
+
+def _validate_overrides_css(text: str, *, enforce_font_pins: bool = False) -> str | None:
+    """Content denylist for ``overrides.css`` (§4.2) — install and read paths.
+
+    Three layers: (1) the injection denylist (@import / external url() /
     expression() / javascript: / -moz-binding) and forbidden selectors, then
     (2) a per-rule *layout* denylist (§4.2/§5.1) that rejects rules which could
     hijack the viewport or block interaction — z-index>9999, display:none,
     pointer-events:none, and viewport-covering position:fixed — with an
     exemption for purely decorative ``body::before``/``body::after`` pseudo-
-    elements (the decorative-scanline idiom).
+    elements (the decorative-scanline idiom), and (3) a font-pin denylist that
+    keeps theme.json's role-tagged ``fonts`` list the only route to the UI font.
+
+    ``enforce_font_pins`` gates layer 3 alone, and defaults to OFF because this
+    function also runs when an ALREADY-INSTALLED pack is re-read: a pack that
+    predates the font-pin rule installed legitimately, and failing it here would
+    turn the theme-detail route into a 500, dropping that pack out of the theme
+    map — losing its colours as well as its font. The runtime scoper still drops
+    the pin, so the preference is protected either way; refusing the *install* is
+    what keeps the manifest the single route for new packs.
     """
     if _THEME_CSS_DENY_RE.search(text) or _THEME_CSS_DENY_RE.search(
         _css_denylist_normalize(text)
@@ -753,6 +831,10 @@ def _validate_overrides_css(text: str) -> str | None:
         violation = _overrides_layout_violation(selectors, decls)
         if violation:
             return violation
+        if enforce_font_pins:
+            violation = _overrides_font_violation(selectors, decls)
+            if violation:
+                return violation
     return None
 
 
@@ -1005,7 +1087,9 @@ def _validate_audio_manifest(theme_dir: Path) -> tuple[dict[str, Any] | None, st
     return out, None
 
 
-def _validate_theme_dir(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+def _validate_theme_dir(
+    path: Path, *, installing: bool = False
+) -> tuple[dict[str, Any] | None, str | None]:
     """Validate an installed theme **directory** (structure + data) for L0/L1/L2.
 
     On success returns ``(summary, None)`` where ``summary`` is the record to
@@ -1015,6 +1099,12 @@ def _validate_theme_dir(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     the actual payload (no higher-tier asset than the declared level). Reuses
     ``_validate_theme_data`` for the colour values so the 43-var allowlist and
     per-value CSS sanitisation match editor-created themes.
+
+    ``installing`` marks the install path, where a pack may still be REFUSED for
+    pinning the UI font in ``overrides.css``. This function also runs when an
+    already-installed pack is re-read (the theme-detail route), and a pack that
+    predates that rule must keep loading there — so the font-pin layer is opt-in
+    rather than applied to every read. See ``_validate_overrides_css``.
     """
     if not path.is_dir() or path.is_symlink():
         return None, "theme path is not a directory"
@@ -1116,7 +1206,10 @@ def _validate_theme_dir(path: Path) -> tuple[dict[str, Any] | None, str | None]:
                 return None, f"too many overlays (max {_THEME_MAX_OVERLAYS})"
         # Security-sensitive content checks.
         if category == "overrides":
-            c_err = _validate_overrides_css(entry.read_text(encoding="utf-8", errors="replace"))
+            c_err = _validate_overrides_css(
+                entry.read_text(encoding="utf-8", errors="replace"),
+                enforce_font_pins=installing,
+            )
             if c_err:
                 return None, c_err
         elif category in ("overlay", "topbar"):
@@ -1254,9 +1347,23 @@ def _theme_asset_descriptor(
             if not isinstance(weight, int) or isinstance(weight, bool) or not (100 <= weight <= 900):
                 weight = 400
             style = f.get("style") if f.get("style") in ("normal", "italic") else "normal"
+            font_role = f.get("role")
+            # Guard the type before the membership test: `role` is untrusted
+            # manifest JSON, and an unhashable value (a list, a dict) raises
+            # TypeError against a frozenset, which would fail the theme-detail
+            # route for EVERY installed pack, not just the malformed one.
+            if not isinstance(font_role, str) or font_role not in _THEME_FONT_ROLES:
+                font_role = _THEME_FONT_DEFAULT_ROLE
             fmt = "truetype" if file_l.endswith(".ttf") else "woff2"
             out_fonts.append(
-                {"family": fam, "src": rel, "weight": weight, "style": style, "format": fmt}
+                {
+                    "family": fam,
+                    "src": rel,
+                    "weight": weight,
+                    "style": style,
+                    "format": fmt,
+                    "role": font_role,
+                }
             )
     if out_fonts:
         desc["fonts"] = out_fonts

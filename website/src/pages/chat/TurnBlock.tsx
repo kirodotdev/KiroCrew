@@ -7,7 +7,7 @@ import { isWorkflowRunTool } from './WorkflowRunCard'
 import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
-import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
+import { OPTION_MARKER_RE } from '../../app-sdk/protocol/optionMarker'
 
 // A workflow_run launch renders as its own always-visible inline card
 // (WorkflowRunCard), so it must never be folded into the collapsible tool-call

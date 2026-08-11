@@ -1,9 +1,10 @@
 # Meetings (builtin app)
 
-An AI meeting assistant. Transcribes a live meeting through KiroCrew's own
-streaming speech-to-text, fans each line out to a small crew of background agents
-(structured notes, an HTML/Mermaid diagram, an action-item list), and gates the
-meeting's close behind a review of the extracted action items.
+An AI meeting assistant. Transcribes a live meeting through Kiro Crew's own
+streaming speech-to-text, stores the finalized transcript, fans each line out to
+a small crew of background agents (structured notes, an HTML/Mermaid diagram, an
+action-item list), and gates the meeting's close behind a review of the extracted
+action items.
 
 `defaultEnabled: false` — it appears in the App Store and is opt-in.
 
@@ -55,11 +56,12 @@ POST   /meetings/{id}/init          create folder/metadata/tasks/outputs (idempo
 POST   /meetings/{id}/start         activate: seed outputs, spawn agent sessions
 POST   /meetings/{id}/status        {status} — active | paused | reviewing | ended
 POST   /meetings/{id}/stop          flush agents, send the finalize notice, mark ended
+GET    /meetings/{id}/transcript    finalized speech + typed broadcasts; optional cursor
 GET    /meetings/{id}/outputs       batch-read every agent output + tasks
 POST   /meetings/{id}/attachments   {action: add|remove, attachments[]|index}
 POST   /meetings/{id}/agents        {agent_id, enable} — toggle mid-meeting
 POST   /meetings/{id}/mute          {agent_id, muted}
-POST   /meetings/{id}/dispatch      {text, chat?} — one transcription/typed line
+POST   /meetings/{id}/dispatch      {text, chat?} — persist then fan out one line
 POST   /meetings/{id}/message       {agent_id, text} — one agent, flushed at once
 POST   /meetings/{id}/reset         reset tripped circuit breakers
 GET    /meetings/{id}/tasks         extracted action items
@@ -84,15 +86,17 @@ calendar-cache.json              last calendar sync
 task-ledger.json                 tasks filed through the local task provider
 meetings/<safe_id>/session.json  per-meeting metadata
 meetings/<safe_id>/tasks.json    extracted action items
+meetings/<safe_id>/transcript.jsonl finalized speech + typed broadcasts
 meetings/<safe_id>/<agent>.md    a markdown agent's output
 meetings/<safe_id>/<agent>.html  an HTML agent's output
 ```
 
-Deleting a meeting removes its complete per-meeting directory (metadata, tasks,
-notes, and diagrams). The route refuses a meeting with a live in-process session
-with `409 meeting_active`; the dashboard keeps the row's delete affordance visible
-but disabled for active, paused, and reviewing states. Calendar events are owned by
-their provider, so deleting local meeting data does not delete the source event.
+Deleting a meeting removes its complete per-meeting directory (metadata,
+transcript, tasks, notes, and diagrams). The route refuses a meeting with a live
+in-process session with `409 meeting_active`; the dashboard keeps the row's delete
+affordance visible but disabled for active, paused, and reviewing states. Calendar
+events are owned by their provider, so deleting local meeting data does not delete
+the source event.
 Deletion shares the task-mutation lock: an in-flight task edit completes before the
 directory is removed, while a stale Quick Add after deletion returns
 `404 meeting_not_found` instead of recreating an orphan `tasks.json`. The dashboard
@@ -130,6 +134,32 @@ extractor. A queue batches lines and flushes every `BATCH_INTERVAL_SECS` (30s),
 so an agent gets a paragraph of context rather than one interruption per
 utterance. Three consecutive dispatch failures trip a circuit breaker (backoff
 60s → 120s → stop); `POST …/reset` resumes.
+
+`POST …/dispatch` first redacts and appends the finalized line to
+`transcript.jsonl`, then fans it out to the queues. The response carries the same
+stored record (`id`, UTC `timestamp`, `source`, `text`), so the dashboard can add
+it to its React Query cache immediately while polling remains the reload and
+disconnect recovery path. Polling sends the opaque byte cursor returned as
+`next_cursor`; the initial request returns the complete history and later requests
+read only appended bytes. `source` is `speech` for final STT segments and `typed`
+for the broadcast bar; the `[chat]` agent-context prefix is not stored as user
+text. Persist-before-fan-out is the data-integrity boundary: an accepted agent
+line cannot be absent from the transcript. A 16 MiB per-meeting ceiling fails the
+request with `413 transcript_too_large` before fan-out and never truncates an
+accepted row. The browser treats that code as terminal instead of retrying: it
+stops STT dispatch, disables typed broadcasts, and shows one persistent notice.
+Appends are serialized, flushed, and synced. An append following a crash tail
+first writes an accounted-for newline, so the malformed tail and the new valid
+record cannot become one corrupt row; the reader skips malformed or invalid UTF-8
+rows.
+
+Dispatch admission has its own short lock covering the live-session check,
+append, and synchronous queue fan-out. Lifecycle handlers wait for that
+transaction, close admission where necessary, and release the lock before slow
+agent flushes. Stop/review/delete therefore cannot detach agents mid-dispatch or
+resurrect an orphan transcript directory, while a slow agent does not hold every
+later speech request behind its flush.
+Meetings created by an older version have no file and read as an empty transcript.
 
 A flush takes **whole lines up to `MAX_BATCH_CHARS` (60k)** and deletes exactly
 the lines it dispatched, so a queue that grew past the cap — a long pause, or a
@@ -279,14 +309,32 @@ Fetch safety:
 * a local path is read on the executor, size-capped, and refused when
   `is_sensitive_path` matches.
 
-## Speech-to-text
+## Transcript UI and speech-to-text
 
-KiroCrew's own `/api/ws/stt` (`dashboard/stt_stream.py`).
+Kiro Crew's own `/api/ws/stt` (`dashboard/stt_stream.py`).
 `hooks/useMeetingTranscription.ts` conforms to that endpoint's existing wire
 protocol — connect, wait for `{"type":"ready"}`, send 16 kHz Int16 PCM from
 `/pcm-worklet.js`, receive `partial`/`final`/`error`, send `{"type":"stop"}` and
 let the server close so trailing finals arrive. Every FINAL segment is POSTed to
-`…/dispatch`, which is what feeds the agents; partials only drive the caption.
+`…/dispatch`, which stores it and feeds the agents. Partials remain browser-only:
+they drive both the compact caption and one clearly marked live row, then disappear
+when the recognizer finalizes or the stream closes. The browser keeps only a
+bounded recent-final buffer for the caption because the JSONL file owns history.
+
+`TranscriptPanel` is always present in a meeting and remains available during
+action-item review. With at least one enabled note or diagram agent,
+`MeetingWorkspace` gives the transcript a 360 px right-hand column beside the
+scrolling agent grid (stacked on narrower screens). When the roster becomes empty,
+the agent plane exits and the transcript expands to the primary content surface;
+enabling an agent restores the split layout through a Framer Motion layout
+transition that honors reduced-motion preferences. The panel follows new speech
+until the reader scrolls up, then offers a localized “jump to latest” control
+rather than pulling the reading position away. Lists above 200 durable segments
+are virtualized so polling does not keep thousands of transcript rows mounted.
+Only typed broadcasts carry a repeated source label; ordinary speech remains the
+default visual rhythm. Empty copy distinguishes an active meeting from review or
+ended states, and the durable list is not an ARIA live region because the compact
+caption already announces recognizer updates.
 
 Cloud transcription is an optional extra (`pip install kirocrew[voice]`). When it
 is absent the endpoint answers a friendly WS error, the hook surfaces it as a
@@ -306,10 +354,10 @@ toast, and the user can still type into the broadcast bar to feed the agents.
   default-disabled app would otherwise stay callable). `is_app_enabled` runs off
   the loop.
 * **Redaction.** Transcripts, agent outputs, extracted tasks, and calendar fields
-  are LLM/user content on the way to the dashboard or a task provider, so
+  are LLM/user content on the way to disk, the dashboard, or a task provider, so
   `security.redact` (exfiltration URLs + credentials) is applied at each
-  boundary: the dispatch entry point, the outputs response, task normalization,
-  `TaskDraft.sanitized`, and `parse_ics`.
+  boundary: before the transcript append/fan-out, the outputs response, task
+  normalization, `TaskDraft.sanitized`, and `parse_ics`.
 * **Strict field readers.** `_common.field_bool` refuses a non-boolean rather
   than coercing (`bool("false")` is `True`, which would invert a mute decision);
   `field_str` treats a non-string as missing rather than stringifying it.
@@ -357,9 +405,9 @@ toast, and the user can still type into the broadcast bar to feed the agents.
   `website/src/test/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
   Mermaid diagram plus an inline-styled HTML table still render (the guards
   against over-stripping the panel into a blank).
-* **No blocking call on the loop.** The calendar fetch is aiohttp; DNS
-  validation, the local `.ics` read, the data-dir seed, the enable check, and the
-  task-provider `create` all run on an executor.
+* **No blocking call on the loop.** The calendar fetch is aiohttp; transcript
+  reads/appends, DNS validation, the local `.ics` read, the data-dir seed, the
+  enable check, and the task-provider `create` all run on an executor.
 
 ## What the port changed
 
@@ -388,4 +436,6 @@ These live in the repo-level `test/` tree, not an in-package `tests/`:
 Frontend: `website/src/test/MeetingsApiClient.test.ts` (fetch-boundary
 translation), `MeetingsSessionLogic.test.ts` (dedup, preset resolution, the
 transition table), `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
-`MeetingsAgentPanel.test.tsx` (including the iframe sandbox).
+`MeetingsAgentPanel.test.tsx` (including the iframe sandbox), and
+`MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
+split-to-primary layout transition).

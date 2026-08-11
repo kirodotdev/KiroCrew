@@ -425,7 +425,15 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
 def _normalize_column(
     state: DashboardState, raw: Any, *, existing: dict | None = None
 ) -> dict | None:
-    """Validate + coerce a column payload. Returns None if invalid."""
+    """Validate + coerce a column payload. Returns None if invalid.
+
+    An unrecognized tag id is a REJECTION, not a silent drop: quietly
+    discarding it while returning 200 lands the column back on
+    ``tag_ids: []`` — the deliberate match-all state — so a stale or buggy
+    client presents as "the filter does nothing" with no signal anywhere.
+    An empty list stays valid: it is the documented match-all/clear-filter
+    state the board UI depends on.
+    """
     if not isinstance(raw, dict):
         return None
     valid_ids = {t.get("id") for t in state._tags}
@@ -434,7 +442,9 @@ def _normalize_column(
         tag_ids = raw.get("tag_ids") or []
         if not isinstance(tag_ids, list):
             return None
-        cleaned["tag_ids"] = [str(t) for t in tag_ids if isinstance(t, str) and t in valid_ids]
+        if not all(isinstance(t, str) and t in valid_ids for t in tag_ids):
+            return None
+        cleaned["tag_ids"] = [str(t) for t in tag_ids]
     if "mode" in raw:
         mode = str(raw.get("mode") or "any")
         if mode not in _VALID_MODES:

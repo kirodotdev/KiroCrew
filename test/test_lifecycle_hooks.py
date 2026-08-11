@@ -6,6 +6,7 @@ Properties 9, 14: Deterministic ordering and shell-before-Python.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
+from kiro_crew.apps.manifest import app_name_error
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -42,13 +44,40 @@ def _make_app_info(name: str, *, on_startup: str = "", on_shutdown: str = "") ->
 # ---------------------------------------------------------------------------
 
 def _app_names() -> st.SearchStrategy[list[str]]:
-    """Generate lists of unique app names."""
+    """Generate lists of unique app names the admission contract actually accepts.
+
+    The dispatcher creates ``apps/<name>/data`` for every app it starts, so a
+    name production would never admit describes an impossible state rather than
+    a bug worth finding. The regex is the kebab-case grammar narrowed to a
+    leading letter and the original 3-11 char range, which keeps the filter
+    rejection rate near zero; ``app_name_error`` then removes the reserved and
+    unportable names, so this file never carries a second copy of that list.
+    """
     return st.lists(
-        st.from_regex(r"[a-z][a-z0-9-]{2,10}", fullmatch=True),
+        st.from_regex(r"[a-z][a-z0-9]{2,6}(?:-[a-z0-9]{1,3})?", fullmatch=True).filter(
+            lambda name: app_name_error(name) is None
+        ),
         min_size=2,
         max_size=8,
         unique=True,
     )
+
+
+def test_generator_cannot_sample_an_inadmissible_app_name() -> None:
+    """Deterministic guard for the sampling domain.
+
+    ``dispatch_startup`` creates ``apps/<name>/data`` for every app it starts.
+    ``nul`` is kebab-case and inside the length range, so the grammar alone still
+    reaches it — on Windows that mkdir fails with WinError 3. The dispatcher is
+    not the bug: the admission contract that let such an app exist was, and it
+    now refuses the name, so this strategy must not invent one either. The
+    exclusion is delegated to ``app_name_error`` rather than restated, so the
+    test domain cannot drift away from what production admits.
+    """
+    grammar = r"[a-z][a-z0-9]{2,6}(?:-[a-z0-9]{1,3})?"
+    assert re.fullmatch(grammar, "nul"), "grammar no longer reaches the name under test"
+    assert app_name_error("nul") is not None, "production must refuse it first"
+    assert app_name_error("null-app") is None, "ordinary names stay in the domain"
 
 
 # ---------------------------------------------------------------------------

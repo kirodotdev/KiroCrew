@@ -101,3 +101,27 @@ describe('bubble: the countdown lives inside the card', () => {
     expect(container.querySelector('.cc-bubble-countdown')).toBeNull()
   })
 })
+
+
+describe('bubble: degraded-theme fallbacks remain visible', () => {
+  it('uses light fallback ink for controls and countdown on the dark fallback card', () => {
+    for (const selector of [
+      '.cc-bubble-x',
+      '.cc-bubble-x:focus-visible',
+      '.cc-bubble-cta:focus-visible',
+      '.cc-bubble-countdown',
+      '.cc-bubble-countdown::after',
+    ]) {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const rule = CSS.match(new RegExp(`${escaped}\\s*\\{[^}]*\\}`))?.[0] ?? ''
+      expect(rule, `${selector} rule not found`).toContain('#e8e8ea')
+    }
+  })
+
+  it('puts the divider on the clickable CTA rather than its wrapper', () => {
+    const foot = CSS.match(/\.cc-bubble-foot\s*\{[^}]*\}/)?.[0] ?? ''
+    const cta = CSS.match(/\.cc-bubble-cta\s*\{[^}]*\}/)?.[0] ?? ''
+    expect(foot).not.toContain('border-top')
+    expect(cta).toContain('border-top')
+  })
+})

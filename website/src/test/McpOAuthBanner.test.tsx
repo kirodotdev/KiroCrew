@@ -161,4 +161,50 @@ describe('renderMcpOAuthMessage', () => {
     // Falls back to default label.
     expect(screen.getByText(/requires authentication/)).toBeInTheDocument()
   })
+
+  /**
+   * A card-owned request is annotated by the backend but still delivered — the
+   * Connections card reads its approval URL out of that very message. So the
+   * decision to hide it belongs here, and only when the card is reachable.
+   * Both directions are pinned: hiding it unconditionally would strip the only
+   * authorize prompt on installs where the gallery does not exist.
+   */
+  describe('card_owned', () => {
+    const cardOwned = makeMsg({
+      server_name: 'notion',
+      oauth_url: 'https://mcp.notion.com/authorize',
+      card_owned: true,
+    })
+
+    it('renders a card_owned message when the caller has no cards', () => {
+      // Default argument — every existing call site behaves exactly as before.
+      expect(renderMcpOAuthMessage(cardOwned)).not.toBeNull()
+      expect(renderMcpOAuthMessage(cardOwned, false)).not.toBeNull()
+    })
+
+    it('drops a card_owned message when the caller renders the cards', () => {
+      expect(renderMcpOAuthMessage(cardOwned, true)).toBeNull()
+    })
+
+    it('renders an unannotated message even when the caller renders the cards', () => {
+      const node = renderMcpOAuthMessage(
+        makeMsg({ server_name: 'my-remote', oauth_url: 'https://mine.example.com/authorize' }),
+        true,
+      )
+      expect(node).not.toBeNull()
+      render(<>{node}</>)
+      expect(screen.getByRole('link', { name: /Authorize my-remote/i })).toBeInTheDocument()
+    })
+
+    it('renders a card_owned failure notice regardless of the caller', () => {
+      // The backend never annotates a rejected URL, but the render layer must
+      // not be the thing standing between the user and a security notice.
+      const node = renderMcpOAuthMessage(
+        makeMsg({ server_name: 'notion', failed: true, error: 'unsafe URL scheme' }),
+        true,
+      )
+      render(<>{node}</>)
+      expect(screen.getByText(/authentication failed: unsafe URL scheme/i)).toBeInTheDocument()
+    })
+  })
 })

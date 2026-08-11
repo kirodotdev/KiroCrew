@@ -21,6 +21,7 @@ const wire = (over: Record<string, unknown> = {}) => ({
   site_name: 'Example',
   domain: 'example.com',
   icon: 'data:image/png;base64,AAAA',
+  icon_dark: '',
   fetched_at: 1770000000,
   ...over,
 })

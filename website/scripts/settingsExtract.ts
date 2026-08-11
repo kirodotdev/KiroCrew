@@ -108,6 +108,10 @@ const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // settings were absent from command-palette search. Registered while
   // converting this file for i18n.
   'SkillsPanel.tsx': 'skills',
+  // Privacy owns the two data-collection switches. Mapped so a SettingRef to
+  // `telemetry.enabled` resolves to a deep link into the control rather than a
+  // CLI command the user has to paste.
+  'PrivacyPanel.tsx': 'privacy',
   'SlackPanel.tsx': { tab: 'channels', params: { channel: 'slack' } },
   'DeveloperPanel.tsx': 'developer',
   'AboutPanel.tsx': 'about',

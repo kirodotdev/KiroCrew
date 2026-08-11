@@ -177,6 +177,7 @@ async def api_status(request: web.Request) -> web.Response:
         update_self_updatable=bool(_update_info.get("self_updatable")),
         update_checked=bool(_update_info.get("checked")),
         update_command=str(_update_info.get("update_command") or ""),
+        update_channel=str(_update_info.get("channel") or ""),
     )
     static_info = _get_static_system_info()
     if state._owner_hash is not None:
@@ -671,6 +672,33 @@ def _collect_system_metrics() -> dict[str, object]:
         data["embedding_model_loaded"] = embedder.is_ready()
     except Exception:
         data["ollama_running"] = False
+
+    # Resource posture — advisory probe from the same cgroup-aware memory reader
+    # that drives the dynamic sub-agent cap and the injected [RESOURCES] line.
+    try:
+        from kiro_crew.resource_status import probe as _resource_probe
+        from kiro_crew.subagent import compute_max_subagents
+
+        status = _resource_probe()
+        data["resource_posture"] = status.posture
+        data["resource_available_gb"] = round(status.available_gb, 2)
+        data["resource_pressure_gb"] = status.pressure_gb
+        data["resource_critical_gb"] = status.critical_gb
+        try:
+            cfg = KiroCrewConfig.load()
+            data["subagent_cap"] = compute_max_subagents(cfg)
+        except Exception:
+            # Fallback: derive from available memory directly
+            if status.available_gb > 0:
+                data["subagent_cap"] = min(11, max(1, int(status.available_gb / 0.5)))
+            else:
+                data["subagent_cap"] = 3
+    except Exception:
+        data["resource_posture"] = "unknown"
+        data["resource_available_gb"] = -1.0
+        data["resource_pressure_gb"] = 4.0
+        data["resource_critical_gb"] = 2.0
+        data["subagent_cap"] = 3
 
     return data
 

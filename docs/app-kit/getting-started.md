@@ -176,6 +176,22 @@ Available in `@kirocrew/app-sdk`:
 | `useNavBadge()` | Update sidebar badge count |
 | `useChatLauncher()` | Navigate to chat with optional agent and message |
 
+## Chat Marker Protocol
+
+Also in `@kirocrew/app-sdk`, for an app that renders agent messages itself. An agent puts follow-up
+choices and steer acknowledgements inline in its prose (`[OPTIONS: a | b]`,
+`[STEERING steer-<id>: …]`); these parse them out so your UI can show buttons instead of raw syntax.
+
+| Export | Purpose |
+|--------|---------|
+| `parseOptions(content)` | Split the prose from the choices offered with it |
+| `deriveFollowUpOptions(messages, isStreaming)` | The choices that still apply to the conversation |
+| `extractSteeringAcks(content)` | Pull the steer acknowledgement out of the text |
+| `stripPartialOptionMarker(text)` | Hide a marker that is still arriving mid-stream |
+
+Types: `ParsedOptions`, `FollowUpDerivation`, `ChatMessage`. React-free, so it also works in a worker
+or a test. Worked examples: [api-reference.md](api-reference.md#chat-marker-protocol).
+
 ## Shared UI Components
 
 Available in `@kirocrew/app-sdk/ui`:

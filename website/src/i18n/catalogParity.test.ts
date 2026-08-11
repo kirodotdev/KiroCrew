@@ -209,9 +209,19 @@ describe('catalog parity', () => {
         // `{{count}}` dropped in translation renders a sentence missing its
         // number; a placeholder renamed in translation renders a literal
         // "{{cnt}}". Both are invisible without this check.
+        //
+        // Self-closing component tags carry interpolated content too, and until
+        // this second pass existed they were covered by NOTHING. A <Trans> key
+        // like "Set <model/> as default model for <agent/>" whose translation
+        // loses `<agent/>` renders a sentence with the agent name missing
+        // entirely — silently, because Trans just omits an absent tag. That is
+        // strictly worse than the mustache case, which at least fails here. The
+        // pass is deliberately the same shape as the mustache one: parity
+        // against en, no stored count, nothing for a future PR to ratchet.
         const enFlat = flatten(en)
         const flat = flatten(CATALOGS[code])
         const placeholders = (s: string) => (s.match(/\{\{[^}]+\}\}/g) ?? []).sort()
+        const tags = (s: string) => (s.match(/<[a-zA-Z][^>]*\/>/g) ?? []).sort()
         const mismatched: string[] = []
         for (const key of EN_SINGULAR_KEYS) {
           if (flat[key] === undefined) continue
@@ -219,6 +229,11 @@ describe('catalog parity', () => {
           const got = placeholders(flat[key])
           if (want.join(',') !== got.join(',')) {
             mismatched.push(`${key}: expected [${want}] got [${got}]`)
+          }
+          const wantTags = tags(enFlat[key])
+          const gotTags = tags(flat[key])
+          if (wantTags.join(',') !== gotTags.join(',')) {
+            mismatched.push(`${key}: expected tags [${wantTags}] got [${gotTags}]`)
           }
         }
         // Plural forms are checked against the English `_other` form rather than

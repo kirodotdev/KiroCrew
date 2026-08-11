@@ -303,3 +303,70 @@ def test_turn_and_startup_generation_count_comes_from_stats(tmp_path: Path):
     assert result["startup"]["overall"]["count"] == 2
     assert result["startup"]["overall"]["other_generations"] == 1
     assert result["startup"]["overall"]["total_count"] == 8
+
+
+class TestTelemetryPosture:
+    """``_telemetry_cfg`` reports the EFFECTIVE state, not the stored flag.
+
+    ``KIROCREW_TELEMETRY`` overrides ``telemetry.enabled`` inside the collector, so
+    a panel that echoed the config value alone would say "off" on a host that is
+    recording — and would offer a switch whose write the collector ignores. The
+    pin is resolved through ``metrics.provider`` so the control and the collector
+    cannot disagree about what "on" means.
+    """
+
+    def _cfg(self, enabled: bool):
+        from types import SimpleNamespace
+        from unittest.mock import patch as _patch
+
+        return _patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load",
+            return_value=SimpleNamespace(telemetry=SimpleNamespace(enabled=enabled)),
+        )
+
+    def test_config_flag_when_env_unset(self, monkeypatch) -> None:
+        from kiro_crew.dashboard.handlers.telemetry import _telemetry_cfg
+
+        monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
+        with self._cfg(True):
+            state = _telemetry_cfg()
+        assert state.enabled is True
+        assert state.env_pinned is False
+
+    def test_env_truthy_overrides_a_false_config(self, monkeypatch) -> None:
+        from kiro_crew.dashboard.handlers.telemetry import _telemetry_cfg
+
+        monkeypatch.setenv("KIROCREW_TELEMETRY", "1")
+        with self._cfg(False):
+            state = _telemetry_cfg()
+        assert state.enabled is True
+        assert state.env_pinned is True
+        assert state.env_var == "KIROCREW_TELEMETRY"
+
+    def test_env_falsy_overrides_a_true_config(self, monkeypatch) -> None:
+        from kiro_crew.dashboard.handlers.telemetry import _telemetry_cfg
+
+        monkeypatch.setenv("KIROCREW_TELEMETRY", "off")
+        with self._cfg(True):
+            state = _telemetry_cfg()
+        assert state.enabled is False
+        assert state.env_pinned is True
+
+    def test_blank_env_is_not_a_pin(self, monkeypatch) -> None:
+        # An exported-but-empty variable is the shape a shell leaves behind; it
+        # must defer to the config file rather than pinning the switch off.
+        from kiro_crew.dashboard.handlers.telemetry import _telemetry_cfg
+
+        monkeypatch.setenv("KIROCREW_TELEMETRY", "  ")
+        with self._cfg(True):
+            state = _telemetry_cfg()
+        assert state.enabled is True
+        assert state.env_pinned is False
+
+    def test_env_var_name_comes_from_the_collector(self) -> None:
+        # The message names a variable for the user to unset, so the name must be
+        # the one the collector reads, not a copy that can drift from it.
+        from kiro_crew.dashboard.handlers.telemetry import _telemetry_cfg
+        from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR
+
+        assert _telemetry_cfg().env_var == TELEMETRY_ENV_VAR

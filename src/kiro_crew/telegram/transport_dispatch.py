@@ -29,6 +29,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp.client import AcpError
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
@@ -45,6 +46,7 @@ from kiro_crew.messaging.link import (
     seed_generation,
 )
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.telegram.attachments import process_telegram_attachments
 from kiro_crew.telegram.commands import (
@@ -108,6 +110,43 @@ def _short(text: str, limit: int = 40) -> str:
     """Collapse whitespace and truncate for compact receipt display."""
     collapsed = " ".join(text.split())
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
+
+
+# Hard cap for a user-visible failure reason: one short chat message, never a
+# traceback. Generous enough for the ACP entitlement message (which lists the
+# models the account does include) while still bounding hostile input.
+_FAILURE_REASON_MAX_CHARS = 500
+
+
+def _user_safe_failure_reason(exc: BaseException) -> str | None:
+    """A bounded, user-safe reason for a failed turn, or None for the generic text.
+
+    Only a *permanent* :class:`AcpError` (``transient is False``) yields a
+    reason: its message is already user-facing and actionable (e.g. names the
+    models the account does include), and the generic "please try again"
+    placeholder would be actively wrong for it. Transient and unclassified
+    failures keep the retry wording, and any other exception type returns
+    None — arbitrary internal errors must never leak into chat (CWE-209).
+
+    The text is untrusted output: credentials/exfil URLs and local filesystem
+    paths are redacted, newlines are collapsed, and the length is hard-capped.
+    """
+    if not isinstance(exc, AcpError) or exc.transient is not False:
+        return None
+    try:
+        text = redact_local_paths(redact(str(exc)))[0]
+        text = " ".join(text.split())
+    except Exception:
+        # Fail closed to the generic placeholder: this helper runs inside the
+        # turn's except block, so it must never raise (that would skip
+        # record_failure and propagate out of the handler).
+        logger.debug("Telegram: failure-reason sanitization failed", exc_info=True)
+        return None
+    if not text:
+        return None
+    if len(text) > _FAILURE_REASON_MAX_CHARS:
+        text = text[: _FAILURE_REASON_MAX_CHARS - 1].rstrip() + "…"
+    return f"⚠️ {text}"
 
 
 _RECEIPT_MAX_ITEMS = 5  # verbatim items shown in a receipt before "…and N more"
@@ -323,6 +362,7 @@ class TelegramDispatcher:
         # on _acquired so we never release a semaphore we didn't hold. Mirrors
         # slack/transport_dispatch.py.
         _acquired = False
+        failure_reason: str | None = None
         attachment_temp_paths: list[str] = []
         try:
             # Ack placeholder first (before the potentially slow cold-start);
@@ -433,15 +473,19 @@ class TelegramDispatcher:
                 )
             except Exception:
                 logger.debug("Telegram: success audit failed", exc_info=True)
-        except Exception:
+        except Exception as exc:
             logger.exception("Telegram transport_dispatch: error handling message")
+            # Permanent, user-actionable failures (e.g. model entitlement)
+            # surface their own bounded reason instead of the misleading
+            # generic retry text; everything else stays generic (None).
+            failure_reason = _user_safe_failure_reason(exc)
             if _acquired:
                 await self.sessions.record_failure(session_key)
         finally:
             # Always finalize the placeholder (no perma-"🤔 …"), even if
             # get_or_create raised before the semaphore was held. Only release
             # the semaphore if we actually acquired it.
-            await renderer.close()
+            await renderer.close(failure_reason=failure_reason)
             self._active_renderers.pop(session_key, None)
             if _acquired:
                 self.sessions.release(session_key)

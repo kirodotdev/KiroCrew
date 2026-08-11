@@ -64,9 +64,17 @@ may be absent.
   Is `agent-browser` on `PATH` (`command -v agent-browser`)?
 - If **none** of the three backends is available, do NOT fake it and do NOT claim
   visual verification you didn't do. Say plainly that you verified the code but
-  not the rendering, and point at the cheapest fix: `kirocrew browse setup` for
-  the Playwright MCP browser, or `npm install -g agent-browser && agent-browser
-  install` for the CLI.
+  not the rendering, and name the right fix for the host:
+  - **Has a dashboard** → **Settings → Browser → toggle Browser Mode on**. This is
+    the ONLY thing that enables Browser Mode, and it installs `@playwright/mcp`
+    plus the browser engine as part of enabling.
+  - **Headless / no dashboard** → the `browser_*` tools cannot be turned on there,
+    so use a backend that needs no Browser Mode: `npm install -g agent-browser &&
+    agent-browser install`, or scripted Playwright via `pod-e2e`.
+  - `kirocrew browse setup` provisions/repairs the Playwright install and the proxy
+    entry, but deliberately does NOT flip the Browser Mode switch — so it fixes a
+    broken install, never an unenabled one. Do not offer it as the way to enable
+    browsing.
 - The steps below describe the **Playwright MCP** path. Steps 1, 2, 4, 5 and 6
   apply to the other two backends unchanged — only the navigate/screenshot calls
   differ (`agent-browser open <url>` + `agent-browser screenshot <path>`).

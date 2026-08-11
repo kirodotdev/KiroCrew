@@ -104,6 +104,10 @@ for KEY in $CRED_KEYS; do
 done
 
 # ── 2. Sandbox posture (first run only) ──────────────────────────────────
+# Signal to the gateway's load_credentials() that credentials were
+# deliberately scrubbed from the process environ and must NOT be
+# re-injected (which would leak into /proc/<pid>/environ).
+export _KIROCREW_CREDS_SCRUBBED=1
 # By this point the resolver above has already run the product's legacy-home
 # migration if one was pending, so $CONFIG is authoritative: present means
 # operator-owned state (never rewrite), absent means genuine first run.

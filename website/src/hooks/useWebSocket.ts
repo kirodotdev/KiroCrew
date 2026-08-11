@@ -4,7 +4,7 @@ import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
-import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
+import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications } from '../store/notificationsSlice'
 import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
 import {
@@ -96,6 +96,18 @@ export function staleAskIds(
   return askIdsOf(current).filter((id) => !live.has(id))
 }
 
+/* Slot-focus intent signal (resume prefetch). The hook instance owns the
+   live socket, but split view needs to report pane focus from a component
+   tree that has no access to the hook's return value — so the sender is a
+   module-level indirection the hook binds while mounted. Before the hook
+   mounts (or after it unmounts) the emitter is a no-op: focus frames are a
+   best-effort optimization, never load-bearing. */
+let sendSlotFocusedImpl: (slot: string | null) => void = () => {}
+
+export function emitSlotFocused(slot: string | null): void {
+  sendSlotFocusedImpl(slot)
+}
+
 export function useWebSocket() {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
@@ -142,6 +154,13 @@ export function useWebSocket() {
   const chunkFlushScheduledRef = useRef(false)
   const chunkRafRef = useRef<number | null>(null)
   const chunkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Slot-recency coalescing: last ts seen per slot, flushed once per frame.
+  // Last-seen wins — the reducer is last-write-wins, so this is the burst's end state.
+  const slotActivityBufRef = useRef<Map<string, string>>(new Map())
+  const slotActivityFlushScheduledRef = useRef(false)
+  const slotActivityRafRef = useRef<number | null>(null)
+  const slotActivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const stopVoice = useCallback(() => {
     voiceMutedRef.current = true
@@ -346,6 +365,38 @@ export function useWebSocket() {
     else chunkTimerRef.current = setTimeout(() => flushChunks(), 16)
   }, [flushChunks])
 
+  /** Flush buffered slot-recency bumps: one touchSlotActivity per slot, not per
+   *  event. Cancels any pending frame first, mirroring flushChunks. */
+  const flushSlotActivity = useCallback(() => {
+    if (slotActivityRafRef.current != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(slotActivityRafRef.current)
+    if (slotActivityTimerRef.current != null) clearTimeout(slotActivityTimerRef.current)
+    slotActivityFlushScheduledRef.current = false
+    slotActivityRafRef.current = null
+    slotActivityTimerRef.current = null
+    const buf = slotActivityBufRef.current
+    if (buf.size === 0) return
+    // A frame firing during reconnect backoff must drop, not dispatch: the on-open
+    // refetch is authoritative. Unmount sets closingRef and still flushes deliberately.
+    const ws = wsRef.current
+    if (!closingRef.current && (!ws || ws.readyState !== WebSocket.OPEN)) { buf.clear(); return }
+    const slots = store.getState().dashboard.slots
+    for (const [key, ts] of buf) {
+      // Never move last_ts backwards: an authoritative slots snapshot can land between
+      // buffering and this flush, and overwriting it with our arrival time reorders the sidebar.
+      const current = slots.find(s => s.key === key)?.last_ts
+      if (current && Date.parse(current) > Date.parse(ts)) continue
+      dispatch(touchSlotActivity({ key, ts }))
+    }
+    buf.clear()
+  }, [dispatch])
+
+  const scheduleSlotActivityFlush = useCallback(() => {
+    if (slotActivityFlushScheduledRef.current) return
+    slotActivityFlushScheduledRef.current = true
+    if (typeof requestAnimationFrame === 'function') slotActivityRafRef.current = requestAnimationFrame(() => flushSlotActivity())
+    else slotActivityTimerRef.current = setTimeout(() => flushSlotActivity(), 16)
+  }, [flushSlotActivity])
+
   const connect = useCallback(() => {
     // Guard against double-connect in StrictMode (dev) — if we already
     // have a WS that's open OR still connecting, reuse it.
@@ -389,6 +440,13 @@ export function useWebSocket() {
         chunkTimerRef.current = null
         chunkFlushScheduledRef.current = false
         chunkBufRef.current.clear()  // drop pre-disconnect partial chunks; refreshSlot recovers state
+        // Same for pending recency bumps: the fetchSlots below carries authoritative last_ts.
+        if (slotActivityRafRef.current != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(slotActivityRafRef.current)
+        if (slotActivityTimerRef.current != null) clearTimeout(slotActivityTimerRef.current)
+        slotActivityRafRef.current = null
+        slotActivityTimerRef.current = null
+        slotActivityFlushScheduledRef.current = false
+        slotActivityBufRef.current.clear()
         dispatch(sseConnected())
         dispatch(fetchSlots()).finally(() => { reconnectingRef.current = false })
         seedGoalLoops()
@@ -403,6 +461,9 @@ export function useWebSocket() {
         ws.send(JSON.stringify({ type: 'subscribe_subagents' }))
         subagentSubRef.current = true
         if (logCbRef.current) ws.send(JSON.stringify({ type: 'subscribe_logs' }))
+        // Re-announce focus: the server lost this socket's focus state with
+        // the old connection, and the store subscription only fires on change.
+        ws.send(JSON.stringify({ type: 'slot_focused', slot: active || null }))
         return
       }
       wasConnectedRef.current = true
@@ -422,6 +483,11 @@ export function useWebSocket() {
       // lines at all until an unrelated reconnect. The reconnect branch above
       // already does this; the two paths must stay symmetric.
       if (logCbRef.current) ws.send(JSON.stringify({ type: 'subscribe_logs' }))
+      // Announce the restored active slot so a resumable session prefetches
+      // while the user reads its transcript (resume prefetch).
+      ws.send(
+        JSON.stringify({ type: 'slot_focused', slot: store.getState().chat.activeSlot || null })
+      )
     }
 
     ws.onmessage = (e) => {
@@ -546,6 +612,11 @@ export function useWebSocket() {
           case 'notification_unack':
             dispatch(unackNotificationByTs(data.ts))
             break
+          case 'notifications_clear':
+            // Another view cleared the inbox; drop this view's copy so the
+            // bell badge (derived from items) converges to 0. Idempotent.
+            dispatch(clearAllNotifications())
+            break
           case 'approval': {
             queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
             // Approval-blocked chime: the agent is stuck until the user acts.
@@ -658,7 +729,8 @@ export function useWebSocket() {
             // message of any role), instead of waiting for the next full slots push. Fallback
             // ts is computed here so the touchSlotActivity reducer stays pure (Redux contract).
             if (data.slot && (data.role === 'user' || data.role === 'assistant' || data.role === 'tool_call' || data.role === 'tool_result')) {
-              dispatch(touchSlotActivity({ key: data.slot, ts: data.ts || new Date().toISOString() }))
+              slotActivityBufRef.current.set(data.slot, data.ts || new Date().toISOString())
+              scheduleSlotActivityFlush()
             }
             if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) dispatch(markSlotUnread(data.slot))
             // Theme audio: an agent reply arriving is the `message-received`
@@ -1167,7 +1239,7 @@ export function useWebSocket() {
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, scheduleChunkFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordResolvedAskId])
+  }, [dispatch, flushChunks, scheduleChunkFlush, scheduleSlotActivityFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordResolvedAskId])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes
@@ -1210,17 +1282,48 @@ export function useWebSocket() {
     }
     window.addEventListener('voice-stop', onVoiceStop)
     window.addEventListener('voice-config-changed', onVoiceConfigChanged)
+    // Slot-focus intent signal (resume prefetch). One shared sender for
+    // every focus source — Redux activeSlot changes (sidebar, keyboard,
+    // deep links, history), tab visibility, and split-view pane focus via
+    // emitSlotFocused — so the HTTP and WS notions of "focused" cannot
+    // drift. Best-effort: dropped silently while the socket is not OPEN.
+    const sendFocus = (slot: string | null) => {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify({ type: 'slot_focused', slot }))
+    }
+    sendSlotFocusedImpl = sendFocus
+    let lastFocusSent: string | null = null
+    const unsubFocus = store.subscribe(() => {
+      const active = store.getState().chat.activeSlot
+      if (active === lastFocusSent) return  // store.subscribe fires on EVERY action
+      lastFocusSent = active
+      sendFocus(active)
+    })
+    const onVisibility = () => {
+      // Hidden → blur (cancels a pending prefetch server-side); visible →
+      // re-announce the active slot even if unchanged, since the server may
+      // have expired the previous prefetch while the tab was away.
+      sendFocus(document.hidden ? null : store.getState().chat.activeSlot)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       closingRef.current = true
       clearTimeout(reconnectTimerRef.current)
       if (chunkRafRef.current != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(chunkRafRef.current)
       if (chunkTimerRef.current != null) clearTimeout(chunkTimerRef.current)
+      // Flush rather than drop: the store outlives the hook, so a pending bump would
+      // otherwise leave a stale sidebar tint. The flush also cancels the scheduled frame.
+      flushSlotActivity()
       wsRef.current?.close()
       wsRef.current = null
       window.removeEventListener('voice-stop', onVoiceStop)
       window.removeEventListener('voice-config-changed', onVoiceConfigChanged)
+      document.removeEventListener('visibilitychange', onVisibility)
+      unsubFocus()
+      sendSlotFocusedImpl = () => {}
     }
-  }, [connect, stopVoice])
+  }, [connect, stopVoice, flushSlotActivity])
 
   /** Subscribe to log events — call with callback on mount, null on unmount. */
   const subscribeLogs = useCallback((cb: LogCallback) => {

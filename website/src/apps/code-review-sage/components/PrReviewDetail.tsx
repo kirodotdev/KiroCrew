@@ -22,6 +22,7 @@ import ReportView from './ReportView'
 import DraftReviewActions from './DraftReviewActions'
 import FailureNotice from './FailureNotice'
 import PrStatusChips from './PrStatusChips'
+import ReviewChat from './ReviewChat'
 import RunProgress from './RunProgress'
 import PostCommentsButton from './PostCommentsButton'
 import RunStatusPill from './RunStatusPill'
@@ -252,6 +253,13 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
               ? i18nT('apps.codeReviewSage.components.prReviewDetail.see_the_reason_above')
               : i18nT('apps.codeReviewSage.components.prReviewDetail.did_not_complete_for_this_change')}
         />
+      )}
+      {/* Questions about the findings sit between reading them and sending
+          them: "why is this a problem?" is what you ask before deciding whether
+          to post it. The panel is collapsed by default and only offers a composer
+          while the reviewer that produced these findings is still loaded. */}
+      {prRun && (
+        <ReviewChat runId={prRun.run_id} changeId={pr.change_id} />
       )}
       {/* Posting the findings above leaves a PENDING review -- a draft only its
           author can see. This releases it with a verdict, so the whole loop

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 
 /**
@@ -66,7 +66,7 @@ describe('streaming flash regression', () => {
     expect(ftWords(container).length).toBeLessThanOrEqual(32)
   })
 
-  it('PREMISE: completing an inline `code` token still remounts already-visible spans', () => {
+  it('PREMISE: completing an inline `code` token still remounts already-visible spans', async () => {
     // This documents that the remount is inherent to react-markdown — the fix
     // makes it harmless rather than preventing it.
     const { container, rerender } = render(
@@ -75,6 +75,9 @@ describe('streaming flash regression', () => {
     const before = ftWords(container)
     expect(before.length).toBeGreaterThan(0)
     rerender(<MarkdownRenderer content={'see `code` and more here'} {...STREAM} />)
+    // Block parsing is throttled while streaming, so the restructure lands on
+    // the next parse tick rather than in this render.
+    await waitFor(() => expect(container.querySelector('code')).not.toBeNull())
     const after = ftWords(container)
     const remounted = before.filter(n => !after.includes(n))
     // eslint-disable-next-line no-console
@@ -82,7 +85,7 @@ describe('streaming flash regression', () => {
     expect(remounted.length).toBeGreaterThan(0)
   })
 
-  it('FIX: a token completing WITHIN the edge does not re-fade already-visible text (opacity is position-stable)', () => {
+  it('FIX: a token completing WITHIN the edge does not re-fade already-visible text (opacity is position-stable)', async () => {
     // Unclosed backtick renders literally; the tail "and more text here" is all
     // ft-word spans. Closing the backtick turns `code` into <code>, remounting
     // the trailing spans (see PREMISE). The trailing text and its distance to
@@ -94,6 +97,9 @@ describe('streaming flash regression', () => {
     const before = tailOpacities(container)
 
     rerender(<MarkdownRenderer content={'see `code` and more text here'} {...STREAM} />)
+    // Same wait as PREMISE: without it the throttle would leave the subtree
+    // unchanged and this guard would pass with no remount to survive.
+    await waitFor(() => expect(container.querySelector('code')).not.toBeNull())
     const after = tailOpacities(container)
 
     // The visible trailing text "and more text here" (18 chars) is unchanged and

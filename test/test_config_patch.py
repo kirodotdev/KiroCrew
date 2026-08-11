@@ -631,3 +631,120 @@ class TestDefaultReasoningEffortPatch:
         # A default change must NEVER take the destructive path — that clears
         # _sessions and shuts live providers down, killing in-flight turns.
         sessions.reload_provider_factory.assert_not_awaited()
+
+
+# ── Local telemetry switch (telemetry.enabled) ───────────────────────────
+
+
+class TestTelemetryEnabledPatch:
+    """The Telemetry panel's switch: writable, and live without a restart.
+
+    The recorder is built once per process and memoized, so a write that only
+    lands in config.json would leave the panel reporting "on" while every metric
+    call site stayed a no-op. Dropping the cached recorder is what makes the
+    switch mean something, which is why it is pinned rather than left to the
+    next restart.
+    """
+
+    @pytest.mark.asyncio
+    async def test_enable_persists(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.enabled", True)).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["telemetry"]["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_disable_persists(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.enabled", True)).status == 200
+            assert (await _patch(c, "telemetry.enabled", False)).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["telemetry"]["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_non_boolean_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.enabled", "yes")).status == 400
+
+    @pytest.mark.asyncio
+    async def test_drops_the_memoized_recorder(self, tmp_config) -> None:
+        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+            async with TestClient(TestServer(_make_app())) as c:
+                assert (await _patch(c, "telemetry.enabled", True)).status == 200
+        reset.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unrelated_field_leaves_the_recorder_alone(self, tmp_config) -> None:
+        # Rebuilding the recorder flushes and restarts the exporter thread, so it
+        # must not ride along on every unrelated config write.
+        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+            async with TestClient(TestServer(_make_app())) as c:
+                assert (await _patch(c, "session.timeout_secs", 600)).status == 200
+        reset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejected_value_leaves_the_recorder_alone(self, tmp_config) -> None:
+        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+            async with TestClient(TestServer(_make_app())) as c:
+                assert (await _patch(c, "telemetry.enabled", "yes")).status == 400
+        reset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recorder_reset_failure_does_not_fail_the_write(self, tmp_config) -> None:
+        # The value is already durable by this point; a flush that raises must not
+        # report the save as failed and send the UI's switch back.
+        with patch("kiro_crew.metrics.provider.shutdown", side_effect=RuntimeError("boom")):
+            async with TestClient(TestServer(_make_app())) as c:
+                assert (await _patch(c, "telemetry.enabled", True)).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["telemetry"]["enabled"] is True
+
+
+class TestTelemetryEnabledEgressGate:
+    """The switch promises local-only, so it must not reach a state that exports.
+
+    `_build_recorder` attaches an OTLP reader whenever `telemetry.otlp_endpoint` is
+    set, so on a host that configured an endpoint, enabling collection from the
+    dashboard would start network egress under a control whose own description says
+    "Nothing is exported". Enabling is refused there; disabling always composes.
+    """
+
+    def _seed_endpoint(self, cfg_path, endpoint: str) -> None:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        data.setdefault("telemetry", {})["otlp_endpoint"] = endpoint
+        cfg_path.write_text(json.dumps(data), encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_enable_is_refused_when_an_endpoint_is_configured(self, tmp_config) -> None:
+        self._seed_endpoint(tmp_config, "http://otel.internal:4318/v1/metrics")
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "telemetry.enabled", True)
+            assert resp.status == 409
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["telemetry"].get("enabled") is not True
+
+    @pytest.mark.asyncio
+    async def test_disable_is_still_allowed_when_an_endpoint_is_configured(
+        self, tmp_config
+    ) -> None:
+        # Tightening always composes — refusing it would strand a user who wants
+        # collection off on exactly the host where it also exports.
+        self._seed_endpoint(tmp_config, "http://otel.internal:4318/v1/metrics")
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.enabled", False)).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["telemetry"]["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_blank_endpoint_does_not_block_enabling(self, tmp_config) -> None:
+        self._seed_endpoint(tmp_config, "   ")
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "telemetry.enabled", True)).status == 200
+
+    @pytest.mark.asyncio
+    async def test_refused_enable_does_not_touch_the_recorder(self, tmp_config) -> None:
+        self._seed_endpoint(tmp_config, "http://otel.internal:4318/v1/metrics")
+        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+            async with TestClient(TestServer(_make_app())) as c:
+                assert (await _patch(c, "telemetry.enabled", True)).status == 409
+        reset.assert_not_called()

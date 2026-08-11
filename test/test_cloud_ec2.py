@@ -6,11 +6,48 @@ All AWS I/O is mocked at the cloud.aws chokepoint (run_aws / checked / checked_j
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
 from kiro_crew.cloud import aws, ec2, sizes
 from kiro_crew.validation import ValidationError
+
+
+class TestSubTemplateSyntax:
+    def test_every_sub_variable_is_legal(self):
+        # The UserData is one big CloudFormation !Sub. Every "${...}" is parsed as a
+        # Sub reference -- INCLUDING ones inside bash "#" comments, which are still part
+        # of the Sub string. Each must be the "${!...}" literal escape or a plausible
+        # reference: an AWS:: pseudo-param, or an identifier starting with a letter
+        # (a Parameter, a Resource logical id, a Sub variable-map key, optionally with
+        # a ".Attribute"). A bare "${...}" ellipsis in a comment matches neither and
+        # broke change-set creation twice, so it must fail here.
+        text = ec2.load_template()
+        ref = re.compile(r"AWS::[A-Za-z0-9]+|[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)*\Z")
+        bad = [
+            inner
+            for inner in re.findall(r"\$\{([^}]*)\}", text)
+            if not inner.startswith("!") and not ref.match(inner)
+        ]
+        assert not bad, f"illegal !Sub variable(s): {bad}"
+
+    def test_bootstrap_enforces_node_major_floor(self):
+        # The frontend build (vite 8 + rolldown) needs Node >=22; AL2023's default
+        # AppStream nodejs is 18, which fails with a node:util/styleText SyntaxError.
+        # The template must (a) declare the >=22 floor, (b) upgrade via a PINNED
+        # official nodejs.org tarball when the installed node is too old (dnf/NodeSource
+        # is a dead end on AL2023 — its modular filtering keeps reinstalling node 18),
+        # verifying the tarball's SHA-256 before extracting as root, and (c) fail the
+        # bootstrap if it still cannot reach the floor.
+        text = ec2.load_template()
+        assert "NODE_MAJOR_MIN=22" in text
+        assert "nodejs.org/dist/" in text
+        assert 'fail "Node.js too old' in text
+        # The tarball MUST be integrity-checked before it is extracted as root.
+        assert "sha256sum -c" in text
+        assert "9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb" in text
+        assert "e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044" in text
 
 
 class TestValidation:
@@ -32,6 +69,16 @@ class TestValidation:
         ec2.validate_tag("a" * 51)  # ok
         with pytest.raises(ValidationError):
             ec2.validate_tag("a" * 52)
+
+    def test_subnet_id_valid(self):
+        assert ec2.validate_subnet_id("subnet-0123456789abcdef0") == "subnet-0123456789abcdef0"
+        assert ec2.validate_subnet_id("subnet-12345678") == "subnet-12345678"  # classic 8-hex
+
+    def test_subnet_id_bad_charset_rejected(self):
+        # flows into subprocess argv — charset-validate like the other fields
+        for bad in ("subnet-XYZ", "subnet-123", "vpc-0123456789abcdef0", "subnet-1; rm -rf"):
+            with pytest.raises(ValidationError):
+                ec2.validate_subnet_id(bad)
 
     def test_region_pattern(self):
         assert ec2.validate_region("us-east-1") == "us-east-1"
@@ -218,6 +265,16 @@ class TestTemplate:
         assert "MetadataOptions" in text
         assert "HttpTokens: required" in text
 
+    def test_public_ip_is_conditional_on_egress_kind(self):
+        # A NAT-routed (private) subnet must not get a public IP; only IGW
+        # subnets (where it is required for egress) do. The launcher passes the
+        # AssociatePublicIp parameter from the computed egress kind.
+        text = ec2.load_template()
+        assert "AssociatePublicIp:" in text  # the parameter exists
+        assert 'WantPublicIp: !Equals [!Ref AssociatePublicIp, "true"]' in text
+        assert "AssociatePublicIpAddress: !If [WantPublicIp, true, false]" in text
+        assert "AssociatePublicIpAddress: true" not in text  # never hardcoded
+
     def test_sub_escape_for_shell_vars(self):
         # ${!tail_ctx} is CFN !Sub's escape syntax: it renders the literal
         # ${tail_ctx} into the bash script. Without the !, Sub would try to
@@ -236,6 +293,100 @@ class TestTemplate:
             if line.lstrip().startswith("#"):
                 continue
             assert line.isascii(), f"non-ASCII in template line {i}: {line!r}"
+
+
+class TestUserDataSize:
+    """Guard the EXPANDED UserData size against EC2's hard 16 KB limit.
+
+    EC2 rejects a launch whose DECODED UserData exceeds 16,384 bytes, and the
+    limit applies AFTER CloudFormation resolves the !Sub — so the raw literal
+    in the template is not the number that matters. Each ``${...}`` grows at
+    render time (the WaitHandle presigned S3 URL alone is ~250 chars), so a
+    template can look comfortably sized in the file yet be rejected at launch.
+    This test renders a worst-case expansion and enforces a ceiling with real
+    headroom, so a regression fails here instead of at a user's
+    ``kirocrew cloud launch``.
+    """
+
+    # EC2's hard limit on the decoded UserData payload, in bytes.
+    _EC2_USERDATA_LIMIT = 16_384
+
+    # Enforced ceiling: 2 KB of headroom under the hard limit, ON TOP of the
+    # already-pessimistic substitution values below. When this trips, slim the
+    # script by MOVING knowledge into the template comments above UserData
+    # (see the "Bootstrap script rationale" block) — never by deleting it or
+    # making the script cryptic.
+    _CEILING = _EC2_USERDATA_LIMIT - 2_048
+
+    # Worst-case value per !Sub variable. Parameter lengths come from the
+    # template's own AllowedPattern caps; pseudo-params and the WaitHandle use
+    # pessimistic constants (a presigned S3 URL measures ~250 chars — 512
+    # doubles that for margin). A NEW substitution variable fails the test
+    # until an entry is added here, forcing its growth to be sized.
+    _WORST_CASE = {
+        "WaitHandle": "h" * 512,
+        "SourceBucket": "b" * 63,
+        "SourceKey": "k" * 255,
+        "KirocrewRepo": "r" * 255,
+        "KirocrewRef": "f" * 128,
+        "DashboardPort": "65535",
+        "StackTag": "t" * 51,
+        "AWS::AccountId": "1" * 12,
+        "AWS::Region": "ap-southeast-99",
+        "AWS::StackName": "s" * 128,
+    }
+
+    def _raw_userdata(self) -> str:
+        text = ec2.load_template()
+        m = re.search(r"Fn::Base64: !Sub \|\n((?: {10}.*\n|\n)+)", text)
+        assert m, "UserData !Sub block scalar not found in the template"
+        # Strip the 10-space YAML block indent — CloudFormation does the same
+        # when it materializes the scalar.
+        script = "".join(
+            (line[10:] if line.startswith(" " * 10) else line) + "\n"
+            for line in m.group(1).splitlines()
+        )
+        # Guard the extraction itself: a regex that silently matched a stub
+        # would turn this whole test into a no-op.
+        assert script.startswith("#!/bin/bash"), "extracted UserData is not the bootstrap script"
+        assert len(script) > 4_000, "extracted UserData is implausibly small"
+        return script
+
+    def _expand(self, script: str) -> str:
+        # Substitute every real ${Var}; leave ${!x} literal escapes for the
+        # final unescape step, exactly as CloudFormation's Sub does.
+        def sub_one(m: re.Match[str]) -> str:
+            var = m.group(1)
+            assert var in self._WORST_CASE, (
+                f"!Sub variable ${{{var}}} has no worst-case size entry — add one "
+                f"to {type(self).__name__}._WORST_CASE so its render-time growth "
+                "is accounted for"
+            )
+            return self._WORST_CASE[var]
+
+        expanded = re.sub(r"\$\{([^!}][^}]*)\}", sub_one, script)
+        return expanded.replace("${!", "${")
+
+    def test_expanded_userdata_stays_under_ceiling(self):
+        script = self._raw_userdata()
+        expanded = self._expand(script)
+        size = len(expanded.encode("utf-8"))
+        assert size <= self._CEILING, (
+            f"worst-case expanded UserData is {size} bytes, over the "
+            f"{self._CEILING}-byte ceiling ({self._EC2_USERDATA_LIMIT} EC2 limit "
+            f"minus headroom). Slim the bootstrap script by relocating comments "
+            f"into the template's rationale block above UserData — do not delete "
+            f"the knowledge or obfuscate the script."
+        )
+
+    def test_expansion_grows_the_payload(self):
+        # Confidence-check the harness: the worst-case render must be LARGER than
+        # the raw literal (the substitutions net-add bytes). If this fails the
+        # worst-case table has degraded into an optimistic one.
+        script = self._raw_userdata()
+        assert len(self._expand(script).encode()) > len(
+            script.replace("${!", "${").encode()
+        )
 
 
 _BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary"
@@ -321,6 +472,20 @@ class TestDeployDryRun:
         # source-shipping placeholders present by default
         assert "SourceBucket=<auto>" in r.argv
 
+    def test_dry_run_shows_explicit_subnet(self, monkeypatch):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
+        r = ec2.deploy(
+            tag="t1",
+            tier=sizes.default_tier(),
+            profile="dev",
+            region="us-east-1",
+            subnet_id="subnet-0123456789abcdef0",
+            dry_run=True,
+        )
+        assert "SubnetId=subnet-0123456789abcdef0" in r.argv
+        assert "VpcId=<auto>" in r.argv  # resolved from the subnet at real-run time
+        assert "AssociatePublicIp=<auto>" in r.argv  # egress kind known only at real run
+
     def test_dry_run_no_source_when_disabled(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
         r = ec2.deploy(
@@ -347,7 +512,7 @@ class TestDeployShipsSource:
                 f"{tag}/kirocrew-src.tar.gz",
             ),
         )
-        monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1"))
+        monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1", "igw"))
         captured = {}
 
         def fake_run(argv, profile="", region="", *, timeout=ec2._DEPLOY_TIMEOUT, proc_sink=None):
@@ -362,6 +527,8 @@ class TestDeployShipsSource:
         )
         r = ec2.deploy(tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1")
         assert "SourceBucket=kirocrew-src-1-us-east-1" in captured["argv"]
+        # IGW-routed subnet -> the public IP is required for egress
+        assert "AssociatePublicIp=true" in captured["argv"]
         assert "SourceKey=t1/kirocrew-src.tar.gz" in captured["argv"]
         # the pre-created shared boundary ARN flows into the deploy params
         assert f"PermissionsBoundaryArn={_BOUNDARY_ARN}" in captured["argv"]
@@ -419,6 +586,105 @@ class TestDeployCleansSourceOnEarlyFailure:
         assert deleted == ["t1"]
 
 
+class TestDeployExplicitSubnet:
+    def _stub_deploy_deps(self, monkeypatch):
+        import kiro_crew.cloud.source as source_mod
+
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
+        monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
+        monkeypatch.setattr(source_mod, "upload_source", lambda *a, **k: ("b", "t1/k.tar.gz"))
+        monkeypatch.setattr(
+            ec2,
+            "describe",
+            lambda *a, **k: {"instance_id": "i-1", "stack_status": "CREATE_COMPLETE"},
+        )
+
+    def test_explicit_subnet_skips_discovery(self, monkeypatch):
+        self._stub_deploy_deps(monkeypatch)
+        monkeypatch.setattr(
+            ec2,
+            "discover_network",
+            lambda *a, **k: pytest.fail("--subnet must bypass discover_network"),
+        )
+        monkeypatch.setattr(
+            ec2,
+            "resolve_explicit_subnet",
+            lambda subnet_id, *a, **k: ("vpc-dedicated", subnet_id, "nat"),
+        )
+        captured = {}
+
+        def fake_run(argv, profile="", region="", *, timeout=ec2._DEPLOY_TIMEOUT, proc_sink=None):
+            captured["argv"] = argv
+            return (0, "ok", "")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        ec2.deploy(
+            tag="t1",
+            tier=sizes.default_tier(),
+            profile="dev",
+            region="ap-southeast-1",
+            subnet_id="subnet-0123456789abcdef0",
+        )
+        assert "VpcId=vpc-dedicated" in captured["argv"]
+        assert "SubnetId=subnet-0123456789abcdef0" in captured["argv"]
+        # NAT-routed pin -> no public IP on the instance
+        assert "AssociatePublicIp=false" in captured["argv"]
+
+    def test_discovered_nat_subnet_suppresses_public_ip(self, monkeypatch):
+        # The egress-kind wiring must also cover the auto-discovery path.
+        self._stub_deploy_deps(monkeypatch)
+        monkeypatch.setattr(
+            ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-priv", "nat")
+        )
+        captured = {}
+
+        def fake_run(argv, profile="", region="", *, timeout=ec2._DEPLOY_TIMEOUT, proc_sink=None):
+            captured["argv"] = argv
+            return (0, "ok", "")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        ec2.deploy(tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1")
+        assert "AssociatePublicIp=false" in captured["argv"]
+
+    def test_bad_subnet_id_rejected_before_any_aws_call(self, monkeypatch):
+        monkeypatch.setattr(
+            aws, "run_aws", lambda *a, **k: pytest.fail("must not reach AWS on a bad subnet id")
+        )
+        with pytest.raises(ValidationError):
+            ec2.deploy(
+                tag="t1",
+                tier=sizes.default_tier(),
+                profile="dev",
+                region="us-east-1",
+                subnet_id="subnet-nope!",
+            )
+
+    def test_explicit_subnet_failure_deletes_uploaded_source(self, monkeypatch):
+        # Same cleanup contract as discovery: a validation failure after the
+        # source upload must not orphan the tarball in S3.
+        import kiro_crew.cloud.source as source_mod
+
+        deleted: list[str] = []
+        self._stub_deploy_deps(monkeypatch)
+        monkeypatch.setattr(source_mod, "delete_source", lambda tag, *a, **k: deleted.append(tag))
+        monkeypatch.setattr(
+            ec2,
+            "resolve_explicit_subnet",
+            lambda *a, **k: (_ for _ in ()).throw(
+                aws.AWSError("no verified internet egress", action="ec2:DescribeRouteTables")
+            ),
+        )
+        with pytest.raises(aws.AWSError):
+            ec2.deploy(
+                tag="t1",
+                tier=sizes.default_tier(),
+                profile="dev",
+                region="us-east-1",
+                subnet_id="subnet-0123456789abcdef0",
+            )
+        assert deleted == ["t1"]
+
+
 def _igw_route_table(subnet_ids):
     """A route table with an internet-gateway default route, associated to
     ``subnet_ids`` (explicit associations)."""
@@ -466,9 +732,10 @@ class TestDiscoverNetwork:
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
-        vpc, subnet = ec2.discover_network("dev", "us-east-1")
+        vpc, subnet, kind = ec2.discover_network("dev", "us-east-1")
         assert vpc == "vpc-default"
         assert subnet == "subnet-public"
+        assert kind == "igw"
 
     def test_skips_az_that_does_not_offer_type(self, monkeypatch):
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
@@ -497,8 +764,9 @@ class TestDiscoverNetwork:
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
-        vpc, subnet = ec2.discover_network("dev", "us-east-1", "t4g.xlarge")
+        vpc, subnet, kind = ec2.discover_network("dev", "us-east-1", "t4g.xlarge")
         assert subnet == "subnet-1b"
+        assert kind == "igw"
 
     def test_raises_when_no_subnet_has_internet_egress(self, monkeypatch):
         # Public-IP flag set, but no route table has a 0.0.0.0/0 route -> the
@@ -567,7 +835,7 @@ class TestDiscoverNetwork:
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
-        _vpc, subnet = ec2.discover_network("dev", "us-east-1")
+        _vpc, subnet, _kind = ec2.discover_network("dev", "us-east-1")
         assert subnet == "subnet-main"
 
     def test_explicit_no_egress_subnet_not_covered_by_main_table(self, monkeypatch):
@@ -651,7 +919,7 @@ class TestDiscoverNetwork:
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
-        _vpc, subnet = ec2.discover_network("dev", "us-east-1")
+        _vpc, subnet, _kind = ec2.discover_network("dev", "us-east-1")
         assert subnet == "subnet-nat"
 
     def test_igw_subnet_without_public_ip_is_usable(self, monkeypatch):
@@ -677,7 +945,7 @@ class TestDiscoverNetwork:
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
-        _vpc, subnet = ec2.discover_network("dev", "us-east-1")
+        _vpc, subnet, _kind = ec2.discover_network("dev", "us-east-1")
         assert subnet == "subnet-igw-nopub"
 
     def test_raises_when_no_az_offers_type(self, monkeypatch):
@@ -712,6 +980,84 @@ class TestDiscoverNetwork:
         with pytest.raises(aws.AWSError) as ei:
             ec2.discover_network("dev", "us-east-1")
         assert "no default VPC" in str(ei.value)
+
+
+class TestResolveExplicitSubnet:
+    def test_resolves_vpc_and_keeps_private_nat_subnet(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "describe-subnets" in args and "--subnet-ids" in args:
+                return {
+                    "Subnets": [
+                        {
+                            "SubnetId": "subnet-priv",
+                            "VpcId": "vpc-dedicated",
+                            "AvailabilityZone": "ap-southeast-1a",
+                        }
+                    ]
+                }
+            if "describe-route-tables" in args:
+                return {"RouteTables": [_nat_route_table(["subnet-priv"])]}
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        vpc, subnet, kind = ec2.resolve_explicit_subnet("subnet-priv", "dev", "ap-southeast-1")
+        assert (vpc, subnet, kind) == ("vpc-dedicated", "subnet-priv", "nat")
+
+    def test_missing_subnet_raises(self, monkeypatch):
+        monkeypatch.setattr(aws, "checked_json", lambda *a, **k: {"Subnets": []})
+        with pytest.raises(aws.AWSError, match="not found"):
+            ec2.resolve_explicit_subnet("subnet-gone", "dev", "us-east-1")
+
+    def test_no_egress_subnet_raises(self, monkeypatch):
+        # An isolated subnet (local route only) would hang the launch to the
+        # WaitCondition timeout — the explicit path must fail fast like discovery.
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "describe-subnets" in args and "--subnet-ids" in args:
+                return {
+                    "Subnets": [
+                        {
+                            "SubnetId": "subnet-iso",
+                            "VpcId": "vpc-1",
+                            "AvailabilityZone": "us-east-1a",
+                        }
+                    ]
+                }
+            if "describe-route-tables" in args:
+                return {
+                    "RouteTables": [
+                        {
+                            "Routes": [
+                                {"DestinationCidrBlock": "10.0.0.0/16", "GatewayId": "local"}
+                            ],
+                            "Associations": [{"SubnetId": "subnet-iso"}],
+                        }
+                    ]
+                }
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        with pytest.raises(aws.AWSError, match="egress"):
+            ec2.resolve_explicit_subnet("subnet-iso", "dev", "us-east-1")
+
+    def test_az_not_offering_type_raises(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "describe-subnets" in args and "--subnet-ids" in args:
+                return {
+                    "Subnets": [
+                        {
+                            "SubnetId": "subnet-1e",
+                            "VpcId": "vpc-1",
+                            "AvailabilityZone": "us-east-1e",
+                        }
+                    ]
+                }
+            if "describe-instance-type-offerings" in args:
+                return {"InstanceTypeOfferings": [{"Location": "us-east-1b"}]}
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        with pytest.raises(aws.AWSError, match="does not offer"):
+            ec2.resolve_explicit_subnet("subnet-1e", "dev", "us-east-1", "t4g.xlarge")
 
 
 class TestStatusAndList:
@@ -1056,7 +1402,7 @@ class TestStackEventsAndFailures:
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
         monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
         monkeypatch.setattr(source_mod, "upload_source", lambda *a, **k: ("b", "k"))
-        monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1"))
+        monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1", "igw"))
         captured = {}
 
         def fake_run(argv, profile="", region="", *, timeout=ec2._DEPLOY_TIMEOUT, proc_sink=None):
@@ -1083,7 +1429,7 @@ class TestStackEventsAndFailures:
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
         monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
         monkeypatch.setattr(source_mod, "upload_source", lambda *a, **k: ("b", "k"))
-        monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1"))
+        monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1", "igw"))
         monkeypatch.setattr(
             aws, "run_aws", lambda *a, **k: (1, "", "Failed to create/update the stack")
         )

@@ -1,8 +1,10 @@
 import { memo, useState, useMemo, useCallback, useRef } from 'react'
+import { Download, FileText } from 'lucide-react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
+import { fileDownloadUrl } from '../utils/fileReadUrl'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -13,8 +15,20 @@ const PDF_EXTS = new Set(['.pdf'])
 // Excalidraw scene JSON. Without this the extension falls through to `code` and
 // the user gets a wall of raw element JSON in Monaco instead of the diagram.
 const EXCALIDRAW_EXTS = new Set(['.excalidraw'])
+// Office binary formats (ZIP-based OOXML + legacy OLE + ODF). These cannot be
+// rendered inline by browsers and produce garbled output when routed through
+// /api/file-read (which decodes as UTF-8 with errors='replace'). OfficeViewer
+// surfaces a download link instead. .pdf is intentionally excluded — it has
+// its own PdfViewer that iframes /api/file-raw using the browser's built-in
+// PDF renderer.
+const OFFICE_EXTS = new Set([
+  '.docx', '.doc',
+  '.xlsx', '.xls',
+  '.pptx', '.ppt',
+  '.odt', '.ods', '.odp',
+])
 
-export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'excalidraw' | 'code' | 'markdown'
+export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'excalidraw' | 'office' | 'code' | 'markdown'
 
 /**
  * Map a filesystem path to a FileType. Note: SVG files (path-backed) are
@@ -31,6 +45,7 @@ export function detectFileType(filePath: string): FileType {
   if (HTML_EXTS.has(ext)) return 'html'
   if (PDF_EXTS.has(ext)) return 'pdf'
   if (EXCALIDRAW_EXTS.has(ext)) return 'excalidraw'
+  if (OFFICE_EXTS.has(ext)) return 'office'
   if (['.md', '.markdown', '.mdx', '.txt', ''].includes(ext)) return 'markdown'
   return 'code'
 }
@@ -238,6 +253,51 @@ export const PdfViewer = memo(function PdfViewer({ filePath }: { filePath: strin
           className="px-2 py-1 rounded text-[11px] text-muted hover:text-text cursor-pointer bg-transparent border-none"
           onClick={() => window.open(url, '_blank')}
         >{i18nT('components.fileRenderers.open_in_new_tab')}</button>
+      </div>
+    </div>
+  )
+})
+
+/* ── Office viewer (download-only card for .docx/.xlsx/.pptx/etc.) ──
+ *
+ * Office binary formats are ZIP archives (OOXML) or legacy OLE compound files
+ * that browsers cannot render inline. Serving them through /api/file-read
+ * decodes them as UTF-8 with errors='replace', producing garbled control-code
+ * text (raw ZIP bytes starting with 'PK…'). This viewer replaces that broken
+ * rendering with a filename + extension badge + Download button pointing at
+ * /api/file-download, which streams the original bytes with attachment
+ * disposition + nosniff so the file downloads cleanly instead. */
+export const OfficeViewer = memo(function OfficeViewer({ filePath }: { filePath: string }) {
+  // Split on BOTH separators — Kiro Crew ships native on Windows where paths
+  // arrive as `C:\Users\…\report.docx`, and a `/`-only split would surface the
+  // whole path as the "filename". Matches the pattern in MarkdownRenderer.tsx
+  // and VectorMemoryCard.tsx.
+  const filename = filePath.split(/[\\/]/).pop() || filePath
+  const ext = extOf(filePath).replace('.', '').toUpperCase()
+  const url = fileDownloadUrl(filePath)
+  return (
+    <div className="h-full flex items-center justify-center p-4 bg-bg-elevated rounded-md border border-border">
+      <div className="flex flex-col items-center gap-3 max-w-md text-center">
+        <div className="relative">
+          <FileText size={64} className="text-muted" strokeWidth={1.25} />
+          <span
+            className="absolute bottom-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-accent text-white"
+            aria-hidden="true"
+          >{ext}</span>
+        </div>
+        <div className="text-sm text-text break-all">{filename}</div>
+        <div className="text-xs text-muted">
+          {i18nT('components.fileRenderers.office_download_hint')}
+        </div>
+        <a
+          href={url}
+          download={filename}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm bg-accent text-white hover:opacity-90 no-underline"
+          aria-label={i18nT('components.fileRenderers.download_file', { filename })}
+        >
+          <Download size={16} aria-hidden="true" />
+          {i18nT('components.fileRenderers.download')}
+        </a>
       </div>
     </div>
   )

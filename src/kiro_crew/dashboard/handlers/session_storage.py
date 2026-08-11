@@ -32,6 +32,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_digest import digest
 from kiro_crew.session_map import SessionMap
 from kiro_crew.session_storage import (
+    BUCKET_DAYS,
     MIN_RECLAIM_AGE_DAYS,
     SessionIndex,
     SessionStorageError,
@@ -56,6 +57,17 @@ REASON_MANUAL = "manual"
 # A reclaim of six figures of sessions is minutes of filesystem work even at
 # rename speed, so every operation here is offloaded off the event loop.
 _MAX_SELECTION = 200_000
+
+# How many replay-only sessions the inventory lists individually. The rest are
+# reported as a total.
+#
+# A cap is not a display preference here: the collapsed group holds six figures of
+# rows on a long-lived install, and sending them all is both the bulk of the
+# response and — if the group is ever expanded — more DOM than a browser will
+# render. The cut is by size, so the rows worth choosing between by hand are the
+# ones that survive it, and the summary states what was left out so the list never
+# reads as the whole store.
+_BACKGROUND_ROW_LIMIT = 200
 
 
 def _sel():
@@ -460,13 +472,38 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
     index = _build_index(state)
     units = list_units(index)
     titles = _titles_by_stem(state.conversation_log)
-    report = measure(index)
+    # The same pass answers both halves of the screen. Measuring separately would
+    # re-enumerate a store that reaches half a million files, and would let the
+    # totals describe a different instant than the rows printed beneath them.
+    report = measure(index, units=units)
+
+    # Replay-only units — subagent runs — are what a long-lived install accumulates
+    # by the hundred thousand, and this screen folds every one of them into a single
+    # collapsed group. Sending them individually cost 35MB of JSON on the measured
+    # machine to render one line, which is most of why the screen took tens of
+    # seconds to open. So the group is summarised here and only its largest members
+    # are listed: someone picking sessions by hand is choosing among the big ones,
+    # and everything below the cut is reached by age instead (``cleanup``), which
+    # needs no per-row selection at all.
+    foreground: list[SessionUnit] = []
+    background: list[SessionUnit] = []
+    for unit in units:
+        (foreground if unit.stems else background).append(unit)
+    background.sort(key=lambda u: u.bytes, reverse=True)
+    listed_background = background[:_BACKGROUND_ROW_LIMIT]
+
+    # One clock for every age answer in this payload, so the thresholds cannot
+    # disagree with each other by the time the last one is computed.
+    now = time.time()
+    reclaimable = [
+        u for u in units if not u.active and u.age_days(now) >= MIN_RECLAIM_AGE_DAYS
+    ]
 
     sessions = []
     # Biggest first: the screen exists to answer "what is taking the space", so the
     # answer should be the first row rather than something to sort for. Sorted on
     # the units, not on the built payload, because the rows are heterogeneous dicts.
-    for unit in sorted(units, key=lambda u: u.bytes, reverse=True):
+    for unit in sorted(foreground, key=lambda u: u.bytes, reverse=True) + listed_background:
         title = _redact(next((titles[stem] for stem in unit.stems if stem in titles), ""))
         # A session with NO transcript half is one that was never a conversation in
         # the product: a subagent run, which only ever writes a replay log. Those
@@ -477,7 +514,7 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
         # titled conversation the user still recognises into the anonymous group —
         # and those are exactly the rows worth showing, because being unmapped is
         # also what makes them reclaimable.
-        background = not unit.stems
+        background_row = not unit.stems
         sessions.append(
             {
                 "uid": unit.uid,
@@ -494,7 +531,7 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
                 # are refused today; separating them stops the screen telling a user
                 # a month-old idle conversation is "in use".
                 "live": unit.live,
-                "background": background,
+                "background": background_row,
             }
         )
     return {
@@ -503,6 +540,31 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
         "reclaimable_bytes": report.reclaimable_bytes,
         "reclaim_blocked_reason": report.reclaim_blocked_reason,
         "sessions": sessions,
+        # The truth about the group the rows above only partly represent, so a
+        # client can say "the 200 largest of 168,832" instead of implying the list
+        # it received is the whole of it.
+        "background": {
+            "sessions": len(background),
+            "bytes": sum(u.bytes for u in background),
+            "listed": len(listed_background),
+        },
+        # What an age sweep would take, per threshold. That is how the bulk of a
+        # large store is actually reclaimed, and this pass already computed it —
+        # sending it lets a client offer the choice without a dry run per option.
+        #
+        # Cumulative ("older than N"), matching what ``cleanup`` actually does,
+        # rather than the disjoint bands ``measure`` reports. A client handed bands
+        # would have to re-derive each threshold by summing them and inferring the
+        # boundaries from their labels, and a label it failed to parse would
+        # silently understate what a sweep is about to move.
+        "age_options": [
+            {
+                "days": days,
+                "sessions": sum(1 for u in reclaimable if u.age_days(now) >= days),
+                "bytes": sum(u.bytes for u in reclaimable if u.age_days(now) >= days),
+            }
+            for days in BUCKET_DAYS
+        ],
         "trash": {
             "bytes": report.trash_bytes,
             "still_on_disk": True,

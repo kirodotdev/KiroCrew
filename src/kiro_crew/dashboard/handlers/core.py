@@ -38,6 +38,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 from kiro_crew.transcribe import BREW_PATH_DIRS, ensure_ffmpeg_in_path, find_brew, is_available
 
@@ -1478,6 +1479,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # empty allowlist stays off; an unrecognised pin_scope falls back to node).
     "dashboard.tailscale.trust_identity": {"type": "bool"},
     "dashboard.tailscale.pin_scope": {"type": "str", "max_len": 8},
+    # Local OTEL metric collection — the Privacy panel's recording switch. Safe
+    # to expose where beacon_endpoint is not: turning this on writes JSONL under
+    # ~/.kiro/crew/metrics. It is NOT unconditionally local, though —
+    # `_build_recorder` attaches an OTLP reader when `telemetry.otlp_endpoint` is
+    # set — so the gate below refuses the ENABLE on a host that configured an
+    # endpoint, which is what keeps the switch's local-only promise true for every
+    # state it can reach. The endpoint itself stays config-file-only, so a
+    # dashboard caller can neither choose a destination nor start sending to one.
+    "telemetry.enabled": {"type": "bool"},
     # SSO login flags for an edition that supplies a real sso_login_handler.
     # Bounded to a short string here; the companion login handler re-validates
     # each token against its own flag allowlist before spawning the login PTY
@@ -1501,6 +1511,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.folder_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
+    "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": 50000},
+    "knowledge.max_sources": {"type": "int", "min": 0, "max": 1000},
+    "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.extraction_model": {"type": "str"},
+    "knowledge.extraction_pool_size": {"type": "int", "min": 1, "max": 10},
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone
     # ``computer_use.json`` (see config.loader.computer_use_state_path) so the
@@ -1681,6 +1696,36 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 403,
             )
 
+    # Local metric collection is offered as local-only ("Nothing is exported"), and
+    # that promise has to hold for every state this route can reach. It would not:
+    # `_build_recorder` attaches an OTLP reader whenever `telemetry.otlp_endpoint`
+    # is set (see metrics/provider.py), so on a host that already configured an
+    # endpoint, enabling collection from the dashboard would start network egress
+    # under a switch that says it does not. Refuse the ENABLE there and let the
+    # config file — which is where the endpoint was chosen — be where that decision
+    # is made. Disabling stays writable for the same reason as the beacon above: a
+    # narrower local choice always composes.
+    if path_key == "telemetry.enabled" and value is True:
+        try:
+            # to_thread: a config load is a fingerprint-cache hit in the steady
+            # state, but a full read plus schema validation (~14ms) when the file
+            # changed — and this handler runs on the event loop.
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            endpoint = str(getattr(cfg.telemetry, "otlp_endpoint", "") or "")
+        except Exception:
+            # Unreadable config: fail closed rather than enabling collection whose
+            # egress posture cannot be established.
+            logger.warning("telemetry config unreadable; refusing to enable", exc_info=True)
+            return _deny("could not read the telemetry configuration", f"{path_key}={value}", 409)
+        if endpoint.strip():
+            return _deny(
+                "telemetry.otlp_endpoint is set, so enabling collection here would "
+                "also export metrics off this machine. Enable it in the config file "
+                "instead, where the endpoint is configured.",
+                f"{path_key}={value}",
+                409,
+            )
+
     # Same rule, same direction, for the tailnet origin derivation. `false` stays
     # writable under a ceiling that already forbids it, for the same reason as
     # above: the ceiling is a floor, a narrower local choice composes with it, and
@@ -1811,6 +1856,22 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 cfg.agent.completion_keep,
                 cfg.agent.completion_keep_chars,
             )
+
+    # The metrics recorder is built once per process and memoized, so a config
+    # write alone would leave the Telemetry panel reporting "on" while every
+    # metric call site stayed a no-op. Dropping the cached recorder makes the next
+    # get_recorder() rebuild from the value just written — collection starts (or
+    # stops, flushing what it had) without a restart. This reaches the gateway
+    # process, which is where the session/turn/HTTP metrics are recorded; other
+    # kirocrew processes pick the value up when they next start.
+    if path_key == "telemetry.enabled":
+        try:
+            # to_thread: shutdown() flushes the exporter and joins the reader
+            # thread, both of which block.
+            await asyncio.to_thread(_metrics_provider.shutdown)
+            logger.info("telemetry.enabled set to %r — metrics recorder rebuilt", value)
+        except Exception:
+            logger.warning("metrics recorder reset after telemetry toggle failed", exc_info=True)
 
     return web.json_response(_masked_config_dict(cfg))
 

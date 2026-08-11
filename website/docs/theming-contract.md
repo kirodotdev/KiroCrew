@@ -73,6 +73,53 @@ Out of contract: app structure/routing, functional-control behavior, security
 chrome, and anything outside the CSS-var set + the `overrides.css` selector
 allowlist.
 
+## Fonts
+
+A pack ships faces in `theme.json`'s `fonts` list, tagging each with the **role**
+it feeds — `sans` (proportional) or `mono`. Absent means `sans`, so a pack written
+before roles existed keeps its meaning.
+
+```json
+"fonts": [
+  { "family": "Manrope",       "file": "manrope-400.ttf", "weight": 400, "role": "sans" },
+  { "family": "Manrope",       "file": "manrope-600.ttf", "weight": 600, "role": "sans" },
+  { "family": "IBM Plex Mono", "file": "plex-400.ttf",    "weight": 400, "role": "mono" }
+]
+```
+
+Files live under `styles/fonts/` as `.woff2` or `.ttf`, at most
+`_THEME_MAX_FONTS` faces across both roles, each within the per-file cap.
+
+Each role fills a token — `--theme-font-sans`, `--theme-font-mono` — and
+Settings → Display → **Font Family** reads through them:
+
+| Option | Resolves to |
+|---|---|
+| Sans | the pack's `sans` face, else Kiro Crew's own proportional stack |
+| Mono | the pack's `mono` face, else Kiro Crew's own monospace stack |
+| System | the OS face — no token, so a pack cannot reach the body font here |
+
+`--mono` reads the mono token too, so code blocks, inline code and diffs follow a
+pack's monospace face without the user having to switch the whole UI to
+monospace. That applies under every option, System included — System governs the
+body font, not the code font. The terminal is separate: it reads its family from a
+Settings field, not from CSS, so a pack never changes it.
+
+**`overrides.css` must not declare a font.** Declaring `--font-body`, `--mono`,
+either role token, or `font` / `font-family` on a whole-UI surface (`body`,
+`html`, `*`, `:root`) is **rejected at install** and dropped at runtime. Such a
+pin lands the font below where the Font Family preference is applied, so the
+user's Mono/System choice would silently stop working with nothing on screen
+explaining why. A `font-family` on ONE allowlisted surface (`.topbar`,
+`.code-block`, `button.primary`) is fine — that is theming, not a pin.
+
+A pack **already installed** with such a pin keeps working: the rule is applied when
+a pack is *installed*, not when an installed pack is re-read, so the theme still
+loads and keeps its colours. Its font pin is dropped when the stylesheet is scoped,
+so the typeface falls back to the built-in stack until the face moves into the
+`fonts` list. Re-installing the pack surfaces the rejection message that explains
+what to change.
+
 ## Stable hooks
 
 An L1 pack's `overrides.css` may only target the surfaces below. This is the list

@@ -15,6 +15,7 @@ from kiro_crew.apps.manifest import (
     Dependencies,
     SetupConfig,
 )
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -68,6 +69,46 @@ class TestValidation:
         m = AppManifest.from_dict(_valid_manifest(name="Not_Kebab"))
         errors = m.validate()
         assert any("kebab-case" in e for e in errors)
+
+    def test_reserved_name_rejected(self):
+        """The system.* notification namespace stays un-shadowable."""
+        m = AppManifest.from_dict(_valid_manifest(name="system"))
+        errors = m.validate()
+        assert any("reserved" in e for e in errors)
+
+    @pytest.mark.parametrize("name", sorted(WINDOWS_DEVICE_STEMS))
+    def test_every_windows_device_stem_is_rejected(self, name):
+        """The whole documented device-name set, not just the stems that happen
+        to fail on one build. An app name is a persistent published identity, so
+        admitting a stem is a one-way door while over-refusing is freely
+        relaxable."""
+        m = AppManifest.from_dict(_valid_manifest(name=name))
+        errors = m.validate()
+        assert any("not portable" in e for e in errors), (name, errors)
+
+    def test_device_stem_vocabulary_is_not_duplicated(self):
+        """One definition, shared with the git-branch grammar. Two copies of a
+        22-name set drift, and the branch rule is the precedent this follows."""
+        from kiro_crew.apps.manifest import UNPORTABLE_APP_NAMES
+
+        assert UNPORTABLE_APP_NAMES is WINDOWS_DEVICE_STEMS
+
+    @pytest.mark.parametrize("name", ["null-app", "console", "com10", "lpt10", "connect"])
+    def test_names_merely_resembling_a_device_stay_valid(self, name):
+        """The rule matches the exact stem. ``com10``/``lpt10`` are outside the
+        reserved 1-9 range and the rest are ordinary words."""
+        m = AppManifest.from_dict(_valid_manifest(name=name))
+        assert m.validate() == []
+
+    @pytest.mark.parametrize("name", ["demo\n", "nul\n", "system\n", "demo\r\n", "demo\n\n"])
+    def test_a_trailing_newline_cannot_slip_through(self, name):
+        """``$`` also matches before a trailing newline, so a ``$``-anchored
+        grammar admits ``"demo\\n"`` — and worse, ``"nul\\n"`` and ``"system\\n"``
+        evade the reserved-name checks that run after it, because those compare
+        against the exact string. ``KEBAB_RE`` is anchored with ``\\Z``."""
+        m = AppManifest.from_dict(_valid_manifest(name=name))
+        errors = m.validate()
+        assert any("kebab-case" in e for e in errors), (name, errors)
 
     def test_invalid_version_format(self):
         m = AppManifest.from_dict(_valid_manifest(version="not-semver"))

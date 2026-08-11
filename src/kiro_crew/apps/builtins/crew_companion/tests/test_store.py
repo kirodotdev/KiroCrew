@@ -388,16 +388,25 @@ class TestLifecycle:
         s.load()
         calls = {"n": 0}
 
+        class ScriptedStop:
+            def __init__(self) -> None:
+                self.waits = 0
+
+            def wait(self, _timeout: float) -> bool:
+                self.waits += 1
+                return self.waits > 2
+
         def boom() -> None:
             calls["n"] += 1
             raise RuntimeError("tick exploded")
 
+        scripted_stop = ScriptedStop()
+        monkeypatch.setattr(s, "_stop", scripted_stop)
         monkeypatch.setattr(s, "tick", boom)
-        s.start()
-        # The loop waits TICK_SECONDS before the first call; give it two chances.
-        time_mod.sleep(2.5)
-        s.stop()
-        assert calls["n"] >= 2, f"loop stopped after {calls['n']} call(s)"
+        s._run()
+
+        assert calls["n"] == 2
+        assert scripted_stop.waits == 3
 
 
 class TestPetPosition:

@@ -108,10 +108,12 @@ def test_monitor_start_interval_maps_to_idle_secs(default_install):
 
 
 def test_monitor_start_confirmation_states_idle_semantics_and_stop_duty(default_install):
-    """The human confirmation must read as an idle gap (not a fixed period) and
-    put the stop obligation on the caller, framing the cap as a backstop."""
+    """The human confirmation must state the deadline-preserving cadence (user
+    messages defer, never restart) and put the stop obligation on the caller,
+    framing the cap as a backstop."""
     result = _call_tool_inner("monitor_start", {"message": "watch PR", "interval_secs": 300})
-    assert "ends" in result.lower()
+    assert "every 300s" in result.lower()
+    assert "without restarting" in result.lower()
     assert "autonudge_stop" in result
     assert "backstop" in result.lower()
 

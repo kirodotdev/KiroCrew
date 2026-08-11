@@ -359,7 +359,12 @@ _jsx('button', {
 - `react` (useState, useEffect, useRef, etc.)
 - `react/jsx-runtime` (_jsx, _jsxs, Fragment)
 - `react-dom`
-- `@kirocrew/app-sdk` (useNavigate)
+- `@kirocrew/app-sdk` — hooks (`useAppApi`, `useAppEvents`, `useTheme`, `useAppInfo`,
+  `useNavigate`, `useNotify`, `useNavBadge`, `useChatLauncher`), the `ChatEmbed` /
+  `ChatPanel` components, and the chat **marker protocol** (`parseOptions`,
+  `deriveFollowUpOptions`, `extractSteeringAcks`, `stripPartialOptionMarker`). The protocol
+  is React-free, so a worker or a plain function can use it too — see
+  `docs/app-kit/api-reference.md`.
 
 ### Interactive Elements (Chat Launch)
 
@@ -672,16 +677,23 @@ grouping come for free and stay consistent with the main chat.
   `"/api/chat/*"`; if your users click Approve/Trust on tool cards you ALSO need
   `"/api/approvals"` + `"/api/approvals/*"` — without it the button 403s with no
   visible error.
-- Chrome quirks (as of current main): the embed draws its own bordered card,
-  a title strip, and an input row with a top border, and its initial auto-scroll
-  fires before markdown/tool cards finish layout (long transcripts open
-  mid-scroll). **Stopgap — tracked in issue #510** (ChatEmbed frameless/scroll
-  props): until that lands, override from the app with scoped `!important` CSS
-  on the embed's Tailwind classes for the chrome, and a small keeper that pins
-  the embed's scroller to the bottom (release when the user scrolls up, re-pin
-  near bottom). These overrides couple you to host DOM internals the repo has
-  never promised — expect them to break on upstream changes, keep them minimal,
-  and delete them when #510 ships.
+- Chrome and scroll are props, not CSS overrides. Pass `frameless` to drop the
+  bordered card, title strip and input-row border so the embed sits flush inside
+  your own card, and `startAtBottom` to jump to the newest turn immediately and
+  stay pinned there (released when the user scrolls up more than 40px, re-pinned
+  when they return). Do NOT reach for `!important` overrides on the embed's
+  Tailwind classes or hand-roll a scroll keeper: those couple you to host DOM
+  internals the repo has never promised.
+- **Still missing — tracked in issue #510:** permission cards do not render
+  inside the embed, so a worker slot your app owns cannot ask the user to
+  approve a tool from there. That is why such slots tend to be blanket-trusted;
+  treat the trust level as a deliberate decision, not a default.
+- Rendering agent messages yourself instead of using `ChatEmbed`? An agent puts
+  follow-up choices and steer acknowledgements inline in its prose
+  (`[OPTIONS: a | b]`, `[STEERING steer-<id>: …]`). Parse them with the SDK's
+  marker protocol rather than by hand, and remember the rule that costs users
+  their input: stripping a marker WITHOUT offering the affordance deletes the
+  choices outright — worse than showing the raw text.
 
 ## Worker Slots — apps that own agent sessions
 

@@ -440,6 +440,13 @@ export default defineConfig({
     // costs nothing.
     environmentOptions: {
       happyDOM: {
+        // Serve the test document on the gateway's real default port. happy-dom
+        // otherwise defaults to localhost:3000, which is one of the Web Preview
+        // panel's own dev-server quick-picks — and the panel refuses to frame a
+        // target on the dashboard's own port (it can only ever be this gateway,
+        // which forbids being embedded). Matching production keeps "the
+        // dashboard" and "a dev server" distinguishable in tests.
+        url: 'http://localhost:6776/',
         settings: {
           disableIframePageLoading: true,
           disableJavaScriptFileLoading: true,
@@ -451,6 +458,19 @@ export default defineConfig({
     setupFiles: './integration/setup.ts',
     css: true,
     pool: 'forks',  // More stable than threads on ARM64 build fleet (avoids ERR_IPC_CHANNEL_CLOSED)
+    // Bound fork memory. Without a cap, vitest spawns one worker per core
+    // (os.availableParallelism); on a high-core fleet the aggregate RSS of that
+    // many full Node heaps — each retaining v8 coverage maps + happy-dom DOM
+    // state across the ~950 files it touches — exceeds host RAM under
+    // ``--coverage``. The kernel then OOM-kills a worker, which vitest surfaces
+    // as "Worker exited unexpectedly" (1 unhandled error → the job fails) even
+    // though every test passed. maxWorkers caps concurrency regardless of core
+    // count, and the per-worker --max-old-space-size gives each fork a heap
+    // ceiling that fails a genuine leak loudly instead of dragging the host down.
+    // (Vitest 4 pool rework: these are top-level, not poolOptions; minWorkers
+    // was removed — only maxWorkers has effect.)
+    maxWorkers: 4,
+    execArgv: ['--max-old-space-size=4096'],
     // Default 5s is too tight for tests that ``await import(...)`` inside the
     // body: under a full concurrent forks run the collect phase can starve the
     // dynamic import past 5s and it times out. 15s gives headroom for
@@ -459,6 +479,11 @@ export default defineConfig({
     include: ['integration/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
     onConsoleLog: (log) =>
       !log.includes('was not wrapped in act(') &&
+      // TipCard's useTipTrigger issues tipsStatus/tipsNext queries; the 232
+      // tests that vi.mock('../api/client') without stubbing those two fields
+      // leave queryFn undefined, so React Query logs "No queryFn was passed"
+      // ~44x per file. Pure noise — the component under test is never TipCard.
+      !log.includes('No queryFn was passed') &&
       // Insurance for the defense-in-depth path above: if a widget iframe
       // <script>/page load ever reaches happy-dom's disable-loading settings
       // (rather than being answered by the msw fallback first), happy-dom logs a
