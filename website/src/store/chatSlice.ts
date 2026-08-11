@@ -507,6 +507,9 @@ interface ChatState {
   historyHasMore: boolean
   historyOffset: number
   pendingInput: string | null
+  /** Transient feedback for agent-rebind failures shared by the picker and
+   *  global cycle shortcuts. The App shell owns rendering and expiry. */
+  agentSwitchNotice: { message: string } | null
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
   creatingSlot: boolean
@@ -648,6 +651,7 @@ const initialState: ChatState = {
   historyHasMore: false,
   historyOffset: 0,
   pendingInput: null,
+  agentSwitchNotice: null,
   creatingSlot: false,
   slotContextPct: {},
   slotContextTokens: {},
@@ -1639,6 +1643,11 @@ const chatSlice = createSlice({
     setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
     clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; state.slotHasMore = false; state.slotOldestIndex = 0; state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
+    setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
+      // Always create a fresh value so repeating the same refusal restarts the
+      // App shell's expiry effect instead of inheriting the previous timer.
+      state.agentSwitchNotice = action.payload === null ? null : { message: action.payload }
+    },
     setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; card_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
       // Defensive init: existing test fixtures build partial preloaded state
       // without this key.
@@ -3456,7 +3465,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

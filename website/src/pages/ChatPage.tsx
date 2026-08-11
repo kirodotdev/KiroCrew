@@ -15,7 +15,7 @@ import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages,
   appendMessage, appendSlotMessage, resumeFromHistory, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
   selectContinuable,
   selectTurnInterrupted,
@@ -72,6 +72,7 @@ const SCROLL_AFTER_RENDER_MS = 100
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
+import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, openPanelView, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -4173,12 +4174,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setPendingModel('')
       return
     }
-    await api.chatSlotAgent(activeSlot, agentName)
-    setAgentDropdown(false)
-    // queryClient, setAgentDropdown, and the setPending* setters are all stable
-    // (react-query client / useState setters / useCallback([])), so listing them
-    // satisfies the linter without re-creating this callback.
-  }, [activeSlot, installedAgents, provider, queryClient, setAgentDropdown, setPendingAgent, setPendingModel])
+    dispatch(setAgentSwitchNotice(null))
+    try {
+      await api.chatSlotAgent(activeSlot, agentName)
+    } catch (error) {
+      // Closing the picker is the call sites' job and already happens
+      // synchronously alongside this call, so a failure surfaces as the shared
+      // notice rather than by holding the dropdown open.
+      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
+    }
+    // queryClient and the setPending* setters are all stable (react-query
+    // client / useState setters / useCallback([])), so listing them satisfies
+    // the linter without re-creating this callback.
+  }, [activeSlot, dispatch, installedAgents, provider, queryClient, setPendingAgent, setPendingModel])
   const switchModel = useCallback(async (modelName: string) => {
     // 'auto' is stored VERBATIM, not collapsed to ''. Both resolve to the same
     // provider behaviour server-side, but '' is also the "never chosen" state,

@@ -36,12 +36,23 @@ vi.mock('../api/client', () => ({
     uploadFiles: vi.fn().mockResolvedValue({ paths: [] }),
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
+    chatSlotAgent: vi.fn().mockResolvedValue(undefined),
   },
   SEARCH_MIN_CHARS: 2,
+  ApiError: class ApiError extends Error {
+    status: number
+    body: string
+    constructor(status: number, message: string, body = '') {
+      super(message)
+      this.name = 'ApiError'
+      this.status = status
+      this.body = body
+    }
+  },
 }))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))
+vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'default' }, { name: 'reviewer' }], defaultAgent: 'default' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 
@@ -69,8 +80,13 @@ function makeStore(slotKey: string) {
 
 function renderPane(slotKey: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <Provider store={makeStore(slotKey)}>
+  const store = makeStore(slotKey)
+  return renderWithStore(store, qc, slotKey)
+}
+
+function renderWithStore(store: ReturnType<typeof makeStore>, qc: QueryClient, slotKey: string) {
+  return Object.assign(render(
+    <Provider store={store}>
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
@@ -79,7 +95,7 @@ function renderPane(slotKey: string) {
         </ThemeProvider>
       </QueryClientProvider>
     </Provider>,
-  )
+  ), { store })
 }
 
 beforeEach(() => {
@@ -110,5 +126,43 @@ describe('ChatPane send — folder token serialization', () => {
     // sendId always rides meta (same contract as ChatPage) so the server echo
     // reconciles against the optimistic bubble even when wire text diverges.
     expect(meta).toEqual({ sendId: expect.stringMatching(/^s-/) })
+  })
+})
+
+/* The split-view pane is the third dashboard caller of `chatSlotAgent`. It used
+ * to swallow failures with `console.error`, so a switch that never happened
+ * looked identical to one that did. It now feeds the same shared notice the
+ * chat picker and the cycle shortcuts use. */
+describe('ChatPane agent switch — failures reach the shared notice', () => {
+  async function openAgentPicker() {
+    const { store } = renderPane('pane-agent')
+    const trigger = await screen.findByLabelText(/agent/i)
+    fireEvent.click(trigger)
+    return store
+  }
+
+  it('publishes the failure message instead of only logging it', async () => {
+    const { ApiError } = await import('../api/client') as unknown as {
+      ApiError: new (s: number, m: string, b?: string) => Error
+    }
+    ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, 'invalid agent name', JSON.stringify({ error: 'invalid agent name' })),
+    )
+    const store = await openAgentPicker()
+    fireEvent.click(await screen.findByText('reviewer'))
+
+    await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalledWith('pane-agent', 'reviewer'))
+    await waitFor(() =>
+      expect(store.getState().chat.agentSwitchNotice?.message).toBe('invalid agent name'),
+    )
+  })
+
+  it('leaves no notice behind when the switch succeeds', async () => {
+    ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined)
+    const store = await openAgentPicker()
+    fireEvent.click(await screen.findByText('reviewer'))
+
+    await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalledWith('pane-agent', 'reviewer'))
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
   })
 })

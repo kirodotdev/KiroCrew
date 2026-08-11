@@ -5,7 +5,11 @@ import App, { calculateTopbarSearchLayout } from '../App'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { openActivityPanel, sseSubagentQueued } from '../store/chatSlice'
 import SegmentedControl from '../components/SegmentedControl'
+import { ApiError } from '../api/client'
 import { safeSetItem } from '../utils/safeStorage'
+
+/** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
+const REAL_FAILURE = 'invalid agent name'
 
 // Mock all page components to isolate routing
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -1066,6 +1070,68 @@ describe('onCycleAgent keyboard shortcut', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
     })
     expect(api.chatSlotAgent).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['forward', 'A', 'KeyA', 'reviewer'],
+    ['backward', 'Z', 'KeyZ', 'oracle'],
+  ])('surfaces an agent-switch API failure when cycling %s', async (_direction, key, code, expectedAgent) => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, REAL_FAILURE, JSON.stringify({ error: REAL_FAILURE })),
+    )
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: true, agent: 'kirocrew' }] })
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+    renderWithProviders(<App />, { route: '/chat' })
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key, code, altKey: true, shiftKey: true, bubbles: true }))
+    })
+
+    expect(api.chatSlotAgent).toHaveBeenCalledWith('slot-1', expectedAgent)
+    const noticeText = await screen.findByText(
+      REAL_FAILURE,
+    )
+    expect(noticeText.closest('[role="status"]')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText(
+      REAL_FAILURE,
+    )).not.toBeInTheDocument()
+  })
+
+  it('restarts the six-second expiry after a repeated failure', async () => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const failure = new ApiError(400, REAL_FAILURE, JSON.stringify({ error: REAL_FAILURE }))
+      ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockRejectedValue(failure)
+      store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: true, agent: 'kirocrew' }] })
+      store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+      renderWithProviders(<App />, { route: '/chat' })
+
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
+        await Promise.resolve()
+      })
+      const copy = REAL_FAILURE
+      expect(screen.getByText(copy)).toBeInTheDocument()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
+        await Promise.resolve()
+      })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+      expect(screen.getByText(copy)).toBeInTheDocument()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(4500) })
+      expect(screen.queryByText(copy)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+      ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    }
   })
 })
 

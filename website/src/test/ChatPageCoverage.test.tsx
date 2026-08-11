@@ -37,6 +37,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { ApiError } from '../api/client'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
@@ -64,6 +65,16 @@ interface UserMessageProps {
   onTogglePin?: () => void
 }
 let userMsgProps: UserMessageProps | null = null
+
+interface ChatInputProps {
+  onAgentClick?: (rect: DOMRect) => void
+}
+let chatInputProps: ChatInputProps | null = null
+
+interface AgentDropdownListProps {
+  onSelect: (name: string) => void
+}
+let agentDropdownProps: AgentDropdownListProps | null = null
 
 vi.mock('../components/QueueStack', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../components/QueueStack')>()
@@ -101,11 +112,22 @@ vi.mock('../components/MarkdownRenderer', () => ({
 }))
 vi.mock('../components/TypewriterText', () => ({ default: () => null }))
 vi.mock('../components/OverlayDrawer', () => ({ default: ({ children }: { children?: ReactNode }) => children }))
-vi.mock('../components/AgentDropdownList', () => ({ default: () => null }))
+vi.mock('../components/AgentDropdownList', () => ({
+  default: (props: AgentDropdownListProps) => {
+    agentDropdownProps = props
+    return <div data-testid="agent-dropdown" />
+  },
+  ManageAgentsFooter: () => null,
+}))
 vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
 vi.mock('../components/InfoTip', () => ({ default: () => null }))
 vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
-vi.mock('../components/ChatInput', () => ({ default: () => null }))
+vi.mock('../components/ChatInput', () => ({
+  default: (props: ChatInputProps) => {
+    chatInputProps = props
+    return null
+  },
+}))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
@@ -119,12 +141,8 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   },
 }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: null }) }))
-vi.mock('../hooks/useFilteredDropdown', () => ({
-  useFilteredDropdown: () => ({
-    filtered: [], query: '', setQuery: vi.fn(),
-    selectedIndex: 0, setSelectedIndex: vi.fn(), onKeyDown: vi.fn(),
-  }),
+vi.mock('../hooks/useAgents', () => ({
+  useAgents: () => ({ agents: [{ name: 'kirocrew' }, { name: 'reviewer' }], defaultAgent: 'kirocrew' }),
 }))
 vi.mock('../hooks/useVoiceInput', () => ({
   useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }),
@@ -188,6 +206,18 @@ vi.mock('../api/client', () => ({
     },
   }),
   fileReadUrl: (p: string) => `/api/file?path=${encodeURIComponent(p)}`,
+  // Mirrors the real class shape so a rejection carries the same fields the
+  // production error does, rather than a hand-rolled object.
+  ApiError: class ApiError extends Error {
+    status: number
+    body: string
+    constructor(status: number, message: string, body = '') {
+      super(message)
+      this.name = 'ApiError'
+      this.status = status
+      this.body = body
+    }
+  },
 }))
 
 Object.defineProperty(window, 'matchMedia', {
@@ -298,6 +328,8 @@ beforeEach(() => {
   queueProps = null
   pinsProps = null
   userMsgProps = null
+  chatInputProps = null
+  agentDropdownProps = null
   sessionStorage.clear()
   setItemSpy.mockClear()
   window.history.replaceState({}, '', '/chat')
@@ -313,6 +345,53 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe('ChatPage agent-switch failure feedback', () => {
+  it('stores the failure message; the picker still closes as it always has', async () => {
+    const switchRequest = apiSpy('chatSlotAgent')
+    // A failure the endpoint really produces, carried in the production error
+    // type, so this pins the actual plumbing rather than a shape we invented.
+    switchRequest.mockRejectedValueOnce(
+      new ApiError(400, 'invalid agent name', JSON.stringify({ error: 'invalid agent name' })),
+    )
+    const { store } = renderChatPage([])
+
+    await waitFor(() => expect(chatInputProps?.onAgentClick).toBeTypeOf('function'))
+    act(() => {
+      chatInputProps!.onAgentClick!({ left: 40, top: 80 } as DOMRect)
+    })
+    await waitFor(() => expect(screen.getByTestId('agent-dropdown')).toBeInTheDocument())
+
+    act(() => { agentDropdownProps!.onSelect('reviewer') })
+
+    await waitFor(() => {
+      expect(switchRequest).toHaveBeenCalledWith('chat-1', 'reviewer')
+      expect(store.getState().chat.agentSwitchNotice?.message).toBe('invalid agent name')
+    })
+    // Unchanged from before this fix: the `onSelect` call site closes the
+    // dropdown synchronously without awaiting the switch, so it has always
+    // closed on failure too. Pinned so that stays a deliberate choice — the
+    // notice is what tells the user the switch did not take.
+    expect(screen.queryByTestId('agent-dropdown')).not.toBeInTheDocument()
+  })
+
+  it('closes the picker when the switch succeeds', async () => {
+    const switchRequest = apiSpy('chatSlotAgent')
+    switchRequest.mockResolvedValueOnce(undefined)
+    const { store } = renderChatPage([])
+
+    await waitFor(() => expect(chatInputProps?.onAgentClick).toBeTypeOf('function'))
+    act(() => {
+      chatInputProps!.onAgentClick!({ left: 40, top: 80 } as DOMRect)
+    })
+    await waitFor(() => expect(screen.getByTestId('agent-dropdown')).toBeInTheDocument())
+
+    act(() => { agentDropdownProps!.onSelect('reviewer') })
+
+    await waitFor(() => expect(screen.queryByTestId('agent-dropdown')).not.toBeInTheDocument())
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
+  })
 })
 
 describe('ChatPage renderMessage — role dispatch', () => {

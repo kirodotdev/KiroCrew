@@ -8,10 +8,11 @@ import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeAppro
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendMessage, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { createSlot, appendMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
+import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
 import { fetchNotifications, ackNotification } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
@@ -1332,6 +1333,17 @@ export default function App() {
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
   const queryClient = useQueryClient()
   const provider = useProvider()
+  const agentSwitchNotice = useAppSelector(s => s.chat.agentSwitchNotice)
+  useEffect(() => {
+    if (!agentSwitchNotice) return
+    const timer = window.setTimeout(() => dispatch(setAgentSwitchNotice(null)), 6000)
+    return () => window.clearTimeout(timer)
+  }, [agentSwitchNotice, dispatch])
+  const switchActiveSlotAgent = useCallback((slot: string, agent: string) => {
+    dispatch(setAgentSwitchNotice(null))
+    void api.chatSlotAgent(slot, agent)
+      .catch(error => dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error))))
+  }, [dispatch])
   useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
     onCycleAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -1341,7 +1353,7 @@ export default function App() {
       const currentAgent = currentSlot?.agent || defaultAgent
       const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
       const nextIdx = (idx + 1) % installedAgents.length
-      api.chatSlotAgent(activeSlot, installedAgents[nextIdx].name)
+      switchActiveSlotAgent(activeSlot, installedAgents[nextIdx].name)
     },
     onCyclePrevAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -1351,7 +1363,7 @@ export default function App() {
       const currentAgent = currentSlot?.agent || defaultAgent
       const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
       const prevIdx = (idx - 1 + installedAgents.length) % installedAgents.length
-      api.chatSlotAgent(activeSlot, installedAgents[prevIdx].name)
+      switchActiveSlotAgent(activeSlot, installedAgents[prevIdx].name)
     },
     onCycleReasoningEffort: () => {
       const activeSlot = store.getState().chat.activeSlot
@@ -2053,6 +2065,13 @@ export default function App() {
           <NotificationsBellButton />
         </div>
       </header>
+
+      {agentSwitchNotice && (
+        <div role="status" className="fixed z-[70] top-14 left-4 right-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+          <span className="text-sm text-text flex-1">{agentSwitchNotice.message}</span>
+          <button onClick={() => dispatch(setAgentSwitchNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
+        </div>
+      )}
 
       {/* Report a Problem — mounted by the nav rail's "Report issue" link. */}
       <ReportProblemModal open={reportProblemOpen} onClose={() => setReportProblemOpen(false)} />

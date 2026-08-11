@@ -21,7 +21,8 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { retireStatelessQuestion, captureStatelessCard, capturePendingAskId, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
+import { retireStatelessQuestion, captureStatelessCard, capturePendingAskId, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
+import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
@@ -174,7 +175,11 @@ export default function ChatPane({
   }, [msgHash, running])
 
 
-  const switchAgent = useCallback((name: string) => { api.chatSlotAgent(slotKey, name).catch((e) => console.error('[ChatPane] switchAgent failed', e)) }, [slotKey])
+  const switchAgent = useCallback((name: string) => {
+    dispatch(setAgentSwitchNotice(null))
+    api.chatSlotAgent(slotKey, name)
+      .catch((e) => dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e))))
+  }, [dispatch, slotKey])
   const switchModel = useCallback((name: string) => { api.chatSlotModel(slotKey, name).catch((e) => console.error('[ChatPane] switchModel failed', e)) }, [slotKey])
 
   // Roving-focus keyboard nav for the pickers (mirrors ChatPage / StyledSelect):
