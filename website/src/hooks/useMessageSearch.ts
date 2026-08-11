@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ChatMessage } from '../types'
 import { searchableTextMemo } from '../utils/searchableText'
 import { hasCommandModifier } from '../utils/commandModifier'
+import { focusComposer } from '../pages/chat/composerFocus'
 
 export interface SearchMatch {
   /** Index into the messages[] Redux array. */
@@ -23,6 +24,15 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
   // Bumped every time the find shortcut fires so the SearchBar can re-focus and
   // select-all — letting the user immediately type a new query over the old one.
   const [focusNonce, setFocusNonce] = useState(0)
+  // Mirror of isOpen readable from the identity-stable close() below. close()
+  // must keep useCallback([]) — ChatPage's handleFileOpen/handleFolderOpen list
+  // `search.close` in their dep arrays precisely because it never churns — so
+  // it cannot read the isOpen state directly without changing identity. Synced
+  // post-commit, which is exact for close(): every caller is an event handler
+  // (Escape, the bar's close button, ChatPage's file/folder-open paths) and
+  // event handlers only run after the commit that made the bar visible.
+  const isOpenRef = useRef(false)
+  useEffect(() => { isOpenRef.current = isOpen }, [isOpen])
 
   // Debounced match computation (50ms)
   useEffect(() => {
@@ -69,10 +79,20 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
 
   const open = useCallback(() => setIsOpen(true), [])
   const close = useCallback(() => {
+    // Focus is handed back only when the bar was actually open: ChatPage's
+    // file/folder-open handlers call close() unconditionally to un-gate the
+    // dock, and a close that never dismissed anything must not steal focus.
+    const wasOpen = isOpenRef.current
+    isOpenRef.current = false
     setIsOpen(false)
     setTerm('')
     setMatches([])
     setCurrentIdx(0)
+    // In the close path itself — not the Escape handler — so the bar's own
+    // close button hands typing back to the composer identically. focusComposer
+    // already defers a frame, skips touch devices, and no-ops when the composer
+    // is unmounted or the session switched, so closing never throws.
+    if (wasOpen) focusComposer()
   }, [])
   const next = useCallback(() => {
     setCurrentIdx(prev => (matches.length === 0 ? 0 : (prev + 1) % matches.length))
