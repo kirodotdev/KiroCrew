@@ -401,6 +401,35 @@ export default [
               // merely containing such a token alongside a plain word still
               // fails, because every token must match end to end.
               String.raw`^\[@(?:media|supports)\([^)\s]*\)\]:[^\s]+(?:\s+\[@(?:media|supports)\([^)\s]*\)\]:[^\s]+)*$`,
+              // Tailwind ARBITRARY-VALUE clusters whose bracketed value carries a
+              // comma or underscore, e.g. the notification glass surfaces in
+              // components/notifications/NotificationFeed.tsx:
+              // `bg-[color-mix(in_srgb,var(--card)_72%,transparent)] backdrop-blur-2xl`
+              // or `shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)]`.
+              // The general class shape above cannot cover these: its char class
+              // forbids `,` and `_`, which are exactly what Tailwind's arbitrary-value
+              // syntax uses to encode CSS commas and spaces inside `[...]`. Such
+              // strings sit in plain `const` ternaries (not JSX attributes), so the
+              // attribute exemption does not reach them either.
+              //
+              // Deliberately NARROWER than "allow , and _ anywhere", on two axes:
+              // (a) the first lookahead rejects any two ADJACENT bare lowercase
+              // words — the prose shape (`connection lost [retry_pending]`)
+              // that would otherwise ride in on a single bracketed token; a
+              // class cluster never has two adjacent bare words, every
+              // utility next to a bare `border`/`isolate` carries a hyphen,
+              // digit, colon or bracket. (b) the second lookahead requires at
+              // least one space-free `[...]` token containing a `,` or `_` —
+              // and `,`/`_` are admitted ONLY inside brackets; outside them
+              // the char class is the general class shape's. A sentence
+              // merely containing a bracket still fails, because its commas
+              // live outside the brackets.
+              //
+              // Known false negative, stated: a SINGLE bare word plus
+              // bracketed-value tokens (`saved bg-[color-mix(a,b)]`) would be
+              // missed — the same single-word residue the general class shape
+              // already accepts, caught by the en-XA render gate instead.
+              String.raw`^(?!.*(?:^|\s)[a-z]+\s+[a-z]+(?:\s|$))(?=[^\[]*\[[^\]\s]*[,_][^\]\s]*\])(?:[\s\-a-z0-9:/().%#]|\[[\-a-z0-9:/().%#,_]*\])+$`,
               // CSS SELECTOR LISTS, e.g. `[role="dialog"],[data-x]` or
               // `a,button,[tabindex]` — a comma-joined list of type selectors and
               // bracketed attribute selectors, as passed to querySelector. The
