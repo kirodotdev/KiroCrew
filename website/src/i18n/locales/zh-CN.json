@@ -9920,8 +9920,11 @@
       "developerPanel": {
         "developer_mode": "开发者模式",
         "developer_tools": "开发者工具",
+        "gateway": "网关",
         "open_developer_page": "打开开发者页面",
-        "show_developer_page_in_sidebar_with_logs_system": "在侧边栏显示开发者页面，包含日志、系统指标与记忆内部信息"
+        "run_a_local_gateway": "运行本地网关",
+        "show_developer_page_in_sidebar_with_logs_system": "在侧边栏显示开发者页面，包含日志、系统指标与记忆内部信息",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "在这台机器上启动网关。关闭后，Kiro Crew 仅作为客户端使用，连接到你已配置的网关，而不在本机运行网关。将在下次打开应用时生效。"
       },
       "discordPanel": {
         "allowed_server_thread_ids": "允许的服务器话题 ID",

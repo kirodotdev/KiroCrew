@@ -10039,8 +10039,11 @@
       "developerPanel": {
         "developer_mode": "डेवलपर मोड",
         "developer_tools": "डेवलपर टूल्स",
+        "gateway": "गेटवे",
         "open_developer_page": "डेवलपर पेज खोलें",
-        "show_developer_page_in_sidebar_with_logs_system": "साइडबार में डेवलपर पेज दिखाएँ, जिसमें लॉग्स, सिस्टम मेट्रिक्स और मेमोरी इंटरनल्स शामिल हों"
+        "run_a_local_gateway": "लोकल गेटवे चलाएँ",
+        "show_developer_page_in_sidebar_with_logs_system": "साइडबार में डेवलपर पेज दिखाएँ, जिसमें लॉग्स, सिस्टम मेट्रिक्स और मेमोरी इंटरनल्स शामिल हों",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "इस मशीन पर गेटवे शुरू करता है। इसे बंद करने पर Kiro Crew केवल क्लाइंट के रूप में काम करेगा और यहाँ गेटवे चलाने के बजाय कॉन्फ़िगर किए गए गेटवे से जुड़ेगा। अगली बार ऐप खोलने पर लागू होगा।"
       },
       "discordPanel": {
         "allowed_server_thread_ids": "अनुमत सर्वर थ्रेड ID",

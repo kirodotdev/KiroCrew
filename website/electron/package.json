@@ -75,6 +75,7 @@
       "sandbox-profile.js",
       "home-dir.js",
       "local-token.js",
+      "local-gateway.js",
       "window-state.js",
       "gateway-liveness.js",
       "gateway-recovery.js",

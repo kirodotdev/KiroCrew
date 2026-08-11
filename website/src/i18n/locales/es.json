@@ -10158,8 +10158,11 @@
       "developerPanel": {
         "developer_mode": "Modo de desarrollador",
         "developer_tools": "Herramientas de desarrollo",
+        "gateway": "Gateway",
         "open_developer_page": "Abrir la página Desarrollador",
-        "show_developer_page_in_sidebar_with_logs_system": "Mostrar la página Desarrollador en la barra lateral con registros, métricas del sistema y detalles internos de la memoria"
+        "run_a_local_gateway": "Ejecutar un gateway local",
+        "show_developer_page_in_sidebar_with_logs_system": "Mostrar la página Desarrollador en la barra lateral con registros, métricas del sistema y detalles internos de la memoria",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "Inicia un gateway en este equipo. Desactívalo para usar Kiro Crew solo como cliente, conectándose al gateway que hayas configurado en lugar de ejecutar uno aquí. Se aplica la próxima vez que abras la aplicación."
       },
       "discordPanel": {
         "allowed_server_thread_ids": "IDs de hilos de servidor permitidos",

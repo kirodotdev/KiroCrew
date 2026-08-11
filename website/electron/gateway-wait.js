@@ -79,11 +79,23 @@ function waitForGateway({
  * carries the Gatekeeper hint because an unsigned/quarantined nested executable
  * being killed on launch is the most common "works for me, not my friend" mode.
  *
- * @param {{code?: number|null, signal?: string|null, error?: string}|null} failure
+ * @param {{code?: number|null, signal?: string|null, error?: string, disabled?: boolean, port?: number}|null} failure
  * @returns {string}
  */
 function describeGatewayFailure(failure) {
   if (!failure) return "The gateway failed to start.";
+  // Nothing was launched, so there is no exit code and no log to read: the port
+  // was silent and this app is set not to start a gateway here. Naming both
+  // halves matters because either one alone is a normal, working state.
+  //
+  // Deliberately does NOT send the user to Settings: the page holding that
+  // switch is served by a gateway, which is the thing not running. The error
+  // dialog carries a button instead.
+  if (failure.disabled) {
+    return `No gateway is answering on port ${failure.port}, and Kiro Crew is set `
+      + "not to start one on this machine. Start the gateway you connect to (or "
+      + "the connection that reaches it) and retry, or start one here.";
+  }
   if (failure.error) return `The gateway could not be launched: ${failure.error}`;
   if (failure.signal === "SIGKILL") {
     return "The gateway was killed on launch (SIGKILL). On macOS this usually "

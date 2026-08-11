@@ -9920,8 +9920,11 @@
       "developerPanel": {
         "developer_mode": "開発者モード",
         "developer_tools": "開発者ツール",
+        "gateway": "ゲートウェイ",
         "open_developer_page": "開発者ページを開く",
-        "show_developer_page_in_sidebar_with_logs_system": "サイドバーに開発者ページを表示（ログ、システムメトリクス、メモリ内部情報を含む）"
+        "run_a_local_gateway": "ローカルゲートウェイを実行する",
+        "show_developer_page_in_sidebar_with_logs_system": "サイドバーに開発者ページを表示（ログ、システムメトリクス、メモリ内部情報を含む）",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "このマシンでゲートウェイを起動します。オフにすると Kiro Crew をクライアントとしてのみ使用し、ここで起動する代わりに設定済みのゲートウェイに接続します。次回アプリを開いたときに反映されます。"
       },
       "discordPanel": {
         "allowed_server_thread_ids": "許可されたサーバースレッド ID",

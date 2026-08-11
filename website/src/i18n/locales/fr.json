@@ -10158,8 +10158,11 @@
       "developerPanel": {
         "developer_mode": "Mode développeur",
         "developer_tools": "Outils de développement",
+        "gateway": "Passerelle",
         "open_developer_page": "Ouvrir la page Développeur",
-        "show_developer_page_in_sidebar_with_logs_system": "Afficher la page Développeur dans la barre latérale, avec les journaux, les métriques système et les détails internes de la mémoire"
+        "run_a_local_gateway": "Exécuter une passerelle locale",
+        "show_developer_page_in_sidebar_with_logs_system": "Afficher la page Développeur dans la barre latérale, avec les journaux, les métriques système et les détails internes de la mémoire",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "Démarre une passerelle sur cette machine. Désactivez cette option pour utiliser Kiro Crew uniquement comme client : la connexion se fera vers la passerelle configurée au lieu d'en lancer une ici. Prend effet au prochain lancement de l'application."
       },
       "discordPanel": {
         "allowed_server_thread_ids": "ID de fils de serveur autorisés",

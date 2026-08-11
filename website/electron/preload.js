@@ -60,6 +60,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
   reportMicDenied: () => ipcRenderer.send("mic:denied"),
 });
 
+// Local-gateway switch for the Settings > Developer toggle. The choice lives in
+// the app's own config, which page JS cannot read or write, so the renderer
+// round-trips through main.js. Both calls resolve with the stored value.
+// Absent in plain browsers and in the PWA — the renderer hides the toggle when
+// the bridge is missing, since a browser tab has no local gateway to manage.
+contextBridge.exposeInMainWorld("localGatewayAPI", {
+  get: () => ipcRenderer.invoke("local-gateway:get"),
+  set: (enabled) => ipcRenderer.invoke("local-gateway:set", !!enabled),
+});
+
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
 // Chromium's per-origin zoom (the thing Cmd/Ctrl +/- changes) is not
 // reachable from page JS, so the renderer round-trips through main.js.

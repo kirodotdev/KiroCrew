@@ -7,8 +7,8 @@
  * - "Open Developer page" link renders only while Developer Mode is on and
  *   navigates to /developer
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { DeveloperPanel } from '../pages/settings/DeveloperPanel'
 
@@ -53,5 +53,35 @@ describe('DeveloperPanel', () => {
     renderPanel()
     fireEvent.click(screen.getByText('Open Developer page'))
     expect(screen.getByTestId('loc').textContent).toBe('/developer')
+  })
+
+  describe('Gateway section', () => {
+    type LocalGatewayAPI = { get(): Promise<boolean>; set(enabled: boolean): Promise<boolean> }
+    const installBridge = (api: LocalGatewayAPI) => {
+      ;(window as unknown as { localGatewayAPI?: LocalGatewayAPI }).localGatewayAPI = api
+    }
+    afterEach(() => {
+      delete (window as unknown as { localGatewayAPI?: LocalGatewayAPI }).localGatewayAPI
+    })
+
+    it('is absent without the desktop bridge', () => {
+      // A browser tab and the PWA have no gateway of their own to start, so the
+      // control must not appear at all rather than appear and do nothing.
+      renderPanel()
+      expect(screen.queryByText('Gateway')).not.toBeInTheDocument()
+      expect(screen.queryByRole('switch', { name: 'Run a local gateway' })).not.toBeInTheDocument()
+    })
+
+    it('renders the toggle in the desktop app and writes the flip through', async () => {
+      const set = vi.fn(() => Promise.resolve(false))
+      installBridge({ get: () => Promise.resolve(true), set })
+      renderPanel()
+
+      const toggle = await screen.findByRole('switch', { name: 'Run a local gateway' })
+      await waitFor(() => expect(toggle).toBeChecked())
+      fireEvent.click(toggle)
+      expect(set).toHaveBeenCalledWith(false)
+      await waitFor(() => expect(toggle).not.toBeChecked())
+    })
   })
 })

@@ -9920,8 +9920,11 @@
       "developerPanel": {
         "developer_mode": "개발자 모드",
         "developer_tools": "개발자 도구",
+        "gateway": "게이트웨이",
         "open_developer_page": "개발자 페이지 열기",
-        "show_developer_page_in_sidebar_with_logs_system": "사이드바에 로그, 시스템 지표, 메모리 내부 정보가 포함된 개발자 페이지 표시"
+        "run_a_local_gateway": "로컬 게이트웨이 실행",
+        "show_developer_page_in_sidebar_with_logs_system": "사이드바에 로그, 시스템 지표, 메모리 내부 정보가 포함된 개발자 페이지 표시",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "이 컴퓨터에서 게이트웨이를 시작합니다. 끄면 Kiro Crew를 클라이언트로만 사용하며, 여기서 실행하는 대신 설정한 게이트웨이에 연결합니다. 다음에 앱을 열 때 적용됩니다."
       },
       "discordPanel": {
         "allowed_server_thread_ids": "허용된 서버 스레드 ID",

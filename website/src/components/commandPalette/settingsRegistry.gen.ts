@@ -478,6 +478,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.run-a-local-gateway",
+    "label": "Run a local gateway",
+    "description": "Start a gateway on this machine. Turn it off to use Kiro Crew as a client only, connecting to the gateway you have configured instead of running one here. Takes effect next time you open the app.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "display.display-mode",
     "label": "Display Mode",
     "description": "How the session color is applied to the row.",

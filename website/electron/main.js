@@ -79,6 +79,8 @@ const {
 
 const { migrateRemoteHostConfig, getRemoteHostConfig, setRemoteHostConfig } = require("./host-config");
 
+const { isLocalGatewayEnabled, setLocalGatewayEnabled, classifyStartFailure } = require("./local-gateway");
+
 const store = new Store({
   defaults: {
     remoteHost: "",                        // LEGACY — migrated to remoteHosts
@@ -89,8 +91,18 @@ const store = new Store({
     lastNudgedVersion: "",                 // last update version announced via native notification (nudge once per version)
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
     updateChannel: "",                     // "" = follow build stamp; "insider"|"stable" = user opt-in (Settings > About)
+    runLocalGateway: true,                 // false = act as a pure client; never start a gateway on this machine
   },
 });
+
+// Read ONCE at launch, because the setting takes effect on the next launch.
+// startGateway() is also the recovery path for a gateway that died mid-session,
+// so re-reading the store there would let a flip made minutes ago refuse to
+// replace a gateway this session is still using — stranding the user with no
+// backend and no way back short of a relaunch. The error dialog's
+// "turn it on and retry" action is the one thing that may change this, since
+// that IS the user asking for a gateway right now.
+let runLocalGateway = isLocalGatewayEnabled(store);
 
 // The PRE-SPAWN read home (see home-dir.js for the full contract): whichever
 // directory's config.json governs this launch under the backend's migration
@@ -608,6 +620,25 @@ function startGateway() {
   glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${process.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
   sendStatus("Checking if gateway is running…");
   return new Promise((resolve) => {
+    // Both branches below funnel through here, so the client-only choice cannot
+    // be honoured on one path and ignored on the other. A takeover reaches it
+    // too: quitting the other channel's app frees the port on this machine, and
+    // that is not a request to run a gateway here.
+    //
+    // With nothing to spawn there is no exit code and no log to wait for, so the
+    // reason is reported as a fail-fast failure rather than left to time out.
+    // The error dialog's Retry re-enters this function, which is what makes
+    // "bring the connection up, then retry" work without a relaunch.
+    const spawnUnlessClientOnly = () => {
+      if (runLocalGateway) {
+        spawnGateway(resolve);
+        return;
+      }
+      glog(`no gateway on :${PORT} and local gateway is off — not starting one`);
+      sendStatus("No gateway is answering…");
+      gatewayStartFailure = { disabled: true, port: PORT };
+      resolve(false);
+    };
     checkBackend()
       .then(async () => {
         // A gateway is already listening on this port. Same-family, dev, and
@@ -621,10 +652,10 @@ function startGateway() {
           resolve(false);
           return;
         }
-        spawnGateway(resolve);
+        spawnUnlessClientOnly();
       })
       .catch(() => {
-        spawnGateway(resolve);
+        spawnUnlessClientOnly();
       });
   });
 }
@@ -1863,7 +1894,7 @@ function fadeLoadingScreen(wc, timeoutMs = 8000) {
  * @returns {Promise<'retry'|'force-retry'|'reveal'|'quit'>}
  */
 function showGatewayErrorDialog(parentWin, opts) {
-  const { title, message, logTail, logPath, portConflict, noRetry = false } = opts;
+  const { title, message, logTail, logPath, portConflict, noRetry = false, localGatewayOff = false } = opts;
   return new Promise((resolve) => {
     const dark = nativeTheme.shouldUseDarkColors;
     const hasParent = parentWin && !parentWin.isDestroyed();
@@ -1885,6 +1916,13 @@ function showGatewayErrorDialog(parentWin, opts) {
     // "Retry" button it would ignore contradicts the dialog's own message.
     const primaryAction = noRetry ? "quit" : (portConflict ? "force-retry" : "retry");
     const primaryLabel = noRetry ? "Quit" : (portConflict ? "Force-stop &amp; Retry" : "Retry");
+    // A client-only install whose remote is unreachable needs an in-app way to
+    // change its mind: Settings lives inside the dashboard, which a gateway has
+    // to serve, so the page holding the switch is exactly what it cannot reach.
+    // Retry stays primary because restoring the remote is the likelier fix.
+    const enableButton = (localGatewayOff && !noRetry)
+      ? `<button class="cancel" onclick="act('enable-retry')">Start Local Gateway</button>`
+      : "";
     const fg = dark ? "#e2e8f0" : "#1e293b";
     const muted = dark ? "#94a3b8" : "#64748b";
     const html = `<!DOCTYPE html><html><head><style>
@@ -1911,6 +1949,7 @@ function showGatewayErrorDialog(parentWin, opts) {
       <pre class="log">${esc(logTail || "(launch log is empty)")}</pre>
       <div class="row">
         <button class="ok" onclick="act('${primaryAction}')">${primaryLabel}</button>
+        ${enableButton}
         <button class="cancel" onclick="act('reveal')">Reveal Log</button>
         ${noRetry ? "" : `<button class="cancel" onclick="act('quit')">Quit</button>`}
       </div>
@@ -2373,10 +2412,25 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     // recoverable case: the spawn dies with "address already in use" and a plain
     // retry can't help (the holder is still there). Detect it and offer to
     // force-stop the stuck KiroCrew process. Only meaningful for OUR own port.
-    const portConflict = failedToStart && backendUrl === BACKEND_URL && isPortInUse(logTail);
+    // Nothing was spawned in the client-only case, so it is classified before
+    // the port-conflict probe — see classifyStartFailure for why the log tail
+    // cannot be trusted to mean "a holder exists right now".
+    const failureKind = classifyStartFailure({
+      failedToStart,
+      failure: err.failure,
+      isOwnPort: backendUrl === BACKEND_URL,
+      portInUseInLog: isPortInUse(logTail),
+    });
+    const localGatewayOff = failureKind === "client-only";
+    const portConflict = failureKind === "port-conflict";
 
     let title, message;
-    if (portConflict) {
+    if (localGatewayOff) {
+      // Nothing failed here — the app was told not to start a gateway and the
+      // port is silent. "Failed to start" would send the user hunting a crash.
+      title = `Kiro Crew — no gateway on port ${PORT}`;
+      message = err.message;
+    } else if (portConflict) {
       title = `Kiro Crew — port ${PORT} already in use`;
       message = `Another Kiro Crew gateway is already using port ${PORT} (it may be wedged). `
         + `Force-stop it and retry, or quit. From a terminal you can also run: `
@@ -2393,12 +2447,20 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     // Loop so "Reveal Log" can re-show the dialog after opening Finder.
     for (;;) {
       const action = await showGatewayErrorDialog(win, {
-        title, message, logTail, logPath, portConflict, port: PORT,
+        title, message, logTail, logPath, portConflict, port: PORT, localGatewayOff,
       });
       if (win.isDestroyed()) return;
       if (action === "reveal") {
         try { shell.showItemInFolder(logPath); } catch { /* best effort */ }
         continue; // re-show the dialog
+      }
+      if (action === "enable-retry") {
+        // The user is asking for a gateway now, from the one surface they can
+        // still reach. Persist it so the next launch agrees, and lift this
+        // session's snapshot so the retry below actually spawns.
+        setLocalGatewayEnabled(store, true);
+        runLocalGateway = true;
+        glog("local gateway turned back on from the error dialog");
       }
       if (action === "force-retry") {
         let freed = true;
@@ -2412,7 +2474,7 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
           return showUnrecoverableGatewayError(win, PORT);
         }
       }
-      if (action === "retry" || action === "force-retry") {
+      if (action === "retry" || action === "force-retry" || action === "enable-retry") {
         gatewayStartFailure = null; // let the retry genuinely re-probe
         // If our own spawned gateway is confirmed gone (or we just force-stopped
         // the port holder), respawn before re-waiting. For a timeout (child may
@@ -2824,6 +2886,15 @@ app.whenReady().then(async () => {
   ipcMain.on("badge:set", (_event, count) => {
     app.setBadgeCount(clampBadgeCount(count));
   });
+
+  // Local-gateway switch for Settings > Developer. The choice lives in the
+  // app's own electron-store config, which page JS cannot reach, so the
+  // renderer round-trips through these handlers. Both resolve with the stored
+  // value so the toggle renders what was actually written. Reading it at launch
+  // (startGateway) rather than here is what gives the setting its next-launch
+  // semantics: flipping it never touches the gateway currently running.
+  ipcMain.handle("local-gateway:get", () => isLocalGatewayEnabled(store));
+  ipcMain.handle("local-gateway:set", (_event, enabled) => setLocalGatewayEnabled(store, enabled));
 
   // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
   // A renderer cannot touch Chromium's per-origin zoom itself, so it

@@ -10039,8 +10039,11 @@
       "developerPanel": {
         "developer_mode": "ডেভেলপার মোড",
         "developer_tools": "ডেভেলপার টুল",
+        "gateway": "গেটওয়ে",
         "open_developer_page": "ডেভেলপার পেজ খুলুন",
-        "show_developer_page_in_sidebar_with_logs_system": "লগ, সিস্টেম মেট্রিক ও মেমরি ইন্টারনালসহ ডেভেলপার পেজ সাইডবারে দেখান"
+        "run_a_local_gateway": "লোকাল গেটওয়ে চালান",
+        "show_developer_page_in_sidebar_with_logs_system": "লগ, সিস্টেম মেট্রিক ও মেমরি ইন্টারনালসহ ডেভেলপার পেজ সাইডবারে দেখান",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "এই মেশিনে একটি গেটওয়ে চালু করে। বন্ধ করলে Kiro Crew শুধু ক্লায়েন্ট হিসেবে কাজ করবে এবং এখানে গেটওয়ে চালানোর বদলে আপনার কনফিগার করা গেটওয়েতে সংযুক্ত হবে। পরের বার অ্যাপ খুললে প্রযোজ্য হবে।"
       },
       "discordPanel": {
         "allowed_server_thread_ids": "অনুমোদিত সার্ভার থ্রেড ID",

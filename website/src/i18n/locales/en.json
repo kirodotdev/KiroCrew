@@ -6816,8 +6816,11 @@
       "developerPanel": {
         "developer_mode": "Developer Mode",
         "developer_tools": "Developer Tools",
+        "gateway": "Gateway",
         "open_developer_page": "Open Developer page",
-        "show_developer_page_in_sidebar_with_logs_system": "Show Developer page in sidebar with Logs, System metrics, and Memory internals"
+        "run_a_local_gateway": "Run a local gateway",
+        "show_developer_page_in_sidebar_with_logs_system": "Show Developer page in sidebar with Logs, System metrics, and Memory internals",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "Start a gateway on this machine. Turn it off to use Kiro Crew as a client only, connecting to the gateway you have configured instead of running one here. Takes effect next time you open the app."
       },
       "displayPanel": {
         "applying": "Applying…",
