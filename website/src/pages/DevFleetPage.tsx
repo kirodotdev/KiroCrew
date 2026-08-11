@@ -341,6 +341,13 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
   const [rect, setRect] = useState<DOMRect | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+
+  const close = useCallback(() => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -351,21 +358,33 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
       const t = e.target as Node
       if (!triggerRef.current?.contains(t) && !popRef.current?.contains(t)) setOpen(false)
     }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); triggerRef.current?.focus() } }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        close()
+      } else if (e.key === 'Tab' && e.shiftKey && document.activeElement === cancelRef.current) {
+        e.preventDefault()
+        confirmRef.current?.focus()
+      } else if (e.key === 'Tab' && !e.shiftKey && document.activeElement === confirmRef.current) {
+        e.preventDefault()
+        cancelRef.current?.focus()
+      }
+    }
     // position:fixed desyncs from any scrolling ancestor — close on scroll
     // (capture phase catches nested scrollers) and on resize.
     const onScrollOrResize = () => setOpen(false)
     document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
+    // Keep the focus boundary intact even when an action button handles keys.
+    document.addEventListener('keydown', onKey, true)
     window.addEventListener('scroll', onScrollOrResize, true)
     window.addEventListener('resize', onScrollOrResize)
+    cancelRef.current?.focus()
     return () => {
       document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('keydown', onKey, true)
       window.removeEventListener('scroll', onScrollOrResize, true)
       window.removeEventListener('resize', onScrollOrResize)
     }
-  }, [open])
+  }, [close, open])
 
   const toggle = () => {
     if (!open && triggerRef.current) setRect(triggerRef.current.getBoundingClientRect())
@@ -398,6 +417,7 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
         <div
           ref={popRef}
           role="dialog"
+          aria-modal="true"
           aria-label={title}
           data-placement={openUp ? 'up' : 'down'}
           style={{ ...posStyle, zIndex: 4000, overflowY: 'auto', background: 'var(--card, #16161a)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', width: CONFIRM_W, boxShadow: '0 8px 24px rgba(0,0,0,0.45)', textAlign: 'left' as const } as CSSProperties}
@@ -405,8 +425,8 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>{title}</div>
           <div style={{ fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 9 }}>{desc}</div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' } as CSSProperties}>
-            <Btn onClick={() => setOpen(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn>
-            <Btn primary onClick={() => { setOpen(false); onConfirm() }}>{confirmLabel || i18nT('pages.devFleetPage.start')}</Btn>
+            <Btn ref={cancelRef} onClick={close}>{i18nT('pages.devFleetPage.cancel')}</Btn>
+            <Btn ref={confirmRef} primary onClick={() => { close(); onConfirm() }}>{confirmLabel || i18nT('pages.devFleetPage.start')}</Btn>
           </div>
         </div>,
         document.body,

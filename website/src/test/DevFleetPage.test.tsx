@@ -1038,6 +1038,27 @@ describe('DevFleetPage', () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
     fireEvent.keyDown(document.body, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(trigger).toHaveFocus()
+  })
+
+  it('keeps keyboard focus within the confirm popover and restores it after Cancel', async () => {
+    const { trigger, pop } = await openPullBuildConfirm()
+    const cancel = within(pop).getByText('Cancel')
+    const start = within(pop).getByText('Start')
+    expect(pop.getAttribute('aria-modal')).toBe('true')
+    expect(cancel).toHaveFocus()
+
+    // The browser's normal Tab behavior moves from Cancel to Start. The dialog
+    // only owns the two boundaries that would otherwise leave it.
+    start.focus()
+    fireEvent.keyDown(document.body, { key: 'Tab' })
+    expect(cancel).toHaveFocus()
+    fireEvent.keyDown(document.body, { key: 'Tab', shiftKey: true })
+    expect(start).toHaveFocus()
+
+    fireEvent.click(cancel)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(trigger).toHaveFocus()
   })
 
   it('confirm popover opens downward when there is room below', async () => {
