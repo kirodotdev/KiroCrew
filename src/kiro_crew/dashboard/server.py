@@ -3840,6 +3840,7 @@ async def start_api_server(
     local_only: bool = True,
     configured_host: str = "",
     assume_kiro_ready: bool = False,
+    conversation_log: Any = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start a minimal API-only server for MCP tool transport (no UI).
 
@@ -3861,6 +3862,12 @@ async def start_api_server(
         task_runner=task_runner,
         slack_client=slack_client,
         owner_id=owner_id,
+        # Headless mode has no UI, but it still runs Slack turns -- and anything
+        # that reasons about how far a conversation has got reads the transcript
+        # through here. Leaving it unset made those readers fall back to their
+        # can't-tell branch: an OPTIONS control posted in this mode carried no
+        # position and every click on it was honoured, however stale.
+        conversation_log=conversation_log,
     )
     state._hook_store = ScriptHookStore()
     set_global_hook_store(state._hook_store)

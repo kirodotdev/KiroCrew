@@ -3628,6 +3628,21 @@ class ConversationLog:
         ts = tail[-1].get("ts")
         return ts if isinstance(ts, str) and ts else None
 
+    def last_row_ts(self, key: str) -> str | None:
+        """The ``ts`` of the last persisted message row for *key*, or ``None``.
+
+        The public form of :meth:`_last_row_ts`: it takes :meth:`_locked` itself,
+        so a caller outside this class gets a read that no concurrent append can
+        tear. Ordering derived from it survives a restart, because the value is a
+        field of the persisted row rather than a count of what a process happens
+        to hold in memory.
+
+        BLOCKING. It performs file I/O, so an async caller must run it off the
+        event loop (``asyncio.to_thread``).
+        """
+        with self._locked(key):
+            return self._last_row_ts(key)
+
     def _invalidate_cache(self, key: str) -> None:
         """Invalidate caches for a key after a write operation."""
         self._msg_cache.pop(key, None)

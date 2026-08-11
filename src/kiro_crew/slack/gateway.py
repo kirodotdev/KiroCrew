@@ -90,6 +90,7 @@ from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_asy
 from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _run_chat
 from kiro_crew.dashboard.chat_utils import (
     dashboard_slot_key,
+    mint_options_token,
     remember_slack_options,
     subagent_event_slot,
 )
@@ -1834,7 +1835,13 @@ class GatewayOrchestrator:
             await self.slack.post_message(channel, part, thread_ts)
         if options:
             try:
-                option_blocks = build_options_blocks(options)
+                # Tokened like every other producer. An untokened control has no
+                # asker to pin, so a click on it falls back to resolving the
+                # thread -- which is exactly the reroute the pin exists to stop.
+                _cron_token = await asyncio.to_thread(
+                    mint_options_token, self.dashboard_state, parent_key
+                )
+                option_blocks = build_options_blocks(options, staleness_token=_cron_token)
                 option_ts = await self.slack.post_blocks(
                     channel,
                     option_blocks,
@@ -4987,6 +4994,50 @@ class GatewayOrchestrator:
                         )
                         _injected = True  # LLM processed result; channel posting is best-effort
 
+                        # Persisted at the per-attempt level, NOT inside the
+                        # Slack branch below: a channel parent (Discord,
+                        # Telegram) delivers via the transport ladder and skips
+                        # that branch entirely, so persisting there dropped
+                        # every non-Slack subagent turn from replay. It still
+                        # runs BEFORE the Slack control is posted, so the
+                        # control's staleness token names this turn rather than
+                        # the one before it.
+                        # Persist BEFORE the control below invites
+                        # an answer to this turn: the token names
+                        # this session's last written row, so an
+                        # unwritten turn stamps the control with the
+                        # PREVIOUS turn's position and the first
+                        # click reads as already superseded.
+                        if self.conv_log and not (
+                            is_thread_temporary(parent_key) or is_thread_incognito(parent_key)
+                        ):
+                            try:
+                                # Defense-in-depth: `announce` is composed from
+                                # already-redacted parts plus identifiers such as
+                                # `info.agent`; we re-redact before persisting to the
+                                # dashboard replay (an external surface), mirroring the
+                                # dashboard branch. `response` is fresh LLM output from
+                                # stream_and_collect and is NOT yet redacted, so its
+                                # redaction here is strictly required.
+                                safe_announce, _ = redact_exfiltration_urls(announce)
+                                safe_announce, _ = redact_credentials(safe_announce)
+                                safe_response, _ = redact_exfiltration_urls(response or "")
+                                safe_response, _ = redact_credentials(safe_response)
+                                await save_conversation_turn_off_loop(
+                                    self.conv_log,
+                                    parent_key,
+                                    safe_announce,
+                                    safe_response,
+                                    source_thread=parent_key,
+                                    source_user="subagent",
+                                    agent=_get_agent_for_session(parent_key),
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Failed to persist subagent turn for %s",
+                                    parent_key,
+                                    exc_info=True,
+                                )
                         # Deliver only the LLM's synthesized response to the
                         # parent's own conversation. Non-Slack channels go
                         # through the governed transport ladder; on failure
@@ -5020,7 +5071,16 @@ class GatewayOrchestrator:
                                             _footer_client,
                                         )
                                         if options:
-                                            footer_blocks.extend(build_options_blocks(options))
+                                            _sub_token = await asyncio.to_thread(
+                                                mint_options_token,
+                                                self.dashboard_state,
+                                                parent_key,
+                                            )
+                                            footer_blocks.extend(
+                                                build_options_blocks(
+                                                    options, staleness_token=_sub_token
+                                                )
+                                            )
                                         _footer_ts = await self.slack.post_blocks(
                                             channel,
                                             footer_blocks,
@@ -5051,36 +5111,6 @@ class GatewayOrchestrator:
                         # log so the dashboard replay shows it. Without this, Slack
                         # subagent injections are visible in the thread but missing
                         # from the dashboard session history.
-                        if self.conv_log and not (
-                            is_thread_temporary(parent_key) or is_thread_incognito(parent_key)
-                        ):
-                            try:
-                                # Defense-in-depth: `announce` is composed from
-                                # already-redacted parts plus identifiers such as
-                                # `info.agent`; we re-redact before persisting to the
-                                # dashboard replay (an external surface), mirroring the
-                                # dashboard branch. `response` is fresh LLM output from
-                                # stream_and_collect and is NOT yet redacted, so its
-                                # redaction here is strictly required.
-                                safe_announce, _ = redact_exfiltration_urls(announce)
-                                safe_announce, _ = redact_credentials(safe_announce)
-                                safe_response, _ = redact_exfiltration_urls(response or "")
-                                safe_response, _ = redact_credentials(safe_response)
-                                await save_conversation_turn_off_loop(
-                                    self.conv_log,
-                                    parent_key,
-                                    safe_announce,
-                                    safe_response,
-                                    source_thread=parent_key,
-                                    source_user="subagent",
-                                    agent=_get_agent_for_session(parent_key),
-                                )
-                            except Exception:
-                                logger.warning(
-                                    "Failed to persist subagent turn for %s",
-                                    parent_key,
-                                    exc_info=True,
-                                )
 
                         logger.info(
                             "Subagent %s → %s session %s", info.id, _inject_label, parent_key
@@ -5639,6 +5669,7 @@ class GatewayOrchestrator:
             local_only=self._local_only,
             configured_host=configured_host,
             assume_kiro_ready=self._test_mode,
+            conversation_log=self.conv_log,
         )
         if dashboard_port == 0 and self._dashboard_runner is not None:
             addresses = self._dashboard_runner.addresses

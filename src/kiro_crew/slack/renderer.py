@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.messaging.transport import TransportCapabilities
@@ -243,6 +243,17 @@ class SlackRenderer(Renderer):
         # Set at turn end when this turn's footer carried an OPTIONS control, so
         # the dispatcher can record it against the session and expire it later.
         self.posted_options: PostedOptions | None = None
+        # Supplied by the dispatcher when it can make this turn durable and stamp
+        # the control it is about to post. Takes the final reply text, returns the
+        # staleness token (or None to post untokened, which clicks then honour).
+        #
+        # It is a callback rather than session state on the renderer because the
+        # two halves live on opposite sides of this seam: only the renderer knows
+        # the final text and whether the turn produced options, and only the
+        # dispatcher knows which conversation ran the turn and where its
+        # transcript is. Keeping identity out of the renderer is the point of the
+        # transport split, so the dispatcher passes in the one operation it owns.
+        self.stamp_options: Callable[[str], Awaitable[str | None]] | None = None
         self._accumulated = ""
         self._bracket_hold = ""  # held text from '[' until ']' to filter [OPTIONS:]
         self._stream_buffer = ""  # unsent text buffered between throttled flushes
@@ -598,7 +609,37 @@ class SlackRenderer(Renderer):
         # Timing footer (always posted at turn end), mirroring native.
         turn_elapsed = (self._now() - self._t0) if self._t0 else 0.0
         footer_blocks, footer_text = build_timing_footer(turn_elapsed, None)
-        footer_blocks = _append_footer_actions(footer_blocks, options, self.thread_ts, None, None)
+        # Make the turn durable and stamp the control BEFORE it goes out. This is
+        # the canonical Slack path, so a control posted from here with no stamp is
+        # a control whose clicks can never be judged: the check abstains and
+        # honours it however far the conversation has since moved. The stamp has to
+        # happen here rather than in the dispatcher's post-turn bookkeeping because
+        # the token rides IN this message, and it has to follow the persist because
+        # it records how far this turn got.
+        #
+        # Best-effort by construction: a failing stamp leaves the control untokened
+        # (honoured on click, i.e. today's behaviour) and leaves the turn for the
+        # dispatcher's own persist to cover, rather than costing the user a footer.
+        _options_token: str | None = None
+        if options and self.stamp_options is not None:
+            try:
+                # The RAW accumulated text, not the stripped/re-redacted copy that
+                # goes to Slack. This value replaces the dispatcher's own persist,
+                # so it has to be what the dispatcher would have written: the
+                # driver accumulates exactly the chunks it forwards here, so this
+                # is byte-identical to its `accumulated` and already
+                # credential-redacted by its StreamRedactor.
+                #
+                # Keeping the `[OPTIONS: ...]` trailer is the load-bearing part. It
+                # is how a replayed turn knows to re-render the question as a
+                # control instead of as literal text, so persisting the stripped
+                # copy would silently turn every replayed control into prose.
+                _options_token = await self.stamp_options(self._accumulated)
+            except Exception:
+                _options_token = None
+        footer_blocks = _append_footer_actions(
+            footer_blocks, options, self.thread_ts, None, None, _options_token
+        )
         footer_ts = await self.slack.post_blocks(
             self.channel, footer_blocks, footer_text, self.thread_ts
         )

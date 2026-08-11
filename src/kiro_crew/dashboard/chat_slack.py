@@ -20,7 +20,7 @@ from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     expire_slack_options,
-    options_records,
+    mint_options_token,
     remember_slack_options,
     slack_options_owner_keys_snapshot,
     slot_history_key,
@@ -36,11 +36,7 @@ from kiro_crew.slack.format import (
     extract_options,
     render_for_slack,
 )
-from kiro_crew.slack.outbound import (
-    OPTIONS_FALLBACK_TEXT,
-    PostedOptions,
-    answer_routing_in_flight,
-)
+from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.sync_bridge import handoff_to_slack
 
 logger = logging.getLogger(__name__)
@@ -150,7 +146,9 @@ async def drain_slack_backfill(
             logger.debug("slack backfill: post failed", exc_info=True)
             return False
 
-    async def _post_options(choices: list[str], *, interactive: bool) -> str | None:
+    async def _post_options(
+        choices: list[str], *, interactive: bool, row_ts: str | None = None
+    ) -> str | None:
         """Post a replayed OPTIONS tag as a control instead of literal text.
 
         The body and the control are separate Slack messages, so this composes
@@ -166,8 +164,15 @@ async def drain_slack_backfill(
         exactly that one later without touching controls another turn recorded in
         the same slot. ``None`` when nothing live was recorded.
         """
+        # Requires BOTH: without a row ts the mint would fall back to reading the
+        # tail off disk, which is the locked, on-loop I/O this path exists to
+        # avoid. A row with no ts therefore posts untokened -- honoured on click,
+        # the same direction every other unprovable case takes.
+        _token = (
+            mint_options_token(state, session_key, row_ts) if interactive and row_ts else None
+        )
         blocks = (
-            build_options_blocks(choices)
+            build_options_blocks(choices, staleness_token=_token)
             if interactive
             else build_options_selected_blocks(choices, [])
         )
@@ -222,7 +227,9 @@ async def drain_slack_backfill(
             if not await _post(part):
                 return
         if choices:
-            posted_ts = await _post_options(choices, interactive=idx == newest)
+            posted_ts = await _post_options(
+                choices, interactive=idx == newest, row_ts=row.get("ts")
+            )
             if posted_ts:
                 live_ts = posted_ts
 
@@ -304,7 +311,9 @@ def _spawn_slack_backfill(
     mid-drain abandons the task and leaves a partially seeded thread. That is
     accepted: the link is already persisted and the thread is live.
     """
-    task = asyncio.create_task(drain_slack_backfill(state, slot, channel, thread_ts))
+    task = asyncio.create_task(
+        drain_slack_backfill(state, slot, channel, thread_ts)
+    )
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     task.add_done_callback(_log_task_exception)
@@ -379,32 +388,18 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
         if not thread_ts:
             return web.json_response({"error": "failed to create thread"}, status=500)
 
-    # Whose control is already live in this thread, captured BEFORE the reassign.
-    # ``link_slack`` moves the thread -> slot index onto THIS slot, so resolving
-    # afterwards names the new owner and the previous conversation's record
-    # becomes unreachable: no dashboard turn would ever expire it, and a click on
-    # those still-live buttons would answer into this session instead.
+    # Strike the previous owner's control through on the way past, so the thread
+    # does not visibly carry a question that now belongs to another conversation.
+    #
+    # Best effort, and nothing depends on it landing: the control's own token
+    # names the conversation that asked, so a click on it is refused when it
+    # arrives whether or not this edit succeeded. Our OWN key is skipped --
+    # re-linking a thread to the slot that already holds it must not strike that
+    # slot's live control.
+    # Read BEFORE the reassign: ``link_slack`` moves the thread -> slot index onto
+    # THIS slot, so resolving afterwards would name the new owner and the previous
+    # conversation's control would never be found to strike through.
     _prior_owner_keys = slack_options_owner_keys_snapshot(state, thread_ts)
-
-    # Retire the previous owner's control BEFORE the reassign, and refuse to
-    # reassign if it could not be retired.
-    #
-    # An ownership change IS supersession, the same call earlier rounds made for a
-    # control posted while the owner moved: the question belongs to a conversation
-    # that no longer owns this thread, so striking it through is right and
-    # re-keying it to us would hand this session an answer to a question it never
-    # asked. Our OWN key is skipped -- re-linking a thread to the slot that already
-    # holds it must not spend that slot's live control.
-    #
-    # Order matters, for the same reason the unlink path aborts. Linking first and
-    # expiring after leaves a window where the thread already routes HERE while the
-    # old buttons are still on screen: a transient Slack failure on the edit (429,
-    # 5xx, network) means the control stays live, and a click on it resolves
-    # through the new reverse index into THIS session, corrupting a conversation
-    # that never asked the question. A returned expiry does not prove the control
-    # was spent either -- records whose edit failed transiently stay tracked
-    # deliberately -- so the guard is "are any prior records still there", not "did
-    # the call raise".
     _own_keys = {effective_session_key(slot), slot.key}
     _prior_keys = [k for k in _prior_owner_keys if k not in _own_keys]
     for _prior_key in _prior_keys:
@@ -415,38 +410,6 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
                 "slack link: could not retire the previous owner's control",
                 exc_info=True,
             )
-    _unretired = [k for k in _prior_keys if options_records(state, k)]
-    if _unretired or answer_routing_in_flight(thread_ts):
-        # Abort rather than reassign. Leaving the thread with its current owner is
-        # recoverable and visible -- the caller retries, and that owner's next turn
-        # spends the control -- whereas completing the link silently corrupts this
-        # session with an answer to someone else's question.
-        #
-        # Two reasons to refuse, the same pair the unlink path weighs. An
-        # unretired record means the buttons are still live. Answer routing IN
-        # FLIGHT means a click already WON: a successful click forgets its record
-        # before dispatching, so by the time the answer is travelling there is
-        # nothing left for the records check to see -- and reassigning the thread
-        # underneath it delivers that selection into a session that never asked
-        # the question. Same defect the unlink abort closes, on the other path.
-        sel().log_api_access(
-            caller="dashboard",
-            operation="chat.slack_link",
-            outcome="deferred",
-            source="dashboard",
-            resources=slot.key,
-            error="a prior OPTIONS control is unretired or its answer is still routing; thread not reassigned",
-        )
-        return web.json_response(
-            {
-                "error": (
-                    "The existing thread still has a pending OPTIONS control or an "
-                    "answer in flight; the thread was not relinked"
-                ),
-                "code": "slack_options_pending",
-            },
-            status=503,
-        )
 
     # Route through the ONE canonical link writer. ``link_slack`` sets the same
     # three slot fields and persists via ``set_slack_link``, but it ALSO
@@ -463,6 +426,11 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     # thread. Linking to an existing thread (challenge-and-redirect) would
     # duplicate messages the thread already contains.
     if not existing_thread:
+        # No mint here. The drain mints its own token off the loop: doing it in
+        # this handler put either blocking transcript I/O on the event loop, or a
+        # thread-pool hop ahead of the spawn below -- and that hop cost the spawned
+        # task its scheduling window under load, so the control never reached
+        # Slack. Inside the task the hop delays only that task's own posting.
         _spawn_slack_backfill(state, slot, target_channel, thread_ts)
 
     sel().log_api_access(
@@ -531,172 +499,36 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
             done = state.sessions.clear_slack_link(session_key[len("dashboard:") :]) or done
         return done
 
-    def _restore_persisted_link_sync() -> None:
-        """Put back the link this handler cleared, if nothing else claimed it.
-
-        Read first, and by PRESENCE: a link sitting here now was written during the
-        await by ``link_slack``, and that writer's value is the live one.
-        """
-        persisted, _chan = state.sessions.get_slack_link(session_key)
-        if not persisted and (prev_thread_ts or prev_channel):
-            state.sessions.set_slack_link(session_key, prev_thread_ts, prev_channel)
-
-    # Capture BEFORE the clear's await. A pure dict read, no persistence write, so
-    # it costs nothing to do inline -- and doing it here is what lets the clear be
-    # conditional on the link not having moved underneath us.
+    # Tear the link down with NO await in the middle, so nothing can interleave
+    # between reading the link and clearing it. That is what retires the
+    # compare-and-clear apparatus this handler used to carry: the strike-through no
+    # longer runs BEFORE the teardown, so there is no await for a relink to land
+    # inside and nothing to reconcile afterwards.
+    #
+    # The ordering is free now. Striking first used to be mandatory -- while the
+    # reverse index was still intact -- because a click arriving after teardown
+    # resolved to nothing and started a brand-new session carrying a stale answer.
+    # A click now carries the identity of the conversation that asked it, so one
+    # arriving after the link is gone is refused on its own terms.
     prev_channel = slot._slack_channel
     prev_thread_ts = slot._slack_thread_ts
     cleared = _clear_persisted_link_sync()
-    # Expire FIRST, while the routing is still intact, then clear the link only if
-    # it is still the one we captured. Neither plain ordering is safe on its own:
-    #
-    #   teardown-then-expire  -- between the two the buttons are still live while
-    #     the reverse index is already gone, so a click resolves to nothing and
-    #     starts a BRAND-NEW session carrying a stale answer.
-    #   expire-then-teardown  -- expiry awaits a Slack edit, long enough for
-    #     another tab to relink this slot mid-await; resuming would then clear the
-    #     REPLACEMENT link's in-memory fields while its persisted link survived,
-    #     leaving the two disagreeing.
-    #
-    # Compare-and-clear satisfies both. The click keeps working (and keeps
-    # resolving to THIS slot) for as long as the control is still answerable, and
-    # the teardown is conditional on the link not having moved underneath us.
+    slot._slack_linked = False
+    slot._slack_channel = ""
+    slot._slack_thread_ts = ""
+    if prev_thread_ts:
+        # Or the thread keeps resolving to this conversation after the link is gone.
+        state._slack_to_slot.pop(prev_thread_ts, None)
+
+    # Presentation only: leave the thread without a question nothing will answer.
+    # Swallowed on failure -- an un-struck control is untidy, not unsafe, because
+    # the click it invites is refused when it arrives.
     try:
         await expire_slack_options(state, session_key)
-    except asyncio.CancelledError:
-        # Gateway shutdown (or any handler cancellation) mid-expiry would otherwise
-        # leave this unlink half-committed: persistence was cleared at the top, the
-        # in-memory fields were never touched, and none of the restoration below
-        # runs. After a restart the routing is gone while the controls are still
-        # live on screen — a click then resolves to nothing and starts a fresh
-        # session, the exact failure the compare-and-clear ordering exists to
-        # prevent, reached by a third route.
-        #
-        # Restored INLINE, like every other link write here. Off-loading it needed
-        # a shield plus a fallback for the loop-teardown case, and the fallback was
-        # itself a blocking write on the loop -- all of that complexity bought
-        # nothing once link mutations went back to being serialized on the loop.
-        _restore_persisted_link_sync()
-        raise
-
-    # Persistence was cleared at the top, so anything here now was written DURING
-    # the await. Read once: both branches below turn on it.
-    persisted_ts, persisted_chan = state.sessions.get_slack_link(session_key)
-
-    if options_records(state, session_key) or answer_routing_in_flight(prev_thread_ts):
-        # Two reasons to keep the thread linked, both ending the same way.
-        #
-        # A tracked record: a returned expiry does NOT prove the control was
-        # spent. Records whose Slack edit failed transiently (429, 5xx, network)
-        # stay tracked deliberately, so the buttons are still live on screen — and
-        # tearing the reverse index down now is precisely the teardown-then-expire
-        # order rejected above: a later click resolves to nothing and starts a
-        # BRAND-NEW session carrying a stale answer. A failed expiry is
-        # teardown-then-NEVER-expire, which is worse.
-        #
-        # An answer still routing: a click that SUCCEEDED forgot its record and
-        # dispatched the answer as a task. The record — this guard's other signal
-        # — is already gone while the answer has not yet resolved which session it
-        # belongs to, so popping the reverse index now sends the user's selection
-        # into a brand-new session. Same corruption, reached from the other side.
-        #
-        # So abort. Keeping the thread linked is recoverable and visible — the
-        # caller retries and the next turn's expiry spends the control — whereas
-        # completing the unlink silently corrupts a future conversation. Restore
-        # the persisted link we cleared at the top so persistence agrees with the
-        # in-memory fields, which were never touched; skip that if something else
-        # wrote a link while we awaited, since that writer's value is the live one.
-        if not persisted_ts and (prev_thread_ts or prev_channel):
-            # ON the loop, deliberately, and this is the settled position after
-            # three passes over it. `_save()` serialises the whole session map, so
-            # it is a real blocking write -- measured on this box at 0.17ms for 50
-            # sessions, 1.0ms for 500 (58KB), 9.8ms at an unrealistic 5000. The two
-            # ways to avoid it are both worse:
-            #
-            #   asyncio.to_thread -- the worker runs CONCURRENTLY with the loop, so
-            #     the read-then-write below stops being atomic: a relink can land
-            #     between them and this restore would overwrite the replacement
-            #     with the link we captured. That is the exact race that forced the
-            #     earlier off-loop rewrite of this handler to be reverted.
-            #   dropping the restore -- persistence stays cleared while the
-            #     in-memory fields still hold the link, so a restart loses the
-            #     routing while the buttons are still live. That is the corruption
-            #     the abort exists to prevent.
-            #
-            # Every other session-map mutation in the codebase (including
-            # `link_slack` on the link path) writes synchronously on the loop for
-            # the same reason, so singling this line out would cost correctness and
-            # buy no measurable latency. If the blocking write is ever worth
-            # removing, the fix is to serialise ALL session-map writers behind one
-            # lock and offload them together -- not to make this one call racy.
-            state.sessions.set_slack_link(session_key, prev_thread_ts, prev_channel)
-        sel().log_api_access(
-            caller="dashboard",
-            operation="chat.slack_unlink",
-            outcome="deferred",
-            source="dashboard",
-            resources=slot.key,
-            error="an OPTIONS control could not be expired; link kept to keep it routable",
-        )
-        # 503, not a 200 that lies: the session IS still linked. The dashboard
-        # already treats a non-2xx here as "session stays linked", so its view
-        # matches the state we just restored without any client change.
-        return web.json_response(
-            {
-                "error": (
-                    "An OPTIONS control is still pending or its answer is still "
-                    "routing; the session stays linked"
-                ),
-                "code": "slack_options_pending",
-            },
-            status=503,
-        )
-
-    if slot._slack_channel == prev_channel and slot._slack_thread_ts == prev_thread_ts:
-        # Equality does NOT prove nothing moved. A relink to the SAME thread can
-        # land during the expiry await and restore the identical channel/ts, which
-        # in memory is byte-for-byte indistinguishable from an untouched link.
-        #
-        # Persistence settles it, and by PRESENCE rather than by value: it was
-        # cleared at the top of this handler, and the only writer is ``link_slack``.
-        # So a persisted link sitting here now was necessarily written DURING the
-        # await -- positive evidence of a relink -- while an empty one is positive
-        # evidence that nothing moved. Comparing the channel/ts alone can only
-        # guess, and guessing either way breaks the other case: assume "relinked"
-        # and an ordinary unlink silently no-ops, assume "nothing moved" and a
-        # successful relink is torn down behind the user's back.
-        if persisted_ts and persisted_ts == prev_thread_ts and persisted_chan == prev_channel:
-            # A relink won the race. Its link is the live one, so leave the slot
-            # fields, persistence and the reverse index exactly as it left them --
-            # they already agree with each other, which is all the teardown was
-            # ever protecting.
-            #
-            # ``cleared`` goes False so this reports as a no-op: the session is
-            # still linked, so claiming ``was_linked`` would tell the UI a teardown
-            # happened, and the courtesy note below would announce "replies here no
-            # longer sync" into the very thread that is still syncing.
-            cleared = False
-            logger.debug(
-                "slack unlink: same-thread relink landed during expiry, "
-                "leaving the replacement intact"
-            )
-        else:
-            # Nothing relinked. Re-clear persistence anyway: it is idempotent
-            # here, and it also drops the "dashboard:"-prefixed twin that a turn
-            # running mid-await could otherwise re-inherit the link from.
-            cleared = _clear_persisted_link_sync() or cleared
-            slot._slack_linked = False
-            slot._slack_channel = ""
-            slot._slack_thread_ts = ""
-            # Drop the thread -> slot reverse index too, or the thread keeps
-            # resolving to this conversation after the link is gone.
-            if prev_thread_ts:
-                state._slack_to_slot.pop(prev_thread_ts, None)
-    else:
-        # A relink landed during the expiry await. Its link is the live one now, so
-        # leave every field and the reverse index exactly as the relink left them.
+    except Exception:
         logger.debug(
-            "slack unlink: link changed during expiry, leaving the replacement intact"
+            "slack unlink: could not strike the pending OPTIONS control through",
+            exc_info=True,
         )
 
     # Best-effort courtesy note so a Slack watcher knows why the thread went

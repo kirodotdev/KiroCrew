@@ -213,6 +213,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     RecoveryPayload,
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
+    mint_options_token,
     payload_for_replay,
 )
 
@@ -6247,7 +6248,16 @@ async def _run_chat(
                     # question clickable forever. build_options_blocks already
                     # redacts each choice through redact_for_display, so nothing
                     # extra is needed here.
-                    _mirror_blocks = build_options_blocks(_mirror_options)
+                    # The asker is THIS session, named explicitly. Resolving it
+                    # from the thread would name whoever owns the thread at mint
+                    # time, so a relink landing mid-turn would stamp the control
+                    # with a conversation that never asked the question.
+                    _mirror_token = await asyncio.to_thread(
+                        mint_options_token, state, session_key
+                    )
+                    _mirror_blocks = build_options_blocks(
+                        _mirror_options, staleness_token=_mirror_token
+                    )
                     # The thread's owner BEFORE the post. A relink landing while
                     # post_blocks is in flight moves the conversation to another
                     # session, and a control recorded under the key this turn

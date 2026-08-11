@@ -1044,8 +1044,17 @@ async def save_conversation_turn_off_loop(
     source_thread: str | None = None,
     source_user: str | None = None,
     agent: str | None = None,
-) -> None:
+) -> str | None:
     """Save a turn without blocking (or fail-fast-dropping on) the event loop.
+
+    Returns the ``ts`` of the row this turn ended on, read back INSIDE the atomic
+    hold so it is this turn's own row and not some later writer's. A caller that
+    stamps something with "how far the conversation had got" needs that value, and
+    re-reading the tail afterwards is not the same thing: the permit for this
+    session is released before the caller gets here, so a queued second turn can
+    land its rows in between and the re-read would return ITS position. Taking the
+    value under the lock we already hold costs nothing and removes the window
+    rather than narrowing it.
 
     :func:`save_conversation_turn` makes TWO ``ConversationLog.append`` calls, and
     append acquires a cross-process flock and writes to disk -- ~12 ms each on a
@@ -1077,7 +1086,7 @@ async def save_conversation_turn_off_loop(
     inherited.
     """
 
-    def _write() -> None:
+    def _write() -> str | None:
         with log.atomic_appends(key):
             save_conversation_turn(
                 log,
@@ -1088,5 +1097,10 @@ async def save_conversation_turn_off_loop(
                 source_user=source_user,
                 agent=agent,
             )
+            # Reentrant for the same key on the same thread (see
+            # ``atomic_appends``), so this reuses the hold rather than
+            # deadlocking on it -- and reading it here rather than after the
+            # hold is released is the whole point.
+            return log.last_row_ts(key)
 
-    await asyncio.to_thread(_write)
+    return await asyncio.to_thread(_write)

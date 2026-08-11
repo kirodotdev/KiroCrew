@@ -32,7 +32,9 @@ from kiro_crew.config.loader import (
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.chat_utils import (
     forget_slack_options_for_thread,
+    options_control_is_stale,
     slack_options_owner_keys_snapshot,
+    slack_options_slot,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
@@ -65,11 +67,14 @@ from kiro_crew.slack.handler import (
     set_tracking_channels,
 )
 from kiro_crew.slack.outbound import (
+    PostedOptions,
     claim_options_answer,
+    decode_options_token,
+    expire_options,
+    mark_options_terminal,
     options_edit_lock,
     release_options_answer,
     settle_options_answer,
-    track_answer_routing,
 )
 from kiro_crew.slack.renderer import (
     TOOL_APPROVE_ACTION_PREFIX,
@@ -1426,6 +1431,101 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     return slot
 
 
+def _options_block_id(payload: dict, action: dict | None = None) -> str | None:
+    """The ``block_id`` Slack echoed back for the clicked OPTIONS control.
+
+    Checked in three places because the two click paths deliver it differently: a
+    button click carries it on the action, and the multi-select block also keys
+    ``state.values``, which is recoverable even from a click that omitted it.
+    """
+    if action:
+        bid = action.get("block_id")
+        if isinstance(bid, str) and bid:
+            return bid
+    for entry in payload.get("actions") or []:
+        bid = entry.get("block_id") if isinstance(entry, dict) else None
+        if isinstance(bid, str) and bid:
+            return bid
+    values = (payload.get("state") or {}).get("values") or {}
+    for block_id, vals in values.items():
+        if isinstance(vals, dict) and OPTIONS_CHECKBOXES_ACTION in vals and isinstance(block_id, str):
+            return block_id
+    return None
+
+
+def _options_choices_from_payload(blocks: list) -> list[str]:
+    """The choices shown on a posted control, read back off its own blocks.
+
+    Recovering them from the message the user clicked is what lets a stale click
+    be struck through without the gateway having kept a record of the control --
+    which is the point: a record held in memory is exactly what a restart loses.
+    """
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        for el in block.get("elements") or []:
+            if not isinstance(el, dict):
+                continue
+            action_id = el.get("action_id", "")
+            if action_id == OPTIONS_CHECKBOXES_ACTION:
+                return [
+                    (o.get("text") or {}).get("text") or o.get("value") or ""
+                    for o in el.get("options") or []
+                    if isinstance(o, dict)
+                ]
+            if action_id.startswith(OPTIONS_ACTION_PREFIX):
+                return [
+                    e.get("value") or ""
+                    for b in blocks
+                    if isinstance(b, dict)
+                    for e in b.get("elements") or []
+                    if isinstance(e, dict)
+                    and e.get("action_id", "").startswith(OPTIONS_ACTION_PREFIX)
+                ]
+    return []
+
+
+async def _refuse_stale_options(channel: str, msg_ts: str, payload: dict) -> None:
+    """Strike a superseded control through and answer nothing.
+
+    Correctness is already settled by the time this runs -- the caller returned
+    without dispatching -- so the edit here is presentation only and its failure
+    is swallowed. An un-struck control is untidy, not unsafe: the next click on it
+    is judged by the same rule and refused again.
+
+    Runs under the message's edit lock and takes the answer claim, because a
+    concurrent click that was ACCEPTED renders the user's selection into this same
+    message. Editing without the lock could overwrite that selection with a
+    strike-through, destroying a legitimate answer to satisfy a stale one.
+    """
+    if not (_orch and _orch.slack):
+        return
+    blocks = (payload.get("message") or {}).get("blocks") or []
+    async with options_edit_lock(channel, msg_ts):
+        if not claim_options_answer(channel, msg_ts):
+            # An accepted click already holds the claim and has rendered its
+            # selection. Leave the message exactly as that click left it.
+            return
+        mark_options_terminal(channel, msg_ts)
+        try:
+            await expire_options(
+                _orch.slack,
+                PostedOptions(
+                    channel=channel,
+                    ts=msg_ts,
+                    choices=tuple(_options_choices_from_payload(blocks)),
+                    blocks=tuple(blocks),
+                ),
+            )
+        except Exception:
+            logger.debug(
+                "could not strike through the stale OPTIONS control %s/%s",
+                channel,
+                msg_ts,
+                exc_info=True,
+            )
+
+
 async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> None:
     """User clicked Send on multi-select OPTIONS checkboxes."""
     if not (_orch and _orch.slack):
@@ -1445,6 +1545,26 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             outcome="denied",
             metadata={"user_id": user_id, "reason": "not_allowed_user"},
         )
+        return
+
+    # One rule, checked before any work: does this control still belong to the
+    # question the conversation is actually on? Judged from the token in the
+    # message plus the transcript on disk, so it holds across a restart -- and it
+    # is the ONLY thing standing between a superseded button and a dispatched
+    # answer, since nothing retires controls ahead of time any more.
+    if await options_control_is_stale(
+        _orch.dashboard_state if _orch else None, _options_block_id(payload), thread_ts
+    ):
+        sel().log_tool_invocation(
+            session_key=thread_ts,
+            agent="kirocrew",
+            source="slack",
+            tool_name="options_submit",
+            tool_kind="interaction",
+            outcome="denied",
+            metadata={"reason": "superseded_control", "channel": channel},
+        )
+        await _refuse_stale_options(channel, msg_ts, payload)
         return
 
     # Read checkbox state from the payload's state.values
@@ -1540,6 +1660,26 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
         # during the edit would move the thread to another session, so resolving
         # after the fact names the NEW owner and leaves the previous owner's record
         # in place -- and that session's next turn would edit over this selection.
+        # Pin the conversation that ASKED, read from the control's own token --
+        # NOT whoever owns the thread now. The two diverge in exactly the case
+        # the pin exists to survive: after a handover, resolving from the thread
+        # names the new owner and would deliver this answer to a conversation
+        # that never asked the question.
+        #
+        # A pinned None is meaningful: it says the asker holds no slot (a native
+        # Slack or cron conversation), so a thread linked after acceptance cannot
+        # capture the answer either. An untokened control -- one posted before
+        # this shipped -- pins nothing and keeps today's resolution, matching the
+        # rest of the rule, which honours what it cannot judge.
+        _asker = decode_options_token(_options_block_id(payload))
+        _asker_key = _asker[0] if _asker else None
+        _pinned_slot = (
+            slack_options_slot(_orch.dashboard_state, _asker_key)
+            if (_asker_key and _orch and _orch.dashboard_state)
+            else None
+        )
+        _pinned_slot_name = getattr(_pinned_slot, "key", None)
+        _route_pinned = _asker_key is not None
         _owner_keys = slack_options_owner_keys_snapshot(
             _orch.dashboard_state if _orch else None, thread_ts
         )
@@ -1632,12 +1772,11 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            target_slot_name=_pinned_slot_name,
+            route_pinned=_route_pinned,
+            asker_key=_asker_key,
         )
     )
-    # The record is already forgotten, so until this task has found its session
-    # the thread's reverse index is the only thing pointing the answer at the
-    # right conversation. Hold the unlink off until then.
-    track_answer_routing(thread_ts, t)
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
     sel().log_tool_invocation(
@@ -1742,6 +1881,15 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
         if el.get("action_id", "").startswith(OPTIONS_ACTION_PREFIX)
     ]
 
+    # The same rule the multi-select path applies, on the same token. A control
+    # posted before this build carries no token and is honoured, so an upgrade
+    # does not strand buttons that are still legitimately answerable.
+    if await options_control_is_stale(
+        _orch.dashboard_state if _orch else None, _options_block_id(payload, action), thread_ts
+    ):
+        await _refuse_stale_options(channel, msg_ts, payload)
+        return
+
     # Redact LLM-generated content before any external use
     choice, _ = redact_exfiltration_urls(choice)
     choice, _ = redact_credentials(choice)
@@ -1766,6 +1914,26 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             return
         # Owner keys BEFORE the edit -- a relink landing during it would move the
         # thread, and forgetting against the new owner orphans the old record.
+        # Pin the conversation that ASKED, read from the control's own token --
+        # NOT whoever owns the thread now. The two diverge in exactly the case
+        # the pin exists to survive: after a handover, resolving from the thread
+        # names the new owner and would deliver this answer to a conversation
+        # that never asked the question.
+        #
+        # A pinned None is meaningful: it says the asker holds no slot (a native
+        # Slack or cron conversation), so a thread linked after acceptance cannot
+        # capture the answer either. An untokened control -- one posted before
+        # this shipped -- pins nothing and keeps today's resolution, matching the
+        # rest of the rule, which honours what it cannot judge.
+        _asker = decode_options_token(_options_block_id(payload, action))
+        _asker_key = _asker[0] if _asker else None
+        _pinned_slot = (
+            slack_options_slot(_orch.dashboard_state, _asker_key)
+            if (_asker_key and _orch and _orch.dashboard_state)
+            else None
+        )
+        _pinned_slot_name = getattr(_pinned_slot, "key", None)
+        _route_pinned = _asker_key is not None
         _owner_keys = slack_options_owner_keys_snapshot(
             _orch.dashboard_state if _orch else None, thread_ts
         )
@@ -1855,12 +2023,11 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             consolidator=_orch.consolidator,
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
+            target_slot_name=_pinned_slot_name,
+            route_pinned=_route_pinned,
+            asker_key=_asker_key,
         )
     )
-    # Same reason as the multi-select submit path: the record is already gone, so
-    # the reverse index is all that points this answer at the right conversation
-    # until the task resolves it. Hold the unlink off until then.
-    track_answer_routing(thread_ts, t)
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
 

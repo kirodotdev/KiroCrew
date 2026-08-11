@@ -29,7 +29,7 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -61,8 +61,9 @@ from kiro_crew.cron import (
 )
 from kiro_crew.dashboard.chat_utils import (
     expire_slack_options,
+    mint_options_token,
+    options_control_is_stale,
     remember_slack_options,
-    slack_options_turn_counter,
 )
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import ConversationLog, HistoryConsolidator
@@ -2133,40 +2134,24 @@ def build_timing_footer(
     return blocks, footer_text
 
 
-def _turn_counter_for(session_key: str) -> int | None:
-    """This session's monotonic turn counter, or None if it cannot be read.
-
-    Used to tell "a turn happened" from "a turn is running", which
-    ``SessionManager.is_busy`` cannot distinguish: a turn that starts and
-    finishes inside a single await window reports as idle at both ends.
-    ``_ChatSlot.total_messages`` is a lifetime count that survives the slot's
-    trim cap, so it moves for a turn that came and went.
-
-    Returns None on any failure. This feeds best-effort OPTIONS cleanup and must
-    never be able to abort the turn that triggered it. A None on either side of
-    the comparison simply reads as "no observed change", leaving the ``is_busy``
-    half of the check to decide.
-
-    Delegates to :func:`slack_options_turn_counter` so this path and the
-    transport-dispatch path cannot drift apart on how the counter is read.
-    """
-    return slack_options_turn_counter(
-        cast("DashboardState | None", get_dashboard_state()), session_key
-    )
-
-
 def _append_footer_actions(
     footer_blocks: list[dict],
     options: list[str] | None,
     thread_ts: str | None,
     linked_session_key: str | None,
     dashboard_state: object | None,
+    staleness_token: str | None = None,
 ) -> list[dict]:
-    """Append OPTIONS checkboxes and/or Link to Dashboard button to footer blocks."""
+    """Append OPTIONS checkboxes and/or Link to Dashboard button to footer blocks.
+
+    *staleness_token* must be minted by the caller, which is async and can do the
+    transcript read off the event loop. Absent it the control posts untokened and
+    clicks on it are honoured unconditionally.
+    """
     if options:
         from kiro_crew.slack.format import build_options_blocks
 
-        footer_blocks.extend(build_options_blocks(options))
+        footer_blocks.extend(build_options_blocks(options, staleness_token=staleness_token))
     if thread_ts and not linked_session_key and dashboard_state:
         from kiro_crew.slack.format import build_link_dashboard_button
 
@@ -2464,6 +2449,8 @@ async def maybe_route_linked_thread(
     channel: str,
     slack: SlackClientOps,
     reply_ts: str,
+    target_slot: Any | None = None,
+    route_pinned: bool = False,
 ) -> bool:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -2476,14 +2463,26 @@ async def maybe_route_linked_thread(
     unauthorized user was denied. Returns ``False`` when normal routing should
     continue: no dashboard state, no linked slot, or a ``!``-bang command
     (which is intentionally allowed to fall through to normal handling).
+
+    *route_pinned* makes *target_slot* authoritative instead of resolving the
+    thread's CURRENT owner. An OPTIONS answer is accepted against the
+    conversation that asked the question, but the dispatch runs as a separate
+    task -- so re-resolving here would let a link, relink or unlink landing in
+    between deliver that answer into a different conversation. Pinning is
+    tri-state on purpose: a pinned ``None`` means "this answer belongs to no
+    slot", so a thread linked AFTER acceptance cannot capture a native answer
+    either.
     """
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return False
-    # The dashboard _slack_to_slot map is keyed by the bare Slack thread_ts
-    # (reply_ts), NOT the namespaced session key — look up with reply_ts so
-    # canonical ``slack:<ts>`` session keys still hit linked slots. session_key
-    # is kept for the SEL logging below.
-    _linked_slot = _dashboard_state.get_linked_slot(reply_ts)
+    if route_pinned:
+        _linked_slot = target_slot
+    else:
+        # The dashboard _slack_to_slot map is keyed by the bare Slack thread_ts
+        # (reply_ts), NOT the namespaced session key — look up with reply_ts so
+        # canonical ``slack:<ts>`` session keys still hit linked slots. session_key
+        # is kept for the SEL logging below.
+        _linked_slot = _dashboard_state.get_linked_slot(reply_ts)
     if not _linked_slot:
         return False
 
@@ -2557,6 +2556,9 @@ async def handle_message(
     channel_agent: str | None = None,
     user_display_name: str | None = None,
     action_context: str | None = None,
+    target_slot_name: str | None = None,
+    route_pinned: bool = False,
+    asker_key: str | None = None,
     from_trusted_bot: bool = False,
     channel_activation: str | None = None,
     had_voice_input: bool = False,
@@ -2607,7 +2609,25 @@ async def handle_message(
     _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
 
     # ── Linked thread intercept: route to dashboard slot if linked ──
-    if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
+    # Resolved from the NAME captured when the answer was accepted, not from the
+    # thread's current owner: the name survives a link change, a live slot object
+    # would not tell us whether it is still the right destination. A pinned name
+    # that no longer resolves falls through to normal handling rather than
+    # inventing a target.
+    _target_slot = None
+    if route_pinned and target_slot_name and _dashboard_state:
+        _target_slot = getattr(_dashboard_state, "_slots", {}).get(target_slot_name)
+
+    if await maybe_route_linked_thread(
+        text,
+        session_key,
+        user_id,
+        channel,
+        slack,
+        reply_ts,
+        target_slot=_target_slot,
+        route_pinned=route_pinned,
+    ):
         return
 
     logger.info(
@@ -3010,14 +3030,36 @@ async def handle_message(
     # namespaced session key. A self-linked Slack thread resolves to our own
     # canonical key (no-op rewrite); a dashboard-linked thread resolves to its
     # ``dashboard:chat-N`` key.
-    linked_session_key = sessions.get_session_for_thread(reply_ts)
-    if linked_session_key and linked_session_key != session_key:
+    # Read the thread's owner ONCE and keep it truthful. Three separate decisions
+    # below consume it -- whether to re-route this turn, whether to CLAIM the
+    # thread, and whether to mirror into a dashboard slot -- and a pinned answer
+    # needs a different answer for each. Falsifying this single value to steer all
+    # three is what made the pin land wrong three times running.
+    thread_owner_key = sessions.get_session_for_thread(reply_ts)
+    # Mirror/footer value: a pinned answer belongs to the conversation that ASKED,
+    # not to whoever owns the thread now, so it mirrors nowhere. (A pinned asker
+    # that *does* hold a slot never reaches here -- maybe_route_linked_thread
+    # already delivered the turn into that slot and returned.)
+    linked_session_key = None if route_pinned else thread_owner_key
+    if route_pinned:
+        # A pinned answer names its own conversation, so the thread's CURRENT
+        # owner has no say -- rewriting the key here is what let a pinned answer
+        # land in whoever took the thread over in the meantime.
+        #
+        # Suppressing that rewrite is only half of it. A pinned asker that holds no
+        # slot -- a cron or native conversation -- would otherwise be left running
+        # under the bare Slack thread key, which for a cron asker is a DIFFERENT
+        # conversation: the answer would open a new session and take the thread
+        # mapping with it. So the asker becomes the session key outright.
+        if asker_key:
+            session_key = asker_key
+    elif thread_owner_key and thread_owner_key != session_key:
         logger.info(
             "🔗 Slack thread %s linked to dashboard session %s — routing there",
             session_key,
-            linked_session_key,
+            thread_owner_key,
         )
-        session_key = linked_session_key
+        session_key = thread_owner_key
 
     client: LLMProvider | None = None
     try:
@@ -3040,11 +3082,17 @@ async def handle_message(
         )
         if is_new:
             await sessions.set_channel(session_key, channel)
-        if not linked_session_key:
+        if thread_owner_key is None and not route_pinned:
             # Self-link: thread index maps the bare Slack thread_ts to this
             # session's canonical key. reply_ts (not session_key) is the true
             # Slack timestamp — storing the namespaced key as slack_thread_ts
             # would corrupt reply routing.
+            #
+            # A PINNED answer never claims the thread, however empty the index
+            # looks. Pinning exists so an accepted click cannot mutate thread
+            # routing: a cron or native asker claiming the thread here would
+            # evict its real owner, and every later human reply would land in
+            # the cron conversation instead.
             sessions.set_slack_link(session_key, reply_ts, channel)
         logger.info(
             "🔍 session state: key=%s is_new=%s resumed=%s",
@@ -3848,29 +3896,65 @@ async def handle_message(
         except Exception:
             logger.debug("Failed to delete empty thinking placeholder", exc_info=True)
 
+    # Persist the turn BEFORE posting anything that invites an answer to it.
+    # The control below carries a staleness token derived from this session's last
+    # persisted transcript row, so posting it while this turn is still unwritten
+    # would stamp it with the PREVIOUS turn's position -- and these two rows
+    # landing straight afterwards would read as the conversation having moved on,
+    # refusing the very click the control was posted for.
+    #
+    # Durability-before-invitation is also right on its own terms: a question
+    # about a turn that has no record is not answerable after a restart.
+    _skip_writes = _is_slack_restricted(session_key)
+    _turn_row_ts: str | None = None
+    if conversation_log and not _skip_writes:
+        # The per-turn hot path: two appends every turn, so this is where the
+        # ~12ms of loop time was paid most often.
+        _turn_row_ts = await save_conversation_turn_off_loop(
+            conversation_log,
+            session_key,
+            text,
+            accumulated,
+            source_thread=session_key,
+            source_user=user_id,
+            agent=_agent,
+        )
+
     # ── Timing footer ──
     elapsed = time.monotonic() - _t0
     footer_blocks, footer_text = build_timing_footer(elapsed, client)
+    # Gated on `options` alone. A top-level Slack message has no ``thread_ts``, so
+    # gating on it left every root-thread control untokened -- unprotected on
+    # exactly the path a restart strands. ``reply_ts`` is the thread this control
+    # actually lands in (``thread_ts or msg_ts``), and ``session_key`` is the
+    # conversation that ran this turn: resolving the asker from the thread instead
+    # would name whoever owns it at mint time, so a link landing mid-turn would
+    # stamp the control with a session that never asked the question.
+    #
+    # The position comes from the row this turn WROTE, not from re-reading the
+    # tail. The session permit is released well above here, so a queued second
+    # turn can persist in between; a re-read would then hand this control the
+    # NEWER turn's position and a click on it -- by then obsolete -- would read as
+    # current and be accepted. Minting from our own row also means no I/O and no
+    # await here at all. No row (restricted session, or no log) means no provable
+    # position, so the control posts untokened and its clicks are honoured.
+    _options_token = (
+        mint_options_token(
+            cast("DashboardState | None", _dashboard_state),
+            session_key,
+            _turn_row_ts,
+        )
+        if options and _turn_row_ts
+        else None
+    )
     footer_blocks = _append_footer_actions(
         footer_blocks,
         options,
         thread_ts,
         linked_session_key,
         _dashboard_state,
+        _options_token,
     )
-    # Baseline BEFORE the footer post. `is_busy` alone only answers "is a turn in
-    # flight right now", so a superseding turn that both STARTS and FINISHES
-    # inside this window reads as not-busy and the check below would miss it.
-    # total_messages is monotonic and survives the slot's trim cap, so it moves
-    # for a turn that came and went.
-    #
-    # Sampled on the thread's owner AT THIS MOMENT, not on the key this turn
-    # started under: a dashboard link landing during the post moves the
-    # conversation to a different session, and a baseline taken on the old key can
-    # never observe the new owner's turns — so the guard would report "nothing
-    # moved" precisely when everything had.
-    _pre_owner = sessions.get_session_for_thread(reply_ts) or session_key
-    _pre_footer_total = _turn_counter_for(_pre_owner)
     _footer_ts = await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
     if options and _footer_ts:
         # Remember this turn's OPTIONS control so the next turn can strike it
@@ -3899,49 +3983,22 @@ async def handle_message(
         except Exception:
             logger.debug("Failed to record OPTIONS control", exc_info=True)
 
-        # The session permit was released well before this footer went up (the
-        # `finally` above), so a message that queued behind this turn can have
-        # acquired it and run ITS expiry pass already — over a record that did
-        # not exist yet. That leaves this control live for a question the
-        # conversation has moved past, which is the defect this PR exists to
-        # remove. If a turn is in flight now, OR one came and went while the
-        # footer was posting, we lost that race: spend the control ourselves
-        # rather than leaving it clickable.
+        # The conversation can move on while post_blocks is in flight -- a queued
+        # message can acquire the permit this turn already released and run a whole
+        # turn underneath us. The control we just posted would then be asking a
+        # question nobody is on any more.
         #
-        # Both halves are needed. `is_busy` catches the turn still running;
-        # the counter catches the turn that already finished, which `is_busy`
-        # reports as idle.
+        # Judged by the SAME predicate the click paths use, against the token that
+        # went out on the control. That is the whole point of minting it: the
+        # question "has this conversation moved past this control" has one answer,
+        # computed one way, whether it is asked here or when a click arrives.
         #
-        # And an owner CHANGE is supersession in its own right: the thread now
-        # belongs to a different session, so the question we just posted would be
-        # answered into a conversation that has moved on. It short-circuits before
-        # the counter comparison on purpose — counters read from two different
-        # sessions say nothing about each other, so comparing them would be
-        # meaningless rather than merely unhelpful.
-        def _counter_moved() -> bool:
-            """True only when BOTH readings exist and differ.
-
-            ``_turn_counter_for`` returns None when the counter cannot be read at
-            all — most often because the session has no dashboard slot, which is
-            the normal state for a Slack conversation until something surfaces
-            one. A slot appearing (the channel surface reconciler creates one) or
-            vanishing mid-post would otherwise flip None against an int and read
-            as "a turn happened", expiring the control we just posted the instant
-            it landed. A slot's existence is not a turn, so an unreadable
-            counter must ABSTAIN rather than vote — which is what the helper's
-            own contract already promises.
-            """
-            after = _turn_counter_for(_options_owner)
-            return (
-                _pre_footer_total is not None
-                and after is not None
-                and after != _pre_footer_total
-            )
-
-        _superseded = (
-            _options_owner != _pre_owner
-            or sessions.is_busy(_options_owner)
-            or _counter_moved()
+        # Cosmetic. A click on a superseded control is refused on its own terms, so
+        # failing to strike it through leaves the thread untidy, not unsafe.
+        _superseded = _options_token is not None and await options_control_is_stale(
+            cast("DashboardState | None", get_dashboard_state()),
+            _options_token,
+            reply_ts,
         )
         if _superseded:
             try:
@@ -4025,20 +4082,9 @@ async def handle_message(
                 )
 
     # ── Update task banner with final state ──
-    # ── Persist conversation history ──
-    _skip_writes = _is_slack_restricted(session_key)
+    # History was persisted earlier, above the OPTIONS control, so that the
+    # control's staleness token names this turn rather than the one before it.
     if conversation_log and not _skip_writes:
-        # The per-turn hot path: two appends every turn, so this is where the
-        # ~12ms of loop time was paid most often.
-        await save_conversation_turn_off_loop(
-            conversation_log,
-            session_key,
-            text,
-            accumulated,
-            source_thread=session_key,
-            source_user=user_id,
-            agent=_agent,
-        )
         if consolidator and _stop_reason != STOP_REASON_CANCELLED:
             consolidator.maybe_consolidate(session_key)
 

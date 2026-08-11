@@ -603,12 +603,10 @@ def _reset_options_control_state():
 
     outbound._ANSWERED.clear()
     outbound._EDIT_LOCKS.clear()
-    outbound._ANSWER_ROUTING.clear()
     outbound._LOCK_USERS.clear()
     yield
     outbound._ANSWERED.clear()
     outbound._EDIT_LOCKS.clear()
-    outbound._ANSWER_ROUTING.clear()
     outbound._LOCK_USERS.clear()
 
 

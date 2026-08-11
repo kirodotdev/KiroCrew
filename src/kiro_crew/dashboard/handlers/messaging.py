@@ -51,6 +51,7 @@ from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 from kiro_crew.dashboard.chat_utils import (
     _remove_queued_by_id,
     dashboard_slot_key,
+    mint_options_token,
     remember_slack_options,
     slack_options_owner_key,
 )
@@ -1401,7 +1402,19 @@ async def api_send_message(request: web.Request) -> web.Response:
                             )
                             if options:
                                 try:
-                                    option_blocks = build_options_blocks(options)
+                                    # Asker is the thread's owner: an out-of-band
+                                    # post has no running session of its own, so
+                                    # the conversation that receives the reply is
+                                    # the right subject.
+                                    _sm_o = slack_options_owner_key(state, thread_ts or "")
+                                    _sm_t = (
+                                        await asyncio.to_thread(mint_options_token, state, _sm_o)
+                                        if _sm_o
+                                        else None
+                                    )
+                                    option_blocks = build_options_blocks(
+                                        options, staleness_token=_sm_t
+                                    )
                                     # Fallback text is the SAFE stub, not the
                                     # message body. Slack parses entities in a
                                     # message's top-level `text` -- which is what
