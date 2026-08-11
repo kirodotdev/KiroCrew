@@ -948,6 +948,7 @@ class _ChatSlot:
         "_pending_rewrite",
         "_file_changes",
         "linked_session_key",
+        "_active_turn_session_key",
         "_side",
         "_acp_client",
         "_steer_segment_cut",
@@ -1313,6 +1314,15 @@ class _ChatSlot:
             []
         )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
         self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
+        # Where the turn CURRENTLY in flight actually started, as opposed to
+        # where the slot would route a new one. The two diverge whenever the
+        # routing above is reassigned on a live slot — a cron injection binds an
+        # existing slot to ``cron:<id>`` with no ``running`` gate — and a cancel
+        # must address the turn, not the routing. Runtime-only: never persisted,
+        # never serialized, empty after a restart, and ``_run_chat`` is its sole
+        # lifecycle owner (installed once the turn is committed, cleared after
+        # its session is released).
+        self._active_turn_session_key: str = ""
         # True only when this slot was created to DISPLAY a conversation that
         # already lives in a channel transcript (the reconciler surfacing a
         # thread, a restore, a History resume). It is what separates such a tab

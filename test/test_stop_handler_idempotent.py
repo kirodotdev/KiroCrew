@@ -26,6 +26,10 @@ class _FakeSlot:
         #: itself — a cron-born tab (``cron:<job_id>``), a channel-born tab
         #: (``slack:<ts>``), a workflow-born tab. Empty for a plain chat tab.
         self.linked_session_key = ""
+        #: No owning app: the App Kit §5.2 cancel guard reads this, and a slot
+        #: nobody owns is cancellable by the dashboard caller.
+        self._app = None
+        self._active_turn_session_key = ""
         self.agent = "kirocrew"
         self.messages: list[dict] = []
         self._dirty = False
@@ -83,6 +87,10 @@ class TestStopHandlerIdempotent:
         app["state"] = state
 
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.query = {}  # no force flag
@@ -110,6 +118,10 @@ class TestStopHandlerIdempotent:
         app["state"] = state
 
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.query = {}
@@ -148,6 +160,10 @@ class TestInterruptHandlerIdempotent:
         app["state"] = state
 
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.content_length = 0
@@ -230,6 +246,10 @@ class TestStopCardTeardownRace:
         app["state"] = state
 
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.query = {}
@@ -460,6 +480,10 @@ class TestStopCancelsTheSessionTheTurnRunsOn:
         app = web.Application()
         app["state"] = state
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.query = {}

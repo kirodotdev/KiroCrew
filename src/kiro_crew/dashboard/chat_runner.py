@@ -4078,6 +4078,29 @@ async def _run_chat(
     if _prompt_depth == 0:
         await expire_slack_options(state, session_key)
 
+    # Publish the identity of the turn this call is about to run. From here down
+    # the local `session_key` is what the turn acquires, audits and releases,
+    # while `slot.linked_session_key` stays mutable underneath it: a cron
+    # injection binds an existing slot with no `running` gate, so a turn that
+    # started on `dashboard:<slot>` can find the slot routed at `cron:<id>`
+    # before it ends. A cancel that re-derived the key would then address a
+    # session this turn never ran on, so the cancel routes read this instead.
+    #
+    # Placed at the same boundary as the OPTIONS expiry above, and for the same
+    # reason: `/goal`, a `/prompts` listing or error, and a blocked slash command
+    # all return without starting an agent turn, so none of them owns a turn
+    # identity. `/prompts get` re-enters at `_prompt_depth=1`, and it is that
+    # depth-1 call which reaches the machinery below while its depth-0 wrapper
+    # returns above — so keying on the BOUNDARY is what puts the identity on the
+    # invocation that actually runs the turn. Keying on `_prompt_depth == 0`
+    # would put it on the wrapper instead.
+    #
+    # BELOW the expiry, not above it: that await is the only thing between the
+    # boundary and the try, so installing after it means every exit that can
+    # happen while the identity is live reaches the teardown that retires it.
+    # Only plain assignments separate this line from the try.
+    slot._active_turn_session_key = session_key
+
     _acquired = False
     _mirror_stream_ts: str = ""
     _mirror_chan: str | None = ""
@@ -7644,6 +7667,23 @@ async def _run_chat(
                 # so a reset that failed or was cancelled still hands back the
                 # permit rather than stranding the session.
                 state.sessions.release(session_key)
+            # This turn's identity dies WITH its session, and inside the same
+            # finally for the same reason the release is: the reset above can be
+            # cancelled, and CancelledError derives from BaseException, so a
+            # clear placed after this block is simply skipped and the slot keeps
+            # advertising a turn that is gone.
+            #
+            # It must also land before `_start_next_queued_turn` further down
+            # can install the SUCCESSOR's key — a clear after that would wipe a
+            # live turn's identity and drop the cancel routes back to mutable
+            # routing. Compare-and-clear keeps that true if the ordering is ever
+            # rearranged: only the turn that installed a key may retire it.
+            #
+            # Outside the `_acquired` guard: the identity is published before
+            # the permit is taken, so a cold start that never acquired one still
+            # has something to retire.
+            if slot._active_turn_session_key == session_key:
+                slot._active_turn_session_key = ""
         # End-of-turn fallback: catches set_project calls that fired mid-turn,
         # after the start-of-turn consume already ran. Guarded because a raise
         # here would skip the steer requeue and queue drain below, silently
