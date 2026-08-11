@@ -241,6 +241,40 @@ _PROBE_ENV_KEYS = frozenset(
 # presence of this variable must never become a shortcut that skips the probe.
 _IDENTITY_PROBE_ENV_KEYS = frozenset({"KIRO_API_KEY"})
 
+# Proxy configuration, forwarded to the ``whoami`` identity probe only.
+#
+# On a host that reaches the network only through an HTTP proxy, ``whoami``
+# must talk to the IdP the same way the user's own shell does — filtered out,
+# the child cannot connect, the probe answers "Not logged in", and the setup
+# gate latches unauthenticated on a host where sign-in actually works. Both
+# case spellings are listed because matching is exact on POSIX and the HTTP
+# stacks disagree on which case they honour (curl-family reads the lowercase
+# names, Rust/Python stacks read either), so forwarding only one case
+# reproduces the bug on half of hosts. ALL_PROXY is included deliberately: a
+# SOCKS-only host sets it INSTEAD of the scheme-specific pair, and curl and
+# reqwest both honour it as the fallback, so omitting it keeps the exact same
+# defect for that host class.
+#
+# These are kept OUT of :data:`_PROBE_ENV_KEYS` for the same reason as the
+# credential above: a proxy URL can embed credentials, and ``--version`` is
+# the FIRST execution of a candidate that has not yet answered anything — and
+# nothing about resolving a version needs the network. ``whoami`` runs only
+# after ``--version`` succeeds, against the same resolved binary an ACP
+# session already runs with the full inherited environment, so the exposure
+# delta is confined to a candidate that has already passed the version gate.
+_IDENTITY_PROXY_ENV_KEYS = frozenset(
+    {
+        "ALL_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
+)
+
 
 @dataclass
 class ProcessResult:
@@ -850,7 +884,15 @@ def _allowlisted_env(
 
 
 def _probe_env(environ: MutableMapping[str, str], search_path: str) -> dict[str, str]:
-    """Build a non-interactive probe environment without proxy or desktop IPC."""
+    """Build a non-interactive probe environment from the fixed allowlist.
+
+    Network-reachability configuration (TLS trust, the session bus where a CLI
+    build needs it) passes through; proxy settings join only the ``whoami``
+    stage via :func:`_identity_probe_env`, because a proxy URL can embed
+    credentials and ``--version`` executes a candidate that has not yet
+    answered anything. Ambient credentials (cloud, Slack, SSH agent,
+    application secrets) never pass.
+    """
 
     result = _allowlisted_env(environ, _PROBE_ENV_KEYS)
     result["PATH"] = search_path
@@ -862,14 +904,16 @@ def _probe_env(environ: MutableMapping[str, str], search_path: str) -> dict[str,
 def _identity_probe_env(
     environ: MutableMapping[str, str], probe_environment: dict[str, str]
 ) -> dict[str, str]:
-    """Add Kiro CLI's own credential env to a probe environment.
+    """Add Kiro CLI's own credential and proxy env to a probe environment.
 
     Separate from :func:`_probe_env` so only the identity probe carries the
-    credential; see :data:`_IDENTITY_PROBE_ENV_KEYS` for why ``whoami`` needs it
-    and why ``--version`` must not get it.
+    credential and the (possibly credentialed) proxy configuration; see
+    :data:`_IDENTITY_PROBE_ENV_KEYS` and :data:`_IDENTITY_PROXY_ENV_KEYS` for
+    why ``whoami`` needs them and why ``--version`` must not get them.
     """
 
     result = dict(probe_environment)
+    result.update(_allowlisted_env(environ, _IDENTITY_PROXY_ENV_KEYS))
     result.update(_allowlisted_env(environ, _IDENTITY_PROBE_ENV_KEYS))
     return result
 

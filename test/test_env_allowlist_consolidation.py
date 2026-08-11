@@ -21,12 +21,13 @@ These tests pin two things:
    real Windows ``os.environ`` yields — which is exactly why the shared fold
    admits the same set there.
 
-``kiro_prerequisite`` passes two different allowlists through the shared matcher:
+``kiro_prerequisite`` passes three different allowlists through the shared matcher:
 ``_PROBE_ENV_KEYS`` for the credential-free ``--version`` probe, and
-``_IDENTITY_PROBE_ENV_KEYS`` for the ``whoami`` identity probe, which names Kiro
-CLI's own credential. Both are pinned, and the credential one additionally pins
-WHAT it admits — one name, admitted by no other site — because a fold that
-widened there would forward more than the carve-out names.
+``_IDENTITY_PROBE_ENV_KEYS`` plus ``_IDENTITY_PROXY_ENV_KEYS`` for the ``whoami``
+identity probe, which names Kiro CLI's own credential and the host's (possibly
+credentialed) proxy configuration. All are pinned, and the credential one
+additionally pins WHAT it admits — one name, admitted by no other site — because
+a fold that widened there would forward more than the carve-out names.
 """
 
 from __future__ import annotations
@@ -218,6 +219,7 @@ class TestCallSiteParity:
         for allowed in (
             registry._SAFE_ENV_KEYS,
             kiro_prerequisite._PROBE_ENV_KEYS,
+            kiro_prerequisite._IDENTITY_PROXY_ENV_KEYS,
             dev_fleet_server._SAFE_ENV_KEYS,
             gh_profile._MEASURE_ENV_PASSTHROUGH,
             source_providers._PROVIDER_BASE_ENV_KEYS,
@@ -287,6 +289,7 @@ class TestCallSiteParity:
             registry._SAFE_ENV_KEYS,
             kiro_prerequisite._PROBE_ENV_KEYS,
             kiro_prerequisite._IDENTITY_PROBE_ENV_KEYS,
+            kiro_prerequisite._IDENTITY_PROXY_ENV_KEYS,
             dev_fleet_server._SAFE_ENV_KEYS,
             gh_profile._MEASURE_ENV_PASSTHROUGH,
             source_providers._PROVIDER_BASE_ENV_KEYS,

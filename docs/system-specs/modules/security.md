@@ -938,9 +938,17 @@ remain in memory and execute through the fixed system interpreter's standard
 input, closing the validation/execution replacement window. The unsandboxed
 official installer receives a system-only `PATH`. Explicit login
 inherits only the allowlisted user-path, UI/device-flow, TLS, and proxy values;
-passive probes receive a narrower environment that excludes proxy credentials
-and desktop-session IPC as well as ambient cloud, Slack, SSH-agent, and
-application credentials. The one deliberate *credential* exception is Kiro CLI's
+passive probes receive a narrower environment that carries TLS trust and, on
+hosts that need it, desktop-session IPC, while excluding ambient cloud, Slack,
+SSH-agent, and application credentials. Proxy configuration (both case
+spellings, since matching is exact on POSIX and HTTP stacks disagree on which
+case they honour) joins only the `whoami` identity stage: a proxy-only host is
+exactly where `whoami` must still reach the IdP, but a proxy URL can embed
+credentials, and `--version` is the first execution of an unvalidated
+candidate that needs no network — so the version stage stays proxy-free and
+the exposure delta is confined to a candidate that already passed the version
+gate, reaching the same resolved binary an ACP session already runs with the
+full inherited environment. The one deliberate *credential* exception is Kiro CLI's
 OWN model credential (`KIRO_API_KEY`, `_IDENTITY_PROBE_ENV_KEYS`), forwarded to the
 `whoami` identity probe only: the CLI reports an API-key session as signed in only
 when it can see that variable, so filtering it out reports a host that ACP
