@@ -24,7 +24,7 @@ import {
   selectSubagent,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, captureStatelessCard, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
-  retireStatelessQuestion,
+  retireStatelessQuestion, capturePendingAskId,
   mcpAppKey,
 } from '../store/chatSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
@@ -32,6 +32,7 @@ import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistr
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle, triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
+import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
 import { type AutoNudgeLoop } from '../components/AutoNudgePopover'
@@ -3463,9 +3464,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const isStreaming = lastMsg?.role === 'streaming'
   // Follow-up options derived from the last assistant message in the current chat.
   // Swapping chats (activeSlot change) → messages change → memo recomputes fresh.
+  // A pending question card suppresses them: both would offer the same choices in
+  // the same band, and only the card can answer the blocked tool call.
   const { followUpOptions, followUpIsPlan } = useMemo(
-    () => deriveFollowUpOptions(messages, isStreaming),
-    [messages, isStreaming],
+    () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion),
+    [messages, isStreaming, pendingQuestion],
   )
   // Visual-only highlight state; text in the input is the source of truth for
   // what gets sent. Cleared whenever the options list changes (new assistant
@@ -3584,6 +3587,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // would compare against the wrong baseline (fork GPT review, 995718f).
     const entrySendSlot = targetSlot ?? uiSlot
     const cardAtSend = captureStatelessCard(store.getState().chat.pendingQuestions, entrySendSlot)
+    // Same entry-time capture for a BLOCKING card, whose staleness is resolved
+    // over the network instead of in the store.
+    const askAtSend = capturePendingAskId(store.getState().chat.pendingQuestions, entrySendSlot)
 
     // Slash command interception (e.g. /side): runs before knowledge so a
     // bare prefix like /side returns immediately without touching input parse.
@@ -3997,6 +4003,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // one is not recoverable).
         dispatch(retireStatelessQuestion({ slot, expected: cardAtSend }))
       }
+      // The user answered in the composer instead of the card; a blocking card
+      // is resolved over the network, so this cannot be a store-only retirement.
+      void resolveAskAfterSend(body, slot === entrySendSlot ? askAtSend : null, dispatch)
     } catch (e: unknown) {
       clearTimeout(timeout)
       if (e instanceof DOMException && e.name === 'AbortError') {

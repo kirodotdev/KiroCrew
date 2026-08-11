@@ -16,6 +16,8 @@ import chatReducer, {
   appendQueuedMessage,
   appendSlotMessage,
   captureStatelessCard,
+  capturePendingAskId,
+  shouldResolveAskOnSend,
   clearFolderSuggestion,
   clearFollowupCard,
   clearQuestionCard,
@@ -165,6 +167,48 @@ describe('chatSlice exported helpers', () => {
     expect(captureStatelessCard(stateless, 'absent')).toBeNull()
     const unminted = { s: { slot: 's', questions: [] } }
     expect(captureStatelessCard(unminted, 's')).toBeNull()
+  })
+
+  // The mirror capture for blocking cards, which the send path resolves over the
+  // network because an agent is parked on the request.
+  it('captures a blocking card ask_id but never a stateless one', () => {
+    const blocking = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7' } }
+    expect(capturePendingAskId(blocking, 's')).toBe('ask-1')
+    const stateless = { s: { slot: 's', questions: [], cardId: 'card-7' } }
+    expect(capturePendingAskId(stateless, 's')).toBeNull()
+    expect(capturePendingAskId(blocking, 'absent')).toBeNull()
+    expect(capturePendingAskId(undefined, 's')).toBeNull()
+    expect(capturePendingAskId(blocking, null)).toBeNull()
+    for (const bad of POISON) expect(capturePendingAskId(blocking, bad)).toBeNull()
+  })
+
+  // Resolving the card unmounts it, and a typed custom answer or a pending option
+  // selection lives only in the component — the same work-in-progress invariant
+  // the stateless path keeps.
+  it('declines to capture a blocking card that holds an answer in progress', () => {
+    const drafting = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7', draftActive: true } }
+    expect(capturePendingAskId(drafting, 's')).toBeNull()
+    const settled = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7', draftActive: false } }
+    expect(capturePendingAskId(settled, 's')).toBe('ask-1')
+  })
+
+  // A queued acceptance MUST resolve the blocking card: the queue cannot pop
+  // until the turn ends, and the turn cannot end while the agent is blocked on
+  // the card, so waiting for queue_pop would hold both for the whole window.
+  it('resolves a blocking card on an accepted send, queued included', () => {
+    expect(shouldResolveAskOnSend({ ok: true }, 'ask-1')).toBe(true)
+    expect(shouldResolveAskOnSend({ ok: true, queued: true }, 'ask-1')).toBe(true)
+    expect(shouldResolveAskOnSend({ queued: true }, 'ask-1')).toBe(true)
+  })
+
+  it('leaves the card alone when the send was rejected or no card was pending', () => {
+    // Rejected send: the card is the user's only way to answer, and the session
+    // never moved on.
+    expect(shouldResolveAskOnSend({ ok: false }, 'ask-1')).toBe(false)
+    expect(shouldResolveAskOnSend({}, 'ask-1')).toBe(false)
+    expect(shouldResolveAskOnSend(null, 'ask-1')).toBe(false)
+    expect(shouldResolveAskOnSend(undefined, 'ask-1')).toBe(false)
+    expect(shouldResolveAskOnSend({ ok: true }, null)).toBe(false)
   })
 
   it('reports no observed queue-edit broadcast for an untouched card', () => {

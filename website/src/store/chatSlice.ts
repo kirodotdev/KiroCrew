@@ -255,6 +255,48 @@ export const captureStatelessCard = (
   return c && !c.ask_id ? c.cardId ?? null : null
 }
 
+/** Capture a slot's pending BLOCKING card's `ask_id` for send-time capture, the
+ *  `ask_id` counterpart to captureStatelessCard, with the same
+ *  synchronously-at-send-entry contract and for the same reason.
+ *
+ *  A blocking card cannot be retired in the store the way a stateless one is:
+ *  an agent is parked on its HTTP request, so deleting the entry alone leaves
+ *  that agent waiting out its whole window with nothing on screen. Sending a
+ *  composer message instead of using the card therefore has to resolve it
+ *  through the answer endpoint, which is why the send path needs the id rather
+ *  than just "a card was pending".
+ *
+ *  Returns null while the card holds an ANSWER IN PROGRESS — a typed custom
+ *  answer or a pending option selection — because resolving it unmounts the card
+ *  and that work lives only in the component. The same invariant the stateless
+ *  path keeps (dropStaleStatelessQuestion), for the same reason: a send must not
+ *  silently destroy something the user is part-way through. The agent then stays
+ *  blocked, but the card is still on screen with the draft intact, so the user
+ *  keeps both affordances for releasing it. A card the user never touched has no
+ *  draft and is resolved normally. */
+export const capturePendingAskId = (
+  map: ChatState['pendingQuestions'] | undefined,
+  slot: string | null | undefined,
+): string | null => {
+  const c = pendingQuestionFor(map, slot)
+  if (c?.draftActive) return null
+  return c?.ask_id ?? null
+}
+
+/** Whether a send's acceptance should resolve the blocking card captured at its
+ *  entry. Shared by the two send sites so the rule cannot drift between them.
+ *
+ *  `queued` counts, which is the difference from the stateless card's rule and
+ *  the whole point of this helper: a queued message cannot pop until the turn
+ *  ends, and the turn cannot end while the agent is blocked on the card, so
+ *  deferring to queue_pop would hold the two against each other for the entire
+ *  ask window. A rejected send resolves nothing — the card is the user's only
+ *  way to answer, and the session never moved on. */
+export const shouldResolveAskOnSend = (
+  accepted: { ok?: boolean; queued?: boolean } | null | undefined,
+  askAtSend: string | null,
+): boolean => !!askAtSend && !!(accepted?.ok || accepted?.queued)
+
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
 type SlotQueueItem = { content: string; queueId: string; ts: string }

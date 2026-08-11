@@ -22,9 +22,10 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { retireStatelessQuestion, captureStatelessCard, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
+import { retireStatelessQuestion, captureStatelessCard, capturePendingAskId, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
+import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { displayModel } from '../lib/model'
 
 
@@ -219,6 +220,9 @@ export default function ChatPane({
     // not do it, or a failed send (offline, 5xx) deletes the card while the
     // session never moved on.
     const cardAtSend = captureStatelessCard(store.getState().chat.pendingQuestions, slotKey)
+    // A blocking card is resolved over the network, not in the store — an agent
+    // is parked on its request.
+    const askAtSend = capturePendingAskId(store.getState().chat.pendingQuestions, slotKey)
     setInput('')
     const files = pendingFiles
     setPendingFiles([])
@@ -234,11 +238,12 @@ export default function ChatPane({
     const meta = files.length ? { files } : undefined
     api.sendChat(text, slotKey, undefined, undefined, meta)
       .then(async (r) => {
-        if (!cardAtSend) return
+        if (!cardAtSend && !askAtSend) return
         const body = await r.json().catch(() => ({}))
         // `ok` only: a QUEUED acceptance is still cancellable — the queued
         // path retires at its queue_pop instead (removeQueuedMessage).
-        if (body.ok && !body.queued) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
+        if (body.ok && !body.queued && cardAtSend) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
+        void resolveAskAfterSend(body, askAtSend, dispatch)
       })
       .catch(() => undefined)
   }, [input, pendingFiles, busy, slotKey, dispatch])
