@@ -2226,7 +2226,7 @@ export default function App() {
           </div>
           {/* Hairline under the expanded header (collapsed rail has none —
               the big logo alone separates well). */}
-          {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mt-0.5 mb-[7px]" />}
+          {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
           {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
           {/* Apps section header. "Explore" (the App Store) rides the header
               row in accent when expanded; collapsed it becomes a regular
