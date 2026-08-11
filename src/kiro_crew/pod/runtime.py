@@ -100,15 +100,20 @@ def write_env_file(cfg: PodConfig, name: str, updates: dict[str, str]) -> None:
     newlines, so a multi-line value would not round-trip. ``--seed`` is
     user-supplied, so reject a newline-bearing value loudly (fail-closed) rather
     than silently writing an un-parseable file.
+
+    The read-modify-write is wrapped in :func:`pod_name_mutex` so concurrent
+    writers (e.g. ``pod up`` racing the boot it starts) cannot lose each other's
+    keys.
     """
-    data = read_env_file(cfg, name)
-    data.update(updates)
-    for key, val in data.items():
-        if "\n" in val or "\r" in val:
-            raise PodError(f"pod env value for {key!r} must be single-line")
-    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
-    body = "".join(f"{k}='{v}'\n" for k, v in data.items())
-    cfg.env_file(name).write_text(body)
+    with pod_name_mutex(cfg, name):
+        data = read_env_file(cfg, name)
+        data.update(updates)
+        for key, val in data.items():
+            if "\n" in val or "\r" in val:
+                raise PodError(f"pod env value for {key!r} must be single-line")
+        cfg.pods_dir.mkdir(parents=True, exist_ok=True)
+        body = "".join(f"{k}='{v}'\n" for k, v in data.items())
+        cfg.env_file(name).write_text(body)
 
 
 def pin_checkout(cfg: PodConfig, name: str, checkout: Path) -> None:
