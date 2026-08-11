@@ -298,10 +298,22 @@ async def _bounded_turn(coro: "Coroutine[Any, Any, Any]", timeout_secs: float) -
     # Published so anything running INSIDE the turn can size its own waits
     # against the budget that is actually left, rather than against the
     # full-length ceiling. Set before the task is created so the task's context
-    # copy carries it; reset in the finally so a direct `await _bounded_turn(...)`
-    # cannot leak a spent deadline into the caller's context and starve the next
-    # turn dispatched there.
-    deadline_token = _TURN_DEADLINE.set(loop.time() + timeout_secs)
+    # copy carries it; restored in the finally so a direct
+    # `await _bounded_turn(...)` cannot leak a spent deadline into the caller's
+    # context and starve the next turn dispatched there.
+    #
+    # Save-and-restore rather than a Token, because this coroutine's `finally`
+    # does not always run in the context that entered it. An abandoned wrapper
+    # — a gateway shutdown that closes the loop with a turn still pending, a
+    # coroutine never awaited — is finalized by the GARBAGE COLLECTOR, which
+    # throws GeneratorExit in from whatever context happens to be current.
+    # `Token.reset` refuses that with `ValueError: ... was created in a
+    # different Context`, and because it raises inside `__del__` the failure is
+    # unraisable: it cannot be caught by the caller and is only printed. `set`
+    # has no such affinity — restoring into a foreign context writes a value
+    # that context is about to discard, which is precisely the no-op wanted.
+    previous_deadline = _TURN_DEADLINE.get()
+    _TURN_DEADLINE.set(loop.time() + timeout_secs)
     task: "asyncio.Task[Any]" = asyncio.ensure_future(coro)
     handle = loop.call_later(timeout_secs, _on_deadline)
     try:
@@ -322,7 +334,7 @@ async def _bounded_turn(coro: "Coroutine[Any, Any, Any]", timeout_secs: float) -
         return result
     finally:
         handle.cancel()
-        _TURN_DEADLINE.reset(deadline_token)
+        _TURN_DEADLINE.set(previous_deadline)
         if not task.done():
             # The wrapper itself was cancelled; don't orphan the turn.
             task.cancel()
