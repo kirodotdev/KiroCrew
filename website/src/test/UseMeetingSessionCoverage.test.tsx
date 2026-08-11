@@ -471,6 +471,18 @@ describe('useMeetingSession lifecycle actions', () => {
   })
 
   it('broadcasts to the listening agents as chat', async () => {
+    // The segment is load-bearing: the source commits it into the transcript
+    // cache, so a response without one routes the mutation into onError.
+    apiMocks.dispatch.mockResolvedValueOnce({
+      dispatched: 2,
+      text: 'please summarize',
+      segment: {
+        id: 'broadcast-1',
+        timestamp: '2026-01-01T00:00:00Z',
+        source: 'typed',
+        text: 'please summarize',
+      },
+    })
     const view = await mountLoaded()
 
     await act(async () => {
