@@ -172,6 +172,38 @@ class TestA3FullHistoryIsReachable:
         # detail endpoint cannot reassemble it.
         assert slot._disk_older_count + len(slot.messages) == 700
 
+    def test_the_frozen_prefix_also_reports_a_durable_only_count(self, state, log):
+        """``_disk_older_count`` counts trimmed transient rows too, so it cannot
+        serve as the base for an absolute message position. The durable-only
+        counter beside it can.
+
+        Transient rows are written to disk but skipped on read-back, so without
+        the second counter a cursor gains one position of skew per trimmed
+        transient row and re-serves a durable message the consumer already had.
+        """
+        # 700 durable turns with 3 transient rows interleaved into the region
+        # that will be trimmed into the frozen prefix.
+        rows = _turns(700)
+        transient = [
+            {"role": "chunk", "content": "partial", "ts": "2026-08-01T10:00:01"},
+            {"role": "streaming", "content": "partial", "ts": "2026-08-01T10:00:02"},
+            {"role": "queued", "content": "waiting", "ts": "2026-08-01T10:00:03"},
+        ]
+        rows[10:10] = transient
+        _write_transcript(Path(log._dir), SLACK_STEM, rows)
+
+        slot = surface_channel_session(
+            state, {"key": SLACK_STEM, "modified": 100.0}, {}, log.read_messages(SLACK_STEM),
+            session_key=SLACK_KEY,
+        )
+        assert slot is not None
+        # The raw counter still accounts for every trimmed LINE — the save model
+        # depends on that and must not change.
+        assert slot._disk_older_count + len(slot.messages) == len(rows)
+        # The durable counter excludes exactly the three transient rows, all of
+        # which fall inside the trimmed prefix.
+        assert slot._disk_older_durable_count == slot._disk_older_count - len(transient)
+
 
 class TestA4TheTabStaysCurrent:
     """A4 — a channel turn after the tab opened appears in the tab."""

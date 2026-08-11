@@ -60,7 +60,7 @@ import weakref
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
-from kiro_crew.dashboard.state import _normalize_slot_key
+from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count
 from kiro_crew.history import carry_provenance
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -372,7 +372,9 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
     """
     slot.messages.clear()
     slot._pending.clear()
-    slot._disk_older_count = max(0, len(messages) - _RESTORE_WINDOW)
+    older = messages[:-_RESTORE_WINDOW] if len(messages) > _RESTORE_WINDOW else []
+    slot._disk_older_count = len(older)
+    slot._disk_older_durable_count = durable_row_count(older)
     for msg in messages[-_RESTORE_WINDOW:]:
         role = msg.get("role", "assistant")
         cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")

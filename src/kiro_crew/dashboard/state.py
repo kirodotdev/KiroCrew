@@ -462,11 +462,39 @@ def stuck_turn_notice(parked_secs: float) -> str:
 
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
 
+#: Transient/streaming roles that are not real messages. They ARE written to
+#: disk — the reconciliation read skips them, which is only necessary because
+#: they are there — so they occupy on-disk lines while contributing no durable
+#: message. Owned here rather than in ``chat_persistence`` because the live trim
+#: below needs them and persistence already imports this module; the reverse
+#: import would be a cycle.
+TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
+
 #: Roles that exist only on the wire: appended so a reader/flush can see them,
-#: never broadcast as a `chat_message` and never persisted (the mirror of
-#: ``chat_persistence._TRANSIENT_ROLES`` minus the rows that ARE broadcast).
+#: never broadcast as a `chat_message` and never persisted (``TRANSIENT_ROLES``
+#: minus the rows that ARE broadcast).
 #: They get no ``meta.mid`` — see ``_ChatSlot.append``.
 _WIRE_ONLY_ROLES = frozenset({"chunk", "done", "streaming"})
+
+
+def durable_row_count(rows: list[dict]) -> int:
+    """How many of *rows* are durable messages rather than transient artifacts.
+
+    ``_disk_older_count`` counts every on-disk line folded into the frozen
+    prefix, transient ones included, because it exists to protect the prefix the
+    save model must not rewrite — for that job the raw line count is correct. It
+    is the wrong base for an ABSOLUTE MESSAGE POSITION: a cursor of
+    ``_disk_older_count + <index over durable rows>`` gains one place of skew per
+    trimmed transient row, so a consumer paging from a position it was handed
+    earlier is served a durable message it already has.
+
+    One definition, so the two counters cannot disagree about what durable means.
+    Defaults a missing role to ``assistant``, matching ``_build_message_entry``,
+    rather than dropping the row.
+    """
+    return sum(1 for r in rows if r.get("role", "assistant") not in TRANSIENT_ROLES)
+
+
 _MAX_SOURCE_LINKS_PER_SLOT = 64
 # How many source links each slot payload actually serializes (the sidebar
 # renders at most this many chips). Shared with the periodic check-status
@@ -923,6 +951,7 @@ class _ChatSlot:
         "_tab_id",
         "_channel_window_mtime",
         "_disk_older_count",
+        "_disk_older_durable_count",
         "_disk_window_len",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
@@ -1198,6 +1227,13 @@ class _ChatSlot:
         self._disk_older_count: int = (
             0  # count of disk messages OLDER than in-memory window (stable, set at restore/resume)
         )
+        # The same frozen prefix counted as DURABLE rows only. _disk_older_count
+        # includes transient rows (chunk/done/streaming/queued/permission), which
+        # are written to disk but skipped on read-back — so it is the right base
+        # for the save model and the wrong one for an absolute message position.
+        # A cursor built on it shifts by one for every trimmed transient row and
+        # re-serves a durable message the consumer already has.
+        self._disk_older_durable_count: int = 0
         # Count of in-memory window messages the LAST save persisted to disk
         # (the on-disk window region). Trimming may only fold a leading window
         # message into the frozen prefix once it is known to be on disk; this
@@ -1513,6 +1549,9 @@ class _ChatSlot:
         # Trim old messages to bound memory usage
         if len(self.messages) > _MAX_SLOT_MESSAGES:
             excess = len(self.messages) - _MAX_SLOT_MESSAGES
+            # Captured before the delete: crediting the durable counter needs to
+            # know WHICH rows joined the prefix, not just how many.
+            trimmed = self.messages[:excess]
             del self.messages[:excess]
             self._resumed_count = max(0, self._resumed_count - excess)
             # A trimmed leading window message may only join the frozen prefix
@@ -1522,6 +1561,10 @@ class _ChatSlot:
             # as on-disk, which would have stranded those turns.
             persisted_trim = min(excess, self._disk_window_len)
             self._disk_older_count += persisted_trim
+            # Same subset, counted by the other semantics. Both counters must
+            # move on EVERY frozen-prefix mutation or absolute cursors drift
+            # away from the prefix they index into.
+            self._disk_older_durable_count += durable_row_count(trimmed[:persisted_trim])
             self._disk_window_len = max(0, self._disk_window_len - excess)
             if persisted_trim < excess:
                 logger.warning(

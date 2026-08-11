@@ -71,6 +71,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
+    durable_row_count,
     parse_cls_meta,
 )
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
@@ -3158,8 +3159,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     disk_total = len(all_messages)
     max_resume = 500
     messages = all_messages[-max_resume:] if disk_total > max_resume else all_messages
-    # Stable count of messages older than what we loaded into memory
-    slot._disk_older_count = max(0, disk_total - len(messages))
+    # Stable count of messages older than what we loaded into memory, plus the
+    # durable-only count absolute cursors index from.
+    older_rows = all_messages[: disk_total - len(messages)]
+    slot._disk_older_count = len(older_rows)
+    slot._disk_older_durable_count = durable_row_count(older_rows)
     for m in messages:
         role = m.get("role", "assistant")
         cls = "msg msg-u" if role == "user" else "msg msg-a"

@@ -24,7 +24,13 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     slot_transcript_key,
 )
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot_key
+from kiro_crew.dashboard.state import (
+    TRANSIENT_ROLES,
+    DashboardState,
+    _ChatSlot,
+    _normalize_slot_key,
+    durable_row_count,
+)
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.history import (
     SLOT_OWNED_META_KEYS,
@@ -644,8 +650,11 @@ def _rehydrate_slot_from_history(
             )
         # Only the recent window is loaded into memory; older on-disk lines become
         # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
-        # therefore count those older lines so the save model preserves them.
-        slot._disk_older_count = max(0, len(messages) - 500)
+        # therefore count those older lines so the save model preserves them, and
+        # the durable counter alongside it is what absolute cursors index from.
+        older = messages[:-500] if len(messages) > 500 else []
+        slot._disk_older_count = len(older)
+        slot._disk_older_durable_count = durable_row_count(older)
         for m in messages[-500:]:
             role = m.get("role", "assistant")
             cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
@@ -967,7 +976,9 @@ def _restore_recent_sessions_steps(
             )
         slot._tab_id = tab_id
         messages = state.conversation_log.read_messages_chained(key)
-        slot._disk_older_count = max(0, len(messages) - 500)
+        older = messages[:-500] if len(messages) > 500 else []
+        slot._disk_older_count = len(older)
+        slot._disk_older_durable_count = durable_row_count(older)
         for m in messages[-500:]:
             role = m.get("role", "assistant")
             cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
@@ -1143,12 +1154,6 @@ def _build_message_entry(m: dict) -> dict | None:
     if isinstance(m.get("meta"), dict):
         entry["meta"] = _redact_meta_for_role(role, m["meta"])
     return entry
-
-
-# Transient/streaming roles that are never persisted (mirrors
-# ``_build_message_entry``). A window-region disk line carrying one of these is
-# not a real message and is never treated as a cross-process append to preserve.
-_TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
 
 
 def _foreign_tail_ts(foreign_lines: list[str]) -> str | None:
@@ -1396,7 +1401,7 @@ def _frozen_prefix_and_foreign_appends(
         if not isinstance(entry, dict) or entry.get("_type") == "metadata":
             continue
         role = entry.get("role")
-        if role is None or role in _TRANSIENT_ROLES:
+        if role is None or role in TRANSIENT_ROLES:
             continue
         norm = ln if ln.endswith("\n") else ln + "\n"
         disk_msgs.append((norm, entry.get("ts"), role, entry.get("content", "")))
