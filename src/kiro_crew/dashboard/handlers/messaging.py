@@ -2165,9 +2165,13 @@ async def api_browser_command_drain(request: web.Request) -> web.Response:
     Called by the Electron main process. Body:
     ``{"session_keys": [str, ...], "wait_ms"?: int}``.
 
-    SIDE EFFECT: registers ``session_keys`` as having a live native panel (TTL
-    ~2x ``wait_ms``); this registration is what ``/api/browser/command`` checks
-    to decide whether to 503.
+    SIDE EFFECT: registers ``session_keys`` as having a live native panel for a
+    fixed liveness window (independent of ``wait_ms``, refreshed by drains and
+    result posts) AND marks a native host as present for the same window; the
+    registration is what ``/api/browser/command`` checks to decide whether to
+    503, and host-presence is what lets it briefly WAIT for a cold-starting
+    panel instead. ``wait_ms == 0`` with empty ``session_keys`` is the Electron
+    idle heartbeat: it refreshes host-presence and returns 204 at once.
 
     Responses:
     - 200 ``{"id", "session_key", "op", "args"}`` — a command is available;
@@ -2194,7 +2198,10 @@ async def api_browser_command_drain(request: web.Request) -> web.Response:
     if not isinstance(session_keys, list) or not all(isinstance(k, str) for k in session_keys):
         return web.json_response({"error": "session_keys must be a list of strings", "code": "session_keys_invalid"}, status=400)
     wait_ms = body.get("wait_ms")
-    if not isinstance(wait_ms, int) or isinstance(wait_ms, bool) or wait_ms <= 0:
+    # ``wait_ms == 0`` is a valid heartbeat: register / refresh the host-present
+    # signal and return 204 at once, without holding a long-poll open. Only a
+    # missing, negative, or non-int value falls back to the default long wait.
+    if not isinstance(wait_ms, int) or isinstance(wait_ms, bool) or wait_ms < 0:
         wait_ms = DEFAULT_DRAIN_WAIT_MS
     bus = get_command_bus()
     command = await bus.drain(session_keys, wait_ms=wait_ms)

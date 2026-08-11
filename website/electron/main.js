@@ -1353,6 +1353,15 @@ function setupWindowContents(win, backendUrl) {
     fetchFn: (url, init) => fetch(url, init),
     getGatewayUrl: () => win._mcBackendUrl,
     getSecret: () => readInternalSecret(),
+    // The idle host-presence heartbeat must fire ONLY when the gateway is truly
+    // on this machine. A loopback URL is necessary but NOT sufficient: a REMOTE
+    // gateway reached over a tunnel also presents as localhost, so additionally
+    // require that no remote host is configured for THIS window's port (each
+    // window has its own `port` from its backendUrl; the module-global PORT is
+    // only the primary window's, so a secondary remote window would otherwise
+    // read the wrong config and leak the local secret over its tunnel).
+    isGatewayLocal: () =>
+      isLoopbackUrl(win._mcBackendUrl) && !getRemoteHostConfig(store, port)?.host,
     // Panels that exist PLUS sessions that may host one on demand. Reporting a
     // key is what registers it with the gateway's command bus, so a declared-but-
     // unmounted session must appear here or its first navigate can never arrive.
@@ -2907,6 +2916,12 @@ app.whenReady().then(async () => {
     if (!set || !id) return { ok: false };
     if (tracked) set.add(id);
     else set.delete(id);
+    // The tracked-slot set just changed. Nudge the agent command channel to
+    // re-read it NOW so a freshly declared key is polled (and thus registered on
+    // the gateway bus) within submit's brief wait window, instead of only after
+    // the current long-poll ends (up to ~25s) -- the cold-start race that
+    // dropped a fresh session's first navigate to the Playwright mirror.
+    if (owner._mcAgentChannel) owner._mcAgentChannel.poke();
     return { ok: true };
   });
   ipcMain.handle("browser:set-agent-act", async (event, panelId, enabled) => {

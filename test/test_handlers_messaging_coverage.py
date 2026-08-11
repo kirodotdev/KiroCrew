@@ -2005,12 +2005,21 @@ class TestBrowserCommandDrain:
         req = _Req(_state(), {"session_keys": ["chat-1"]}, extra=_INTERNAL)
         assert _payload(_run(mod.api_browser_command_drain, req)) == command
 
-    @pytest.mark.parametrize("wait_ms", [None, 0, True, "500"])
+    @pytest.mark.parametrize("wait_ms", [None, True, "500"])
     def test_invalid_wait_falls_back_to_the_default(self, monkeypatch, wait_ms: Any) -> None:
         bus = _install_bus(monkeypatch, _FakeBus(drain=None))
         req = _Req(_state(), {"session_keys": [], "wait_ms": wait_ms}, extra=_INTERNAL)
         _run(mod.api_browser_command_drain, req)
         assert bus.drain_calls[0][1] == mod.DEFAULT_DRAIN_WAIT_MS
+
+    def test_zero_wait_is_an_immediate_heartbeat(self, monkeypatch) -> None:
+        # ``wait_ms == 0`` is the Electron idle host-presence heartbeat: it must
+        # pass through as 0 (register + return at once), NOT be coerced to the
+        # long default wait.
+        bus = _install_bus(monkeypatch, _FakeBus(drain=None))
+        req = _Req(_state(), {"session_keys": [], "wait_ms": 0}, extra=_INTERNAL)
+        _run(mod.api_browser_command_drain, req)
+        assert bus.drain_calls[0][1] == 0
 
 
 class TestBrowserCommandResult:
