@@ -239,6 +239,26 @@ jobs:
           PR: ${{ steps.context.outputs.pr }}
         run: |
           set -euo pipefail
+
+          # A peer run of this workflow can remove the same label between our
+          # snapshot and our DELETE, and a label that is already gone has
+          # reached the state we wanted. Treat only that 404 as success; any
+          # other failure is still a failure.
+          drop_label() {
+            local label="$1" encoded out
+            encoded="$(jq -rn --arg value "$label" '$value | @uri')"
+            if out="$(gh api --method DELETE \
+              "repos/$REPO/issues/$PR/labels/$encoded" 2>&1)"; then
+              return 0
+            fi
+            if grep -q 'HTTP 404' <<<"$out"; then
+              echo "Label '$label' was already removed by a concurrent run."
+              return 0
+            fi
+            printf '%s\n' "$out" >&2
+            return 1
+          }
+
           current="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
           for label in \
             "readiness: checking" \
@@ -246,8 +266,7 @@ jobs:
             "readiness: maintainer review" \
             "readiness: passed"; do
             if grep -Fxq "$label" <<<"$current"; then
-              encoded="$(jq -rn --arg value "$label" '$value | @uri')"
-              gh api --method DELETE "repos/$REPO/issues/$PR/labels/$encoded" >/dev/null
+              drop_label "$label"
             fi
           done
 
@@ -573,6 +592,58 @@ jobs:
             exit 0
           fi
 
+          # The commit status IS the verdict, and `PR Readiness` is the only
+          # required status check on protected branches, so it is published
+          # FIRST and on its own. The labels below are advisory decoration; a
+          # cosmetic label call must never be in a position to decide whether
+          # the required check reports anything at all.
+          jq -n \
+            --arg state "$STATUS_STATE" \
+            --arg target_url "$URL" \
+            --arg description "$DESCRIPTION" \
+            '{
+              state: $state,
+              target_url: $target_url,
+              description: $description,
+              context: "PR Readiness"
+            }' \
+            | gh api --method POST "repos/$REPO/statuses/$SHA" --input - >/dev/null
+
+          # Two runs can evaluate the SAME revision concurrently: each
+          # pull_request_target run gets its own concurrency group keyed on
+          # run_id, which keeps a superseded run from showing as cancelled and
+          # leaves two runs on one revision racing each other's labels. Both
+          # races below end in the state this run wanted, so neither is an
+          # error -- but nothing wider than those two is tolerated.
+          drop_label() {
+            local label="$1" encoded out
+            encoded="$(jq -rn --arg value "$label" '$value | @uri')"
+            if out="$(gh api --method DELETE \
+              "repos/$REPO/issues/$PR/labels/$encoded" 2>&1)"; then
+              return 0
+            fi
+            if grep -q 'HTTP 404' <<<"$out"; then
+              echo "Label '$label' was already removed by a concurrent run."
+              return 0
+            fi
+            printf '%s\n' "$out" >&2
+            return 1
+          }
+
+          ensure_label() {
+            local name="$1" color="$2" description="$3" out
+            if out="$(gh label create "$name" --repo "$REPO" \
+              --color "$color" --description "$description" 2>&1)"; then
+              return 0
+            fi
+            if grep -qi 'already exists' <<<"$out"; then
+              echo "Label '$name' was already created by a concurrent run."
+              return 0
+            fi
+            printf '%s\n' "$out" >&2
+            return 1
+          }
+
           label_specs=(
             "readiness: checking|BFDADC|Automated validation is still running"
             "readiness: action required|D73A4A|A blocking check or review needs attention"
@@ -585,8 +656,7 @@ jobs:
             color="${rest%%|*}"
             description="${rest#*|}"
             if ! grep -Fxq "$name" <<<"$existing_labels"; then
-              gh label create "$name" --repo "$REPO" \
-                --color "$color" --description "$description"
+              ensure_label "$name" "$color" "$description"
             fi
           done
 
@@ -597,8 +667,7 @@ jobs:
             "readiness: maintainer review" \
             "readiness: passed"; do
             if [ "$label" != "$TARGET_LABEL" ] && grep -Fxq "$label" <<<"$current"; then
-              encoded="$(jq -rn --arg value "$label" '$value | @uri')"
-              gh api --method DELETE "repos/$REPO/issues/$PR/labels/$encoded" >/dev/null
+              drop_label "$label"
             fi
           done
           if ! grep -Fxq "$TARGET_LABEL" <<<"$current"; then
@@ -606,17 +675,5 @@ jobs:
               | gh api --method POST "repos/$REPO/issues/$PR/labels" \
                   --input - >/dev/null
           fi
-
-          jq -n \
-            --arg state "$STATUS_STATE" \
-            --arg target_url "$URL" \
-            --arg description "$DESCRIPTION" \
-            '{
-              state: $state,
-              target_url: $target_url,
-              description: $description,
-              context: "PR Readiness"
-            }' \
-            | gh api --method POST "repos/$REPO/statuses/$SHA" --input - >/dev/null
 
           cat "$RUNNER_TEMP/pr-readiness-summary.md" >> "$GITHUB_STEP_SUMMARY"
