@@ -471,6 +471,8 @@ describe('useWebSocket frame router', () => {
       ws.simulateMessage({ type: 'chat_message', data: { slot: ACTIVE, role: 'user', content: 'go', ts: '2024-01-01T00:00:00Z' } })
     })
     expect(chat().slotStatusDetail[ACTIVE]?.kind).toBe('thinking')
+    // last_ts is coalesced to one dispatch per frame, so drain the rAF queue.
+    act(() => { rafCbs.splice(0).forEach(cb => cb(0)) })
     expect(dash().slots[0].last_ts).toBe('2024-01-01T00:00:00Z')
   })
 
