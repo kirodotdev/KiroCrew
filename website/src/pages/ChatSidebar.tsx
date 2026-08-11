@@ -2500,7 +2500,12 @@ function ChatSidebar({
                       {link.state === 'closed' && <span className="capitalize text-danger">{link.state}</span>}
                       {/* CI status is moot once the PR is terminal (merged or closed) —
                           the lifecycle glyph is the terminal signal. */}
-                      {showsChipCi(link.state) && link.ci === 'running' && <Loader2 className="lucide-inline shrink-0 animate-spin" aria-label={i18nT('pages.chatSidebar.checks_running')} />}
+                      {/* Pending CI is a STATIC amber dot (the provider's own pending
+                          convention), never a spinner: an animated glyph on a session
+                          card reads as "the agent is working on this session", which is
+                          a stronger claim than "this PR's checks haven't finished".
+                          Motion on the card stays reserved for session activity. */}
+                      {showsChipCi(link.state) && link.ci === 'running' && <Circle className="lucide-inline shrink-0 text-warn scale-75" fill="currentColor" strokeWidth={0} aria-label={i18nT('pages.chatSidebar.checks_running')} />}
                       {showsChipCi(link.state) && link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label={i18nT('pages.chatSidebar.checks_passed')} />}
                       {showsChipCi(link.state) && link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label={i18nT('pages.chatSidebar.checks_failed')} />}
                     </a>
