@@ -53,6 +53,7 @@ import signal
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import aiohttp
 
@@ -811,6 +812,37 @@ class SshTunnelManager:
         self._token_minted_at: dict[str, float] = {}
         self._token_ttl_secs: dict[str, int] = {}
 
+    async def _persist_hint(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+        """Run a registry hint write in a worker thread; return only when it is DONE.
+
+        A cancelled ``await asyncio.to_thread(...)`` abandons only the await —
+        the already-submitted worker thread keeps running, and its
+        read-modify-rewrite of ``instances.json`` can land AFTER the caller's
+        ``async with self._lock`` block has unwound. That late write races the
+        next locked write (e.g. a cancelled connect's ``was_connected=True``
+        overtaking a disconnect's reset and reviving an instance the user
+        disconnected). So on cancellation this helper keeps waiting for the
+        worker to finish, then re-raises the cancellation — the caller's lock
+        is not released until the write has durably completed. Write FAILURES
+        are swallowed: hint persistence is best-effort, matching the
+        pre-offload ``contextlib.suppress(Exception)`` semantics.
+        """
+        task: asyncio.Task[Any] = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as e:
+                if task.done():
+                    raise  # write already completed; propagate the cancel as-is
+                cancelled = e
+                continue  # keep waiting: the worker write is still in flight
+            except Exception:
+                pass  # best-effort hint write
+            break
+        if cancelled is not None:
+            raise cancelled
+
     def _reserved_ports(self) -> set[int]:
         """Ports already taken: live tunnels + local_port set on any instance."""
         reserved: set[int] = {t.status.local_port for t in self._tunnels.values()}
@@ -956,7 +988,7 @@ class SshTunnelManager:
         :meth:`_resolve_transport`.
         """
         async with self._lock:
-            inst = self._registry.get(instance_id)
+            inst = await asyncio.to_thread(self._registry.get, instance_id)
             if inst is None:
                 raise KeyError(f"no instance with id {instance_id!r}")
 
@@ -1048,10 +1080,20 @@ class SshTunnelManager:
             self._store_token(instance_id, token, inst.ttl)
             self._schedule_token_refresh(instance_id)
 
-            # Persist hints: port assignment, was_connected, last-active.
-            with contextlib.suppress(Exception):
-                self._registry.update(instance_id, local_port=local_port, was_connected=True)
-                self._registry.set_last_active(instance_id)
+            # Persist hints: port assignment, was_connected, last-active — ONE
+            # read-modify-rewrite of instances.json (fsync), so the pair is
+            # durable together and the manager lock is held for a single fsync
+            # round-trip. _persist_hint runs it off the loop and does not
+            # return — even under cancellation — until the write completes, so
+            # the lock cannot release while the worker write is still in
+            # flight (a late hint write would race a subsequent disconnect).
+            await self._persist_hint(
+                self._registry.update,
+                instance_id,
+                mark_last_active=True,
+                local_port=local_port,
+                was_connected=True,
+            )
             # A successful (re)connect clears any stale give-up counter so the next
             # unexpected drop gets a full fresh recovery budget instead of tripping
             # the cap immediately.
@@ -1085,12 +1127,18 @@ class SshTunnelManager:
             # Clear the lazy-reconnect hint AND the recorded local port together
             # (one atomic write). local_port must return to the unallocated
             # sentinel so the now-free port is not treated as reserved forever.
-            with contextlib.suppress(Exception):
-                self._registry.update(
-                    instance_id,
-                    was_connected=False,
-                    local_port=_UNALLOCATED_PORT,
-                )
+            # _persist_hint runs the read-modify-rewrite off the loop and does
+            # not return — even if this handler is cancelled (e.g. aiohttp
+            # aborting at shutdown) — until the write completes: the in-memory
+            # teardown above is already done, so abandoning the persisted reset
+            # would leave was_connected=True plus a stale local_port, reviving
+            # an instance the user disconnected and pinning the freed port.
+            await self._persist_hint(
+                self._registry.update,
+                instance_id,
+                was_connected=False,
+                local_port=_UNALLOCATED_PORT,
+            )
             return tunnel is not None
 
     async def shutdown(self) -> None:
@@ -1174,12 +1222,23 @@ class SshTunnelManager:
         return await tunnel.start()
 
     async def _mark_recovered(self, instance_id: str) -> None:
-        """Reset the attempt counter (under lock, iff still tracked) + persist."""
+        """Reset the attempt counter and persist the hint, under lock, iff tracked.
+
+        The persist stays INSIDE the manager lock so write order equals
+        lock-acquisition order: a concurrent :meth:`disconnect`'s
+        ``was_connected=False`` (also written under the lock) can never be
+        overwritten by this recovery write landing late. The tracked-check
+        gates the persist — an instance the user disconnected must not be
+        re-marked auto-reconnectable. ``_persist_hint`` keeps the lock held
+        until the worker write completes even under cancellation; a cancelled
+        bare ``to_thread`` await would NOT stop the already-running thread, so
+        its write could land after the lock released and break the ordering.
+        """
         async with self._lock:
-            if instance_id in self._tunnels:
-                self._recover_attempts[instance_id] = 0
-        with contextlib.suppress(Exception):
-            self._registry.set_was_connected(instance_id, True)
+            if instance_id not in self._tunnels:
+                return
+            self._recover_attempts[instance_id] = 0
+            await self._persist_hint(self._registry.set_was_connected, instance_id, True)
 
     async def _recover(self, instance_id: str) -> None:
         """2-tier self-heal for an unhealthy tunnel (either transport).
@@ -1198,7 +1257,7 @@ class SshTunnelManager:
         """
         # Phase 1 — validate + bump the attempt counter under the lock, then release.
         async with self._lock:
-            inst = self._registry.get(instance_id)
+            inst = await asyncio.to_thread(self._registry.get, instance_id)
             current = self._tunnels.get(instance_id)
             if inst is None or current is None:
                 return  # disconnected / removed while we waited
@@ -1278,7 +1337,7 @@ class SshTunnelManager:
         Runs WITHOUT the manager lock (the probes do network I/O). Returns the
         result dict, or None for an unknown instance.
         """
-        inst = self._registry.get(instance_id)
+        inst = await asyncio.to_thread(self._registry.get, instance_id)
         if inst is None:
             return None
         tunnel = self._tunnels.get(instance_id)
@@ -1314,7 +1373,7 @@ class SshTunnelManager:
         probe detects the drop and self-heals (Stage 2) — no manual reconnect
         needed. Returns ``{ok, message}``.
         """
-        inst = self._registry.get(instance_id)
+        inst = await asyncio.to_thread(self._registry.get, instance_id)
         if inst is None:
             return {"ok": False, "message": "unknown instance"}
         try:
@@ -1622,7 +1681,7 @@ class SshTunnelManager:
         if the instance is still connected (guards a disconnect mid-mint). Uses
         whichever transport the instance is configured for.
         """
-        inst = self._registry.get(instance_id)
+        inst = await asyncio.to_thread(self._registry.get, instance_id)
         if inst is None or instance_id not in self._tunnels:
             return False
         try:

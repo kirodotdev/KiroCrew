@@ -415,15 +415,20 @@ class InstancesRegistry:
             )
             return inst
 
-    def update(self, instance_id: str, **changes: object) -> Instance:
+    def update(
+        self, instance_id: str, *, mark_last_active: bool = False, **changes: object
+    ) -> Instance:
         """Patch fields on an existing instance and return the updated record.
 
         Accepts any of: ``name``, ``ssh_host``, ``remote_port``, ``local_port``,
         ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
         ``ssm_run_as``,
         ``aws_profile``, ``aws_region``, ``was_connected``. The ``id`` is
-        immutable. Raises :class:`InstanceNotFoundError` /
-        :class:`InvalidInstanceError`.
+        immutable. ``mark_last_active=True`` additionally records the instance
+        as the auto-revive target in the SAME read-modify-write, so callers that
+        need both (a connect persisting its hints) get one atomic file rewrite
+        instead of two — the pair becomes durable together. Raises
+        :class:`InstanceNotFoundError` / :class:`InvalidInstanceError`.
         """
         allowed = {
             "name",
@@ -454,6 +459,8 @@ class InstancesRegistry:
             for key, value in changes.items():
                 setattr(target, key, value)
             target.validate()
+            if mark_last_active:
+                doc.last_active_id = instance_id
             self._write(doc)
             logger.info("Updated instance %s: %s", instance_id, sorted(changes))
             return target

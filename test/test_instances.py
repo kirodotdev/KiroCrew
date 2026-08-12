@@ -833,6 +833,22 @@ class TestRegistry:
         reg.set_last_active("cd-1")
         assert reg.get_last_active().id == "cd-1"
 
+    def test_update_mark_last_active_is_one_mutation(self, tmp_path):
+        """update(mark_last_active=True) records the auto-revive target in the
+        same read-modify-write as the field changes, and plain update leaves
+        the recorded target alone."""
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
+        reg.add(name="CD2", ssh_host="cd-2", instance_id="cd-2")
+
+        u = reg.update("cd-1", mark_last_active=True, local_port=7778, was_connected=True)
+        assert u.local_port == 7778 and u.was_connected is True
+        assert reg.get_last_active().id == "cd-1"
+
+        # A plain update on another instance does not steal the target.
+        reg.update("cd-2", local_port=7779)
+        assert reg.get_last_active().id == "cd-1"
+
     def test_remove_clears_last_active_and_reload(self, tmp_path):
         reg = self._reg(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
@@ -1683,6 +1699,39 @@ class TestHandlers:
             ).status
             == 404
         )
+
+    def test_remove_sweeps_a_reconnect_that_raced_the_removal(self, tmp_path, monkeypatch):
+        """The offloaded reg.remove yields the loop between the pre-removal
+        disconnect and the deletion, so a tab reconnect can re-establish a
+        tunnel for the record mid-delete. A successful removal must disconnect
+        AGAIN afterwards: the record is gone by then, so connect refuses new
+        attempts and the sweep tears down whatever slipped in."""
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+
+        class _RacingManager:
+            def __init__(self):
+                self.disconnect_calls = 0
+                self.live = False
+
+            async def disconnect(self, instance_id):
+                self.disconnect_calls += 1
+                if self.disconnect_calls == 1:
+                    # A reconnect slips in right after the pre-removal teardown.
+                    self.live = True
+                else:
+                    self.live = False
+                return True
+
+        mgr = _RacingManager()
+        state = _State(reg, manager=mgr)
+        r = asyncio.run(handlers.api_instances_remove(_FakeReq(state, match={"id": "cd-1"})))
+        assert r.status == 200
+        assert mgr.disconnect_calls == 2, "no post-removal teardown sweep ran"
+        assert mgr.live is False, "the racing reconnect's tunnel survived the removal"
 
     def test_connect_503_404_and_502(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers

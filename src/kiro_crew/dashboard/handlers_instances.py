@@ -17,6 +17,7 @@ crosses this boundary, it is never logged, and it never appears in list/status.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -144,7 +145,10 @@ async def api_instances_list(request: web.Request) -> web.Response:
         return denied
     state: DashboardState = request.app["state"]
     reg = _registry(state)
-    items = [_instance_view(state, i) for i in reg.list()]
+    # Registry calls read (and mutations atomically rewrite + fsync)
+    # instances.json under a threading lock a to_thread worker may hold across
+    # its fsync — so every registry touch in these handlers goes off the loop.
+    items = [_instance_view(state, i) for i in await asyncio.to_thread(reg.list)]
     _audit("list", "success")
     return web.json_response(
         {
@@ -168,7 +172,7 @@ async def api_instances_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
     reg = _registry(state)
-    if reg.get(instance_id) is None:
+    if await asyncio.to_thread(reg.get, instance_id) is None:
         _audit("status", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found"}, status=404)
     # Optional on-demand failure diagnosis: ?diagnose=1 runs the ordered probe
@@ -206,7 +210,8 @@ async def api_instances_add(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "body must be an object"}, status=400)
     try:
-        inst = reg.add(
+        inst = await asyncio.to_thread(
+            reg.add,
             name=str(body.get("name", "")),
             ssh_host=str(body.get("ssh_host", "")),
             remote_port=int(body.get("remote_port", 7777)),
@@ -258,7 +263,7 @@ async def api_instances_update(request: web.Request) -> web.Response:
     }
     changes = {k: v for k, v in body.items() if k in allowed}
     try:
-        inst = reg.update(instance_id, **changes)
+        inst = await asyncio.to_thread(lambda: reg.update(instance_id, **changes))
     except InstanceNotFoundError as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
         return web.json_response({"error": str(e)}, status=404)
@@ -270,7 +275,15 @@ async def api_instances_update(request: web.Request) -> web.Response:
 
 
 async def api_instances_remove(request: web.Request) -> web.Response:
-    """DELETE /api/instances/{id} — remove an instance (disconnects first)."""
+    """DELETE /api/instances/{id} — remove an instance (disconnects first).
+
+    The pre-removal disconnect and the offloaded ``reg.remove`` are separate
+    awaits, so a reconnect landing between them can re-establish a tunnel for
+    the record while it is being deleted. The post-removal disconnect closes
+    that window: once the record is gone, ``connect`` refuses the unknown id,
+    so a final teardown after the successful remove cannot itself be raced —
+    any tunnel it finds is the leftover of a reconnect that slipped in.
+    """
     denied = _guard(request, "remove")
     if denied is not None:
         return denied
@@ -280,10 +293,12 @@ async def api_instances_remove(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is not None:
         await mgr.disconnect(instance_id)  # tear down any live tunnel first
-    existed = reg.remove(instance_id)
+    existed = await asyncio.to_thread(reg.remove, instance_id)
     if not existed:
         _audit("remove", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found"}, status=404)
+    if mgr is not None:
+        await mgr.disconnect(instance_id)  # sweep any reconnect that raced the removal
     _audit("remove", "success", request_id=instance_id)
     return web.json_response({"removed": instance_id})
 
@@ -399,7 +414,7 @@ async def api_instances_restart(request: web.Request) -> web.Response:
         return denied
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
-    if _registry(state).get(instance_id) is None:
+    if await asyncio.to_thread(_registry(state).get, instance_id) is None:
         _audit("restart", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found"}, status=404)
     mgr = getattr(state, "instances_manager", None)
@@ -433,7 +448,7 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
         return denied
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
-    inst = _registry(state).get(instance_id)
+    inst = await asyncio.to_thread(_registry(state).get, instance_id)
     if inst is None:
         _audit("send_session", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)

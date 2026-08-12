@@ -1269,23 +1269,22 @@ def list_apps() -> list[dict[str, Any]]:
                 manifest = AppManifest.from_json_file(manifest_path)
                 manifest_data = manifest.to_dict()
                 # For self-managed apps, the app may update its own
-                # app.json without going through update_app().  Sync
-                # the version from the manifest so the dashboard shows
-                # the real version instead of a stale installed.json.
+                # app.json without going through update_app().  Reflect
+                # the manifest version in the RETURNED metadata only, so
+                # the dashboard shows the real version. Deliberately no
+                # write-back here: list_apps() must stay read-only —
+                # callers run it concurrently from worker threads, and a
+                # persisted read-modify-write of installed.json from a
+                # listing would race real mutators (install/enable/
+                # register) and silently overwrite their fields. The
+                # durable repair happens on the single-app paths
+                # (get_app / update_app).
                 if (
                     meta.lifecycle == "app"
                     and manifest.version
                     and manifest.version != meta.version
                 ):
-                    logger.debug(
-                        "Syncing %s version: installed=%s manifest=%s",
-                        meta.name,
-                        meta.version,
-                        manifest.version,
-                    )
                     meta.version = manifest.version
-                    meta.updatedAt = _now_iso()
-                    _write_installed(entry.name, meta)
             except Exception:
                 pass
         app_info: dict[str, Any] = {

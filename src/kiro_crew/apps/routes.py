@@ -196,7 +196,10 @@ async def _notify_builtin_service(request: web.Request, name: str) -> str | None
 
 async def handle_list_apps(request: web.Request) -> web.Response:
     """GET /api/apps — list all installed apps."""
-    apps = list_apps()
+    # list_apps() walks the apps dir and reads two files per installed app, and
+    # this endpoint re-runs it on every dashboard refresh — so the walk goes off
+    # the loop (its cost scales with installed app count).
+    apps = await asyncio.to_thread(list_apps)
     # Enrich with backend process status
     procs = {p["app_name"]: p for p in list_app_processes()}
     for app in apps:
@@ -304,7 +307,11 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     from the former deploy_web app), each with a ``configured`` flag. Built-in
     providers (the internal registry) are registered frontend-side and are not returned here.
     """
-    providers = collect_publish_providers(list_apps())
+    # Both the apps-dir walk (list_apps) and the per-provider configured-state
+    # probe (_provider_is_configured reads each app's persisted config file)
+    # touch disk, so the whole collection runs off the loop — same shape as the
+    # deploy registry read below.
+    providers = await asyncio.to_thread(lambda: collect_publish_providers(list_apps()))
     # Core deploy provider (always present, regardless of any app install state)
     try:
         from kiro_crew.deploy import profiles as _deploy_profiles

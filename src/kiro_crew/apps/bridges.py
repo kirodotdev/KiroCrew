@@ -11,6 +11,7 @@ between apps.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1557,7 +1558,9 @@ async def reconcile_app_crons_for_execution(cron_service: Any) -> list[str]:
     if cron_service is None:
         return []
 
-    app_infos = list_apps()
+    # list_apps() walks the apps dir (two file reads per app), and this runs on
+    # the gateway boot path — off the loop.
+    app_infos = await asyncio.to_thread(list_apps)
     installed_names = {app_name for app_info in app_infos if (app_name := app_info.get("name", ""))}
     cron_owner_names: set[str] = set()
     for job in cron_service.list_jobs(include_disabled=True):
