@@ -18,6 +18,7 @@ from kiro_crew.messaging.link import (
     legacy_dashboard_mirror_key,
     release_conversation_location,
 )
+from kiro_crew.session import SessionManager, _opt_out_key
 from kiro_crew.session_map import MIRROR_OPT_OUT_FLAG, ConversationOwnershipConflict, SessionMap
 
 
@@ -26,6 +27,18 @@ def session_map(tmp_path):
     """A SessionMap backed by a temp directory."""
     with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
         yield SessionMap()
+
+
+def _manager_over(session_map):
+    """A SessionManager wired to just this map.
+
+    ``set_mirror_opt_out`` / ``mirror_opt_out`` touch nothing but
+    ``_session_map``, so binding that one attribute exercises the real accessors
+    without standing up a whole manager.
+    """
+    mgr = SessionManager.__new__(SessionManager)
+    mgr._session_map = session_map
+    return mgr
 
 
 def plant_binding(session_map, key, link, *, accepts_inbound=False):
@@ -629,6 +642,86 @@ class TestAutomaticMirrorOptOut:
         silently re-enable mirroring for every conversation that turned it off.
         """
         assert MIRROR_OPT_OUT_FLAG == "mirror_opt_out"
+
+    def test_the_refusal_is_keyed_by_the_durable_bucket_not_the_generation(self):
+        """A preference about the conversation, not about one session.
+
+        ``/new`` and the configured idle/daily reset rotate the ``:genN`` suffix.
+        Keyed per generation the refusal expires on rotation — an idle reset would
+        undo the user's "off" unprompted — and each rotated generation strands its
+        own row that pruning is forbidden to collect.
+        """
+        assert _opt_out_key("telegram:kirocrew:direct:7:gen3") == "telegram:kirocrew:direct:7"
+        assert _opt_out_key("telegram:kirocrew:direct:7") == "telegram:kirocrew:direct:7"
+        assert (
+            _opt_out_key("telegram:kirocrew:forum:-100123:5:gen9")
+            == "telegram:kirocrew:forum:-100123:5"
+        )
+        # Outside the canonical grammar there is no generation to strip.
+        assert _opt_out_key("dashboard:chat-9") == "dashboard:chat-9"
+
+    def test_the_suffix_is_stripped_even_when_the_key_does_not_parse(self):
+        """The shapes that most need stripping are the ones the parser rejects.
+
+        A ``dm_scope="unified"`` bucket is ``unified:{agent}`` — too short for the
+        canonical grammar — so a parser-only rule would leave every unified
+        conversation keyed per generation, which is the bug being fixed.
+        """
+        assert _opt_out_key("unified:kirocrew:gen3") == "unified:kirocrew"
+        assert _opt_out_key("unified:kirocrew") == "unified:kirocrew"
+        # A trailing segment that merely starts with "gen" is not a generation.
+        assert _opt_out_key("telegram:kirocrew:direct:general") == (
+            "telegram:kirocrew:direct:general"
+        )
+
+    def test_every_generation_shares_one_flag_row(self, session_map):
+        """Bucket-keying is what bounds the unprunable rows to one per chat."""
+        for gen in ("", ":gen1", ":gen2", ":gen7"):
+            session_map.set_flag(
+                _opt_out_key(f"telegram:kirocrew:direct:7{gen}"), MIRROR_OPT_OUT_FLAG, True
+            )
+        flagged = [k for k, e in session_map._data.items() if e.get("flags")]
+        assert flagged == ["telegram:kirocrew:direct:7"]
+
+    def test_a_refusal_stored_under_the_old_generation_key_is_still_honoured(
+        self, session_map
+    ):
+        """Upgrading must not silently restore mirroring.
+
+        An earlier build keyed the refusal by the generation-suffixed session key.
+        Reading only the bucket would miss every refusal already on disk — the
+        fix for the expiry bug would itself deliver the expiry bug, once.
+        """
+        mgr = _manager_over(session_map)
+        key = "telegram:kirocrew:direct:7:gen3"
+        session_map.set_flag(key, MIRROR_OPT_OUT_FLAG, True)
+        assert mgr.mirror_opt_out(key) is True
+
+    def test_reading_a_legacy_refusal_promotes_it_to_the_bucket(self, session_map):
+        """Otherwise the refusal is honoured for that generation and lost at the next.
+
+        Reading without promoting hands an upgrading user the expiring behaviour
+        this change exists to remove, and leaves an unprunable row per generation.
+        """
+        mgr = _manager_over(session_map)
+        session_map.set_flag("telegram:kirocrew:direct:7:gen3", MIRROR_OPT_OUT_FLAG, True)
+        assert mgr.mirror_opt_out("telegram:kirocrew:direct:7:gen3") is True
+        # Promoted to the bucket, and the generation row retired with it.
+        assert session_map.get_flag("telegram:kirocrew:direct:7", MIRROR_OPT_OUT_FLAG) is True
+        assert (
+            session_map.get_flag("telegram:kirocrew:direct:7:gen3", MIRROR_OPT_OUT_FLAG)
+            is False
+        )
+        # And it now survives the rotation that would have dropped it.
+        assert mgr.mirror_opt_out("telegram:kirocrew:direct:7:gen4") is True
+
+    def test_withdrawing_also_retires_the_old_generation_key(self, session_map):
+        """Otherwise a legacy refusal outlives the withdrawal that cleared it."""
+        mgr = _manager_over(session_map)
+        key = "telegram:kirocrew:direct:7:gen3"
+        session_map.set_flag(key, MIRROR_OPT_OUT_FLAG, True)
+        mgr.set_mirror_opt_out(key, False)
+        assert mgr.mirror_opt_out(key) is False
 
     def test_a_session_scoped_flag_does_not_make_an_entry_immortal(self, session_map):
         """Immortality is opt-in, because prune is the only collection path.

@@ -40,6 +40,7 @@ from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
+    DM_SCOPE_UNIFIED,
     ChannelLink,
     build_dm_session_key,
     legacy_dashboard_mirror_key,
@@ -86,6 +87,11 @@ logger = logging.getLogger(__name__)
 # explicit override nor agent.default_agent is configured. Mirrors the Slack
 # path's _DEFAULT_KIROCREW_AGENT.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+# This dispatcher's surface, as it appears in a ``ChannelLink.channel_type`` and
+# in a session key's first segment. Named so the mirror checks compare against
+# one spelling rather than repeating the literal.
+_CHANNEL = "telegram"
 
 # Upper bound on how many queued messages collapse into a single combined turn.
 # A single human won't realistically burst past this mid-turn; anything beyond
@@ -1354,6 +1360,20 @@ class TelegramDispatcher:
             thread_id=(str(topic) if topic is not None else None),
         )
 
+    def _origin_mirror_is_ambiguous(self, route: tuple[str, str]) -> bool:
+        """True when this route's session key does not identify a single chat.
+
+        ``dm_scope="unified"`` collapses every allowed user's direct DMs into one
+        ``unified:{agent}`` bucket — the channel and the user drop out of the key —
+        so a mirror bound on that session belongs to no particular chat, and the
+        one that happens to be bound receives every other user's dashboard
+        replies. A forum route keeps its full bucket under any scope.
+        """
+        slot, _comp = route
+        return (
+            self.cfg.messaging.dm_scope == DM_SCOPE_UNIFIED and slot == CHAT_TYPE_DIRECT
+        )
+
     def _bind_origin_mirror(
         self, session_key: str, route: tuple[str, str], chat_id: int
     ) -> None:
@@ -1374,28 +1394,41 @@ class TelegramDispatcher:
         found no ``telegram`` link and the chat sat there looking dead while the
         conversation continued elsewhere.
 
+        Skipped entirely when the session key does not identify ONE chat. Under
+        ``dm_scope="unified"`` a direct DM collapses to a ``unified:{agent}``
+        bucket with the channel and the user dropped out, so every allowed user's
+        DMs share one key and "the origin chat" has no single answer: binding it
+        would point that session's mirror at whichever chat bound it, and deliver
+        one user's dashboard replies into another user's chat. ``/link`` stays
+        available there — it names the chat the user is actually in. A forum route
+        keeps its full bucket under any scope, so it is unaffected.
+
         Re-asserted on EVERY turn rather than only on a new session, because the
         binding is what a restart-cold session, an unlink at this location by
         another session, or a rival claim can take away — and only a self-healing
-        bind cannot leave a live conversation silently unmirrored. The write is
-        skipped when the binding already says this, so the steady-state cost per
-        turn is a read, not a session-map save.
+        bind cannot leave a live conversation silently unmirrored. Those all
+        REMOVE a binding; none of them repoints one. So with the ambiguous scope
+        excluded above, an existing binding for this channel is always deliberate,
+        and this leaves it alone whether it names this chat or another one:
+        re-pointing a user's chosen target at the origin would undo an explicit
+        action with no signal. A binding for a DIFFERENT channel does not answer
+        the question this bind asks, so it does not block the write.
 
         Honours the persisted opt-out ``/unlink`` writes: without it, "off" would
         last exactly until the user's next message. Declining is ALL this does —
         it never clears a binding it finds. ``/unlink`` persists the flag and the
         release in one session-map write, so "opted out with a live binding" is
         not a state the unlink path can leave behind; and every explicit bind
-        (``/link``, the dashboard's mirror-link endpoint) withdraws the flag, so
-        a binding that survives here is one the user asked for. Clearing it would
-        delete their link one turn later and re-create the very "chat looks dead"
-        symptom this bind exists to prevent.
+        (``/link``, the dashboard's mirror-link endpoint) withdraws the flag.
         """
+        if self._origin_mirror_is_ambiguous(route):
+            return
         if self.sessions.mirror_opt_out(session_key):
             return
-        desired = self._origin_mirror_link(route, chat_id)
-        if self.sessions.get_mirror_link(session_key) == desired:
+        existing = self.sessions.get_mirror_link(session_key)
+        if existing is not None and existing.channel_type == _CHANNEL:
             return
+        desired = self._origin_mirror_link(route, chat_id)
         try:
             self.sessions.set_mirror_link(session_key, desired)
         except Exception:

@@ -28,6 +28,7 @@ from kiro_crew.messaging.renderer import (
     OutputEvent,
 )
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.session import _opt_out_key
 from kiro_crew.session_map import ConversationOwnershipConflict
 from kiro_crew.telegram.client import (
     TELEGRAM_CHUNK_LIMIT,
@@ -333,12 +334,12 @@ class FakeSessions:
     def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
         self.batched_writes.append(self.batch_depth > 0)
         if opted_out:
-            self.mirror_opt_outs.add(key)
+            self.mirror_opt_outs.add(_opt_out_key(key))
         else:
-            self.mirror_opt_outs.discard(key)
+            self.mirror_opt_outs.discard(_opt_out_key(key))
 
     def mirror_opt_out(self, key: str) -> bool:
-        return key in self.mirror_opt_outs
+        return _opt_out_key(key) in self.mirror_opt_outs
 
     def clear_mirror_link(self, key: str) -> bool:
         self.batched_writes.append(self.batch_depth > 0)
@@ -398,6 +399,7 @@ def _cfg(
     *,
     allow_forum: bool = False,
     allowed_forum_chat_ids: list | None = None,
+    dm_scope: str = "per-channel-peer",
 ) -> Any:
     return SimpleNamespace(
         telegram=SimpleNamespace(
@@ -407,7 +409,7 @@ def _cfg(
         ),
         agent=SimpleNamespace(default_agent=default_agent),
         messaging=SimpleNamespace(
-            dm_scope="per-channel-peer",
+            dm_scope=dm_scope,
             idle_reset_minutes=0,
             daily_reset_hour=-1,
             queue_mode="steer",
@@ -422,6 +424,7 @@ def _dispatcher(
     default_agent: str = "",
     allow_forum: bool = False,
     allowed_forum_chat_ids: list | None = None,
+    dm_scope: str = "per-channel-peer",
 ) -> tuple[TelegramDispatcher, FakeClient, FakeSessions]:
     sess = FakeSessions(raise_on_get=raise_on_get)
     d = TelegramDispatcher(
@@ -431,6 +434,7 @@ def _dispatcher(
             default_agent=default_agent,
             allow_forum=allow_forum,
             allowed_forum_chat_ids=allowed_forum_chat_ids,
+            dm_scope=dm_scope,
         ),
         allowed_user_ids=allowed,
         agent=None,
@@ -3100,15 +3104,74 @@ class TestAutomaticOriginMirror:
         self._turn(d, text="second")
         assert writes == []
 
-    def test_bind_repairs_a_binding_that_drifted_to_another_location(self) -> None:
-        # Self-healing: a live conversation whose binding was swept or rebound
-        # elsewhere must not stay silently unmirrored.
+    def test_an_explicit_bind_to_a_different_chat_is_not_repointed(self) -> None:
+        # Nothing repoints a binding: a swept or rival-claimed one is REMOVED,
+        # not moved. So a telegram binding naming another chat is always
+        # deliberate (the dashboard can bind a surfaced session anywhere), and
+        # re-pointing it at the origin would undo an explicit action silently.
         d, _cli, sess = _dispatcher({7})
         key = d._session_key(("direct", "7"))
-        sess.mirror_links[key] = ChannelLink("telegram", channel_id="999")
+        chosen = ChannelLink("telegram", channel_id="999", thread_id=None)
+        sess.mirror_links[key] = chosen
+        self._turn(d)
+        assert sess.mirror_links == {key: chosen}
+
+    def test_a_binding_for_another_channel_does_not_block_the_bind(self) -> None:
+        # set_channel writes the legacy slack_channel_id for a new telegram
+        # session, so the first turn can see a synthesized non-telegram link.
+        # That says nothing about telegram mirroring and must not suppress it.
+        d, _cli, sess = _dispatcher({7})
+        key = d._session_key(("direct", "7"))
+        sess.mirror_links[key] = ChannelLink("slack", channel_id="telegram:7")
         self._turn(d)
         assert sess.mirror_links[key] == ChannelLink(
             "telegram", channel_id="7", thread_id=None
+        )
+
+    def test_the_refusal_survives_a_generation_rotation(self) -> None:
+        # /new and the configured idle/daily reset rotate the :genN suffix. Keyed
+        # per generation the flag would expire on rotation — an idle reset would
+        # undo the user's /unlink with no action on their part, which is the very
+        # failure the persisted flag exists to prevent.
+        d, _cli, sess = _dispatcher({7})
+        asyncio.run(d._handle_unlink(("direct", "7"), 7))
+        before = d._session_key(("direct", "7"))
+        d._conv.bump_gen(("direct", "7"))
+        after = d._session_key(("direct", "7"))
+        assert after != before, "generation did not rotate; test would be vacuous"
+        assert sess.mirror_opt_out(after) is True
+
+    def test_a_unified_dm_scope_is_not_auto_bound(self) -> None:
+        # dm_scope=unified collapses every allowed user's DMs into one
+        # unified:{agent} bucket — channel and user drop out of the key — so a
+        # mirror bound there belongs to no particular chat and would deliver one
+        # user's dashboard replies into another user's chat.
+        d, _cli, sess = _dispatcher({7}, dm_scope="unified")
+        self._turn(d)
+        assert sess.mirror_links == {}
+
+    def test_a_forum_route_is_still_bound_under_a_unified_scope(self) -> None:
+        # A forum route keeps its full bucket under any dm_scope, so it names one
+        # Topic and stays unambiguous.
+        d, _cli, sess = _dispatcher(
+            {7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890], dm_scope="unified"
+        )
+        asyncio.run(
+            d.handle_message(
+                TelegramInboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="-1001234567890",
+                    text="hi",
+                    chat_type="supergroup",
+                    thread_id="5",
+                    message_id=1,
+                )
+            )
+        )
+        route = ("forum", "-1001234567890:5")
+        assert sess.mirror_links[d._session_key(route)] == ChannelLink(
+            "telegram", channel_id="-1001234567890", thread_id="5"
         )
 
     def test_a_refused_claim_does_not_break_the_turn(self) -> None:

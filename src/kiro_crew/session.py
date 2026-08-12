@@ -78,6 +78,7 @@ import asyncio
 import inspect
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -390,6 +391,34 @@ _CIRCUIT_BREAKER_THRESHOLD = 5
 # Cap on remembered per-session channel notice targets. reset()/remove() evict
 # their own entries, so this only bounds sessions dropped by some other path.
 _MAX_ORIGIN_LINKS = 512
+
+
+# Trailing ``:gen{N}`` on a session key. Matched here rather than reused from
+# messaging.link because that module's copy is private to its own parser.
+_GEN_SUFFIX_RE = re.compile(r"^gen\d+$")
+
+
+def _opt_out_key(key: str) -> str:
+    """The key an automatic-mirroring refusal is stored under.
+
+    The durable BUCKET, never the generation-suffixed session key. The refusal is
+    a preference about the CONVERSATION, not about one session — the same reason
+    the per-route model choice is not keyed by session — and generations rotate
+    on ``/new`` and on the configured idle/daily reset. Keyed per generation, an
+    idle rotation would silently undo the user's "off" with no action on their
+    part, and every rotated generation would strand its own row that pruning is
+    forbidden to collect. Bucket-keyed, one conversation holds one such row.
+
+    The suffix is stripped textually rather than through the canonical parser,
+    because the shapes that most need it are the ones the parser rejects: a
+    ``dm_scope="unified"`` bucket is ``unified:{agent}``, which is too short for
+    the §9 grammar, so a parser-only rule would leave unified conversations keyed
+    per generation — exactly the bug this function exists to prevent.
+    """
+    canon = canonical_key(key)
+    head, sep, tail = canon.rpartition(":")
+    return head if sep and _GEN_SUFFIX_RE.match(tail) else canon
+
 
 # Background session recycle thresholds (more aggressive than chat compaction)
 _BG_RECYCLE_PCT = 70.0  # recycle at 70% — well before overflow
@@ -4209,11 +4238,41 @@ class SessionManager:
         dashboard link is a direct instruction and :meth:`set_mirror_link` never
         reads it.
         """
-        self._session_map.set_flag(key, MIRROR_OPT_OUT_FLAG, opted_out)
+        with self._session_map.batched_save():
+            self._session_map.set_flag(_opt_out_key(key), MIRROR_OPT_OUT_FLAG, opted_out)
+            # Retire a refusal an earlier build stored under the generation key,
+            # so it cannot outlive a withdrawal made through the bucket.
+            legacy = canonical_key(key)
+            if legacy != _opt_out_key(key):
+                self._session_map.set_flag(legacy, MIRROR_OPT_OUT_FLAG, False)
 
     def mirror_opt_out(self, key: str) -> bool:
-        """True iff this conversation declined automatic origin mirroring."""
-        return self._session_map.get_flag(key, MIRROR_OPT_OUT_FLAG)
+        """True iff this conversation declined automatic origin mirroring.
+
+        Reads the bucket, then falls back to the generation key an earlier build
+        wrote. Without the fallback, upgrading silently restores mirroring for
+        every conversation that had already turned it off — the exact failure the
+        flag exists to prevent, delivered by the fix for it.
+
+        A legacy hit is PROMOTED to the bucket, which is why this read writes.
+        Reading it without promoting would honour the refusal for the generation
+        it was stored under and lose it at the next rotation, so an upgrading user
+        would keep the expiring behaviour this change exists to remove. Retiring
+        the old row in the same write also stops it holding an entry that pruning
+        is forbidden to collect, one per generation.
+        """
+        bucket = _opt_out_key(key)
+        if self._session_map.get_flag(bucket, MIRROR_OPT_OUT_FLAG):
+            return True
+        legacy = canonical_key(key)
+        if legacy == bucket:
+            return False
+        if not self._session_map.get_flag(legacy, MIRROR_OPT_OUT_FLAG):
+            return False
+        with self._session_map.batched_save():
+            self._session_map.set_flag(bucket, MIRROR_OPT_OUT_FLAG, True)
+            self._session_map.set_flag(legacy, MIRROR_OPT_OUT_FLAG, False)
+        return True
 
     def batched_save(self) -> AbstractContextManager[None]:
         """Collapse the session-map writes of a related mutation sequence into one.
