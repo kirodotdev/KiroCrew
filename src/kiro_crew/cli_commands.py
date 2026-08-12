@@ -1170,7 +1170,12 @@ def _policy(args: argparse.Namespace) -> None:
     effective ceiling.  No mutation — purely diagnostic, so it is MCP-safe.
     """
     from kiro_crew.platform.context import current_context
-    from kiro_crew.platform.governance import SCOPE_CATALOG, gate_decision, resolve
+    from kiro_crew.platform.governance import (
+        CAPABILITY,
+        SCOPE_CATALOG,
+        gate_decision,
+        resolve,
+    )
     from kiro_crew.platform.governance_profiles import (
         get_store_profile,
         resolve_active_scope,
@@ -1204,6 +1209,31 @@ def _policy(args: argparse.Namespace) -> None:
             print("Policy: none (editable secure-defaults) — nothing to validate.")
         else:
             print(f"Policy: v{ceiling.version} OK ({len(ceiling.controls)} governed scopes).")
+            # A capability the policy does not name is UNGOVERNED, and an
+            # ungoverned control is permitted — omission never denies (see the
+            # CAPABILITY-DEFAULT CONTRACT in platform/governance.py). That is the
+            # same rule every other archetype follows, but it is the one authors
+            # most often get wrong, because a partial `capabilities` block LOOKS
+            # like a complete statement. Report the gap so an unpinned row reads
+            # as a choice instead of an oversight.
+            unnamed = sorted(
+                scope
+                for scope, spec in SCOPE_CATALOG.items()
+                if spec.kind == CAPABILITY and scope not in ceiling.controls
+            )
+            if unnamed and len(unnamed) < sum(
+                1 for spec in SCOPE_CATALOG.values() if spec.kind == CAPABILITY
+            ):
+                print(
+                    f"   ⚠️  governs capabilities but leaves {len(unnamed)} "
+                    "row(s) UNGOVERNED (therefore permitted):"
+                )
+                for scope in unnamed:
+                    print(f"        {scope}")
+                print(
+                    "      Omission does not deny. Name each row explicitly "
+                    "(enabled true or false) if you meant to decide it."
+                )
         # Force-load every profile; the store records invalid ones as deny-all.
         from kiro_crew.platform.governance_profiles import _profiles_dir
 
