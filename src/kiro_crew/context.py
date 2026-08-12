@@ -1608,6 +1608,7 @@ class ContextBuilder:
         exclude_last_n: int = 0,
         model_window: int | None = None,
         context_groups: frozenset[str] | None = None,
+        query_text: str = "",
     ) -> str:
         """Build context for a new session (memory + skills + history).
 
@@ -1946,7 +1947,11 @@ class ContextBuilder:
             # store holds no lessons, so a separate get_lessons() existence probe
             # would be a duplicate SELECT * over the same rows (embedding blobs
             # included) whose only use is an emptiness check.
-            lessons_ctx = memory.vector_store.get_lessons_context() if memory.vector_store else ""
+            lessons_ctx = (
+                memory.vector_store.get_lessons_context(query_text=query_text, cap=caps.lessons)
+                if memory.vector_store
+                else ""
+            )
             if not lessons_ctx:
                 lessons_ctx = self.lessons.get_context()
             if lessons_ctx:
@@ -2130,6 +2135,7 @@ class ContextBuilder:
                 exclude_last_n=exclude_last_n,
                 model_window=model_window,
                 context_groups=context_groups,
+                query_text=text,
             )
             if session_ctx:
                 # Scrub forgeable boundary markers from the UNTRUSTED content in

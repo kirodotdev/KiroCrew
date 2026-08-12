@@ -494,7 +494,7 @@ User-taught corrections ("always do X", "never do Y"). Single write path through
 
 **Migration**: `migrate_from_markdown()` reads `lessons.jsonl` and writes each entry as `lesson.*` semantic key with `source=migration, confidence=0.9`. User-explicit lessons (confidence 1.0) can't be overwritten by migration.
 
-Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block, at most 50 lessons (`get_lessons(limit=50)` in the vector path, `_MAX_LESSONS_IN_CONTEXT = 50` in the JSONL path). The JSONL store itself retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that, so "50 in context" and "200 on disk" are different numbers.
+Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block. The vector path ranks lessons by hybrid relevance to the incoming request and fills the caller's character budget, stating in the block how many of the stored lessons are shown and how many are omitted; the JSONL path caps at `_MAX_LESSONS_IN_CONTEXT = 50`. The JSONL store itself retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that, so what reaches the context and what sits on disk are different numbers.
 
 ### Conflict resolution: which layer wins
 

@@ -132,6 +132,24 @@ _MMR_MAX_POOL = 1000
 _SEMANTIC_VECTOR_WEIGHT = 0.6  # weight for vector score in hybrid semantic retrieval
 _SEMANTIC_KEYWORD_WEIGHT = 0.4  # weight for keyword score in hybrid semantic retrieval
 
+
+def _keyword_score(raw_overlap: int) -> float:
+    """Normalize a raw keyword-overlap count to [0, 1]."""
+    return min(raw_overlap / 10.0, 1.0) if raw_overlap > 0 else 0.0
+
+
+def _hybrid_score(keyword: float, vector: float) -> float:
+    """Merge keyword and vector scores, degrading to keyword-only without a vector.
+
+    Shared by every hybrid retrieval path so the weighting cannot drift between
+    them; each caller still chooses which text it matches and where its vector
+    comes from, because those differ legitimately.
+    """
+    if vector > 0:
+        return _SEMANTIC_VECTOR_WEIGHT * vector + _SEMANTIC_KEYWORD_WEIGHT * keyword
+    return keyword
+
+
 # snowballstemmer's pure-Python stemmers keep the word being stemmed as
 # mutable instance state (set_current() -> _stem() -> get_current()), so a
 # single shared instance is NOT thread-safe: concurrent context builds
@@ -987,8 +1005,7 @@ class VectorMemoryStore:
                 key_overlap = len(query_words & key_words)
                 val_overlap = len(query_words & val_words)
                 kw_raw = key_overlap * 3 + val_overlap
-                # Normalize keyword score to [0, 1]
-                kw_score = min(kw_raw / 10.0, 1.0) if kw_raw > 0 else 0.0
+                kw_score = _keyword_score(kw_raw)
 
                 # Vector score (when embeddings available)
                 vec_score = 0.0
@@ -998,13 +1015,7 @@ class VectorMemoryStore:
                     if entry_emb:
                         vec_score = max(0.0, self._cosine_sim(query_embedding, entry_emb))
 
-                # Hybrid merge
-                if query_embedding is not None and vec_score > 0:
-                    score = (
-                        _SEMANTIC_VECTOR_WEIGHT * vec_score + _SEMANTIC_KEYWORD_WEIGHT * kw_score
-                    )
-                else:
-                    score = kw_score
+                score = _hybrid_score(kw_score, vec_score)
 
                 if score > 0:
                     scored_rows.append((score, dict(r)))
@@ -2273,21 +2284,98 @@ class VectorMemoryStore:
                 deleted = True
         return deleted
 
-    def get_lessons_context(self) -> str:
-        """Format lessons for prompt injection."""
-        lessons = self.get_lessons(limit=50)
-        if not lessons:
-            return ""
-        lines = [
-            "[Learned corrections — user-taught rules from past mistakes.\n"
-            "ALWAYS follow these. They override default behavior.]"
+    def get_lessons_context(self, query_text: str = "", cap: int = 0) -> str:
+        """Format lessons for prompt injection, most relevant first.
+
+        Lessons are ranked against *query_text* using the same hybrid
+        vector + keyword score as :meth:`get_semantic_context`, then emitted
+        until *cap* characters are used. Ranking is relevance-only — neither
+        ``source`` nor ``confidence`` contributes — so an unrelated user-taught
+        rule cannot displace a relevant inferred one.
+
+        Args:
+            query_text: Request to rank against. Empty keeps recency order.
+            cap: Character budget for the rendered block. 0 means unbounded.
+        """
+        entries = [
+            (row, text)
+            for row in self.get_lessons()
+            if (text := _lesson_display_text(json.loads(row["value_json"])))
         ]
-        for e in lessons:
-            text = _lesson_display_text(json.loads(e["value_json"]))
-            if text:
-                lines.append(f"- {text}")
-        lines.append("[End of learned corrections]\n")
-        return "\n".join(lines)
+        if not entries:
+            return ""
+        total = len(entries)
+        ranked = self._rank_lessons(entries, query_text) if query_text else entries
+        order = "most relevant" if query_text else "most recent"
+
+        def render(rows: list[tuple[dict, str]]) -> str:
+            header = (
+                "[Learned corrections — user-taught rules from past mistakes.\n"
+                "ALWAYS follow these. They override default behavior."
+            )
+            if len(rows) < total:
+                header += (
+                    f"\nShowing {len(rows)} of {total} lessons, {order} first; "
+                    f"{total - len(rows)} omitted."
+                )
+            body = "\n".join(f"- {text}" for _, text in rows)
+            return f"{header}]\n{body}\n[End of learned corrections]\n"
+
+        if not cap:
+            return render(ranked)
+
+        selected: list[tuple[dict, str]] = []
+        used = 0
+        for entry in ranked:
+            size = len(entry[1]) + 3  # "- " prefix and newline
+            if selected and used + size > cap:
+                # Skip rather than stop: one long lesson high in the ranking
+                # must not discard every shorter one behind it that still fits.
+                continue
+            selected.append(entry)
+            used += size
+        # The header grows with the counts it reports, so trim to fit rather
+        # than reserving a guessed margin. At least one lesson is always kept.
+        while len(selected) > 1 and len(render(selected)) > cap:
+            selected.pop()
+        return render(selected)
+
+    def _rank_lessons(
+        self, entries: list[tuple[dict, str]], query_text: str
+    ) -> list[tuple[dict, str]]:
+        """Order *entries* by hybrid relevance to *query_text*, most relevant first.
+
+        Stored ``embedding`` blobs are reused, so this costs one embed for the
+        query rather than one per lesson. The sort is stable and *entries*
+        arrives newest-first, so equal scores keep recency order and a query
+        that matches nothing degrades to plain recency.
+        """
+        query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
+        query_emb = self._try_embed(query_text) if self.embed_fn else None
+        scored: list[tuple[float, tuple[dict, str]]] = []
+        for entry in entries:
+            row, text = entry
+            # Only the rendered text is matched. A lesson key is
+            # ``lesson.<md5hash>``, which carries no words, so there is no key
+            # term to weight here the way get_semantic_context() weights its own.
+            overlap = len(query_words & _stem_words(set(re.findall(r"\w+", text.lower()))))
+            score = _hybrid_score(
+                _keyword_score(overlap), self._stored_similarity(row, query_emb)
+            )
+            scored.append((score, entry))
+        scored.sort(key=lambda pair: -pair[0])
+        return [entry for _, entry in scored]
+
+    def _stored_similarity(self, entry: dict, query_emb: list[float] | None) -> float:
+        """Cosine similarity between *query_emb* and a row's stored embedding."""
+        blob = entry.get("embedding")
+        if query_emb is None or not isinstance(blob, bytes) or len(blob) < 4:
+            return 0.0
+        try:
+            stored = struct.unpack(f"{len(blob) // 4}f", blob)
+        except struct.error:
+            return 0.0
+        return max(0.0, self._cosine_sim(query_emb, list(stored)))
 
     # ── Migration & Import ──
 
@@ -3018,7 +3106,7 @@ class VectorMemoryStore:
         """Preview what would be injected into context (for debugging)."""
         semantic = self.get_semantic_context(query_text=query_text)
         episodic = self.get_episodic_context(query_text=query_text)
-        lessons = self.get_lessons_context()
+        lessons = self.get_lessons_context(query_text=query_text)
         return {
             "semantic_chars": len(semantic),
             "episodic_chars": len(episodic),
