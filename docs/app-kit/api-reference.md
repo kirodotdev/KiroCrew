@@ -168,6 +168,14 @@ const renderers = [{
 <ChatMessageList messages={messages} running={running} renderers={renderers} />
 ```
 
+### Limitation: two roles are grouped before your entry is consulted
+
+`thinking` and `permission` (exported as `GROUPED_ROLES`, a frozen array) are assembled into one
+collapsible "worked through N steps" group **before** rows are resolved. An entry claiming either is
+still consulted, but it renders **inside** that group, and the group keeps its own summary and
+approval affordance — so you cannot yet use the registry to replace the built-in approval UI with
+your own. Substituting the group itself is not an extension point today — tracked in #2940.
+
 ### Replacing a built-in row
 
 Reuse the built-in's `id`:
@@ -219,6 +227,7 @@ Two rules the registry relies on:
 | `mergeRenderers(extra)` | function | shape-matched defaults, then host entries, then the rest |
 | `resolveRenderer(message, renderers)` | function | first entry that claims the message |
 | `ToolCallPill` | component | the store-free tool row the default registry uses |
+| `GROUPED_ROLES` | value | frozen array of the roles grouped before per-row resolution (see the limitation above) |
 | `MessageRenderer` | type | `{ id, roles, match?, render }` |
 | `MessageRenderContext` | type | what `render` is handed |
 

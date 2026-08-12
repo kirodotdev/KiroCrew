@@ -78,7 +78,7 @@ export default function FeaturedSpotlight({ app, onOpen, onGet, onEnable, busy }
           />
         ) : (
           <div className="w-[92px] h-[92px] rounded-3xl bg-white/15 border border-white/25 backdrop-blur-sm grid place-items-center text-white">
-            {(app.iconUrl || app.icon) ? <AppIcon icon={app.icon} iconUrl={app.iconUrl} size={56} /> : <Package size={44} />}
+            {(app.iconUrl || app.icon) ? <AppIcon icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} size={56} /> : <Package size={44} />}
           </div>
         )}
       </div>

@@ -367,6 +367,24 @@ export function resolveRenderer(
 }
 
 /**
+ * Roles assembled into a collapsible group BEFORE per-row resolution, so the
+ * transcript shows "worked through N steps" instead of a wall of rows.
+ *
+ * Frozen, and an array rather than a Set, because this crosses into apps through
+ * the vendored SDK surface: a `ReadonlySet` is only a compile-time promise, and an
+ * app is plain JavaScript that never sees our types — one `delete('permission')`
+ * on a shared Set would stop the host grouping permissions and take the pending
+ * approval UI with it. Two entries, so `includes` costs nothing.
+ *
+ * Consequence worth knowing when you register an entry: an entry claiming one of
+ * these roles is still consulted, but its row renders INSIDE the group, and the
+ * group keeps its own summary and approval affordance. Replacing the group itself
+ * is not an extension point today — see the limitation note in
+ * docs/app-kit/api-reference.md.
+ */
+export const GROUPED_ROLES: readonly string[] = Object.freeze(['thinking', 'permission'])
+
+/**
  * Host entries sit between the SHAPE-matched defaults and the role-keyed ones.
  *
  * A shape-matched entry recognises a message by what it IS (`kind`), not by the

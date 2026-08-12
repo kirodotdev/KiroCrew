@@ -1229,7 +1229,7 @@ class TestApplyTrustFields:
         entry = {
             "name": "evil-app",
             "_registry": "evil-registry",
-            "provenance": "core",
+            "provenance": "official",
             "verified": True,
         }
         (out,) = registry._apply_trust_fields([entry])
@@ -1241,7 +1241,7 @@ class TestApplyTrustFields:
         (``_index_author``, taken by ``list_registry`` pre-merge)."""
         entry = {"name": "good-app", "_index_author": "KiroCrew"}  # brand-ok: author-spoof fixture
         (out,) = registry._apply_trust_fields([entry])
-        assert out["provenance"] == "core"
+        assert out["provenance"] == "official"
         assert out["verified"] is True
 
     def test_manifest_author_alone_never_mints_verified(self):
@@ -1258,7 +1258,7 @@ class TestApplyTrustFields:
     def test_core_third_party_author_is_not_verified_and_keeps_featured(self):
         entry = {"name": "community-app", "_index_author": "someone", "featured": 2}
         (out,) = registry._apply_trust_fields([entry])
-        assert out["provenance"] == "core"
+        assert out["provenance"] == "official"
         assert out["verified"] is False
         assert out["featured"] == 2  # curator flag preserved for core entries
 
@@ -1273,13 +1273,67 @@ class TestApplyTrustFields:
         degrade to unverified, not raise."""
         entry = {"name": "weird", "_index_author": 42}
         (out,) = registry._apply_trust_fields([entry])
-        assert out["provenance"] == "core"
+        assert out["provenance"] == "official"
         assert out["verified"] is False
+
+    def test_bundled_seed_row_is_official_not_a_separate_value(self):
+        """The bundled ``app-registry.json`` is the OFFLINE SEED of the list we
+        publish, not a different kind of app, so it carries the same provenance
+        a signed remote catalog will. Giving the seed its own value would put a
+        weaker integrity guarantee — it rides on the install artifact and cannot
+        be revoked before the next release — behind a label the client cannot
+        tell apart from the stronger one. Provenance names WHOSE list an app is
+        on; how the list arrived is a separate axis."""
+        entry = {"name": "launchdarkly", "repo": "https://example.com/org/app"}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "official"
 
     def test_index_author_snapshot_never_leaks_into_payload(self):
         entry = {"name": "x", "_index_author": "KiroCrew"}  # brand-ok: author-spoof fixture
         (out,) = registry._apply_trust_fields([entry])
         assert "_index_author" not in out
+
+    def test_two_word_org_spelling_is_verified(self):
+        """The product name is two words, and both the bundled catalog and the
+        official published catalog state the org that way. A single-token-only
+        comparison silently un-verified every first-party app whose index row
+        spelled the org correctly."""
+        entry = {"name": "spec-builder", "_index_author": "Kiro Crew"}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["verified"] is True
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "Ｋｉｒｏ　Ｃｒｅｗ",  # fullwidth, ideographic space
+            "kiro\u200bcrew",  # zero-width space
+            "Kiro\u00adCrew",  # soft hyphen
+            "  kiro   crew  ",  # padded, doubled inner space
+            "KIROCREW",
+        ],
+    )
+    def test_first_party_spelling_variants_still_verify(self, spelling):
+        """A row we ship or sign may legitimately name us in a non-ASCII form.
+        Folding (NFKC + drop category-Cf + collapse whitespace) keeps the mark
+        instead of dropping it on a spelling difference a human cannot see."""
+        entry = {"name": "app", "_index_author": spelling}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["verified"] is True
+
+    def test_folding_does_not_grant_the_mark_to_an_external_row(self):
+        """The fold widens the match, so pin the short-circuit that keeps it
+        harmless: a tagged row is unverified BEFORE the author is consulted."""
+        entry = {"name": "app", "_registry": "labs", "_index_author": "Kiro Crew"}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "external"
+        assert out["verified"] is False
+
+    def test_near_miss_author_is_not_verified(self):
+        """Folding must not blur a DIFFERENT name into ours."""
+        for name in ("kiro crews", "kiro-crew", "kirocrew labs", "crew kiro"):
+            entry = {"name": "app", "_index_author": name}
+            (out,) = registry._apply_trust_fields([entry])
+            assert out["verified"] is False, name
 
     def test_registry_tag_is_kept_in_payload(self):
         """``_registry`` stays in the row — the external-source label text and
@@ -1324,7 +1378,7 @@ class TestApplyTrustFields:
         monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
 
         rows = {r["name"]: r for r in await registry.list_registry()}
-        assert rows["core-app"]["provenance"] == "core"
+        assert rows["core-app"]["provenance"] == "official"
         assert rows["core-app"]["verified"] is True
         assert rows["core-app"]["featured"] == 1
         # Manifest-published author does not mint the badge.
@@ -1337,3 +1391,113 @@ class TestApplyTrustFields:
         assert "featured" not in rows["ext-app"]
         # The internal snapshot key never leaks into the API payload.
         assert all("_index_author" not in r for r in rows.values())
+
+
+class TestMergeManifestProjectsRegistryKeys:
+    """``_merge_manifest`` starts from an explicit projection of the index row.
+
+    An index row is untrusted content, so a key an index invents must not ride
+    into the API payload just because the merge started from a copy of the row.
+    """
+
+    MANIFEST = {"name": "demo-app", "displayName": "Demo App", "version": "1.2.3"}
+
+    def test_unknown_index_key_does_not_reach_the_row(self):
+        entry = {
+            "name": "demo-app",
+            "repo": "DemoRepo",
+            "surpriseKey": "whatever an index felt like publishing",
+            "__proto__": {"polluted": True},
+        }
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        assert "surpriseKey" not in out
+        assert "__proto__" not in out
+
+    def test_index_cannot_publish_trust_or_install_state(self):
+        """These are stamped server-side after the merge; an index value for
+        them must not survive to be read before that happens."""
+        entry = {
+            "name": "demo-app",
+            "repo": "DemoRepo",
+            "provenance": "builtin",
+            "verified": True,
+            "installed": True,
+            "enabled": True,
+            "origin": "builtin",
+            "lifecycle": "locked",
+        }
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        for key in ("provenance", "verified", "installed", "enabled", "origin", "lifecycle"):
+            assert key not in out, key
+
+    def test_index_cannot_override_manifest_display_copy(self):
+        """Display fields come from the fetched app.json, so an index row that
+        publishes its own must not win — nor survive alongside."""
+        entry = {
+            "name": "demo-app",
+            "repo": "DemoRepo",
+            "displayName": "Index Said This",
+            "description": "index copy",
+        }
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        assert out["displayName"] == "Demo App"
+        assert "description" not in out  # manifest carried none, so neither does the row
+
+    @pytest.mark.parametrize(
+        "key,value",
+        [
+            ("gitUrl", "https://example.com/org/app.git"),
+            ("repo", "DemoRepo"),
+            ("branch", "release"),
+            ("subdirectory", "apps/demo"),
+            ("resources", "app"),
+            ("detectInstalled", "which demo"),
+            ("managed", True),
+            ("featured", 2),
+            ("_registry", "labs"),
+        ],
+    )
+    def test_registry_owned_keys_survive(self, key, value):
+        """Each of these has a reader — the clone path, the install path, the
+        spotlight, or the trust stamp. Dropping one breaks that reader."""
+        entry = {"name": "demo-app", key: value}
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        assert out[key] == value
+
+    def test_index_author_snapshot_survives_the_merge(self):
+        """``_apply_trust_fields`` runs AFTER the merge and consumes this key to
+        decide the verified mark, so the projection has to carry it through."""
+        entry = {"name": "demo-app", "_index_author": "Kiro Crew"}
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        assert out["_index_author"] == "Kiro Crew"
+
+    def test_dark_icon_path_becomes_a_blob_url(self):
+        """A raster icon cannot repaint from theme tokens, so an app may ship a
+        dark variant; it routes through the same proxy as the light one."""
+        entry = {"name": "demo-app", "repo": "DemoRepo"}
+        manifest = {**self.MANIFEST, "iconPath": "a/i.png", "iconPathDark": "a/i-dark.png"}
+        out = registry._merge_manifest(entry, manifest)
+        assert out["iconUrl"] == "/api/apps/blob?repo=DemoRepo&path=a/i.png"
+        assert out["iconUrlDark"] == "/api/apps/blob?repo=DemoRepo&path=a/i-dark.png"
+
+    def test_dark_icon_is_omitted_when_absent(self):
+        """Absence must not publish an empty string: the client treats a falsy
+        dark variant as "fall back to the light one", and an empty key would
+        also widen the payload for every app that ships one icon."""
+        entry = {"name": "demo-app", "repo": "DemoRepo"}
+        out = registry._merge_manifest(entry, {**self.MANIFEST, "iconPath": "a/i.png"})
+        assert "iconUrlDark" not in out
+
+    def test_manifest_declared_icon_url_is_never_copied(self):
+        """An index-fetched manifest is untrusted content. Honouring an absolute
+        ``iconUrl`` from it would let a third party point the store's <img> at
+        any host; only repo-relative paths rewritten through our proxy are used."""
+        entry = {"name": "demo-app", "repo": "DemoRepo"}
+        manifest = {
+            **self.MANIFEST,
+            "iconUrl": "https://evil.example/track.png",
+            "iconUrlDark": "https://evil.example/track-dark.png",
+        }
+        out = registry._merge_manifest(entry, manifest)
+        assert "iconUrl" not in out
+        assert "iconUrlDark" not in out

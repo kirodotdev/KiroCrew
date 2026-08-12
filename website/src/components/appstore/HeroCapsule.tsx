@@ -26,6 +26,7 @@ export default function HeroCapsule({
   art,
   icon,
   iconUrl,
+  iconUrlDark,
   className = 'w-24 h-[54px]',
 }: {
   /** App name — seeds the deterministic gradient when there is no art. */
@@ -33,10 +34,11 @@ export default function HeroCapsule({
   art: HeroArtFields
   icon?: string
   iconUrl?: string
+  iconUrlDark?: string
   className?: string
 }) {
   const hero = useHeroArt(art)
-  const hasIcon = !!(icon || iconUrl)
+  const hasIcon = !!(icon || iconUrl || iconUrlDark)
 
   return (
     <div
@@ -46,7 +48,7 @@ export default function HeroCapsule({
       {hero.src ? (
         <img src={hero.src} alt="" className="absolute inset-0 w-full h-full object-cover" onError={hero.onError} />
       ) : hasIcon ? (
-        <AppIcon icon={icon} iconUrl={iconUrl} size={28} />
+        <AppIcon icon={icon} iconUrl={iconUrl} iconUrlDark={iconUrlDark} size={28} />
       ) : (
         <Package size={22} />
       )}

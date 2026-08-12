@@ -35,6 +35,7 @@ import re
 import shutil
 import sys
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -848,15 +849,54 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
+#: Keys a registry index row may contribute to a merged app-store row.
+#
+# An index row is UNTRUSTED content — an external registry's index is
+# user-supplied JSON — so the merge projects these names explicitly instead of
+# spreading the row. Spreading shipped every key an index chose to invent
+# straight to the browser, which both grew the payload with fields no consumer
+# reads and gave an index a channel for keys the client never validated.
+#
+# Each name here has a reader: ``name`` is identity; ``gitUrl`` / ``repo`` /
+# ``branch`` / ``subdirectory`` are the clone coordinates
+# (``_entry_git_url``, ``install_from_registry``); ``resources`` selects the
+# self-managed install path; ``detectInstalled`` is the pre-install probe;
+# ``managed`` is the legacy registry-only flag; ``featured`` is the Discover
+# spotlight flag (kept only on non-external rows by ``_apply_trust_fields``);
+# ``_registry`` is the server-attached source tag; ``_index_author`` is the
+# author snapshot ``_apply_trust_fields`` consumes for the verified mark.
+#
+# Display fields are deliberately ABSENT: they come from the fetched
+# ``app.json`` below, so an index cannot publish display copy for an app whose
+# manifest says otherwise. Install-status and trust fields are also absent —
+# ``_enrich_with_install_status`` and ``_apply_trust_fields`` run after this
+# and stamp them server-side.
+_REGISTRY_ROW_KEYS: frozenset[str] = frozenset(
+    {
+        "name",
+        "gitUrl",
+        "repo",
+        "branch",
+        "subdirectory",
+        "resources",
+        "detectInstalled",
+        "managed",
+        "featured",
+        "_registry",
+        "_index_author",
+    }
+)
+
+
 def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     """Merge app.json fields into a registry entry.
 
-    Registry-only fields (name, repo, branch, managed, detectInstalled)
-    are preserved from the entry. Everything else comes from app.json,
-    with the blob proxy URL pattern applied to image paths.
+    Registry-only fields (``_REGISTRY_ROW_KEYS``) are preserved from the entry.
+    Everything else comes from app.json, with the blob proxy URL pattern
+    applied to image paths.
     """
     repo = entry.get("repo", "")
-    result = dict(entry)  # start with registry fields
+    result = {k: v for k, v in entry.items() if k in _REGISTRY_ROW_KEYS}
 
     # Top-level display fields from app.json
     for key in (
@@ -894,10 +934,23 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     if "platform" in manifest:
         result["platform"] = manifest["platform"]
 
-    # Icon — convert repo-relative path to blob proxy URL
+    # Icon — convert repo-relative path to blob proxy URL.
+    #
+    # Only ``iconPath`` (repo-relative) is honoured, never a manifest-declared
+    # ``iconUrl``: an index-fetched manifest is untrusted content, and copying an
+    # absolute URL out of it would let a third party point the store's <img> at
+    # any host it likes. Rewriting a repo-relative path keeps every icon fetch
+    # on our own proxy, which enforces the extension allowlist and the
+    # trusted-host gate.
     icon_path = manifest.get("iconPath", "")
     if icon_path and repo:
         result["iconUrl"] = f"/api/apps/blob?repo={repo}&path={icon_path}"
+    # Dark-appearance variant. Raster icons have fixed bytes, so an app that
+    # must read well on both backgrounds ships two files; first-party
+    # ``/app-assets/`` SVGs are inlined and repaint from theme tokens instead.
+    icon_path_dark = manifest.get("iconPathDark", "")
+    if icon_path_dark and repo:
+        result["iconUrlDark"] = f"/api/apps/blob?repo={repo}&path={icon_path_dark}"
     # Lucide fallback icon from manifest extra fields
     if manifest.get("icon"):
         result["icon"] = manifest["icon"]
@@ -973,6 +1026,38 @@ def _enrich_with_install_status(
     return entries
 
 
+#: Index-declared author spellings that name US, folded by ``_fold_author``.
+#
+# The product name is two words, so the bundled catalog and the official
+# published catalog both state ``Kiro Crew``; the historical bundled spelling
+# was the single token ``kirocrew``. Both are us, so both mint the mark.
+FIRST_PARTY_AUTHORS: frozenset[str] = frozenset(
+    {"kirocrew", "kiro crew"}  # brand-ok: folded values, lower-cased by contract
+)
+
+
+def _fold_author(value: object) -> str:
+    """Fold an author name for the first-party comparison.
+
+    NFKC maps fullwidth forms onto ASCII, category-``Cf`` code points (ZWSP,
+    soft hyphen, bidi marks) are dropped, and runs of whitespace collapse to a
+    single space. Without this, ``Ｋｉｒｏ Ｃｒｅｗ`` and ``kiro\u200bcrew``
+    read as us to a human but compare unequal, so an index row that legitimately
+    names us in a non-ASCII form would silently lose the mark.
+
+    Widening the match is safe HERE and only here: ``_apply_trust_fields``
+    short-circuits every ``_registry``-tagged row to ``verified: False`` before
+    consulting the author at all, so the folded comparison is only ever reached
+    for rows whose index we ship or sign. Do not reuse this to GRANT trust on a
+    path where untrusted content supplies the name.
+    """
+    if not isinstance(value, str):
+        return ""
+    folded = unicodedata.normalize("NFKC", value)
+    folded = "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+    return " ".join(folded.split()).lower()
+
+
 def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Stamp server-computed ``provenance`` and ``verified`` on every row.
 
@@ -992,11 +1077,26 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     - ``provenance``: ``"external"`` when ``_registry`` is set (the tag is
       applied server-side per configured registry and cannot be forged by
       index content); otherwise ``"builtin"`` when ``origin == "builtin"``,
-      else ``"core"`` (bundled ``app-registry.json`` or edition entry).
+      else ``"official"``.
+
+      ``"official"`` means "an app WE list", and the bundled
+      ``app-registry.json`` is one delivery of that list — the offline seed
+      that ships inside the wheel. It answers the same question the remote
+      signed catalog answers, so it gets the same value rather than a second
+      one: two provenance values for one claim would put a weaker integrity
+      guarantee (rides on the install artifact, cannot be revoked before the
+      next release) behind a label a client cannot tell apart from the
+      stronger one. The value names WHOSE list an app is on; how that list
+      reached the client is a separate axis, and belongs in a separate field
+      once there is more than one answer to record.
+
+      ``"core"`` was the previous spelling. Clients accept both during the
+      migration, so an older gateway's rows still label correctly.
     - ``verified``: ``True`` only when provenance is NOT ``"external"`` AND
       (``origin == "builtin"`` or the INDEX-declared author — snapshotted
       into ``_index_author`` by ``list_registry`` before the manifest merge
-      — is "kirocrew", case-insensitively). The badge asserts first-party
+      — names us after ``_fold_author`` (see ``FIRST_PARTY_AUTHORS``). The
+      badge asserts first-party
       provenance next to an Install button that runs setup code with
       gateway privileges, so it is never awardable from index-published
       trust keys or from the repo-fetched ``app.json``: a third-party core
@@ -1009,15 +1109,15 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     for entry in entries:
         index_author = entry.pop("_index_author", None)
-        author_lower = index_author.lower() if isinstance(index_author, str) else ""
+        folded_author = _fold_author(index_author)
         if entry.get("_registry"):
             entry["provenance"] = "external"
             entry["verified"] = False
             entry.pop("featured", None)
         else:
             builtin = entry.get("origin") == "builtin"
-            entry["provenance"] = "builtin" if builtin else "core"
-            entry["verified"] = builtin or author_lower == "kirocrew"
+            entry["provenance"] = "builtin" if builtin else "official"
+            entry["verified"] = builtin or folded_author in FIRST_PARTY_AUTHORS
     return entries
 
 

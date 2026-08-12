@@ -36,7 +36,7 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
       onClick={onOpen}
     >
       {/* Hero capsule — 16:9 crop of the app's own art, gradient when absent */}
-      <HeroCapsule name={app.name} art={app} icon={app.icon} iconUrl={app.iconUrl} />
+      <HeroCapsule name={app.name} art={app} icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 text-[14px] font-semibold text-text-strong">
           <span className="truncate">{appDisplayName(app)}</span>
