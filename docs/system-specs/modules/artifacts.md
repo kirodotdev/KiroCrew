@@ -640,6 +640,67 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
     redacted name, so a rename during the off-window stops showing the old
     label. Neither pass touches content hashes — a converged store still spends
     nothing.
+  - **Residue from an interrupted ingest is reaped, unbudgeted — and only where
+    it is attributable.** Ownership lands in `artifact_item_state` in a commit of
+    its own, after `ingest_file` has committed the items, so an interruption in
+    that window leaves items nothing points at. Replacement is driven by
+    `old_item_ids` — the record that was lost — so the next ingest of that
+    artifact adds a second copy instead of replacing the first.
+    **Being unowned is not by itself evidence of a crash.** Knowledge restored
+    from a bundle written before ownership travelled arrives unowned too and is
+    indistinguishable by inspection, so a sweep keyed on "no row names this item"
+    would delete content no interruption ever touched. Attribution therefore
+    comes from a marker written *before* the items: `ingest_artifact` records an
+    `ingesting` intent row for the slug, and `_set_state` clears it by writing
+    the real status. `sweep_unowned_items` acts only when such an intent is
+    outstanding, and only on items created at or after the earliest outstanding
+    intent — residue is necessarily younger than the intent that produced it.
+    With no intent outstanding the sweep returns immediately.
+    **The clock narrows candidates; it does not establish provenance.** Both
+    timestamps are naive local time, and an imported item keeps its original
+    `created_at`, so a bundle from a host running ahead — or simply in another
+    timezone — restores knowledge dated *after* an intent it has nothing to do
+    with. What makes the reap safe is that an intent is always LOCAL: it is
+    written by this store's own ingest and can never arrive in a bundle.
+    It runs after the reaps above (which delete state rows) and before the ingest
+    loop (which would otherwise add the second copy), and stands down entirely on
+    a state row whose `item_ids` will not parse or does not decode to a list of
+    strings — such a row owns something but does not say what, and reaping past
+    it would delete what it protects. A decoded scalar is refused for the same
+    reason: iterating a JSON string would enrol its characters as owned ids and
+    make the real ones look unowned.
+    Because attribution requires the marker, residue left by an interruption that
+    predates this mechanism is **preserved, not repaired** — the safe direction,
+    since a stale duplicate is recoverable and deleted items are not.
+- **The live upsert path fences the same window.** The change-listener reaches
+  `ingest_artifact` on every save with no reconcile in between, so repairing
+  only at start-up would leave a crash followed by an ordinary edit still
+  duplicating. `ingest_artifact` therefore sweeps on every ingest, *before*
+  recording its own intent — so it can only ever act on an intent left
+  outstanding by an earlier, interrupted ingest, never on the one in progress.
+  On a source with no outstanding intent the sweep is two indexed reads and
+  returns zero. Only an `active` row is marked, and its recorded group is left
+  intact: that group is still live until `ingest_file` succeeds, and a failed
+  ingest must be able to retry from it. A `deduped` row is skipped — its status
+  carries a dedup claim keyed to the recorded hash, and it owns no items, so it
+  can leave no residue. A failed sweep is logged and the ingest proceeds:
+  leaving residue for the next reconcile beats refusing to index current
+  content.
+- **An intent is retired the moment it stops describing reality.** It is a
+  licence to delete, so one that outlives its attempt keeps authorizing the
+  sweep, and the next unowned knowledge to arrive — a restore from a
+  pre-ownership bundle — falls inside its time window and is reaped as residue
+  no interruption produced. A partial or failed terminal return retires it,
+  because `ingest_file` rolls its new items back. An **exception or
+  cancellation** retires it only when the source gained no items: the pipeline
+  commits before the finalizer that reports the outcome, and that finalizer runs
+  to completion even under cancellation, so a failure can land on either side of
+  a durable write. Whether it did is measured against the pre-ingest snapshot
+  rather than assumed, and the retirement itself goes through the same
+  `run_to_completion` finalizer, so a cancellation cannot drop it while the
+  executor still has it queued. This is deliberately not an unconditional
+  `finally`: retiring an intent that still has residue behind it would discard
+  the only record that can attribute it.
 - **A dead source pointer neither deletes nor rewrites an index.**
   `ingest_artifact` returns early whenever `get()` reported `source_missing`
   (live file moved / unreadable, so the content is a snapshot fallback). That
