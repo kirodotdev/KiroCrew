@@ -9088,6 +9088,8 @@
         "delete_confirm": "¿Eliminar \"{{name}}\"?",
         "dismiss": "Descartar",
         "dismiss_confirm": "¿Descartar \"{{name}}\"?",
+        "dismiss_all": "Descartar todo",
+        "dismiss_all_confirm": "¿Descartar las {{count}} habilidades pendientes?",
         "edit": "Editar",
         "empty_subtitle": "Las habilidades enseñan al agente procedimientos reutilizables. Explora el registro para añadir una.",
         "filter_skills": "Filtrar habilidades…",

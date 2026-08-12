@@ -8975,6 +8975,8 @@
         "delete_confirm": "„{{name}}“ löschen?",
         "dismiss": "Schließen",
         "dismiss_confirm": "„{{name}}“ verwerfen?",
+        "dismiss_all": "Alle verwerfen",
+        "dismiss_all_confirm": "Alle {{count}} ausstehenden Skills verwerfen?",
         "edit": "Bearbeiten",
         "empty_subtitle": "Fähigkeiten lehren den Agenten wiederverwendbare Verfahren. Durchsuchen Sie das Register, um eine hinzuzufügen.",
         "filter_skills": "Skills filtern…",

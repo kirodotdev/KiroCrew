@@ -8862,6 +8862,8 @@
         "delete_confirm": "删除“{{name}}”？",
         "dismiss": "忽略",
         "dismiss_confirm": "忽略“{{name}}”？",
+        "dismiss_all": "全部忽略",
+        "dismiss_all_confirm": "忽略全部 {{count}} 个待审核技能？",
         "edit": "编辑",
         "empty_subtitle": "技能教会代理可重复使用的流程。浏览注册表添加一个。",
         "filter_skills": "筛选技能…",

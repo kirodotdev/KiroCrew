@@ -298,6 +298,7 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     api_skills,
     api_skills_create,
     api_skills_pending,
+    api_skills_pending_dismiss_all,
 )
 
 # ── Sessions (extracted to handlers/sessions.py) ──

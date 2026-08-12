@@ -527,6 +527,53 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
     return web.json_response({"dismissed": slug})
 
 
+async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
+    """POST /api/skills/-/pending/-/dismiss-all — dismiss pending candidates.
+
+    Accepts an optional JSON body ``{"slugs": ["slug1", ...]}``.  When present,
+    only those slugs are dismissed (the client passes the set it displayed to the
+    user, so a candidate staged *after* the confirmation dialog is never silently
+    deleted).  When the body is absent or ``slugs`` is empty, ALL pending
+    candidates are dismissed (back-compat / fallback).
+    """
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be a JSON object", "code": "invalid_body"}, status=400)
+    raw_slugs = body.get("slugs")
+    if raw_slugs is not None and (
+        not isinstance(raw_slugs, list)
+        or not all(isinstance(s, str) for s in raw_slugs)
+    ):
+        return web.json_response({"error": "slugs must be an array of strings", "code": "invalid_slugs"}, status=400)
+    slugs: list[str] = raw_slugs if isinstance(raw_slugs, list) else []
+    try:
+        if slugs:
+            count = await asyncio.get_running_loop().run_in_executor(
+                discovery_executor(),
+                lambda: skills.dismiss_pending_slugs(slugs),
+            )
+        else:
+            return web.json_response({"error": "slugs array is required and must not be empty", "code": "slugs_required"}, status=400)
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skills_pending_dismiss_all', tool_kind='skill',
+            outcome='error', metadata={},
+        )
+        return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name='api_skills_pending_dismiss_all', tool_kind='skill',
+        outcome='ok', metadata={'count': count},
+    )
+    return web.json_response({"dismissed_count": count})
+
+
 async def api_skill_pin(request: web.Request) -> web.Response:
     """POST /api/skills/-/pin — body {name, pinned:bool}. Pin/unpin an auto-skill
     so the lifecycle never archives it."""

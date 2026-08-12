@@ -2661,6 +2661,27 @@ class SkillsLoader:
         logger.info("Dismissed pending skill: %s", slug)
         return True
 
+    def dismiss_all_pending(self) -> int:
+        """Delete all pending candidates. Returns count dismissed."""
+        pending = self.list_pending_skills()
+        count = 0
+        for entry in pending:
+            if self.dismiss_pending_skill(entry["slug"]):
+                count += 1
+        if count:
+            logger.info("Dismissed all %d pending skills", count)
+        return count
+
+    def dismiss_pending_slugs(self, slugs: list[str]) -> int:
+        """Delete only the specified pending candidates. Returns count dismissed."""
+        count = 0
+        for slug in slugs:
+            if self.dismiss_pending_skill(slug):
+                count += 1
+        if count:
+            logger.info("Dismissed %d of %d requested pending skills", count, len(slugs))
+        return count
+
     def prune_pending(self, ttl_days: int, *, now: float | None = None) -> int:
         """Remove pending candidates older than ``ttl_days``. Returns count pruned.
 

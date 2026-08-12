@@ -8862,6 +8862,8 @@
         "delete_confirm": "‘{{name}}’을(를) 삭제하시겠습니까?",
         "dismiss": "무시",
         "dismiss_confirm": "‘{{name}}’을(를) 무시할까요?",
+        "dismiss_all": "모두 무시",
+        "dismiss_all_confirm": "대기 중인 {{count}}개의 스킬을 모두 무시할까요?",
         "edit": "편집",
         "empty_subtitle": "스킬은 에이전트에게 재사용 가능한 절차를 가르칩니다. 레지스트리를 둘러보고 추가하세요.",
         "filter_skills": "스킬 필터…",

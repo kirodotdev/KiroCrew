@@ -8812,6 +8812,8 @@
         "adds_new_requirements_to": "[Àððş ñèẁ ŕèǫùìŕèɱèñţş ţø {{target}} — {{description}} ····················]",
         "delete_confirm": "[Ðèĺèţè \"{{name}}\"? ···············]",
         "dismiss_confirm": "[Ðìşɱìşş \"{{name}}\"? ··········]",
+        "dismiss_all": "[Ðìşɱìşş Àĺĺ ··········]",
+        "dismiss_all_confirm": "[Ðìşɱìşş àĺĺ {{count}} þèñðìñğ şķìĺĺş? ····················]",
         "loaded_by_2": "[Ĺøàðèð ƀý: {{agents}} ··········]",
         "no_skills_match_query": "[Ñø şķìĺĺş ɱàţçĥ “{{query}}”. ·················]",
         "pending_review_count": "[Þèñðìñğ ŕèṽìèẁ ({{count}}) ···············]",

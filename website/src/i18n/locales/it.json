@@ -9088,6 +9088,8 @@
         "delete_confirm": "Eliminare «{{name}}»?",
         "dismiss": "Ignora",
         "dismiss_confirm": "Ignorare «{{name}}»?",
+        "dismiss_all": "Ignora tutto",
+        "dismiss_all_confirm": "Ignorare tutte le {{count}} competenze in attesa?",
         "edit": "Modifica",
         "empty_subtitle": "Le competenze insegnano all'agente procedure riutilizzabili. Esplora il registro per aggiungerne una.",
         "filter_skills": "Filtra le skill…",

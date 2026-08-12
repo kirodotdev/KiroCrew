@@ -8862,6 +8862,8 @@
         "delete_confirm": "「{{name}}」を削除しますか？",
         "dismiss": "破棄",
         "dismiss_confirm": "「{{name}}」を非表示にしますか？",
+        "dismiss_all": "すべて非表示",
+        "dismiss_all_confirm": "保留中の{{count}}件のスキルをすべて非表示にしますか？",
         "edit": "編集",
         "empty_subtitle": "スキルはエージェントに再利用可能な手順を教えます。レジストリを参照して追加してください。",
         "filter_skills": "スキルをフィルタリング…",

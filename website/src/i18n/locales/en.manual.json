@@ -3048,6 +3048,8 @@
         "adds_new_requirements_to": "Adds new requirements to {{target}} — {{description}}",
         "delete_confirm": "Delete \"{{name}}\"?",
         "dismiss_confirm": "Dismiss \"{{name}}\"?",
+        "dismiss_all": "Dismiss All",
+        "dismiss_all_confirm": "Dismiss all {{count}} pending skills?",
         "loaded_by_2": "Loaded by: {{agents}}",
         "no_skills_match_query": "No skills match “{{query}}”.",
         "pending_review_count": "Pending review ({{count}})",
