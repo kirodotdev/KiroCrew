@@ -774,6 +774,23 @@ export interface InvestigationRecord {
  * items that must not share one investigation record. */
 export type ItemKind = 'issue' | 'pull'
 
+/** Why dispatch cannot proceed, or `ok` when it can. Mirrors the backend's
+ *  `dispatch.REASON_*`: `no_local_path` asks the user to set a value,
+ *  `checkout_unusable` tells them the value they set broke. They are separate
+ *  because those need different sentences, and one string cannot carry both. */
+export type DispatchReason = 'ok' | 'no_local_path' | 'checkout_unusable'
+
+/** Whether an issue in this repo may be handed to an implementation attempt.
+ *  Re-derived by the server on every read, so a checkout deleted after it was
+ *  recorded stops reporting ready. */
+export interface DispatchReadiness {
+  owner: string
+  repo: string
+  ready: boolean
+  reason: DispatchReason
+  local_path: string
+}
+
 export interface InvestigationResponse {
   owner: string
   repo: string
@@ -794,6 +811,10 @@ export interface InvestigationPatch {
 
 export interface ApiError {
   error: string
+  /** Machine-readable refusal code, present on the routes that carry one. The
+   *  UI matches on this rather than on the message, so copy can be said in the
+   *  catalog's words instead of the server's. */
+  code?: string
 }
 
 /** Thrown by `putSettings` on a 409. Carries the settings the server currently
@@ -1596,10 +1617,47 @@ export const issueRadarApi = {
     return r.json()
   },
 
+  /** Whether this repo can hand an issue to an implementation attempt. */
+  getDispatchReadiness: async (ref: RepoRef): Promise<DispatchReadiness> => {
+    const q = new URLSearchParams(repoQuery(ref))
+    const r = await fetch(`${API}/dispatch-readiness?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Record this repo's local checkout, or clear it with an empty string.
+   *
+   * The server validates and REFUSES rather than falling back, so a rejected
+   * path throws here and nothing is stored — which is why the caller keeps the
+   * user's text on screen instead of snapping the field back to the saved value.
+   * A successful write answers with the same readiness shape as the GET, and the
+   * stored path is the RESOLVED one, so the response is what should be rendered
+   * rather than the string that was typed. */
+  setRepoLocalPath: async (ref: RepoRef, localPath: string): Promise<DispatchReadiness> => {
+    const r = await fetch(`${API}/repo/local-path`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), local_path: localPath }),
+    })
+    if (!r.ok) {
+      // Parsed inline rather than through parseErrorBody, which drops `code`:
+      // the refusal is shown to a user, and a raw backend sentence naming the
+      // `local_path` field is not copy. The code lets the caller say it in the
+      // catalog's words and fall back to the server's text only when the code is
+      // one it does not know.
+      let body: Partial<ApiError> = {}
+      try { body = (await r.json()) as ApiError } catch { /* non-JSON body */ }
+      const err = new Error(body.error || `HTTP ${r.status}`) as Error & { code?: string }
+      err.code = body.code
+      throw err
+    }
+    return r.json()
+  },
+
   /** Read the repo's cached AI label recommendations (`recommendations` is null
    * if none generated yet). Never runs the model. */
-  getRecommendations: async (ref: RepoRef): Promise<RecommendationsResponse> => {
-    const q = new URLSearchParams(repoQuery(ref))
+  getRecommendations: async (ref: RepoRef): Promise<RecommendationsResponse> => {    const q = new URLSearchParams(repoQuery(ref))
     const r = await fetch(`${API}/recommendations?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()

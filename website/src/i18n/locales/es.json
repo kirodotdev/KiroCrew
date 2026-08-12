@@ -2232,6 +2232,20 @@
         "selected_change_hidden_by_filters": "El elemento {{subject}} seleccionado está oculto por los filtros activos.",
         "selected_issue_hidden_by_filters": "La incidencia seleccionada está oculta por los filtros activos.",
         "to_see_its_details": "para ver sus detalles."
+      },
+      "dispatch": {
+        "sectionTitle": "Working on issues",
+        "sectionHint": "Where the work would happen",
+        "fieldLabel": "Repository on this machine",
+        "fieldHint": "An absolute path to this repository on your machine. Each issue gets its own worktree branched off it, so the files you have open are never touched. Issue Radar itself reads through your provider CLI and needs no local copy; working on an issue does. Leave it empty to clear.",
+        "placeholder": "/home/you/code/widget",
+        "save": "Save",
+        "statusChecking": "Checking…",
+        "statusNoLocalPath": "Not set, so issues cannot be worked on yet.",
+        "statusCheckoutUnusable": "The saved path is missing, or is no longer a repository.",
+        "statusReady": "Ready to work on issues.",
+        "mustBeAbsolute": "Enter an absolute path, or leave it empty to clear.",
+        "refusedInvalidPath": "That is not a usable repository. Give an absolute path to a directory that holds a .git entry, and not a protected directory."
       }
     },
     "mdNotebook": {
