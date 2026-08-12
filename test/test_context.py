@@ -1052,6 +1052,59 @@ class TestBuildMessageOffloadedAtCallSites:
         vector_store.get_episodic_context.assert_not_called()
 
 
+def _inline_async_attr_calls(attr_names: set[str]) -> list[str]:
+    """Return production call sites where an ``async def`` calls one of *attr_names* inline.
+
+    Shared by the loop-stall guards below.  A nested ``def`` / ``async def`` /
+    ``lambda`` is a separate frame (a sync helper, a thread target, an offloaded
+    callable) and is NOT scanned as part of the enclosing coroutine, so both
+    sanctioned offload shapes pass: passing the method as an ARG to
+    ``run_in_embed_pool`` / ``asyncio.to_thread`` never matches, because the
+    Call's own func is the offload helper. A ``# loop-ok: <reason>`` trailing
+    comment suppresses a finding.
+    """
+    import ast
+    from pathlib import Path
+
+    nested_scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    src_root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+    offenders: list[str] = []
+
+    def _iter_frame_calls(fn: ast.AsyncFunctionDef):
+        """Yield Call nodes lexically in *fn*'s own frame — skip nested scopes."""
+        stack: list[ast.AST] = list(ast.iter_child_nodes(fn))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, nested_scopes):
+                continue  # separate frame: sync helper / thread target / lambda
+            if isinstance(node, ast.Call):
+                yield node
+            stack.extend(ast.iter_child_nodes(node))
+
+    for py in src_root.rglob("*.py"):
+        try:
+            text = py.read_text(encoding="utf-8")
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = text.splitlines()
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.AsyncFunctionDef):
+                continue
+            for call in _iter_frame_calls(fn):
+                func = call.func
+                if not (isinstance(func, ast.Attribute) and func.attr in attr_names):
+                    continue
+                src_line = lines[call.lineno - 1] if call.lineno <= len(lines) else ""
+                if "# loop-ok" in src_line:
+                    continue
+                offenders.append(
+                    f"{py.relative_to(src_root)}:{call.lineno} in async {fn.name} "
+                    f"({func.attr})"
+                )
+    return offenders
+
+
 class TestAsyncCallSitesUseToThread:
     """Static guard: no async coroutine may call build_message inline.
 
@@ -1071,49 +1124,26 @@ class TestAsyncCallSitesUseToThread:
     """
 
     def test_no_inline_build_message_in_async_functions(self):
-        import ast
-        from pathlib import Path
-
-        nested_scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-        src_root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
-        offenders: list[str] = []
-
-        def _iter_frame_calls(fn: ast.AsyncFunctionDef):
-            """Yield Call nodes lexically in *fn*'s own frame — skip nested scopes."""
-            stack: list[ast.AST] = list(ast.iter_child_nodes(fn))
-            while stack:
-                node = stack.pop()
-                if isinstance(node, nested_scopes):
-                    continue  # separate frame: sync helper / thread target / lambda
-                if isinstance(node, ast.Call):
-                    yield node
-                stack.extend(ast.iter_child_nodes(node))
-
-        for py in src_root.rglob("*.py"):
-            try:
-                text = py.read_text(encoding="utf-8")
-                tree = ast.parse(text)
-            except SyntaxError:
-                continue
-            lines = text.splitlines()
-            for fn in ast.walk(tree):
-                if not isinstance(fn, ast.AsyncFunctionDef):
-                    continue
-                for call in _iter_frame_calls(fn):
-                    func = call.func
-                    # Inline call: the Call's func IS .build_message. The
-                    # sanctioned run_in_embed_pool(x.build_message, ...) form
-                    # passes the method as an ARG, so its Call func is
-                    # to_thread and never matches here.
-                    if not (isinstance(func, ast.Attribute) and func.attr == "build_message"):
-                        continue
-                    src_line = lines[call.lineno - 1] if call.lineno <= len(lines) else ""
-                    if "# loop-ok" in src_line:
-                        continue
-                    offenders.append(f"{py.relative_to(src_root)}:{call.lineno} in async {fn.name}")
+        offenders = _inline_async_attr_calls({"build_message"})
 
         assert not offenders, (
             "build_message called inline from async coroutine(s) — the episodic "
             "query embed blocks the event loop; wrap in run_in_embed_pool (or "
             "add '# loop-ok: <reason>' if genuinely safe):\n  " + "\n  ".join(offenders)
+        )
+
+    def test_no_inline_memory_markdown_writes_in_async_functions(self):
+        """write_preferences / write_projects take a cross-process advisory lock.
+
+        The wait is bounded, but waiting inline on the loop still stalls
+        heartbeats, Slack and the dashboard for its duration, so every async
+        call site must offload.
+        """
+        offenders = _inline_async_attr_calls({"write_preferences", "write_projects"})
+
+        assert not offenders, (
+            "guarded memory writer called inline from async coroutine(s) — it "
+            "takes a cross-process advisory lock and would stall the event "
+            "loop; wrap in asyncio.to_thread (or add '# loop-ok: <reason>' if "
+            "genuinely safe):\n  " + "\n  ".join(offenders)
         )

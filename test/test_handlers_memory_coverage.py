@@ -146,7 +146,7 @@ class TestPreferencesProjectsHistory:
         req = _make_request(state, method="PUT", json_body={"content": "- new"})
         resp = await mem_mod.api_memory_preferences(req)
         assert _body(resp) == {"ok": True}
-        mem.write_preferences.assert_called_once_with("- new")
+        mem.write_preferences.assert_called_once_with("- new", force=True)
 
     @pytest.mark.asyncio
     async def test_preferences_put_defaults_missing_content_to_empty(self) -> None:
@@ -154,7 +154,7 @@ class TestPreferencesProjectsHistory:
         state = _make_state(memory=mem)
         req = _make_request(state, method="PUT", json_body={})
         assert (await mem_mod.api_memory_preferences(req)).status == 200
-        mem.write_preferences.assert_called_once_with("")
+        mem.write_preferences.assert_called_once_with("", force=True)
 
     @pytest.mark.asyncio
     async def test_preferences_put_rejects_invalid_json(self) -> None:
@@ -180,7 +180,7 @@ class TestPreferencesProjectsHistory:
         state = _make_state(memory=mem)
         req = _make_request(state, method="PUT", json_body={"content": "## New"})
         assert (await mem_mod.api_memory_projects(req)).status == 200
-        mem.write_projects.assert_called_once_with("## New")
+        mem.write_projects.assert_called_once_with("## New", force=True)
 
     @pytest.mark.asyncio
     async def test_projects_put_rejects_invalid_json(self) -> None:

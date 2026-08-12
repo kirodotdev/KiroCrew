@@ -12,14 +12,20 @@ Structure:
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import re
 import time
+from collections.abc import Iterator
 from datetime import date as _date
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew import platform_compat
 from kiro_crew._sqlite_compat import FTS5_UNAVAILABLE_HINT, fts5_available, sqlite3
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.metrics.db_metrics import timed, timed_query
 from kiro_crew.platform_compat import file_lock
@@ -39,6 +45,66 @@ PROJECTS_FILE = "projects.md"
 
 _DEFAULT_PREFERENCES = "# User Preferences\n\n<!-- Learned from conversations -->\n"
 _DEFAULT_PROJECTS = "# Active Projects\n\n<!-- Current work context -->\n"
+
+# ── Degenerate-write guard ──
+#
+# The consolidator asks an LLM for "the COMPLETE updated file" and writes the
+# reply verbatim as the new file body.  A model that reads the "return the
+# existing content if nothing changed" instruction as a sentinel request answers
+# with a placeholder word instead of the file, and the whole memory file is
+# replaced by that word.  Such a reply is never a legitimate memory file, so
+# guarded writes reject it rather than destroying real content.
+_DEGENERATE_BODIES = frozenset(
+    {
+        "unchanged",
+        "(unchanged)",
+        "no change",
+        "no changes",
+        "no changes needed",
+        "no changes to make",
+        "nothing changed",
+        "nothing to change",
+        "nothing to update",
+        "nochange",
+        "not changed",
+        "no update",
+        "no updates",
+        "no change required",
+        "no changes required",
+        "no update required",
+        "no updates required",
+        "no changes necessary",
+        "same",
+        "same as above",
+        "same as before",
+        "none",
+        "n/a",
+        "na",
+        "null",
+        "nil",
+    }
+)
+
+# A guarded write that keeps less than this fraction of a substantive existing
+# file is a truncation, not an edit.  The consolidator does prune stale entries,
+# but dropping four fifths of the file in one pass is the clobber signature.
+_MIN_RETAINED_FRACTION = 0.2
+
+# Below this size the shrink heuristic is meaningless (a nearly empty file can
+# legitimately be replaced by something equally small).
+_SHRINK_GUARD_MIN_CHARS = 400
+
+# Lock file serializing read-modify-write of the markdown memory files across
+# processes.  Concurrent Kiro Crew sessions each rewrite these files wholesale.
+_WRITE_LOCK_FILE = ".write.lock"
+
+# Bounded wait for that lock.  The hold window is a read, a compare and an
+# atomic rename (sub-millisecond), so real contention clears immediately; the
+# ceiling exists so a wedged or crashed holder can never stall a caller
+# indefinitely.  Acquisition is always non-blocking + retry, never a bare
+# blocking ``flock``, so the worst case for any caller is a bounded wait.
+_WRITE_LOCK_TIMEOUT_SECS = 5.0
+_WRITE_LOCK_POLL_SECS = 0.02
 
 # read_recent_history runs on every message turn (context build) and statting +
 # reading up to 181 daily files synchronously on the event loop is a per-message
@@ -120,6 +186,123 @@ def legacy_memory_present() -> bool:
     return False
 
 
+# ── Guarded-write helpers ──
+
+
+def _memory_body(content: str) -> str:
+    """Return *content* stripped of chrome that carries no memory of its own.
+
+    Drops the leading ``# H1`` title, the ``_Updated: <date>_`` stamp that
+    :meth:`MemoryStore.write_projects` adds, HTML comment placeholders, and
+    blank lines.  What remains is the substance of the file, which is what the
+    guard below reasons about: a reply of ``"unchanged"`` and a reply of
+    ``"# Active Projects\\n\\nunchanged"`` are equally destructive, and only
+    comparing bodies catches both.
+    """
+    kept: list[str] = []
+    for line in content.strip().splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# "):
+            continue
+        if stripped.startswith("_Updated:") and stripped.endswith("_"):
+            continue
+        if stripped.startswith("<!--") and stripped.endswith("-->"):
+            continue
+        kept.append(stripped)
+    return "\n".join(kept).strip()
+
+
+def _normalize_placeholder(body: str) -> str:
+    """Reduce a body to a bare token for placeholder matching.
+
+    Lowercases, collapses inner whitespace, and strips surrounding markdown
+    emphasis/code/quote/bracket characters and trailing punctuation, so
+    "Unchanged.", "*unchanged*" and "`no changes`" all reduce to a token the
+    _DEGENERATE_BODIES lookup can catch.
+    """
+    s = re.sub(r"\s+", " ", body.strip().lower())
+    s = re.sub(r"^[\s*_`~\"'()\[\]-]+", "", s)
+    s = re.sub(r"[\s*_`~\"'()\[\].,!?;:-]+$", "", s)
+    return s
+
+
+def degenerate_write_reason(new: str, current: str) -> str | None:
+    """Return why writing *new* over *current* would destroy memory, else ``None``.
+
+    Three rejections, cheapest first: an empty body, a placeholder body (the
+    consolidator answering the prompt instead of returning the file), and a
+    write that discards most of a substantive file.
+    """
+    body = _memory_body(new)
+    if not body:
+        return "empty body"
+    if _normalize_placeholder(body) in _DEGENERATE_BODIES:
+        return f"placeholder body {body!r}"
+    current_body = _memory_body(current)
+    if (
+        len(current_body) >= _SHRINK_GUARD_MIN_CHARS
+        and len(body) < len(current_body) * _MIN_RETAINED_FRACTION
+    ):
+        return f"truncation: {len(body)} chars would replace {len(current_body)}"
+    return None
+
+
+class MemoryWriteLockTimeout(RuntimeError):
+    """Raised when the memory write lock cannot be acquired within the bound.
+
+    Fail-closed signal: the guarded writers refuse rather than write
+    unserialized (which could lose a concurrent update). Callers on the event
+    loop offload the write and turn this into a transient error / retry.
+    """
+
+
+@contextlib.contextmanager
+def _memory_write_lock(memory_dir_path: Path) -> Iterator[None]:
+    """Hold an exclusive advisory lock over the markdown memory files.
+
+    Serializes the read-compare-write sequence in the guarded writers across
+    processes, so two concurrent sessions cannot interleave their read and
+    their write and lose one another's update.
+
+    Acquisition is non-blocking with a bounded retry (never a bare blocking
+    ``flock``): a wedged holder makes this fail closed -- it raises
+    ``MemoryWriteLockTimeout`` rather than write unserialized (which could lose
+    a concurrent update) or stall the caller forever.  Even so, the whole write
+    is synchronous and must not run
+    on the event loop thread; the async call sites offload it (see
+    ``history.py`` ``_consolidate`` and the dashboard memory handlers), and
+    ``test_context.py::TestAsyncCallSitesUseToThread`` fails the build if a new
+    coroutine calls a guarded writer inline.
+    """
+    memory_dir_path.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(memory_dir_path / _WRITE_LOCK_FILE), os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = False
+    try:
+        deadline = time.monotonic() + _WRITE_LOCK_TIMEOUT_SECS
+        while True:
+            acquired = platform_compat.try_acquire_lock(fd, exclusive=True)
+            if acquired or time.monotonic() >= deadline:
+                break
+            time.sleep(_WRITE_LOCK_POLL_SECS)
+        if not acquired:
+            # Fail closed: a wedged holder means we cannot serialize the
+            # read-compare-write, so refuse rather than write unserialized and
+            # risk losing the holder's concurrent update. The wait is bounded
+            # (never blocks the caller); callers on the event loop offload the
+            # write and translate this into a transient retry.
+            raise MemoryWriteLockTimeout(
+                "memory write lock not acquired within "
+                f"{_WRITE_LOCK_TIMEOUT_SECS:.1f}s"
+            )
+        yield
+    finally:
+        if acquired:
+            platform_compat.release_lock(fd)
+        os.close(fd)
+
+
 # ── MemoryStore ──
 
 
@@ -164,11 +347,23 @@ class MemoryStore:
             return self._preferences_file.read_text(encoding="utf-8")
         return ""
 
-    def write_preferences(self, content: str) -> None:
-        """Write user preferences and update FTS index."""
+    def write_preferences(
+        self, content: str, *, expected: str | None = None, force: bool = False
+    ) -> bool:
+        """Write user preferences and update FTS index.
+
+        See :meth:`write_projects` for the guard semantics; they are identical.
+        Returns ``True`` when the file was written.
+        """
         self._memory_dir.mkdir(parents=True, exist_ok=True)
-        self._preferences_file.write_text(content, encoding="utf-8")
+        with _memory_write_lock(self._memory_dir):
+            if not force and not self._write_allowed(
+                PREFERENCES_FILE, content, self.read_preferences(), expected
+            ):
+                return False
+            atomic_write(self._preferences_file, content)
         self._index_file(self._preferences_file, content)
+        return True
 
     def add_preference(self, preference: str) -> None:
         """Append a preference line, avoiding duplicates."""
@@ -185,8 +380,46 @@ class MemoryStore:
             return self._projects_file.read_text(encoding="utf-8")
         return ""
 
-    def write_projects(self, content: str) -> None:
-        """Write active projects, adding header if missing, and update FTS index."""
+    def _write_allowed(
+        self, name: str, content: str, current: str, expected: str | None
+    ) -> bool:
+        """Return whether a guarded write of *content* over *current* may proceed.
+
+        Must be called with the memory write lock held, so *current* is the
+        content the write will actually replace.
+        """
+        if expected is not None and current.strip() != expected.strip():
+            logger.warning(
+                "Rejected stale %s write: on-disk content changed after it was "
+                "read, so this update was computed from a stale view and would "
+                "drop a concurrent writer's changes",
+                name,
+            )
+            return False
+        if reason := degenerate_write_reason(content, current):
+            logger.warning("Rejected degenerate %s write: %s", name, reason)
+            return False
+        return True
+
+    def write_projects(
+        self, content: str, *, expected: str | None = None, force: bool = False
+    ) -> bool:
+        """Write active projects, adding header if missing, and update FTS index.
+
+        Returns ``True`` when the file was written and ``False`` when the write
+        was rejected.  Automated callers (the consolidator) get two protections:
+
+        - **Degenerate-write guard.** A body that is empty, a placeholder such
+          as ``unchanged``, or a truncation of a substantive file is rejected
+          instead of overwriting real content.
+        - **Compare-and-swap.** When *expected* is supplied, the write lands
+          only if the on-disk content still matches it, so an update computed
+          from a stale read never silently overwrites a concurrent writer.
+
+        Both checks and the write run under an exclusive cross-process lock.
+        Pass ``force=True`` for an explicit human edit that intends to shrink or
+        clear the file.
+        """
         self._memory_dir.mkdir(parents=True, exist_ok=True)
         date = datetime.now().strftime("%Y-%m-%d")
         # Don't double-wrap if content already has the header
@@ -194,8 +427,14 @@ class MemoryStore:
             full = content.strip() + "\n"
         else:
             full = f"# Active Projects\n\n_Updated: {date}_\n\n{content}\n"
-        self._projects_file.write_text(full, encoding="utf-8")
+        with _memory_write_lock(self._memory_dir):
+            if not force and not self._write_allowed(
+                PROJECTS_FILE, full, self.read_projects(), expected
+            ):
+                return False
+            atomic_write(self._projects_file, full)
         self._index_file(self._projects_file, full)
+        return True
 
     # ── Legacy read/write (used by consolidator) ──
 
@@ -211,17 +450,21 @@ class MemoryStore:
         return "\n\n".join(parts)
 
     def write(self, content: str) -> None:
-        """Write combined memory — splits into preferences + projects sections."""
+        """Write combined memory — splits into preferences + projects sections.
+
+        An explicit whole-memory set (CLI, eval seeding), so it bypasses the
+        guards that protect the consolidator from itself.
+        """
         if "# Active Projects" in content:
             idx = content.index("# Active Projects")
-            self.write_preferences(content[:idx].strip() + "\n")
-            # Use write_text + index (not write_projects which adds header)
+            self.write_preferences(content[:idx].strip() + "\n", force=True)
+            # Use atomic_write + index (not write_projects which adds header)
             projects_content = content[idx:].strip() + "\n"
             self._memory_dir.mkdir(parents=True, exist_ok=True)
-            self._projects_file.write_text(projects_content, encoding="utf-8")
+            atomic_write(self._projects_file, projects_content)
             self._index_file(self._projects_file, projects_content)
         else:
-            self.write_preferences(content)
+            self.write_preferences(content, force=True)
 
     # ── Daily History ──
 

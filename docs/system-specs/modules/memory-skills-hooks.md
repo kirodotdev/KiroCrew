@@ -48,6 +48,16 @@ FTS5 search via `~/.kiro/crew/memory_index.db` (SQLite via `pysqlite3-binary` on
 
 Context injection includes source citations per section. Agent can update memory files via kiro-cli's file tools.
 
+### Guarded Writes (`write_preferences`, `write_projects`)
+
+Both files are replaced wholesale by the consolidator from an LLM reply, so the writers protect against the two ways that destroys content. Each returns `True` when the write landed and `False` when it was rejected, and runs its check plus the write under an exclusive cross-process advisory lock (`memory/.write.lock`) with an atomic `atomic_write` rename.
+
+**Loop safety:** lock acquisition is non-blocking with a bounded retry (`_WRITE_LOCK_TIMEOUT_SECS`, 5s; never a bare blocking `flock`), so a wedged holder makes the write fail closed: it raises `MemoryWriteLockTimeout` rather than write unserialized (which could lose a concurrent update) or stall the caller forever, and callers on the event loop offload the write and turn the timeout into a transient retry. The writers are nonetheless synchronous and must not run on the event loop thread: `_consolidate` and the dashboard memory handlers offload them via `asyncio.to_thread`, and `test_context.py::TestAsyncCallSitesUseToThread` fails the build if a new coroutine calls either writer inline (same static-guard treatment as `build_message`).
+
+- **Degenerate-write guard.** `degenerate_write_reason(new, current)` rejects a body that is empty, that is a placeholder from `_DEGENERATE_BODIES` (`unchanged`, `no changes`, `n/a`, …), or that keeps less than `_MIN_RETAINED_FRACTION` (20%) of a substantive existing file (`_SHRINK_GUARD_MIN_CHARS`, 400 chars). Comparison runs on the *body* (`_memory_body`), which strips the H1 title, the `_Updated:` stamp, and HTML comments, so `unchanged` and `# Active Projects\n\nunchanged` are caught alike.
+- **Compare-and-swap.** When `expected=` is supplied, the write lands only if the on-disk content still matches it. Callers that read, compute for seconds, then write (the consolidator) pass their pre-computation snapshot so a concurrent session's update is never silently lost. Omitting `expected` keeps the old last-writer-wins behavior.
+- **`force=True`** bypasses both checks for an explicit human or fixture write that intends to shrink or clear the file: the dashboard memory editor (`PUT /api/memory/projects`), the legacy combined `write()`, and eval seeding.
+
 ### Decaying Memory (`read_recent_history`)
 
 History context uses natural decay: recent days in full detail, older days

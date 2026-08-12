@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from kiro_crew import platform_compat
 from kiro_crew.memory import MemoryStore
 
 
@@ -204,3 +205,208 @@ class TestRecentHistoryCache:
         prefs = store.read_preferences()
         # Empty pref should not add a blank bullet
         assert "\n- \n" not in prefs
+
+
+_REAL_PROJECTS = "# Active Projects\n\n" + "".join(
+    f"## Project {i}\n- owner: someone\n- status: in progress and being tracked\n\n"
+    for i in range(12)
+)
+
+
+class TestDegenerateWriteGuard:
+    """The consolidator asks an LLM for the whole file and writes the reply.
+
+    A model that answers the "return existing content if nothing changed"
+    instruction with a placeholder used to replace the entire file with that
+    word.  Guarded writes must reject those replies.
+    """
+
+    def test_placeholder_body_rejected(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        assert store.write_projects("unchanged") is False
+        assert "Project 7" in store.read_projects()
+
+    def test_placeholder_variants_rejected(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        for body in (
+            "Unchanged",
+            "no changes",
+            "(unchanged)",
+            "N/A",
+            "same as before",
+            "unchanged.",
+            "*unchanged*",
+            "`no changes`",
+            "Nothing changed!",
+            "_N/A_",
+            "nothing to update",
+            "No changes required.",
+            "no updates required",
+        ):
+            assert store.write_projects(body) is False, body
+        assert "Project 7" in store.read_projects()
+
+    def test_placeholder_under_header_rejected(self, tmp_path):
+        """The wrapped form is just as destructive as the bare word."""
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        assert store.write_projects("# Active Projects\n\n_Updated: 2026-08-05_\n\nunchanged") is False
+        assert "Project 7" in store.read_projects()
+
+    def test_empty_body_rejected(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        assert store.write_projects("") is False
+        assert store.write_projects("# Active Projects\n\n") is False
+        assert "Project 7" in store.read_projects()
+
+    def test_truncation_rejected(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        assert store.write_projects("## Project 0\n- still here\n") is False
+        assert "Project 7" in store.read_projects()
+
+    def test_legitimate_prune_allowed(self, tmp_path):
+        """Dropping some entries is normal consolidation, not a clobber."""
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        pruned = "# Active Projects\n\n" + "".join(
+            f"## Project {i}\n- owner: someone\n- status: in progress and being tracked\n\n"
+            for i in range(8)
+        )
+        assert store.write_projects(pruned) is True
+        assert "Project 7" in store.read_projects()
+        assert "Project 11" not in store.read_projects()
+
+    def test_force_allows_clearing(self, tmp_path):
+        """An explicit human edit may shrink or clear the file."""
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        assert store.write_projects("## Only one left\n", force=True) is True
+        assert "Project 7" not in store.read_projects()
+
+    def test_guard_does_not_block_first_write(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        assert store.write_projects("## Fresh start\n- doing things\n") is True
+        assert "Fresh start" in store.read_projects()
+
+    def test_preferences_guarded_too(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        big = "# User Preferences\n\n" + "".join(
+            f"- preference number {i} that the user stated explicitly\n" for i in range(20)
+        )
+        store.write_preferences(big, force=True)
+
+        assert store.write_preferences("unchanged") is False
+        assert "preference number 17" in store.read_preferences()
+
+
+class TestWriteLockIsBounded:
+    """The lock must never block a caller indefinitely.
+
+    A blocking ``flock`` would freeze whichever thread waits on it for as long
+    as a wedged holder lives. Acquisition is non-blocking with a bounded retry,
+    so a stuck holder makes the write fail closed (raises
+    ``MemoryWriteLockTimeout``) rather than write unserialized.
+    """
+
+    def test_raises_when_lock_is_held_elsewhere(self, tmp_path, monkeypatch):
+        import os
+        import time
+
+        import pytest
+
+        from kiro_crew import memory as memory_mod
+
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        monkeypatch.setattr(memory_mod, "_WRITE_LOCK_TIMEOUT_SECS", 0.2)
+
+        # Hold the lock from an independent fd, as another process would.
+        lock_path = tmp_path / "memory" / memory_mod._WRITE_LOCK_FILE
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        assert platform_compat.try_acquire_lock(fd, exclusive=True)
+        try:
+            started = time.monotonic()
+            updated = _REAL_PROJECTS + "## Project 12\n- added under contention\n"
+            # Fail closed: refuse rather than write unserialized.
+            with pytest.raises(memory_mod.MemoryWriteLockTimeout):
+                store.write_projects(updated)
+            elapsed = time.monotonic() - started
+        finally:
+            platform_compat.release_lock(fd)
+            os.close(fd)
+
+        # Bounded: it gave up waiting (raised) rather than hanging.
+        assert elapsed < 5.0
+        # The contended write did not land.
+        assert "added under contention" not in store.read_projects()
+
+    def test_lock_is_released_after_write(self, tmp_path):
+        import os
+
+        from kiro_crew import memory as memory_mod
+
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        lock_path = tmp_path / "memory" / memory_mod._WRITE_LOCK_FILE
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            # Nothing still holds it, so an outside acquire succeeds immediately.
+            assert platform_compat.try_acquire_lock(fd, exclusive=True)
+            platform_compat.release_lock(fd)
+        finally:
+            os.close(fd)
+
+    """Concurrent sessions rewrite these files wholesale from their own view."""
+
+    def test_stale_write_rejected(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        snapshot = store.read_projects()  # what a session read before its LLM turn
+
+        # A concurrent session lands its own update in the meantime.
+        concurrent = snapshot + "\n## Project from other session\n- new work\n"
+        assert store.write_projects(concurrent, force=True) is True
+
+        # The first session's reply was computed from the stale snapshot.
+        stale = snapshot + "\n## Project from first session\n- other work\n"
+        assert store.write_projects(stale, expected=snapshot) is False
+
+        current = store.read_projects()
+        assert "Project from other session" in current
+        assert "Project from first session" not in current
+
+    def test_fresh_write_accepted(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        snapshot = store.read_projects()
+        updated = snapshot + "\n## Newly tracked project\n- just started\n"
+        assert store.write_projects(updated, expected=snapshot) is True
+        assert "Newly tracked project" in store.read_projects()
+
+    def test_expected_none_skips_cas(self, tmp_path):
+        """Callers that pass no expectation keep the old last-writer-wins path."""
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects(_REAL_PROJECTS, force=True)
+
+        replacement = "# Active Projects\n\n" + "".join(
+            f"## Replacement {i}\n- owner: someone else\n- status: also in progress\n\n"
+            for i in range(12)
+        )
+        assert store.write_projects(replacement) is True
+        assert "Replacement 3" in store.read_projects()

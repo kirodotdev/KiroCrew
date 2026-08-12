@@ -28,6 +28,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect, stream_and_collect_json
+from kiro_crew.memory import MemoryWriteLockTimeout, degenerate_write_reason
 from kiro_crew.messaging.link import legacy_key
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -4666,12 +4667,19 @@ class HistoryConsolidator:
                     '"preferences_update": The COMPLETE updated preferences file. '
                     "Merge duplicates, keep only newest if contradicted, remove stale "
                     "one-off observations. Keep '# User Preferences' header. "
-                    "Return existing content exactly if nothing changed."
+                    "If nothing changed, repeat the existing content above verbatim. "
+                    "NEVER answer with a placeholder such as 'unchanged' or 'no "
+                    "changes': the reply is written directly to the file, so a "
+                    "placeholder destroys it."
                 )
                 keys.append(
                     '"projects_update": The COMPLETE updated projects file. '
                     "Only active projects, remove stale entries, update facts. "
-                    "Keep '# Active Projects' header. Return existing if unchanged."
+                    "Keep '# Active Projects' header. "
+                    "If nothing changed, repeat the existing content above verbatim. "
+                    "NEVER answer with a placeholder such as 'unchanged' or 'no "
+                    "changes': the reply is written directly to the file, so a "
+                    "placeholder destroys it."
                 )
 
             if include_history:
@@ -4733,6 +4741,60 @@ class HistoryConsolidator:
                     )
                 return None
 
+            # Markdown writes FIRST, before any durable side effect
+            # (append_history, structured memory, lessons, mark_consolidated).
+            # current_prefs / current_projects were read BEFORE the LLM turn,
+            # which takes seconds; a concurrent session can rewrite either file
+            # in that window. Passing the snapshot as expected= makes each write
+            # a compare-and-swap. A placeholder/degenerate reply is a benign
+            # no-op (the guard rejects it and we proceed). But if an otherwise
+            # substantive reply is rejected, the file moved on: this reply was
+            # computed from a stale view, so abort the whole consolidation
+            # before anything durable is written and retry the full span next
+            # cycle -- otherwise we would append a history summary while leaving
+            # the offset unadvanced, duplicating it on retry.
+            #
+            # Offloaded: this coroutine runs on the event loop thread and the
+            # guarded writers take a cross-process advisory lock; waiting inline
+            # would stall heartbeats, Slack and the dashboard.
+            if not self._migrated:
+                stale = False
+                try:
+                    if prefs := result.get("preferences_update"):
+                        if prefs.strip() != current_prefs.strip():
+                            wrote = await asyncio.to_thread(
+                                memory.write_preferences, prefs, expected=current_prefs
+                            )
+                            if not wrote and degenerate_write_reason(prefs, current_prefs) is None:
+                                stale = True
+                    if projects := result.get("projects_update"):
+                        if projects.strip() != current_projects.strip():
+                            wrote = await asyncio.to_thread(
+                                memory.write_projects, projects, expected=current_projects
+                            )
+                            if (
+                                not wrote
+                                and degenerate_write_reason(projects, current_projects) is None
+                            ):
+                                stale = True
+                except MemoryWriteLockTimeout:
+                    # A wedged cross-process lock is transient (a concurrent
+                    # holder), so treat it like a stale reject: defer.
+                    stale = True
+                if stale:
+                    # Defer WITHOUT charging the attempt budget: a concurrency
+                    # event (stale CAS, or a held lock) is not a failure and must
+                    # not count toward permanent abandonment. Nothing durable ran
+                    # yet (this precedes append_history / mark_consolidated), so
+                    # the full span is retried cleanly next cycle.
+                    logger.info(
+                        "Deferring consolidation for %s: a concurrent session "
+                        "held the memory lock or rewrote a file during the LLM "
+                        "turn; retrying the full span next cycle",
+                        key,
+                    )
+                    return None
+
             if entry := result.get("history_entry"):
                 # Offloaded to a worker thread: append_history takes a blocking
                 # advisory file lock (cross-process) and does synchronous file
@@ -4749,16 +4811,6 @@ class HistoryConsolidator:
             # if the embedding endpoint is slow/hung (heartbeats, Slack, dashboard).
             if self._vector_store:
                 await run_in_embed_pool(self._write_structured_memory, result, key)
-
-            # Markdown writes (backward compat — skip if migrated)
-            if not self._migrated:
-                if prefs := result.get("preferences_update"):
-                    if prefs.strip() != current_prefs.strip():
-                        memory.write_preferences(prefs)
-
-                if projects := result.get("projects_update"):
-                    if projects.strip() != current_projects.strip():
-                        memory.write_projects(projects)
 
             # Lesson extraction: _save_lessons calls write_lesson which embeds
             # each rule (+ up to 5 lazy backfills) via blocking urllib to Ollama.
