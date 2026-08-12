@@ -452,6 +452,25 @@ export default defineConfig({
           disableJavaScriptFileLoading: true,
           disableJavaScriptEvaluation: true,
           disableCSSFileLoading: true,
+          // Resolve a declined resource load as a silent success instead of
+          // rejecting with a NotSupportedError. happy-dom runs the load
+          // asynchronously on DOM insertion, so that rejection is orphaned —
+          // it escapes the test that inserted the node and vitest counts it as
+          // a run-level unhandled error, failing the whole shard even when every
+          // assertion passed. We assert the serialized DOM, never the sandboxed
+          // widget runtime, so a no-op success preserves the contract under test.
+          handleDisabledFileLoadingAsSuccess: true,
+          // Never follow a link or form navigation over the network. An
+          // un-intercepted `<a href>` click — e.g. an artifact anchor a test
+          // clicks with no onArtifactOpen handler — otherwise makes happy-dom
+          // dial the document origin for real; that fetch outlives the test and
+          // its ECONNREFUSED lands after msw teardown as another orphaned
+          // rejection. Disabling navigation still falls back to setting the URL
+          // (no dial), so tests that read location after a click keep working.
+          navigation: {
+            disableMainFrameNavigation: true,
+            disableChildFrameNavigation: true,
+          },
         },
       },
     },
