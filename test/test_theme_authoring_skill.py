@@ -39,7 +39,7 @@ def _frontend_allowed_classes() -> set[str]:
 
 
 def test_variable_count_matches_validator() -> None:
-    """The '43-variable palette' claim tracks _THEME_CSS_VARS."""
+    """The palette-size claim tracks _THEME_CSS_VARS."""
     n = len(_THEME_CSS_VARS)
     text = _skill_text()
     assert f"{n} allowlisted variables" in text and f"{n}-variable palette" in text, (
@@ -81,3 +81,34 @@ def test_surface_allowlist_matches_runtime_scoper() -> None:
     assert named <= allowed | forbidden, (
         f"skill names surfaces the scoper does not allow: {sorted(named - allowed - forbidden)}"
     )
+
+
+def test_skill_claims_no_allowlisted_var_is_excluded() -> None:
+    """The skill must not tell authors to work around a variable that is allowed.
+
+    The counts alone did not catch this: when eleven variables were added to
+    ``_THEME_CSS_VARS``, the skill kept naming five of them as excluded and
+    prescribing an overrides.css patch for them. A count assertion goes green the
+    moment a number is edited, while the prose keeps sending every synced agent
+    down a workaround that is no longer needed — worse than a stale number,
+    because it produces wrong output rather than incomplete output.
+
+    Scans whole blocks rather than sentences, because the skill wrote the claim
+    and the variable names on either side of a colon, and expands ``--prefix-*``
+    globs, because it referred to the four ``--json-*`` colors collectively.
+    """
+    unavailable = re.compile(r"not\s+(?:in\s+the\s+)?(?:allowlist|allowlisted|palette)", re.I)
+    for block in re.split(r"\n\s*\n", _skill_text()):
+        if not unavailable.search(block):
+            continue
+        claimed: set[str] = set()
+        for token in re.findall(r"--[a-z0-9-]+\*?", block):
+            if token.endswith("*"):
+                prefix = token[:-1]
+                claimed |= {v for v in _THEME_CSS_VARS if v.startswith(prefix)}
+            elif token in _THEME_CSS_VARS:
+                claimed.add(token)
+        assert not claimed, (
+            f"{SKILL.relative_to(ROOT)} says these are unavailable, but "
+            f"_THEME_CSS_VARS allows them: {sorted(claimed)}"
+        )

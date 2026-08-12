@@ -1,6 +1,6 @@
 ---
 name: theme-pack-authoring
-description: Build, validate, and install Kiro Crew theme packs -- pack anatomy, the 43-variable palette, role-tagged fonts, the overrides.css allowlist (what installs vs what actually renders), and the install-verify cycle. Use when the user wants to create or edit a theme pack.
+description: Build, validate, and install Kiro Crew theme packs -- pack anatomy, the 54-variable palette, role-tagged fonts, the overrides.css allowlist (what installs vs what actually renders), and the install-verify cycle. Use when the user wants to create or edit a theme pack.
 triggers: theme pack, custom theme, theme.json, variables.json, overrides.css, install theme, theme font, dashboard theme, build a theme
 ---
 
@@ -16,7 +16,7 @@ debugging time.
 ```
 my-theme/
 ├── theme.json          # manifest: slug, name, emoji, level, formatVersion, fonts[]
-├── variables.json      # dark + light palettes (43 allowlisted CSS vars)
+├── variables.json      # dark + light palettes (54 allowlisted CSS vars)
 ├── readme.md           # optional; attribution and notes
 ├── styles/
 │   ├── overrides.css   # optional; scoped structural CSS (see allowlist below)
@@ -68,7 +68,7 @@ a level-0 pack shipping a font is refused.
 
 ## variables.json — the palette
 
-Two blocks, `dark` and `light`, each holding up to **43 allowlisted variables**.
+Two blocks, `dark` and `light`, each holding up to **54 allowlisted variables**.
 Required minimum per block: `--bg`, `--text`, `--accent`. Unknown keys are
 REJECTED (install fails), so do not invent variables; the allowlist is
 `_THEME_CSS_VARS` in `src/kiro_crew/dashboard/theme_validate.py`.
@@ -76,15 +76,15 @@ REJECTED (install fails), so do not invent variables; the allowlist is
 - To clone a built-in theme's palette, transcribe its block from
   `website/src/index.css` (e.g. `[data-theme="kiro-dark"]`), keeping only
   allowlisted vars.
-- Five commonly-wanted vars are NOT in the allowlist: `--accent-fg` and the four
-  `--json-*` highlight colors. Patch them via overrides.css on the pack's own
-  scoped body selector — legal (not a font, `body` is allowlisted):
+- `--accent-fg` and the four `--json-*` highlight colors are allowlisted, so set
+  them in `variables.json` like any other variable. Earlier versions of this pack
+  format excluded them and needed an overrides.css workaround; that is no longer
+  required and no longer the right shape:
 
-```css
-[data-theme="custom-my-theme-dark"] body {
-  --accent-fg: #ffffff;
-  --json-key: #b07fff; --json-str: #7ee787; --json-num: #c19aff; --json-bool: #f94359;
-}
+```json
+"--accent-fg": "#ffffff",
+"--json-key": "#b07fff", "--json-str": "#7ee787",
+"--json-num": "#c19aff", "--json-bool": "#f94359"
 ```
 
 ## overrides.css — what installs is NOT what renders
@@ -123,6 +123,6 @@ from `kiro_crew.dashboard.theme_validate` runs the same check programmatically.
 - Toggle a built-in theme vs your pack on the same screen — an A/B flip beats
   memory.
 - Check: the chat transcript (body face), small accent badges (bold weight), a
-  message with inline code and a link, a JSON payload (the `--json-*` patch),
+  message with inline code and a link, a JSON payload (the `--json-*` colors),
   primary buttons (`--accent-fg`), Sans/Mono/System switching in Settings, and
   the dropped-rules notice staying absent.
