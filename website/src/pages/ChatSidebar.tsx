@@ -375,6 +375,11 @@ interface Slot {
   // `pending_approval` rides on every ChatSlot payload; the sidebar reads it to
   // suppress the "your turn" dot and show the yellow "Needs approval" subtitle.
   pending_approval?: boolean
+  // The agent asked something and is waiting on the answer — an unanswered
+  // question card, or a turn that ended with an [OPTIONS:] tag. Its own subtitle,
+  // and it suppresses the "your turn" dot for the same reason an approval does.
+  needs_input?: boolean
+  needs_input_reason?: '' | 'question' | 'options'
   mode?: string
   agent?: string
   model?: string  // '' / absent = provider-default ("auto")
@@ -2284,6 +2289,13 @@ function ChatSidebar({
       ? '1 sub-agent needs approval'
       : `${subagentAwaiting} sub-agents need approval`
     const wfActive = workflowActive[s.key]
+    // The agent's own ask, labelled by WHICH ask it is: a question card the user
+    // can still answer in the transcript, versus a turn that ended offering
+    // options. Both mean the session cannot advance until the user replies, so
+    // they share one row and differ only in wording.
+    const needsInputLabel = s.needs_input_reason === 'question'
+      ? i18nT('pages.chatSidebar.needs_your_answer')
+      : i18nT('pages.chatSidebar.waiting_on_your_choice')
     // Goal loop (auto-nudge). A loop is a MODE, not a turn state, so it is not
     // gated on `s.running` — a looping session spends most of its life mid-turn,
     // and hiding the indicator then would hide it almost always.
@@ -2416,7 +2428,7 @@ function ChatSidebar({
             dispatch(switchSlot(s.key))
             onSelectSlot?.(s.key)
           }}>
-          {s.unread && !s.running && !s.pending_approval && !subagentAwaiting && !goalLoop && (
+          {s.unread && !s.running && !s.pending_approval && !subagentAwaiting && !goalLoop && !s.needs_input && (
             // Blue dot = "your turn": the agent finished its turn (not running)
             // and you haven't opened the session since (unread). Redefined from
             // the old "any unseen output" trigger so it no longer lights
@@ -2427,6 +2439,9 @@ function ChatSidebar({
             // A goal loop suppresses it too: the loop appends a turn every cycle,
             // so the dot would light permanently and stop meaning "your turn".
             // The "Loop N/M" subtitle carries the state instead.
+            // An unanswered agent question suppresses it on the same grounds —
+            // its own info-coloured subtitle says more than a bare dot, and two
+            // markers for one state read as two separate things to do.
             <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--accent)' }} title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
           )}
           <div className="flex-1 min-w-0 overflow-hidden">
@@ -2533,6 +2548,18 @@ function ChatSidebar({
               <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={subagentApprovalLabel}>
                 <Bot size={11} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
                 <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
+              </div>
+            ) : s.needs_input ? (
+              // The agent asked something and is waiting on the answer. Ranked
+              // above every "working" signal for the same reason the approval
+              // branches are: an owed reply must not read as work in progress —
+              // and a BLOCKING card keeps `s.running` true, so without this the
+              // row would show "Thinking…" while nothing can advance until the
+              // user answers. Info-coloured and static-glyphed to stay distinct
+              // from the warn-coloured approval rows above.
+              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={needsInputLabel}>
+                <MessageSquare size={11} className="shrink-0" style={{ color: 'var(--info)' }} aria-hidden />
+                <span className="truncate"><span className="font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>{s.last_message ? <span className="text-muted"> · {s.last_message}</span> : null}</span>
               </div>
             ) : goalLoop ? (
               // An active goal loop outranks every "working" signal below it but

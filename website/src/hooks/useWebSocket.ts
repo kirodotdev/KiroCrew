@@ -20,13 +20,24 @@ import { i18nT } from '../i18n/t'
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */
-/** Own-property `ask_id`s held in the pending-question map, in map order.
- *  Legacy cards (no ask_id) are excluded: they have no server-side record. */
+/** The server-side IDENTITY of a held card: a blocking ask's `ask_id`, or a
+ *  stateless card's server-minted `card_id`. Both kinds are listed by
+ *  `GET /api/ask-question/pending`, so both can be reconciled against it.
+ *
+ *  A card with neither (an entry built by a fixture, or delivered before the
+ *  server kept a record) has no identity to compare, and absence from the
+ *  snapshot says nothing about it — those are skipped rather than reported
+ *  stale. */
+export function identityOf(card: { ask_id?: string; serverCardId?: string } | undefined): string {
+  return card?.ask_id || card?.serverCardId || ''
+}
+
+/** Own-property card identities held in the pending-question map, in map order. */
 export function askIdsOf(
-  map: Record<string, { ask_id?: string } | undefined> | undefined,
+  map: Record<string, { ask_id?: string; serverCardId?: string } | undefined> | undefined,
 ): string[] {
   return Object.values(map ?? {})
-    .map((card) => card?.ask_id)
+    .map((card) => identityOf(card))
     .filter((id): id is string => !!id)
 }
 
@@ -53,10 +64,18 @@ export function resolvedSince(log: Map<string, number>, watermark: number): stri
  *  - An id that vanished locally during the fetch was resolved by a WS event, so
  *    the response's copy is already dead and must not be re-added — a
  *    resurrected card can only 404 on submit.
+ *
+ *  Both kinds of card go through this, keyed by `identityOf`: the server records
+ *  and lists stateless cards too, so a tab that was disconnected while its card
+ *  was retired or replaced must have it removed, not merely be denied a
+ *  duplicate. A card whose identity is absent from the snapshot is stale in
+ *  exactly the same sense for both kinds.
  */
-export function reconcileQuestions<T extends { ask_id: string; slot?: string; questions?: unknown[] }>(
-  before: Record<string, { ask_id?: string } | undefined> | undefined,
-  after: Record<string, { ask_id?: string } | undefined> | undefined,
+export function reconcileQuestions<
+  T extends { ask_id?: string; card_id?: string; slot?: string; questions?: unknown[] },
+>(
+  before: Record<string, { ask_id?: string; serverCardId?: string } | undefined> | undefined,
+  after: Record<string, { ask_id?: string; serverCardId?: string } | undefined> | undefined,
   pending: T[],
   resolvedDuringFetch: string[] = [],
 ): { drop: string[]; add: T[] } {
@@ -64,35 +83,57 @@ export function reconcileQuestions<T extends { ask_id: string; slot?: string; qu
   // Two independent sources, because neither alone is sufficient:
   //  - the before/after diff catches a card that WAS local and disappeared
   //    (including one this client resolved itself, with no WS event involved);
-  //  - the observed resolution log catches an ask_id this client never held, so
+  //  - the observed resolution log catches an identity this client never held, so
   //    there was nothing for the diff to notice. That is the case where the
   //    snapshot alone would resurrect a dead card.
   const dead = new Set([
     ...askIdsOf(before).filter((id) => !afterIds.has(id)),
     ...resolvedDuringFetch,
   ])
+  const beforeIds = new Set(askIdsOf(before))
+  /** True when *slot* now holds a DIFFERENT card that the snapshot cannot know
+   *  about — one that arrived while the request was in flight (its identity is
+   *  absent from `before`). The same ordering argument as the drop side, applied
+   *  to adds: one card renders per slot, so adding the snapshot's row would
+   *  replace a newer live card with a stale one. */
+  const arrivedDuringFetch = (slot: string | undefined, identity: string): boolean => {
+    if (!slot) return false
+    const held = identityOf(after?.[slot])
+    return !!held && held !== identity && !beforeIds.has(held)
+  }
   return {
     drop: staleAskIds(before, pending),
-    add: pending.filter((q) => !!q.slot && !!q.questions?.length && !dead.has(q.ask_id)),
+    add: pending.filter((q) => {
+      const identity = q.ask_id || q.card_id || ''
+      return (
+        !!q.slot &&
+        !!q.questions?.length &&
+        !dead.has(identity) &&
+        !arrivedDuringFetch(q.slot, identity)
+      )
+    }),
   }
 }
 
-/** Ask-ids held locally that the server no longer lists as pending.
+/** Card identities held locally that the server no longer lists as pending.
  *
  *  `question_card` and `question_card_resolved` are one-shot broadcasts, so a
  *  reload or reconnect can miss either one: a card that should be showing is
- *  absent, or one resolved while disconnected is still on screen. Reconnect
- *  therefore reconciles in both directions rather than only adding.
+ *  absent, or one retired while disconnected is still on screen. Reconnect
+ *  therefore reconciles in both directions rather than only adding — for a
+ *  stateless card as much as a blocking one, since keeping a retired or
+ *  superseded card would send its answer against a question the agent has
+ *  already moved past.
  *
- *  Legacy cards (no ask_id) are never reported stale: the server has no record
- *  of them, so their absence from the response says nothing about them.
+ *  A card with no identity at all is never reported stale: there is nothing to
+ *  compare, so its absence from the response says nothing about it.
  *  Exported so this is unit-testable without standing up a live socket.
  */
 export function staleAskIds(
-  current: Record<string, { ask_id?: string } | undefined> | undefined,
-  pending: { ask_id: string }[],
+  current: Record<string, { ask_id?: string; serverCardId?: string } | undefined> | undefined,
+  pending: { ask_id?: string; card_id?: string }[],
 ): string[] {
-  const live = new Set(pending.map((q) => q.ask_id))
+  const live = new Set(pending.map((q) => q.ask_id || q.card_id || '').filter(Boolean))
   return askIdsOf(current).filter((id) => !live.has(id))
 }
 
@@ -120,10 +161,13 @@ export function useWebSocket() {
      with a sequence so trimming never shifts a watermark's meaning. */
   const resolvedAskIdsRef = useRef<Map<string, number>>(new Map())
   const resolvedSeqRef = useRef(0)
-  const recordResolvedAskId = useCallback((askId: string) => {
-    if (!askId) return
+  /** Log a RETIRED question identity — a blocking `ask_id` or a stateless
+   *  `card_id`, in one map because the snapshot add side asks the same question
+   *  of both: "was this retired while my request was in flight?" */
+  const recordRetiredId = useCallback((retiredId: string) => {
+    if (!retiredId) return
     const log = resolvedAskIdsRef.current
-    log.set(askId, ++resolvedSeqRef.current)
+    log.set(retiredId, ++resolvedSeqRef.current)
     if (log.size > 200) {
       // Drop the oldest entries; a reconcile only ever consults recent ones.
       const oldest = [...log.entries()].sort((a, b) => a[1] - b[1]).slice(0, log.size - 200)
@@ -296,15 +340,34 @@ export function useWebSocket() {
       // `before`/`after` cannot see it, because there was nothing to remove.
       const resolvedSeen = resolvedSeqRef.current
       const pending = await api.pendingQuestions()
+      // ONE reconcile for both kinds. The server records and lists stateless
+      // cards, so their absence from the snapshot is evidence in the same way a
+      // blocking ask's is: a tab that was disconnected while its card was retired
+      // or superseded must lose it, or submitting it answers a question the agent
+      // has already moved past.
       const { drop, add } = reconcileQuestions(
         before,
         store.getState().chat.pendingQuestions,
         pending,
         resolvedSince(resolvedAskIdsRef.current, resolvedSeen),
       )
-      for (const askId of drop) dispatch(resolveQuestionCard({ ask_id: askId }))
+      // Identity-keyed retirement: an entry is dropped by whichever id it holds.
+      const heldBefore = Object.values(before ?? {})
+      for (const id of drop) {
+        const wasBlocking = heldBefore.some((c) => c?.ask_id === id)
+        dispatch(resolveQuestionCard(wasBlocking ? { ask_id: id } : { card_id: id }))
+      }
       for (const q of add) {
-        dispatch(setQuestionCard({ slot: q.slot as string, ask_id: q.ask_id, questions: q.questions }))
+        // A stateless row carries `card_id`; a blocking one carries `ask_id`. The
+        // reducer coalesces a structurally identical re-delivery, so re-adding a
+        // card this tab already holds keeps the mounted component and the user's
+        // half-entered answer rather than churning it.
+        dispatch(setQuestionCard({
+          slot: q.slot as string,
+          ask_id: q.ask_id,
+          card_id: q.card_id,
+          questions: q.questions as Parameters<typeof setQuestionCard>[0]['questions'],
+        }))
       }
     } catch { /* ignore */ }
   }, [dispatch])
@@ -791,6 +854,14 @@ export function useWebSocket() {
             break
           case 'queue_cancel':
             dispatch(cancelQueuedMessage(data))
+            // A cancelled queued message is an answer that never lands. The
+            // card was cleared optimistically when it was submitted, so without
+            // this the slot would keep reporting needs_input with nothing on
+            // screen to answer or dismiss. Re-syncing brings the card back from
+            // the server's own record — the question is genuinely unanswered
+            // again. Harmless when the cancelled message was not an answer: the
+            // snapshot then lists nothing for the slot and adds nothing.
+            syncPendingQuestions()
             break
           case 'queue_edit':
             dispatch(editQueuedMessage(data))
@@ -846,13 +917,15 @@ export function useWebSocket() {
             dispatch(setQuestionCard({ ...(data as Parameters<typeof setQuestionCard>[0]), fresh: true }))
             break
           case 'question_card_resolved': {
-            const ask = data as { ask_id: string }
+            const ask = data as { ask_id?: string; card_id?: string }
             // Recorded independently of local state: a resolution can arrive for
             // a card this client never held (empty state, or the card only exists
             // in an in-flight rehydration snapshot), in which case the dispatch
             // below is a no-op and the reconcile would otherwise re-add a dead
-            // card. See recordResolvedAskId.
-            recordResolvedAskId(ask.ask_id)
+            // card. See recordRetiredId. Both identities land in the same log —
+            // a blocking ask's `ask_id` and a stateless card's `card_id` — so one
+            // watermark covers both kinds on the snapshot add side.
+            recordRetiredId(ask.ask_id || ask.card_id || '')
             dispatch(resolveQuestionCard(ask))
             break
           }
@@ -1259,7 +1332,7 @@ export function useWebSocket() {
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, scheduleChunkFlush, scheduleSlotActivityFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordResolvedAskId])
+  }, [dispatch, flushChunks, scheduleChunkFlush, scheduleSlotActivityFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordRetiredId])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes

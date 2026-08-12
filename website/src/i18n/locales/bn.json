@@ -4710,6 +4710,7 @@
         },
         "recentsProvider": {
           "approve": "অনুমোদন",
+          "answer": "উত্তর দিন",
           "current": "বর্তমান",
           "new_session": "নতুন সেশন…",
           "older_sessions": "পুরোনো সেশন",
@@ -7945,6 +7946,8 @@
       "more_pull_request_or_issue_in_this_session_other": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট বা ইস্যু",
       "move_folder_to": "ফোল্ডার সরান",
       "needs_approval": "অনুমোদন প্রয়োজন",
+      "needs_your_answer": "আপনার উত্তর দরকার",
+      "waiting_on_your_choice": "আপনার পছন্দের অপেক্ষায়",
       "new": "নতুন",
       "new_autopilot_chat": "নতুন অটোপাইলট চ্যাট",
       "new_chat": "নতুন চ্যাট",

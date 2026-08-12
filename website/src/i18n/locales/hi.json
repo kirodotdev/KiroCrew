@@ -4710,6 +4710,7 @@
         },
         "recentsProvider": {
           "approve": "मंज़ूरी दें",
+          "answer": "उत्तर दें",
           "current": "मौजूदा",
           "new_session": "नया सेशन…",
           "older_sessions": "पुराने सत्र",
@@ -7945,6 +7946,8 @@
       "more_pull_request_or_issue_in_this_session_other": "इस सत्र में {{count}} और पुल रिक्वेस्ट या इश्यू",
       "move_folder_to": "फ़ोल्डर यहाँ ले जाएँ",
       "needs_approval": "स्वीकृति आवश्यक",
+      "needs_your_answer": "तुम्हारा उत्तर चाहिए",
+      "waiting_on_your_choice": "तुम्हारी पसंद का इंतज़ार",
       "new": "नया",
       "new_autopilot_chat": "नई ऑटोपायलट चैट",
       "new_chat": "नई चैट",

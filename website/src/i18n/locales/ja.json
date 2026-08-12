@@ -4637,6 +4637,7 @@
         },
         "recentsProvider": {
           "approve": "承認",
+          "answer": "回答",
           "current": "現在",
           "new_session": "新しいセッション…",
           "older_sessions": "以前のセッション",
@@ -7841,6 +7842,8 @@
       "open_source_link_in_side_panel": "{{url}} をサイドパネルで開く ({{modifier}} するとブラウザーで開く)",
       "move_folder_to": "フォルダーの移動先",
       "needs_approval": "承認が必要です",
+      "needs_your_answer": "回答が必要です",
+      "waiting_on_your_choice": "選択を待機中",
       "new": "新規",
       "new_autopilot_chat": "新しいオートパイロットチャット",
       "new_chat": "新しいチャット",

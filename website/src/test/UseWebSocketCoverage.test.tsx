@@ -1192,6 +1192,191 @@ describe('useWebSocket frame router', () => {
     await act(async () => { await Promise.resolve() })
     expect(chat().pendingQuestions[ACTIVE]?.ask_id).toBe('ask-alive')
   })
+
+  it('rehydrates a STATELESS card (card_id, no ask_id) into an empty slot', async () => {
+    // A card is a one-shot broadcast with no transcript row, so after a reload
+    // the slot's needs-input status would name a question with nothing on screen
+    // to answer or dismiss. The server-held record is the only way back.
+    ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { card_id: 'card-alive', slot: ACTIVE, questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }] },
+    ])
+    mount()
+    await act(async () => { await Promise.resolve() })
+    const card = chat().pendingQuestions[ACTIVE]
+    expect(card?.ask_id).toBeUndefined()
+    expect(card?.serverCardId).toBe('card-alive')
+    expect(card?.questions[0].question).toBe('Which region?')
+  })
+
+  it('drops a stateless card when the server announces its retirement', async () => {
+    // Another window answered or dismissed it. The card must leave this window
+    // too, or submitting it appends a duplicate turn.
+    const { ws } = mount()
+    act(() => {
+      ws.simulateMessage({
+        type: 'question_card',
+        data: { slot: ACTIVE, card_id: 'card-live', questions: [{ question: 'Q', options: [{ label: 'x' }] }] },
+      })
+    })
+    expect(chat().pendingQuestions[ACTIVE]?.serverCardId).toBe('card-live')
+    // A retirement for a DIFFERENT card must not touch it: a stale announcement
+    // for an already-replaced question would otherwise clear the live card.
+    act(() => {
+      ws.simulateMessage({ type: 'question_card_resolved', data: { card_id: 'card-other', slot: ACTIVE } })
+    })
+    expect(chat().pendingQuestions[ACTIVE]?.serverCardId).toBe('card-live')
+    act(() => {
+      ws.simulateMessage({ type: 'question_card_resolved', data: { card_id: 'card-live', slot: ACTIVE } })
+    })
+    expect(chat().pendingQuestions[ACTIVE]).toBeUndefined()
+  })
+
+  it('does not rehydrate a stateless card retired while the request was in flight', async () => {
+    // The response describes the server as it was when the request was served, so
+    // it races the retirement. Re-rendering the card would resurrect a dead ask.
+    let release: (v: unknown) => void = () => {}
+    ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      new Promise((res) => { release = res }),
+    )
+    const { ws } = mount()
+    act(() => {
+      ws.simulateMessage({ type: 'question_card_resolved', data: { card_id: 'card-ghost', slot: ACTIVE } })
+    })
+    await act(async () => {
+      release([{ card_id: 'card-ghost', slot: ACTIVE, questions: [{ question: 'Q', options: [{ label: 'x' }] }] }])
+      await Promise.resolve()
+    })
+    expect(chat().pendingQuestions[ACTIVE]).toBeUndefined()
+  })
+
+  it('drops a stateless card the server no longer lists (retired while disconnected)', async () => {
+    // A tab that missed the retirement broadcast holds card A while the server
+    // has moved on. Keeping it lets a submit answer a question the agent is past;
+    // the snapshot's silence about A is the evidence, exactly as for a blocking
+    // ask — which is why both kinds go through one reconcile.
+    const held = setQuestionCard({
+      slot: ACTIVE,
+      card_id: 'card-gone',
+      questions: [{ question: 'Stale', options: [{ label: 'x' }] }],
+      fresh: true,
+    })
+    ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockResolvedValueOnce([])
+    act(() => {
+      globalStore.dispatch(held)
+      testStore.dispatch(held as never)
+    })
+    mount()
+    await act(async () => { await Promise.resolve() })
+    expect(chat().pendingQuestions[ACTIVE]).toBeUndefined()
+  })
+
+  it('replaces a held stateless card with the one the server now lists', async () => {
+    const held = setQuestionCard({
+      slot: ACTIVE,
+      card_id: 'card-old',
+      questions: [{ question: 'Old', options: [{ label: 'x' }] }],
+      fresh: true,
+    })
+    ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { card_id: 'card-new', slot: ACTIVE, questions: [{ question: 'New', options: [{ label: 'y' }] }] },
+    ])
+    act(() => {
+      globalStore.dispatch(held)
+      testStore.dispatch(held as never)
+    })
+    mount()
+    await act(async () => { await Promise.resolve() })
+    expect(chat().pendingQuestions[ACTIVE]?.serverCardId).toBe('card-new')
+    expect(chat().pendingQuestions[ACTIVE]?.questions[0].question).toBe('New')
+  })
+
+  it('keeps a held stateless card the server still lists', async () => {
+    // Reload with the same card pending: the snapshot confirms it, so the drop
+    // side must leave it alone. A live set that only collected ask_ids would
+    // report every stateless card stale and wipe a live question.
+    const held = setQuestionCard({
+      slot: ACTIVE,
+      card_id: 'card-live',
+      questions: [{ question: 'Still asking', options: [{ label: 'x' }] }],
+      fresh: true,
+    })
+    ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { card_id: 'card-live', slot: ACTIVE, questions: [{ question: 'Still asking', options: [{ label: 'x' }] }] },
+    ])
+    act(() => {
+      globalStore.dispatch(held)
+      testStore.dispatch(held as never)
+    })
+    const deliveryId = chat().pendingQuestions[ACTIVE]?.cardId
+    expect(deliveryId).toBeTruthy()
+    mount()
+    await act(async () => { await Promise.resolve() })
+    expect(chat().pendingQuestions[ACTIVE]?.serverCardId).toBe('card-live')
+    // The SAME entry, not a drop-and-re-add: a fresh per-delivery id would mean
+    // the component remounted, discarding a half-typed answer on every reconnect.
+    expect(chat().pendingQuestions[ACTIVE]?.cardId).toBe(deliveryId)
+  })
+
+  it('restores a stateless card when a queued answer is cancelled', async () => {
+    // The card is cleared optimistically on submit. If the answer was QUEUED and
+    // the user then cancels it, nothing ever lands — so without this the slot
+    // keeps reporting needs_input with nothing on screen to answer or dismiss.
+    // The server still holds the record, so the question comes back.
+    // Two Onces, not mockResolvedValue: a persistent mock would leak this
+    // snapshot into every later test in the file. The first serves the mount's
+    // sync, the second the cancel's.
+    const snapshot = [
+      { card_id: 'card-unanswered', slot: ACTIVE, questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }] },
+    ]
+    ;(api.pendingQuestions as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValueOnce(snapshot)
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    // Simulate the answered-then-cleared state this window would be in.
+    act(() => {
+      globalStore.dispatch(resolveQuestionCard({ card_id: 'card-unanswered' }))
+      testStore.dispatch(resolveQuestionCard({ card_id: 'card-unanswered' }) as never)
+    })
+    expect(chat().pendingQuestions[ACTIVE]).toBeUndefined()
+
+    await act(async () => {
+      ws.simulateMessage({ type: 'queue_cancel', data: { slot: ACTIVE, queue_id: 'q-1' } })
+      await Promise.resolve()
+    })
+    expect(chat().pendingQuestions[ACTIVE]?.serverCardId).toBe('card-unanswered')
+  })
+
+  it('never overwrites a card that arrived while the request was in flight', async () => {
+    // The response describes the server as it was when the request was served, so
+    // one card per slot means adding its row would replace a NEWER live card. The
+    // deferred promise is load-bearing: the dispatch has to land strictly between
+    // the fetch starting and its resolution, or the test passes on ordering luck
+    // instead of on the guard.
+    let release: (v: unknown) => void = () => {}
+    ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      new Promise((res) => { release = res }),
+    )
+    const live = setQuestionCard({
+      slot: ACTIVE,
+      card_id: 'card-new',
+      questions: [{ question: 'Live', options: [{ label: 'y' }] }],
+      fresh: true,
+    })
+    mount()
+    // Both stores: the hook reads the module store for its snapshots (like the
+    // rest of this file's setup) and dispatches into the Provider's test store.
+    act(() => {
+      globalStore.dispatch(live)
+      testStore.dispatch(live as never)
+    })
+    await act(async () => {
+      release([{ card_id: 'card-old', slot: ACTIVE, questions: [{ question: 'Stale', options: [{ label: 'x' }] }] }])
+      await Promise.resolve()
+    })
+    expect(chat().pendingQuestions[ACTIVE]?.serverCardId).toBe('card-new')
+    expect(chat().pendingQuestions[ACTIVE]?.questions[0].question).toBe('Live')
+  })
 })
 
 describe('useWebSocket connection lifecycle', () => {

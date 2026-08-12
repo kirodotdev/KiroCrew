@@ -4783,6 +4783,7 @@
         },
         "recentsProvider": {
           "approve": "Aprovar",
+          "answer": "Responder",
           "current": "Atuais",
           "new_session": "Nova sessão…",
           "older_sessions": "Sessões antigas",
@@ -8050,6 +8051,8 @@
       "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests ou issues adicionais nesta sessão",
       "move_folder_to": "Mover pasta para",
       "needs_approval": "Precisa de aprovação",
+      "needs_your_answer": "Precisa da sua resposta",
+      "waiting_on_your_choice": "Aguardando sua escolha",
       "new": "Novo",
       "new_autopilot_chat": "Novo chat no Autopilot",
       "new_chat": "Novo chat",

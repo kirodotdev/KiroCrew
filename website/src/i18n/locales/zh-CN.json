@@ -4637,6 +4637,7 @@
         },
         "recentsProvider": {
           "approve": "批准",
+          "answer": "回答",
           "current": "当前",
           "new_session": "新建会话…",
           "older_sessions": "较早的会话",
@@ -7840,6 +7841,8 @@
       "more_pull_request_or_issue_in_this_session_other": "此会话中还有 {{count}} 个拉取请求或 issue",
       "move_folder_to": "将文件夹移到",
       "needs_approval": "需要审批",
+      "needs_your_answer": "需要你回答",
+      "waiting_on_your_choice": "等待你选择",
       "new": "新建",
       "new_autopilot_chat": "新建自动驾驶聊天",
       "new_chat": "新建对话",

@@ -4856,6 +4856,7 @@
         },
         "recentsProvider": {
           "approve": "Разрешить",
+          "answer": "Ответить",
           "current": "Текущая",
           "new_session": "Новая сессия…",
           "older_sessions": "Более старые сессии",
@@ -8155,6 +8156,8 @@
       "more_pull_request_or_issue_in_this_session_other": "ещё {{count}} пул-реквеста или задачи в этой сессии",
       "move_folder_to": "Переместить папку в",
       "needs_approval": "Требует подтверждения",
+      "needs_your_answer": "Нужен ваш ответ",
+      "waiting_on_your_choice": "Ожидает вашего выбора",
       "new": "Создать",
       "new_autopilot_chat": "Новый чат с автопилотом",
       "new_chat": "Новый чат",

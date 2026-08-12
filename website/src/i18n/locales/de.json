@@ -4710,6 +4710,7 @@
         },
         "recentsProvider": {
           "approve": "Genehmigen",
+          "answer": "Antworten",
           "current": "Aktuell",
           "new_session": "Neue Sitzung…",
           "older_sessions": "Ältere Sitzungen",
@@ -7945,6 +7946,8 @@
       "more_pull_request_or_issue_in_this_session_other": "{{count}} weitere Pull Requests oder Issues in dieser Sitzung",
       "move_folder_to": "Ordner verschieben nach",
       "needs_approval": "Benötigt Genehmigung",
+      "needs_your_answer": "Benötigt deine Antwort",
+      "waiting_on_your_choice": "Wartet auf deine Auswahl",
       "new": "Neu",
       "new_autopilot_chat": "Neuer Autopilot-Chat",
       "new_chat": "Neuer Chat",

@@ -1049,6 +1049,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.ask_question import (
         api_ask_question,
         api_ask_question_answer,
+        api_ask_question_dismiss,
         api_ask_question_pending,
     )
 
@@ -1056,6 +1057,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     # Registered before the {ask_id} route so the literal path is not captured
     # as an ask_id.
     app.router.add_get("/api/ask-question/pending", api_ask_question_pending)
+    app.router.add_post("/api/ask-question/dismiss", api_ask_question_dismiss)
     app.router.add_post("/api/ask-question/{ask_id}/answer", api_ask_question_answer)
 
     # Artifacts — persistent, versioned LLM-generated UI

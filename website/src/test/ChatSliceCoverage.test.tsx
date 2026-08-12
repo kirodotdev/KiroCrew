@@ -525,6 +525,31 @@ describe('chatSlice question cards', () => {
     expect(chat(store).pendingQuestions.b).toBeDefined()
   })
 
+  it('spares a half-typed stateless answer when the server retires the record', () => {
+    // A nudge on a monitored session retires the record while the user is still
+    // typing. The typed text lives only in the card's component state, so
+    // unmounting it here would discard the answer — the same invariant the frame
+    // applier keeps. A blocking ask is different: its future is already settled.
+    const store = makeStore()
+    store.dispatch(setQuestionCard({ slot: 'front', card_id: 'card-live', questions: [{ question: 'q', options: [] }] }))
+    store.dispatch(setQuestionDraft({ slot: 'front', active: true }))
+    store.dispatch(resolveQuestionCard({ card_id: 'card-live' }))
+    expect(chat(store).pendingQuestions.front).toBeDefined()
+
+    // Once the draft is gone the same retirement clears it.
+    store.dispatch(setQuestionDraft({ slot: 'front', active: false }))
+    store.dispatch(resolveQuestionCard({ card_id: 'card-live' }))
+    expect(chat(store).pendingQuestions.front).toBeUndefined()
+  })
+
+  it('clears a blocking card even mid-draft, since its ask is already settled', () => {
+    const store = makeStore()
+    store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-9', questions: [{ question: 'q', options: [] }] }))
+    store.dispatch(setQuestionDraft({ slot: 'front', active: true }))
+    store.dispatch(resolveQuestionCard({ ask_id: 'ask-9' }))
+    expect(chat(store).pendingQuestions.front).toBeUndefined()
+  })
+
   it('retires a stale stateless card on the next turn but spares a half-typed answer', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('front'))

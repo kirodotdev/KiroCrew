@@ -596,7 +596,7 @@ interface ChatState {
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
-  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; cardId?: string; draftActive?: boolean }>
+  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; cardId?: string; serverCardId?: string; draftActive?: boolean }>
   // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
   // as a card above the composer. Keyed BY SLOT: a single global card let a
   // suggestion arriving in session B silently evict session A's unacted-on card,
@@ -1627,7 +1627,7 @@ const chatSlice = createSlice({
     setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
     clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; state.slotHasMore = false; state.slotOldestIndex = 0; state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
-    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
+    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; card_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
       // Defensive init: existing test fixtures build partial preloaded state
       // without this key.
       if (!state.pendingQuestions) state.pendingQuestions = {}
@@ -1659,6 +1659,13 @@ const chatSlice = createSlice({
         // payload — is what send-time captures compare against, so two
         // deliveries of an identical question are still distinguishable.
         cardId: `card-${secureRandomId()}`,
+        // The SERVER's identity for this ask, carried on the broadcast. Distinct
+        // from `cardId` above, which is minted here per delivery: only the
+        // server's own id can name the record the dismiss route retires, so a
+        // dismissal that lands after a newer card replaced this one is refused
+        // instead of clearing the new card's status. Absent for a blocking card
+        // (its `ask_id` is that identity) and for a payload that predates it.
+        serverCardId: action.payload.card_id,
         // A fresh, structurally IDENTICAL replacement keeps the mounted
         // component (PendingQuestionCard keys the component by payload, not
         // cardId), so the user's local draft survives the swap — but a plain
@@ -1717,14 +1724,30 @@ const chatSlice = createSlice({
       const card = state.pendingQuestions?.[safeKey(action.payload.slot)]
       if (card) card.draftActive = action.payload.active
     },
-    /** Clear the card only if it is the one the backend just resolved.
-     *  Guards against a stale `question_card_resolved` (from a timed-out
-     *  earlier ask) wiping a newer card the user is mid-way through. */
-    resolveQuestionCard(state, action: PayloadAction<{ ask_id: string }>) {
-      // Delete by ask_id match so a stale resolution for an already-replaced
-      // question cannot clear a different slot's live card.
+    /** Clear the card the backend just retired, matched by IDENTITY.
+     *
+     *  `ask_id` names a blocking round-trip; `card_id` names a stateless card
+     *  (compared against the server identity the card was delivered with).
+     *  Matching by identity rather than by slot is what stops a stale retirement
+     *  — for a question already replaced by a newer one — from clearing a live
+     *  card the user is part-way through.
+     *
+     *  A STATELESS card with a draft in progress survives, for the same reason
+     *  `dropStaleStatelessQuestion` spares it: the typed answer lives only in the
+     *  card's component state, so unmounting discards it — and a retirement
+     *  arrives at an unpredictable moment (a nudge frame on a monitored session
+     *  retires the record while the user is still typing). The card is already
+     *  answerable as a plain message, and dismissing it after the server dropped
+     *  the record is treated as success. A BLOCKING ask is not spared: its future
+     *  is already settled, so the card cannot be answered at all. */
+    resolveQuestionCard(state, action: PayloadAction<{ ask_id?: string; card_id?: string }>) {
+      const { ask_id: askId, card_id: cardId } = action.payload
+      if (!askId && !cardId) return
       for (const [slotKey, card] of Object.entries(state.pendingQuestions ?? {})) {
-        if (card?.ask_id === action.payload.ask_id) delete state.pendingQuestions[slotKey]
+        const hit = askId ? card?.ask_id === askId : card?.serverCardId === cardId
+        if (!hit) continue
+        if (!askId && card?.draftActive) continue
+        delete state.pendingQuestions[slotKey]
       }
     },
     setFollowupCard(state, action: PayloadAction<{ slot: string; items: FollowupItem[]; ts?: number }>) {

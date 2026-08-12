@@ -4783,6 +4783,7 @@
         },
         "recentsProvider": {
           "approve": "Approuver",
+          "answer": "Répondre",
           "current": "Actuelle",
           "new_session": "Nouvelle session…",
           "older_sessions": "Sessions plus anciennes",
@@ -8050,6 +8051,8 @@
       "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests ou issues supplémentaires dans cette session",
       "move_folder_to": "Déplacer le dossier vers",
       "needs_approval": "Approbation requise",
+      "needs_your_answer": "Attend votre réponse",
+      "waiting_on_your_choice": "Attend votre choix",
       "new": "Nouveau",
       "new_autopilot_chat": "Nouveau chat en autopilote",
       "new_chat": "Nouveau chat",

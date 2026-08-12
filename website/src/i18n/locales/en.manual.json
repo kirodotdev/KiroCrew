@@ -1186,6 +1186,7 @@
       "providers": {
         "recentsProvider": {
           "approve": "Approve",
+          "answer": "Answer",
           "new_session": "New Session…",
           "recent": "Recent",
           "thinking": "Thinking…",

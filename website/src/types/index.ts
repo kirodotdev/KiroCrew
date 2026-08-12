@@ -514,6 +514,12 @@ export interface ChatSlot {
   webapp_metadata?: WebAppMetadata
   // Board fields
   has_options?: boolean; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean; orchestrating?: boolean
+  /** The agent asked the user something and cannot move past it: an unanswered
+   * question card, or a turn that ended with an [OPTIONS:] tag. Narrower than
+   * `waiting_for_input` (true of every finished turn) and separate from
+   * `pending_approval` (a tool gate). `needs_input_reason` names which. */
+  needs_input?: boolean
+  needs_input_reason?: '' | 'question' | 'options'
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
   /** In-flight `wait` tool sleep, absent when nothing is sleeping. `deadline_ts`
