@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from chat_test_helpers import move_transcript_past
 
 from kiro_crew.history import ConversationLog
 
@@ -51,9 +52,11 @@ class TestIntentSummarySidecar:
 
     def test_a_new_message_invalidates_the_cache(self, log):
         log.append("s1", "user", "hello")
-        log.set_cached_intent_summary("s1", _payload(), log.session_mtime("s1"))
+        sig = log.session_mtime("s1")
+        log.set_cached_intent_summary("s1", _payload(), sig)
         assert log.get_cached_intent_summary("s1") is not None
         log.append("s1", "user", "another turn")
+        move_transcript_past(log, "s1", sig)  # don't rely on the OS tick
         assert log.get_cached_intent_summary("s1") is None
 
     def test_a_stale_signature_is_rejected(self, log):
@@ -170,6 +173,7 @@ class TestWriteGuard:
         log.append("s1", "user", "hello")
         sig = log.session_mtime("s1")
         log.append("s1", "user", "a newer turn")  # transcript moved on
+        move_transcript_past(log, "s1", sig)  # don't rely on the OS tick
 
         assert log.set_cached_intent_summary("s1", _payload(), sig) is False
         assert log.get_cached_intent_summary("s1") is None

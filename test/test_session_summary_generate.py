@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from chat_test_helpers import move_transcript_past
 
 from kiro_crew.config.loader import KiroCrewConfig, SessionSummaryConfig
 from kiro_crew.dashboard import chat_summary
@@ -190,11 +191,15 @@ class TestGating:
         state, slot = env
         log = state.conversation_log
         real_read = log.read_messages_chained
+        # Production captures the signature at generation start; the racing
+        # append below must provably land PAST it, not merely after it in time.
+        pre_read_sig = log.session_mtime(state.hkey)
 
         def racing_read(key):
             records = real_read(key)
             # A concurrent turn appends while generation is reading.
             log.append(key, "user", "landed mid-read")
+            move_transcript_past(log, key, pre_read_sig)  # don't rely on the OS tick (#2981)
             return records
 
         monkeypatch.setattr(log, "read_messages_chained", racing_read)
@@ -270,7 +275,10 @@ class TestCaching:
         called = []
         _stub_llm(monkeypatch, _GOOD_REPLY, called)
         await chat_summary.generate_session_summary(state, slot, cfg=_cfg())
-        state.conversation_log.append(state.hkey, "user", "another")
+        log = state.conversation_log
+        sig = log.session_mtime(state.hkey)  # what pass 1 stamped the sidecar with
+        log.append(state.hkey, "user", "another")
+        move_transcript_past(log, state.hkey, sig)  # don't rely on the OS tick (#2981)
         slot._summary_turn_mark = 0
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is True
         assert len(called) == 2

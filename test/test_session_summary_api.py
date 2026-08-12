@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_state
+from chat_test_helpers import _make_state, move_transcript_past
 
 from kiro_crew.config.loader import KiroCrewConfig, SessionSummaryConfig
 from kiro_crew.dashboard import chat_handlers
@@ -106,8 +106,10 @@ class TestSummaryEndpoint:
         hkey = slot_history_key(slot)
         log = state.conversation_log
         log.append(hkey, "user", "hello")
-        log.set_cached_intent_summary(hkey, _payload(), log.session_mtime(hkey))
+        sig = log.session_mtime(hkey)
+        log.set_cached_intent_summary(hkey, _payload(), sig)
         log.append(hkey, "user", "a newer turn")
+        move_transcript_past(log, hkey, sig)  # don't rely on the OS tick (#2981)
 
         async with TestClient(TestServer(_make_app(state))) as client:
             body = await (await client.get("/api/chat/slots/s1/summary")).json()
