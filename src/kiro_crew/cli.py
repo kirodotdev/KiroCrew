@@ -1393,7 +1393,7 @@ Examples:
     )
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,status,token,url,logs,exec,provision,install}",
+        metavar="{up,down,ls,prune,status,token,url,logs,exec,provision,install}",
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -1432,6 +1432,35 @@ Examples:
     pod_down.add_argument("name", help="Worktree name")
     pod_ls = pod_sub.add_parser("ls", help="List running pods")
     pod_ls.add_argument("--json", action="store_true", help="Emit rows as JSON")
+    pod_prune = pod_sub.add_parser(
+        "prune", help="Reclaim orphaned pod HOMEs in bulk (the N-at-once `pod down`)"
+    )
+    pod_prune.add_argument(
+        "--older-than",
+        dest="older_than",
+        default="3d",
+        help=(
+            "Only reclaim orphans whose last activity is older than this "
+            "(e.g. 3d, 12h, 30m, 45s). Default: 3d, so a freshly-crashed HOME "
+            "an operator may still be debugging is kept. Use --all to reclaim "
+            "regardless of age."
+        ),
+    )
+    pod_prune.add_argument(
+        "--all",
+        dest="prune_all",
+        action="store_true",
+        help="Reclaim ALL orphans regardless of age (overrides --older-than)",
+    )
+    pod_prune.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Classify and print what would be reclaimed without deleting anything",
+    )
+    pod_prune.add_argument(
+        "--json", action="store_true", help="Emit per-name results as JSON"
+    )
     pod_status = pod_sub.add_parser("status", help="Up/down + health for one pod")
     pod_status.add_argument("name", help="Worktree name")
     pod_status.add_argument("--json", action="store_true", help="Emit status as JSON")

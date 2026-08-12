@@ -20,7 +20,8 @@ kirocrew pod up   <wt> [--json]   # bring up an isolated pod → {base_url, toke
 kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
 kirocrew pod up   <wt> --approval reads  # boot its gateway in an approval mode
 kirocrew pod up   <wt> --crons          # boot its gateway with the cron scheduler on
-kirocrew pod ls                   # what's running (≈ kubectl get pods) + orphaned HOMEs
+kirocrew pod ls                   # what's running (≈ kubectl get pods) + orphaned HOMEs (with age)
+kirocrew pod prune [--all] [--dry-run]  # bulk-reclaim orphaned HOMEs (default: older than 3d; --all for every age)
 kirocrew pod status <wt>          # up/down + health
 kirocrew pod token  <wt> [--ttl]  # (re)mint a dashboard token for a running pod
 kirocrew pod url    <wt>          # print its base_url
@@ -81,7 +82,10 @@ HOME through `runtime.cleanup_home` (which re-validates the name and refuses
 semantics), then VERIFIES the directory is gone and fails loudly if it is not.
 The trade is that a pod which goes away without a `down` — a crash, a raw
 `systemctl --user stop`, a reboot — leaves its HOME behind; `pod ls` reports
-those, and `pod down <wt>` reclaims one.
+those with their age, `pod down <wt>` reclaims one, and `pod prune` reclaims
+them in bulk — by default only HOMEs whose last activity is older than 3 days
+(`--all` sweeps every age; each delete still routes through the same
+stop-drain-verify path `down` uses, with liveness re-checked per name).
 
 ### Port derivation
 

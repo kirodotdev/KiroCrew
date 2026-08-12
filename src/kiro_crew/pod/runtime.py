@@ -829,7 +829,11 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
     :func:`cleanup_home`'s re-validation via ``kirocrew pod down <name>``.
     """
     try:
-        entries = [p for p in cfg.pod_root.iterdir() if p.is_dir()]
+        # never follow a symlink: a link under pod_root can point at a LIVE
+        # pod's HOME (or anywhere), and everything downstream of this
+        # enumeration treats the NAME as the directory it will judge and
+        # delete. A real pod HOME is always created as a plain directory.
+        entries = [p for p in cfg.pod_root.iterdir() if p.is_dir() and not p.is_symlink()]
     except OSError:
         return []
     live = active_names(cfg)
@@ -1095,13 +1099,41 @@ def cleanup_home(cfg: PodConfig, name: str) -> int:
         print(f"refusing pod cleanup for invalid instance name {name!r}")
         return 2
     root = cfg.pod_root.resolve()
-    target = (cfg.pod_root / name).resolve()
+    unresolved = cfg.pod_root / name
+    # Refuse to delete THROUGH a symlink: resolving first lets a link planted
+    # under pod_root pass the containment check below while the tree it names
+    # lives elsewhere — including another, live pod's HOME. A real pod HOME is
+    # always created as a plain directory, so a link here is never ours to follow.
+    if unresolved.is_symlink():
+        print(f"refusing pod cleanup: {unresolved} is a symlink, not a pod HOME")
+        return 2
+    target = unresolved.resolve()
     if target == root or target.parent != root:
         print(f"refusing pod cleanup: {target} is not a pod dir under {root}")
         return 2
-    shutil.rmtree(target, ignore_errors=True)
-    if not target.exists():
+    # Delete by the UNRESOLVED name, never the resolved target: between the
+    # symlink pre-check above and this call the entry can be swapped for a
+    # symlink (check-to-use race), and rmtree on the RESOLVED path would then
+    # delete the live sibling the link points at. rmtree itself refuses a
+    # top-level symlink, so deleting by name makes the swap harmless — nothing
+    # is removed and the survivor check below reports the failure.
+    shutil.rmtree(unresolved, ignore_errors=True)
+    # Verify by the ENTRY itself, never the resolved target: an entry swapped
+    # to a DANGLING symlink during the delete makes rmtree refuse silently
+    # (suppressed by ignore_errors), and the resolved target of a dangling
+    # link does not exist — so a target-existence check would report a clean
+    # reclaim while the link remains as residue that orphan_homes (which
+    # skips symlinks) can never surface again.
+    if not os.path.lexists(unresolved):
         return 0
+    if unresolved.is_symlink():
+        # Swapped to a symlink mid-delete: rmtree refused it (correctly), and
+        # the link itself is the residue — name it rather than the target.
+        print(
+            f"pod cleanup did not remove {unresolved}: the entry is now a "
+            "symlink, which teardown refuses to follow — remove it by hand"
+        )
+        return 1
     survivors = _surviving_entries(target)
     print(
         f"pod cleanup did not fully remove {target}: still present "
