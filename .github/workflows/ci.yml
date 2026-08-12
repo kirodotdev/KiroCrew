@@ -788,10 +788,19 @@ jobs:
     # on ordinary noise. Raise a floor only after main has held the higher
     # number for a while, and never above the LOWEST recent main measurement.
     #
-    #   Backend  measured ~81.9% on main (2026-08-07) -> floor 80%
-    #   Frontend measured 60.46-61.74% on main (2026-08-07) -> floor 60%
-    #     (frontend sits ~0.5pp above its floor: it cannot be ratcheted until
-    #      website/src gains real test coverage)
+    #   Backend  measured 90.57% on main (2026-08-18) -> floor 88%
+    #   Frontend measured 91.32-91.34% on main (2026-08-18) -> floor 89%
+    #
+    # Both were sampled across three consecutive successful main runs, because
+    # the policy above is written against the LOWEST recent measurement and one
+    # sample cannot establish that. Frontend's floor sits HIGHER than backend's
+    # because its measured rate is higher, not because it is held to a stricter
+    # standard -- each lane keeps roughly 2.3pp.
+    #
+    # Why not 85%, which is where this change started: the lanes crossed 90%
+    # while it sat unmerged, and a floor 5-6pp under main protects almost
+    # nothing. The point of the gate is to catch a regression, so the number has
+    # to track what main actually holds.
     #
     # How backend got here, so the next person can judge the headroom:
     #   78.69%  starting point
@@ -800,14 +809,29 @@ jobs:
     #           Since retired: CI runs those files, so they are measured again.
     #   81.50%  #2103 added unit coverage for 7 pure-logic-ish modules
     #   81.94%  #2115 added 11 dashboard/Slack/app-platform modules
-    # 80% therefore leaves ~1.9pp of headroom, wider than the ~1.4pp the 77%
-    # floor had. Deliberately conservative: the last wave converted at a third
-    # the rate of the one before it (1,883 tests for +0.44pp vs 1,040 for
-    # +1.35pp), because the remaining uncovered lines sit behind I/O a unit test
-    # cannot reach. Do not assume the next raise is as cheap.
+    #   86.93%  #2947 and 88.84% #3005, ranked by uncovered-statement MASS
+    #           rather than by percentage -- a 550-statement module at 17% is
+    #           worth more than a small one at 60%
+    #   89.57%  #3118, which converted only 58% of the statements it targeted
+    #           where #3005 converted more than it targeted: what remains sits
+    #           behind I/O, subprocess and network boundaries
+    #   90.57%  work merged since
+    #
+    # And frontend, which moved later and converts differently:
+    #   60.46%  2026-08-07, before any dedicated coverage work
+    #   83.38%  the zero-coverage sweep (files with no test file at all)
+    #   86.14%  #2948 and #3014
+    #   88.29%  #3132, where three surfaces starting at or near 0% produced 739
+    #           of its 1,470 statements while ChatPage.tsx -- the single largest
+    #           target by uncovered count, 481 -- produced nothing measurable
+    #   91.32%  work merged since
+    # Two lessons in those two lines, both of which cost a wave to learn: rank
+    # candidates by how UNCOVERED a file is and not merely by its uncovered
+    # count, because a file near 0% converts far better than a large page
+    # already at 80%; and do not size a frontend wave off a backend one.
     env:
-      BACKEND_MIN: 80
-      FRONTEND_MIN: 60
+      BACKEND_MIN: 88
+      FRONTEND_MIN: 89
       # The per-file floor, applied to BOTH lanes with a per-lane baseline of
       # the files that were already below it. A project-wide average lets a
       # well-covered large file pay for a bare small one, so it can be satisfied
@@ -927,7 +951,7 @@ jobs:
           F=backend-cov/coverage.xml
           test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
           # Compare the raw line-rate against the threshold; round only for
-          # display (a round-then-compare would let 79.95%..79.99% pass 80%).
+          # display (a round-then-compare would let 87.95%..87.99% pass 88%).
           python3 - "$F" "$BACKEND_MIN" Backend <<'PY'
           import sys, xml.etree.ElementTree as ET
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]

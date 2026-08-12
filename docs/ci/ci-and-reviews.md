@@ -117,7 +117,7 @@ Details worth knowing:
 - **`coverage-gate` is fail-closed.** It runs `if: always()` and its first step
   converts any non-success upstream result into an explicit failure, because GitHub
   treats a **skipped** required check as satisfied. It also compares the raw
-  line-rate and rounds only for display, so 79.95% cannot pass an 80% floor.
+  line-rate and rounds only for display, so 87.95% cannot pass an 88% floor.
 - **`coverage-gate` enforces two different shapes.** The project floors
   (`BACKEND_MIN`, `FRONTEND_MIN`) compare one lane-wide average; the per-file floor
   (`PER_FILE_MIN`, `scripts/check_per_file_coverage.py`) requires *every measured
