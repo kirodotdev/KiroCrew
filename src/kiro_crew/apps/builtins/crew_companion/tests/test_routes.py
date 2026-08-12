@@ -8,7 +8,7 @@ that true.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -370,7 +370,12 @@ class TestHooks:
         await hooks.on_startup(ctx)
         store = hooks.get_store()
         assert store is not None
-        store.add("persisted", to_iso(NOW + timedelta(hours=3)))
+        # The hook-built store uses the real clock, so a frozen test instant
+        # eventually becomes overdue and races the live tick thread.
+        store.add(
+            "persisted",
+            to_iso(datetime.now().astimezone() + timedelta(hours=3)),
+        )
 
         await hooks.on_shutdown(ctx)
         await hooks.on_startup(ctx)
