@@ -1017,10 +1017,26 @@ export function useVirtualChat<T>(
 
       let genuineResize = false
       let firstMount = false
+      // True when the SCROLLER's own box resized (the observer watches it
+      // alongside the rows). Chrome around the transcript changes the viewport
+      // height with no scroll event and no row resize — the composer autosizes
+      // when a slot switch restores a long draft, attachment strips and
+      // banners mount, the browser window resizes. A viewport SHRINK while
+      // pinned leaves scrollTop at the old, now-too-small bottom target — the
+      // view rests slightly above the latest message ("switching sessions
+      // doesn't land at the bottom"). A GROW is clamped by the browser itself.
+      // Routed through pinAuto below, so the race-proof guard still applies:
+      // with follow released (reading history, anchor restore in flight) a
+      // viewport resize never moves the viewport.
+      let viewportResized = false
       // True when one of the resized entries is the caller-designated
       // streaming row (see `streamingIndex` option / syncHeightsNow's doc).
       let streamingRowResized = false
       for (const entry of entries) {
+        if (entry.target === el) {
+          viewportResized = true
+          continue
+        }
         const idx = elIndexRef.current.get(entry.target)
         if (idx === undefined) continue
         const it = itemsRef.current[idx]
@@ -1068,7 +1084,11 @@ export function useVirtualChat<T>(
       // for the length of the animation re-creates the spacer lurch that
       // `streamingIndex`'s immediate path exists to prevent. Collapsing the rail
       // mid-turn is rare; a visible lurch is not an acceptable trade for it.
-      if ((genuineResize || firstMount) && !streamingRowResized && isRailSettling()) {
+      //
+      // The viewport entry takes this deferral too: the animation resizes the
+      // scroller's box on every frame, and a per-frame viewport pin is exactly
+      // the write storm this window exists to hold back.
+      if ((genuineResize || firstMount || viewportResized) && !streamingRowResized && isRailSettling()) {
         railSettleFollowRef.current = railSettleFollowRef.current || stickRef.current
         if (railSettleTimerRef.current === null) {
           railSettleTimerRef.current = setTimeout(() => {
@@ -1096,7 +1116,10 @@ export function useVirtualChat<T>(
       // message right as the turn re-keys (single → grouped turn) and remounts
       // the row, which otherwise looks like a first-mount and skips the pin.
       // pinAuto still releases if the live geometry shows a real scroll-up.
-      const shouldFollow = genuineResize || (firstMount && stickRef.current)
+      // A viewport resize is likewise only followed while following — with
+      // stick released it must never move a reading user.
+      const shouldFollow =
+        genuineResize || ((firstMount || viewportResized) && stickRef.current)
       if (shouldFollow && (stickRef.current || performance.now() - lastUserScrollAtRef.current >= SCROLL_SETTLE_MS)) {
         pinAuto()
       }
@@ -1132,6 +1155,11 @@ export function useVirtualChat<T>(
     // exactly the currently-mounted rows (the null-element branch deletes on
     // unmount), so iterating it cannot resurrect a detached node.
     for (const el of elIndexRef.current.keys()) ro.observe(el)
+    // Observe the scroller's own box (the viewport branch above) — after the
+    // rows, so row-position assumptions about observation order keep holding.
+    // A re-created observer must re-observe it here; the `scrollerEl` effect
+    // below covers a scroller that mounts later than this effect.
+    if (scrollerRef.current) ro.observe(scrollerRef.current)
     return () => {
       ro.disconnect()
       // Cancel a frame queued by the last resize so it can't fire a
@@ -1148,6 +1176,18 @@ export function useVirtualChat<T>(
       resizeObserverRef.current = null
     }
   }, [recomputeWindow, pinAuto, scheduleHeightSync, syncHeightsNow, scrollerRef])
+
+  // Late-mounting scroller: the RO effect above observes `scrollerRef.current`
+  // at setup, but a scroller (or an ancestor) rendered AFTER that effect ran
+  // would never be observed — same rationale as the `scrollerEl` state for the
+  // scroll/IO listeners. observe() is idempotent, so the overlap with the
+  // setup-time observe is harmless.
+  useEffect(() => {
+    const el = scrollerEl
+    if (!el) return
+    resizeObserverRef.current?.observe(el)
+    return () => { resizeObserverRef.current?.unobserve(el) }
+  }, [scrollerEl])
 
   // ---- IntersectionObserver: top/bottom sentinels for window expansion ----
   useEffect(() => {
