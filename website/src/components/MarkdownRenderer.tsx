@@ -1,4 +1,4 @@
-import { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
+import React, { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
 import { Paperclip, X, Download, Plus, Minus, Search, Folder } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -1165,7 +1165,110 @@ const REMARK_PLUGINS: PluggableList = [
   remarkCjkFriendlyGfmStrikethrough,
   [remarkMath, { singleDollarTextMath: false }],
 ]
-const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeSanitize, rehypeKatex]
+
+/**
+ * HTML block-level elements that cannot legally nest inside `<p>`. When
+ * `rehype-raw` parses raw HTML embedded in markdown, it may produce a HAST tree
+ * with a block element inside a `<p>` (e.g. `<p><div>…</div></p>`). The
+ * browser's HTML parser auto-corrects this by closing the `<p>` before the
+ * block element, moving the block out — but React's VDOM still thinks the block
+ * is inside the `<p>`. On the next reconciliation React tries to `removeChild`
+ * from `<p>`, the node is no longer there, and we get:
+ *   "Failed to execute 'removeChild' on 'Node': The node to be removed is not
+ *    a child of this node."
+ *
+ * This plugin mirrors the browser's correction at the HAST level so React's
+ * tree matches reality from the first render.
+ */
+const BLOCK_ELEMENTS = new Set([
+  'address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'dd',
+  'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'li',
+  'main', 'nav', 'ol', 'p', 'pre', 'section', 'table', 'ul',
+])
+
+function rehypeUnwrapBlocks() {
+  return (tree: HastRoot) => {
+    const walk = (parent: HastRoot | HastElement) => {
+      if (!parent.children) return
+      for (let i = 0; i < parent.children.length; i++) {
+        const child = parent.children[i]
+        if (child.type === 'element') walk(child)
+      }
+      // Only `<p>` elements need unwrapping (that's the only element the
+      // browser auto-closes when it encounters a block child).
+      if (parent.type !== 'element' || parent.tagName !== 'p') return
+      const hasBlock = parent.children.some(
+        c => c.type === 'element' && BLOCK_ELEMENTS.has(c.tagName),
+      )
+      if (!hasBlock) return
+
+      // Split: children before a block go into a <p>, the block becomes a
+      // sibling, children after go into the next iteration's bucket. We
+      // rebuild the parent's slot in-place by replacing it in the grandparent.
+      // Since we're walking depth-first and only mutate the CURRENT parent's
+      // children list at the grandparent level, we handle this by returning
+      // replacement nodes and letting the outer walk splice them.
+      const replacement: RootContent[] = []
+      let bucket: RootContent[] = []
+      const flushBucket = () => {
+        // Only emit a <p> wrapper if the bucket has non-whitespace content.
+        const hasContent = bucket.some(n =>
+          n.type === 'element' || (n.type === 'text' && n.value.trim()),
+        )
+        if (hasContent) {
+          replacement.push({
+            type: 'element',
+            tagName: 'p',
+            properties: { ...(parent as HastElement).properties },
+            children: bucket as HastElement['children'],
+            // Preserve source position so rehypeSourcepos can stamp
+            // data-sourcepos on the synthesized wrappers (needed for
+            // inline-comment anchoring).
+            position: (parent as HastElement).position,
+          })
+        }
+        bucket = []
+      }
+      for (const child of parent.children) {
+        if (child.type === 'element' && BLOCK_ELEMENTS.has(child.tagName)) {
+          flushBucket()
+          replacement.push(child as RootContent)
+        } else {
+          bucket.push(child as RootContent)
+        }
+      }
+      flushBucket()
+      // Stash the replacement so the caller can splice it.
+      ;(parent as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement = replacement
+    }
+
+    // Two-pass: first walk marks <p> elements that need splitting, then we
+    // splice replacements into their parents top-down. A single pass that
+    // mutates children while iterating would skip indices.
+    const splice = (node: HastRoot | HastElement) => {
+      if (!node.children) return
+      let i = 0
+      while (i < node.children.length) {
+        const child = node.children[i]
+        if (child.type === 'element') splice(child)
+        const rep = (child as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement
+        if (rep) {
+          delete (child as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement
+          ;(node.children as RootContent[]).splice(i, 1, ...rep)
+          i += rep.length
+        } else {
+          i++
+        }
+      }
+    }
+
+    walk(tree)
+    splice(tree)
+  }
+}
+
+const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
 
 // Matches one source line break plus any leading tabs/spaces, so a trailing
 // space before the break doesn't survive as its own text node. Mirrors the
@@ -1240,7 +1343,7 @@ function rehypeSourcepos() {
     walk(tree)
   }
 }
-const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeSanitize, rehypeKatex, rehypeSourcepos]
+const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
 // NOTE: remark plugin config is shared via REMARK_PLUGINS above (singleDollarTextMath:
 // false). The sourcepos variant only differs in the rehype chain.
 
