@@ -27,7 +27,6 @@ import re
 import shutil
 import signal
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -72,7 +71,6 @@ from kiro_crew.config.loader import (
     CRED_WEIXIN_TOKEN,
     _session_work_dir,
     build_provider_factory,
-    config_dir,
     data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
@@ -1526,11 +1524,63 @@ class GatewayOrchestrator:
             shutil.which("brazil-build") and (Path(proj).parent.parent / ".brazil").is_dir()
         )
 
-    def _check_missing_deps(self) -> None:
+    # Budgets for the two startup subprocesses below. Class attributes (not
+    # literals) so tests can shrink them to exercise the timeout/kill paths
+    # without waiting out the real budgets.
+    _DEP_INSTALL_TIMEOUT_SECS: float = 300.0
+    _KIRO_CLI_VERSION_TIMEOUT_SECS: float = 5.0
+    # Bound on the post-kill reap: a build-backend grandchild that survived
+    # the kill can hold the stdout/stderr pipes open, making an unbounded
+    # ``communicate()`` wait forever and hang boot.
+    _STARTUP_CHILD_REAP_SECS: float = 5.0
+
+    @staticmethod
+    async def _kill_startup_child(proc: "asyncio.subprocess.Process") -> None:
+        """Best-effort kill of a startup child and its descendants.
+
+        ``proc.kill()`` signals only the child's own PID; pip's build-backend
+        grandchildren survive it, keep writing into site-packages, and hold
+        the pipe write ends open. The tree kill covers them: process-group on
+        POSIX (the child is spawned with ``start_new_session``) and
+        ``taskkill /T`` on Windows. Async on purpose — the Windows branch
+        spawns ``taskkill`` (up to 5s), and ``kill_process_tree_async``
+        offloads it so the kill itself cannot stall the loop this fix exists
+        to protect (POSIX dispatches inline; ``killpg`` is non-blocking).
+        Falls back to a plain kill when the tree kill is refused
+        (already-dead child, non-int mocked PID in tests).
+        """
+        sig = getattr(signal, "SIGKILL", signal.SIGTERM)  # no SIGKILL on Windows
+        try:
+            await platform_compat.kill_process_tree_async(proc.pid, sig)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+
+    @classmethod
+    async def _reap_startup_child(cls, proc: "asyncio.subprocess.Process") -> None:
+        """Bounded reap after a kill — never lets a wedged pipe hang boot.
+
+        Best-effort by design: past the bound, boot proceeds and the OS reaps
+        the zombie eventually. ``suppress(Exception)`` deliberately does not
+        swallow ``CancelledError`` (a ``BaseException``).
+        """
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.communicate(), timeout=cls._STARTUP_CHILD_REAP_SECS)
+
+    async def _check_missing_deps(self) -> None:
         """Auto-repair missing pip deps for venv installs.
 
         After auto-update, old code may have pulled new source via git reset
         but skipped ``pip install``. This catches the gap on next startup.
+
+        Async on purpose: the install can legitimately take minutes, and a
+        synchronous ``subprocess.run`` here would block the event loop for the
+        whole budget (see the module invariant — the loop runs callbacks one at
+        a time, so nothing else, including the loop-stall heartbeat once it is
+        armed, runs while a callback blocks). The child runs via
+        ``asyncio.create_subprocess_exec`` — the same pattern the auto-update
+        path in this file already uses — so the loop keeps servicing callbacks
+        while pip works.
         """
         missing = [pip for mod, pip in self._REQUIRED_DEPS if importlib.util.find_spec(mod) is None]
         if not missing:
@@ -1542,37 +1592,97 @@ class GatewayOrchestrator:
 
         logger.warning("Missing deps %s — installing directly", missing)
         print(f"👻 Installing missing dependencies: {', '.join(missing)}")
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--quiet", *missing],
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            *missing,
             cwd=proj,
-            capture_output=True,
-            timeout=300,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            # Own process group (POSIX; no-op on Windows) so a timeout kill
+            # reaches pip's build-backend grandchildren, not just pip itself.
+            start_new_session=platform_compat.IS_POSIX,
         )
-        if result.returncode == 0:
+        try:
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self._DEP_INSTALL_TIMEOUT_SECS
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            await self._kill_startup_child(proc)
+            await self._reap_startup_child(proc)
+            print("❌ pip install timed out — run manually: kirocrew update")
+            logger.error(
+                "Dep repair timed out after %.0fs", self._DEP_INSTALL_TIMEOUT_SECS
+            )
+            return
+        except asyncio.CancelledError:
+            # Gateway shutdown / Ctrl-C mid-install: leaving pip running would
+            # race the NEXT boot's install of the same distributions — the
+            # half-installed state this repair path exists to fix.
+            await self._kill_startup_child(proc)
+            raise
+        if proc.returncode == 0:
             # Invalidate import caches so the new packages are found
             importlib.invalidate_caches()
             print("✅ Dependencies installed")
         else:
             print("❌ pip install failed — run manually: kirocrew update")
-            logger.error("Dep repair failed: %s", result.stderr.decode(errors="replace")[:500])
+            logger.error(
+                "Dep repair failed: %s", (stderr or b"").decode(errors="replace")[:500]
+            )
 
     # ------------------------------------------------------------------
     # Service initialisation
     # ------------------------------------------------------------------
 
-    def _init_services(self) -> None:
-        """Initialize memory, skills, hooks, context, history, sessions."""
-        if not self._slack_enabled:
-            logger.info("Slack not configured — starting without the Slack gateway")
+    async def _warn_if_kiro_cli_outdated(self) -> None:
+        """Warn when kiro-cli is too old for ``--agent`` (requires >= 1.26).
 
-        # Check kiro-cli version (--agent requires >= 1.26)
+        Never raises: an absent, hung, or unparseable kiro-cli must not break
+        boot. Off the loop via an async subprocess so a slow binary cannot
+        stall every other callback for the 5s budget, and a timeout is logged
+        (not silently swallowed) so a wedged kiro-cli that costs 5s on every
+        boot is diagnosable from gateway.log.
+        """
         try:
-            result = subprocess.run(
-                ["kiro-cli", "--version"], capture_output=True, text=True, timeout=5
+            proc = await asyncio.create_subprocess_exec(
+                "kiro-cli",
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            if result.returncode == 0:
+        except Exception:
+            return  # binary missing/unspawnable — same silence as before
+        try:
+            out, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=self._KIRO_CLI_VERSION_TIMEOUT_SECS
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            await self._kill_startup_child(proc)
+            await self._reap_startup_child(proc)
+            logger.warning(
+                "kiro-cli --version timed out after %.0fs",
+                self._KIRO_CLI_VERSION_TIMEOUT_SECS,
+            )
+            return
+        except asyncio.CancelledError:
+            await self._kill_startup_child(proc)
+            raise
+        except Exception:
+            # Transport/pipe errors must not abort boot (this helper's
+            # contract is "never raises" — the pre-#3051 code swallowed them
+            # via a blanket except). Kill+reap best-effort and continue.
+            await self._kill_startup_child(proc)
+            await self._reap_startup_child(proc)
+            logger.debug("kiro-cli --version probe failed", exc_info=True)
+            return
+        try:
+            if proc.returncode == 0:
                 # e.g. "kiro-cli 1.25.0" -> (1, 25, 0)
-                parts = result.stdout.strip().split()[-1].split(".")
+                parts = out.decode(errors="replace").strip().split()[-1].split(".")
                 major, minor = int(parts[0]), int(parts[1])
                 if (major, minor) < (1, 26):
                     print(
@@ -1580,11 +1690,30 @@ class GatewayOrchestrator:
                         "Update kiro-cli, or use the default claude-agent-acp backend."
                     )
         except Exception:
-            pass
+            pass  # unparseable version output — same silence as before
+
+    async def _init_services(self) -> None:
+        """Initialize memory, skills, hooks, context, history, sessions.
+
+        Async so the blocking pieces named by issue #3051 — the kiro-cli
+        version probe, the pip dep repair, ``VectorMemoryStore.init()`` and
+        ``memory.rebuild_index()`` — run off the event loop. Object
+        CONSTRUCTION deliberately stays on the loop thread:
+        ``SessionManager.__init__`` creates asyncio primitives (locks,
+        semaphores, queues), so hopping the whole method into a worker thread
+        would trade a blocking bug for a thread-affinity one. (Other sync
+        filesystem steps — agent-config install, builtin-skills copy — remain
+        on the loop; they are bounded small-file work, not usage-scaled.)
+        """
+        if not self._slack_enabled:
+            logger.info("Slack not configured — starting without the Slack gateway")
+
+        # Check kiro-cli version (--agent requires >= 1.26)
+        await self._warn_if_kiro_cli_outdated()
 
         # Auto-repair missing pip deps (handles chicken-and-egg after auto-update)
         try:
-            self._check_missing_deps()
+            await self._check_missing_deps()
         except Exception:
             logger.warning("Dep check failed", exc_info=True)
 
@@ -1680,7 +1809,10 @@ class GatewayOrchestrator:
             episodic_limit=self._cfg.memory.episodic_max_results,
             embedding_dim=self._cfg.memory.embedding_dim,
         )
-        self.vector_memory.init()
+        # Off-loop: init() connects sqlite and runs schema migrations, which
+        # scale with store size (VectorMemoryStore's own docs say async
+        # contexts should wrap it in asyncio.to_thread).
+        await asyncio.to_thread(self.vector_memory.init)
         memory.vector_store = self.vector_memory
 
         skills = SkillsLoader()
@@ -1731,11 +1863,13 @@ class GatewayOrchestrator:
         # Trigger skill extraction when sessions expire (idle/orphan)
         self.sessions.on_session_expire = self.consolidator.consolidate_session
 
-        # Channel history buffer
+        # Channel history buffer. data_home(), not config_dir(): this method is
+        # async and config_dir() re-runs start-of-process maintenance (mkdir,
+        # breadcrumb refresh, archive sweep) on every call — #1057.
         self.channel_history = ChannelHistory(
             observe_max_entries=self._cfg.observe_max_messages,
             observe_ttl_secs=int(self._cfg.observe_ttl_hours * 3600),
-            history_dir=config_dir() / "history",
+            history_dir=data_home() / "history",
         )
         self.ctx_builder.channel_history = self.channel_history
 
@@ -1746,8 +1880,9 @@ class GatewayOrchestrator:
             if ch_cfg.activation == ACTIVATION_OBSERVE:
                 self.channel_history.set_observe(ch_id)
 
-        # FTS index
-        indexed = memory.rebuild_index()
+        # FTS index. Off-loop: rebuild_index globs every history *.md and
+        # rewrites the index, so it scales with usage.
+        indexed = await asyncio.to_thread(memory.rebuild_index)
         logger.info("FTS index built: %d files", indexed)
 
     async def _open_dm_with_retry(
@@ -6556,7 +6691,7 @@ class GatewayOrchestrator:
         await cautious_boot.initialize()
 
         seen = SeenCache()
-        self._init_services()
+        await self._init_services()
 
         # Wire in-process embeddings (always-on) and kick background model download
         await self._start_embeddings()

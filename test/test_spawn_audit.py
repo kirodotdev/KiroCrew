@@ -769,7 +769,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "session_pid.py::kill_orphan_mcps",
         "slack/gateway.py::_auto_apply_update",
         "slack/gateway.py::_check_missing_deps",
-        "slack/gateway.py::_init_services",
+        # The kiro-cli version probe, extracted from _init_services (issue
+        # #3051). Fixed argv ("kiro-cli --version"), no agent-influenced
+        # input; sandboxing the probe would be circular for the same reason
+        # as the other boot-time self-checks above.
+        "slack/gateway.py::_warn_if_kiro_cli_outdated",
         "testing/harness.py::spawn_feature_gateway",
         # Apple on-device speech (macOS only). None of these takes an agent-authored
         # command: the argv is a fixed toolchain path, the helper Kiro Crew itself

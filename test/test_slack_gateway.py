@@ -61,6 +61,15 @@ def _make_orchestrator(
 # ─── Helper utilities ────────────────────────────────────────────────────
 
 
+def _fake_async_proc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""):
+    """A stand-in for an ``asyncio.create_subprocess_exec`` child process."""
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
+    proc.kill = MagicMock()
+    return proc
+
+
 def _mock_sessions():
     """Return a mock SessionManager with common methods."""
     s = MagicMock()
@@ -345,8 +354,11 @@ class TestInitServices:
                                         with patch("kiro_crew.slack.gateway.HistoryConsolidator"):
                                             with patch("kiro_crew.slack.gateway.ChannelHistory"):
                                                 with patch("kiro_crew.agent.rebuild_agent_config", return_value=Path("/tmp/a")):
-                                                    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="kiro-cli 1.30.0")):
-                                                        orch._init_services()
+                                                    with patch(
+                                                        "asyncio.create_subprocess_exec",
+                                                        new=AsyncMock(return_value=_fake_async_proc(stdout=b"kiro-cli 1.30.0")),
+                                                    ):
+                                                        asyncio.run(orch._init_services())
 
         assert orch.sessions is not None
         assert orch.ctx_builder is not None
@@ -377,8 +389,11 @@ class TestInitServices:
                                         with patch("kiro_crew.slack.gateway.HistoryConsolidator"):
                                             with patch("kiro_crew.slack.gateway.ChannelHistory"):
                                                 with patch("kiro_crew.agent.rebuild_agent_config", return_value=Path("/tmp/a")):
-                                                    with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="kiro-cli 1.30.0")):
-                                                        orch._init_services()
+                                                    with patch(
+                                                        "asyncio.create_subprocess_exec",
+                                                        new=AsyncMock(return_value=_fake_async_proc(stdout=b"kiro-cli 1.30.0")),
+                                                    ):
+                                                        asyncio.run(orch._init_services())
 
         assert orch.slack is None
         assert orch.sessions is not None
@@ -952,7 +967,7 @@ class TestBrazilInstallAndDeps:
     def test_check_missing_deps_no_missing(self):
         orch = _make_orchestrator()
         with patch("importlib.util.find_spec", return_value=MagicMock()):
-            orch._check_missing_deps()  # should not raise
+            asyncio.run(orch._check_missing_deps())  # should not raise
 
     def test_check_missing_deps_brazil_skips(self):
         orch = _make_orchestrator()
@@ -961,7 +976,7 @@ class TestBrazilInstallAndDeps:
                 with patch.object(
                     GatewayOrchestrator, "_is_brazil_install", return_value=True
                 ):
-                    orch._check_missing_deps()  # should not raise, skips pip
+                    asyncio.run(orch._check_missing_deps())  # should not raise, skips pip
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2390,7 +2405,7 @@ class TestRunMethod:
         orch = _make_orchestrator()
 
         # Mock all init methods
-        orch._init_services = MagicMock()
+        orch._init_services = AsyncMock()
         # _init_services is mocked so vector_memory never gets created — mock
         # the default-on embeddings wiring too (it dereferences vector_memory).
         orch._start_embeddings = AsyncMock()
@@ -2437,7 +2452,7 @@ class TestRunMethod:
 
         orch = _make_orchestrator(no_dashboard=True)
 
-        orch._init_services = MagicMock()
+        orch._init_services = AsyncMock()
         orch._start_embeddings = AsyncMock()
         # run() spawns _auto_migrate_memory as a fire-and-forget task; with
         # _init_services mocked it would raise AttributeError on
@@ -4243,7 +4258,7 @@ class TestRunSignalAndBgSession:
         orch = _make_orchestrator(no_dashboard=True)
         orch._cfg.memory.embedding_provider = "llama_cpp"
 
-        orch._init_services = MagicMock()
+        orch._init_services = AsyncMock()
         orch._start_embeddings = AsyncMock()
         # run() spawns _auto_migrate_memory as a fire-and-forget task; with
         # _init_services mocked it would raise AttributeError on
@@ -4297,7 +4312,7 @@ class TestBgSessionDashboardBranch:
         """_start_bg_session prints dashboard URLs when not _no_dashboard."""
         orch = _make_orchestrator(no_dashboard=False, no_open=True)
 
-        orch._init_services = MagicMock()
+        orch._init_services = AsyncMock()
         orch._start_embeddings = AsyncMock()
         # run() spawns _auto_migrate_memory as a fire-and-forget task; with
         # _init_services mocked it would raise AttributeError on
@@ -4361,10 +4376,16 @@ class TestCheckMissingDepsPip:
                 with patch.object(
                     GatewayOrchestrator, "_is_brazil_install", return_value=False
                 ):
-                    with patch("subprocess.run") as mock_run:
-                        mock_run.return_value = MagicMock(returncode=0)
-                        orch._check_missing_deps()
-                    mock_run.assert_called_once()
+                    mock_exec = AsyncMock(return_value=_fake_async_proc(returncode=0))
+                    with patch("asyncio.create_subprocess_exec", mock_exec):
+                        asyncio.run(orch._check_missing_deps())
+                    mock_exec.assert_awaited_once()
+                    # Pin the command shape so a refactor cannot silently stop
+                    # installing (sys.executable -m pip install ...).
+                    import sys as _sys
+
+                    args = mock_exec.await_args.args
+                    assert args[:4] == (_sys.executable, "-m", "pip", "install")
 
     def test_pip_install_failure(self):
         orch = _make_orchestrator()
@@ -4373,11 +4394,278 @@ class TestCheckMissingDepsPip:
                 with patch.object(
                     GatewayOrchestrator, "_is_brazil_install", return_value=False
                 ):
-                    with patch("subprocess.run") as mock_run:
-                        mock_run.return_value = MagicMock(
-                            returncode=1, stderr=b"error"
-                        )
-                        orch._check_missing_deps()  # should not raise
+                    mock_exec = AsyncMock(
+                        return_value=_fake_async_proc(returncode=1, stderr=b"error")
+                    )
+                    with patch("asyncio.create_subprocess_exec", mock_exec):
+                        asyncio.run(orch._check_missing_deps())  # should not raise
+
+    def test_pip_install_timeout_kills_child(self):
+        """A wedged pip is killed and reaped; boot continues without raising."""
+        orch = _make_orchestrator()
+        proc = MagicMock()
+        proc.returncode = None
+        proc.kill = MagicMock()
+
+        async def _communicate():
+            if proc.kill.called:
+                return (b"", b"")  # post-kill reap returns immediately
+            await asyncio.sleep(3600)  # hang until wait_for cancels us
+            return (b"", b"")
+
+        proc.communicate = MagicMock(side_effect=_communicate)
+        with patch("importlib.util.find_spec", return_value=None):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/proj"}):
+                with patch.object(
+                    GatewayOrchestrator, "_is_brazil_install", return_value=False
+                ):
+                    with patch.object(
+                        GatewayOrchestrator, "_DEP_INSTALL_TIMEOUT_SECS", 0.05
+                    ):
+                        with patch(
+                            "asyncio.create_subprocess_exec",
+                            AsyncMock(return_value=proc),
+                        ):
+                            asyncio.run(orch._check_missing_deps())  # no raise
+        proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_version_probe_transport_error_does_not_abort_boot(self):
+        """_warn_if_kiro_cli_outdated must never raise.
+
+        A pipe/transport error from communicate() propagating out of this
+        helper would abort run() before the dashboard binds. The child is
+        still killed+reaped best-effort.
+        """
+        calls = {"n": 0}
+
+        async def _communicate():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("broken pipe")
+            return (b"", b"")  # the post-kill reap
+
+        proc = MagicMock()
+        proc.returncode = None
+        proc.kill = MagicMock()
+        proc.communicate = MagicMock(side_effect=_communicate)
+        orch = _make_orchestrator()
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            await orch._warn_if_kiro_cli_outdated()  # must not raise
+        proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pip_install_cancellation_kills_child(self):
+        """Gateway shutdown mid-install must not orphan pip.
+
+        A leaked pip would race the NEXT boot's install of the same
+        distributions — the half-installed state this repair path exists to
+        fix.
+        """
+        proc = MagicMock()
+        proc.returncode = None
+        proc.kill = MagicMock()
+
+        async def _communicate():
+            await asyncio.sleep(3600)  # hang until cancelled
+            return (b"", b"")
+
+        proc.communicate = MagicMock(side_effect=_communicate)
+        orch = _make_orchestrator()
+        with patch("importlib.util.find_spec", return_value=None):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/proj"}):
+                with patch.object(
+                    GatewayOrchestrator, "_is_brazil_install", return_value=False
+                ):
+                    with patch(
+                        "asyncio.create_subprocess_exec", AsyncMock(return_value=proc)
+                    ):
+                        task = asyncio.create_task(orch._check_missing_deps())
+                        await asyncio.sleep(0.05)  # let it reach the await
+                        task.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            await task
+        proc.kill.assert_called_once()
+
+
+class TestInitServicesLoopResponsiveness:
+    """The event loop must keep servicing callbacks during slow startup work.
+
+    Invariant (issue #3051): the loop runs callbacks one at a time, so a
+    synchronous subprocess/scan inside ``_init_services`` starves every other
+    coroutine — including the loop-stall watchdog heartbeat once armed — for
+    its whole duration. These tests run a fast ticker concurrently with a
+    deliberately slow dependency install / store scan and assert the ticker's
+    max inter-tick gap stays under a load-adaptive ceiling. A regression to
+    the old synchronous shape (subprocess.run / a bare on-loop call) blocks
+    the ticker for the whole slow window and blows the ceiling.
+    """
+
+    _SLOW_SECS = 0.5
+    # Floor for the gap ceiling. The real ceiling adapts to host load (see
+    # _gap_ceiling): an absolute constant alone is the flake class AGENTS.md
+    # warns about — coverage + a saturated -n auto runner can produce
+    # hundred-ms scheduler hiccups on a perfectly healthy loop.
+    _MAX_GAP_SECS = 0.4
+    # Multiple of the measured control gap. The mutant signal is ~_SLOW_SECS
+    # (0.5s) vs a healthy ~0.01s, so 8x still kills every mutant on any host
+    # where the control gap stays under ~60ms.
+    _GAP_CEILING_FACTOR = 8
+
+    @staticmethod
+    def _gap_ticker(state: dict):
+        state["last"] = time.monotonic()
+
+        async def _ticker():
+            state["last"] = time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                state["max_gap"] = max(state["max_gap"], now - state["last"])
+                state["ticks"] += 1
+                state["last"] = now
+
+        return _ticker
+
+    @staticmethod
+    def _fold_final_gap(state: dict) -> None:
+        """Record the gap between the last tick and measurement end.
+
+        Without this, a block at the TAIL of the measured call is invisible:
+        the parent coroutine resumes first and cancels the ticker before it
+        can run once more to observe the gap.
+        """
+        state["max_gap"] = max(state["max_gap"], time.monotonic() - state["last"])
+
+    async def _gap_ceiling(self) -> float:
+        """Measure the host's baseline tick gap and derive the failure ceiling.
+
+        Runs the same ticker over a plain ``asyncio.sleep`` window with
+        nothing offloaded — any gap observed here is pure scheduler noise —
+        then allows the measured phase a small multiple of it, floored at
+        _MAX_GAP_SECS for quiet hosts.
+        """
+        control = {"ticks": 0, "max_gap": 0.0}
+        task = asyncio.create_task(self._gap_ticker(control)())
+        await asyncio.sleep(0.02)  # ticker baseline
+        try:
+            await asyncio.sleep(self._SLOW_SECS)
+            self._fold_final_gap(control)
+        finally:
+            task.cancel()
+        return max(self._MAX_GAP_SECS, self._GAP_CEILING_FACTOR * control["max_gap"])
+
+    @pytest.mark.asyncio
+    async def test_slow_pip_install_does_not_starve_heartbeat(self):
+        orch = _make_orchestrator()
+        ceiling = await self._gap_ceiling()
+        state = {"ticks": 0, "max_gap": 0.0}
+        _ticker = self._gap_ticker(state)
+
+        async def _slow_exec(*args, **kwargs):
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.kill = MagicMock()
+
+            async def _communicate():
+                await asyncio.sleep(self._SLOW_SECS)  # yields to the loop
+                return (b"", b"")
+
+            proc.communicate = MagicMock(side_effect=_communicate)
+            return proc
+
+        def _blocking_run(*args, **kwargs):  # the OLD, buggy shape
+            time.sleep(self._SLOW_SECS)  # blocks the loop thread
+            return MagicMock(returncode=0, stdout="", stderr=b"")
+
+        with patch("importlib.util.find_spec", return_value=None):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/proj"}):
+                with patch.object(
+                    GatewayOrchestrator, "_is_brazil_install", return_value=False
+                ):
+                    # Patch BOTH shapes: the fixed code awaits the async exec
+                    # (ticker keeps running); a mutant reverted to
+                    # subprocess.run blocks the loop and starves the ticker.
+                    # The sync shape is patched on the subprocess MODULE (not
+                    # the gateway namespace) because the fixed gateway no
+                    # longer imports subprocess at all.
+                    with patch(
+                        "asyncio.create_subprocess_exec", side_effect=_slow_exec
+                    ):
+                        with patch(
+                            "subprocess.run",
+                            side_effect=_blocking_run,
+                        ):
+                            ticker_task = asyncio.create_task(_ticker())
+                            # Let the ticker establish its baseline BEFORE the
+                            # measured call: awaiting a coroutine runs it
+                            # inline, so without this yield an on-loop block
+                            # would happen before the first tick and never be
+                            # observed as a gap.
+                            await asyncio.sleep(0.02)
+                            try:
+                                await asyncio.wait_for(
+                                    orch._check_missing_deps(), timeout=10
+                                )
+                                self._fold_final_gap(state)
+                            finally:
+                                ticker_task.cancel()
+        assert state["max_gap"] < ceiling, (
+            f"loop blocked for {state['max_gap']:.2f}s during dep install "
+            f"(ceiling {ceiling:.2f}s)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_slow_fts_rebuild_does_not_starve_heartbeat(self):
+        """rebuild_index and vector init scale with usage; both must run off-loop."""
+        orch = _make_orchestrator(slack_enabled=False)
+        ceiling = await self._gap_ceiling()
+        state = {"ticks": 0, "max_gap": 0.0}
+        _ticker = self._gap_ticker(state)
+
+        def _slow_rebuild():
+            time.sleep(self._SLOW_SECS)  # off-loop this is harmless
+            return 3
+
+        def _slow_vector_init():
+            time.sleep(self._SLOW_SECS)  # off-loop this is harmless
+
+        mock_mem_inst = MagicMock()
+        mock_mem_inst.init = MagicMock()
+        mock_mem_inst.rebuild_index = MagicMock(side_effect=_slow_rebuild)
+        mock_vm_inst = MagicMock()
+        mock_vm_inst.init = MagicMock(side_effect=_slow_vector_init)
+        with patch("kiro_crew.slack.gateway.MemoryStore", return_value=mock_mem_inst):
+            with patch("kiro_crew.vector_memory.VectorMemoryStore") as mock_vm:
+                mock_vm.return_value = mock_vm_inst
+                with patch("kiro_crew.slack.gateway.SkillsLoader"):
+                    with patch("kiro_crew.slack.gateway.HookManager"):
+                        with patch("kiro_crew.slack.gateway.LessonStore"):
+                            with patch("kiro_crew.slack.gateway.ContextBuilder"):
+                                with patch("kiro_crew.slack.gateway.ConversationLog", return_value=MagicMock()):
+                                    with patch("kiro_crew.slack.gateway.SessionManager"):
+                                        with patch("kiro_crew.slack.gateway.HistoryConsolidator"):
+                                            with patch("kiro_crew.slack.gateway.ChannelHistory"):
+                                                with patch("kiro_crew.agent.rebuild_agent_config", return_value=Path("/tmp/a")):
+                                                    with patch(
+                                                        "asyncio.create_subprocess_exec",
+                                                        new=AsyncMock(return_value=_fake_async_proc(stdout=b"kiro-cli 1.30.0")),
+                                                    ):
+                                                        ticker_task = asyncio.create_task(_ticker())
+                                                        # Baseline tick first — see the
+                                                        # comment in the pip test above.
+                                                        await asyncio.sleep(0.02)
+                                                        try:
+                                                            await asyncio.wait_for(
+                                                                orch._init_services(), timeout=10
+                                                            )
+                                                            self._fold_final_gap(state)
+                                                        finally:
+                                                            ticker_task.cancel()
+        assert state["max_gap"] < ceiling, (
+            f"loop blocked for {state['max_gap']:.2f}s during service init "
+            f"(ceiling {ceiling:.2f}s)"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
