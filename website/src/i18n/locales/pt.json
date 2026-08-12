@@ -10316,6 +10316,7 @@
         "enable_via_setting": "Alternativamente, defina <settingRef/> e depois execute <restartCmd/>."
       },
       "mcpPoolableServers": {
+        "clear_all": "Remover todos do pool",
         "blocked": "bloqueado",
         "could_not_load_mcp_servers": "Não foi possível carregar os servidores MCP.",
         "could_not_update_all_try_again": "Não foi possível atualizar os servidores. Nenhuma alteração foi feita. Tente novamente.",
@@ -10326,6 +10327,7 @@
         "no_mcp_servers_configured": "Nenhum servidor MCP configurado.",
         "pool": "Agrupar {{name}}",
         "poolable_mcp_servers": "Servidores MCP agrupáveis",
+        "pool_all": "Agrupar todos",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "O agrupamento entra em vigor quando o gateway MCP compartilhado está ativado. De todo modo, você pode\n            pré-configurar aqui quais servidores são agrupáveis.",
         "shared": "· compartilhado",

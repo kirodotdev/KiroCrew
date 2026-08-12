@@ -10197,6 +10197,7 @@
         "enable_via_setting": "বিকল্পভাবে, <settingRef/> সেট করুন, তারপর <restartCmd/> চালান।"
       },
       "mcpPoolableServers": {
+        "clear_all": "সবগুলো পুল থেকে সরান",
         "blocked": "ব্লক করা",
         "could_not_load_mcp_servers": "MCP সার্ভার লোড করা যায়নি।",
         "could_not_update_all_try_again": "সার্ভার আপডেট করা যায়নি। কোনো পরিবর্তন হয়নি। আবার চেষ্টা করো।",
@@ -10207,6 +10208,7 @@
         "no_mcp_servers_configured": "কোনো MCP সার্ভার কনফিগার করা নেই।",
         "pool": "{{name}} পুল করো",
         "poolable_mcp_servers": "পুলযোগ্য MCP সার্ভার",
+        "pool_all": "সবগুলো পুলে যোগ করুন",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "শেয়ার্ড MCP গেটওয়ে সক্রিয় থাকলে পুলিং কার্যকর হয়। যেকোনো ক্ষেত্রেই কোন\n            সার্ভারগুলো পুলযোগ্য তা আপনি এখানে আগেভাগে কনফিগার করতে পারেন।",
         "shared": "· শেয়ার্ড",

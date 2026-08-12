@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { SettingsSection, SettingsCard } from '../../components/settings'
-import { Toggle } from '../../components/ui'
+import { Btn, Checkbox, Toggle } from '../../components/ui'
 import { api, type McpPoolableServer } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
@@ -25,16 +25,33 @@ export function poolableEligible(servers: McpPoolableServer[]): McpPoolableServe
 }
 
 /**
- * State of the "toggle all" switch.
+ * State of the master checkbox.
  *
  * Only the eligible rows count: locked rows can never be written from here, so
- * including them would leave the toggle-all switch permanently off (and its click
+ * including them would leave the master checkbox permanently off (and its click
  * permanently a no-op) on any install with one denylisted or HTTP server. With
- * no eligible rows at all the switch reads off — there is nothing to turn on.
+ * no eligible rows at all the checkbox reads off — there is nothing to turn on.
  */
-export function toggleAllChecked(servers: McpPoolableServer[]): boolean {
+export type ToggleAllState = 'off' | 'mixed' | 'on'
+
+export function toggleAllState(servers: McpPoolableServer[]): ToggleAllState {
   const eligible = poolableEligible(servers)
-  return eligible.length > 0 && eligible.every(srv => srv.poolable)
+  if (eligible.length === 0 || eligible.every(srv => !srv.poolable)) return 'off'
+  if (eligible.every(srv => srv.poolable)) return 'on'
+  return 'mixed'
+}
+
+export function toggleAllChecked(servers: McpPoolableServer[]): boolean {
+  return toggleAllState(servers) === 'on'
+}
+
+/**
+ * A mixed selection clears on activation. Pooling the missing rows instead would
+ * briefly start servers the user deliberately excluded, which is the unsafe
+ * direction for a bulk control with side effects.
+ */
+export function toggleAllNextValue(state: ToggleAllState): boolean {
+  return state === 'off'
 }
 
 /**
@@ -89,9 +106,12 @@ export function McpPoolableServers() {
 
   const servers = serversQ.data?.servers ?? []
   const eligible = poolableEligible(servers)
-  const allChecked = toggleAllChecked(servers)
+  const allState = toggleAllState(servers)
   const pooledCount = eligible.filter(srv => srv.poolable).length
   const viaAgentConfig = pooledViaAgentConfig(servers)
+  const bulkDisabled = bulkPending || pending.size > 0
+  const poolAllLabel = i18nT('pages.settings.mcpPoolableServers.pool_all')
+  const clearAllLabel = i18nT('pages.settings.mcpPoolableServers.clear_all')
 
   const toggle = async (srv: McpPoolableServer, next: boolean) => {
     setError(null)
@@ -167,21 +187,38 @@ export function McpPoolableServers() {
                         })}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div
+                  className="flex items-center gap-2"
+                  role="group"
+                  aria-label={i18nT('pages.settings.mcpPoolableServers.toggle_all')}
+                  aria-busy={bulkPending}
+                >
                   {bulkPending && <Loader2 size={14} className="animate-spin text-accent" />}
-                  <Toggle
-                    checked={allChecked}
-                    onChange={next => toggleAll(next)}
-                    // A single row's write in flight holds this one: the two would
-                    // race the same allowlist. Emptiness is handled by not
-                    // rendering the row at all.
-                    disabled={bulkPending || pending.size > 0}
-                    label={i18nT('pages.settings.mcpPoolableServers.toggle_all')}
-                    // The switch position alone cannot say how many rows are already
-                    // pooled, and a mixed list reads off. Pointing at the count makes an
-                    // AT user hear the real state before acting on it.
-                    describedBy="mcp-pool-toggle-all-count"
-                  />
+                  <div
+                    className={`inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap ${
+                      bulkDisabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
+                    }`}
+                  >
+                    <Checkbox
+                      ref={input => {
+                        if (input) input.indeterminate = allState === 'mixed'
+                      }}
+                      checked={allState === 'on'}
+                      aria-checked={allState === 'mixed' ? 'mixed' : allState === 'on'}
+                      onChange={() => toggleAll(toggleAllNextValue(allState))}
+                      // A single row's write in flight holds every bulk action: the
+                      // writes would otherwise race the same allowlist.
+                      disabled={bulkDisabled}
+                      aria-label={allState === 'off' ? poolAllLabel : clearAllLabel}
+                      aria-describedby="mcp-pool-toggle-all-count"
+                    />
+                    <span>{allState === 'off' ? poolAllLabel : clearAllLabel}</span>
+                  </div>
+                  {allState === 'mixed' && (
+                    <Btn type="button" disabled={bulkDisabled} onClick={() => toggleAll(true)}>
+                      {poolAllLabel}
+                    </Btn>
+                  )}
                 </div>
               </div>
             )}

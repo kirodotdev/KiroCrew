@@ -159,6 +159,8 @@
     "pages.sessionsTab.pid": "Sortable column header in the Sessions table, holding the operating-system process identifier of the session's agent runtime. Abbreviation of \"process ID\" - a number the reader copies into `ps` or `kill`, so keep it as the platform abbreviation rather than expanding it.",
     "pages.settings.aboutPanel.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.settings.instancesPanel.20h": "A preset retention/timeout duration of 20 hours. The number is data; only the unit letter is translatable, and most locales keep `h`.",
+    "pages.settings.mcpPoolableServers.clear_all": "Action beside the MCP pool summary that removes every eligible server from the shared process pool. It does not delete server configurations.",
+    "pages.settings.mcpPoolableServers.pool_all": "Action beside the MCP pool summary that adds every eligible server to the shared process pool. Here `pool` is a verb about process reuse, not a swimming pool.",
     "pages.settings.notificationsPanel.app": "\"app\" as a notification-delivery target, meaning the desktop application itself rather than Slack or Discord.",
     "pages.settings.notificationsPanel.preset_pop": "Name of a notification sound preset — a short percussive 'pop'. One of several sound names in a picker; it names the sound, so translate only if the language has a natural onomatopoeia, otherwise keep it.",
     "pages.settings.securityPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",

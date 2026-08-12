@@ -3385,11 +3385,13 @@
         "your_chat_sessions_were_restarted_so_this_takes": "Your chat sessions were restarted so this takes effect right away — Kiro reads its tool list once per session, so an open chat would not have picked it up otherwise. Your messages are still there; the agent re-reads its context on your next message."
       },
       "mcpPoolableServers": {
+        "clear_all": "Clear all",
         "could_not_update_all_try_again": "Could not update servers. No changes were made. Try again.",
         "could_not_update_try_again": "Could not update {{name}}. Try again.",
         "n_of_m_pooled": "{{on}} of {{total}} poolable servers pooled",
         "n_of_m_pooled_plus_agent": "{{on}} of {{total}} poolable servers pooled, +{{extra}} via agent config",
         "pool": "Pool {{name}}",
+        "pool_all": "Pool all",
         "toggle_all": "Toggle all"
       },
       "postureDisclosure": {

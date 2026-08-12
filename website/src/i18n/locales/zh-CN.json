@@ -10078,6 +10078,7 @@
         "enable_via_setting": "或者，设置 <settingRef/>，然后运行 <restartCmd/>。"
       },
       "mcpPoolableServers": {
+        "clear_all": "全部取消池化",
         "blocked": "已阻止",
         "could_not_load_mcp_servers": "无法加载 MCP 服务器。",
         "could_not_update_all_try_again": "无法更新服务器，未做任何更改，重试一次。",
@@ -10088,6 +10089,7 @@
         "no_mcp_servers_configured": "未配置 MCP 服务器。",
         "pool": "池化 {{name}}",
         "poolable_mcp_servers": "可池化的 MCP 服务器",
+        "pool_all": "全部池化",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "池化在启用共享 MCP 网关后生效。无论是否启用，你都可以在此\n            预先配置哪些服务器可池化。",
         "shared": "· 共享",

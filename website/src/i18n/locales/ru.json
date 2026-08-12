@@ -10435,6 +10435,7 @@
         "enable_via_setting": "Или задайте <settingRef/>, затем выполните <restartCmd/>."
       },
       "mcpPoolableServers": {
+        "clear_all": "Удалить все из пула",
         "blocked": "заблокировано",
         "could_not_load_mcp_servers": "Не удалось загрузить MCP-серверы.",
         "could_not_update_all_try_again": "Не удалось обновить серверы. Изменения не внесены. Попробуй снова.",
@@ -10445,6 +10446,7 @@
         "no_mcp_servers_configured": "MCP-серверы не настроены.",
         "pool": "Пул для {{name}}",
         "poolable_mcp_servers": "MCP-серверы с поддержкой пула",
+        "pool_all": "Добавить все в пул",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "Пул начинает работать, когда включён общий MCP-шлюз. Здесь всё равно можно заранее указать, какие\n            серверы могут использовать пул.",
         "shared": "· общий",

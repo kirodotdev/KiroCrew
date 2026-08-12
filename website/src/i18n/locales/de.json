@@ -10197,6 +10197,7 @@
         "enable_via_setting": "Alternativ setzen Sie <settingRef/> und führen Sie dann <restartCmd/> aus."
       },
       "mcpPoolableServers": {
+        "clear_all": "Alle aus dem Pool entfernen",
         "blocked": "blockiert",
         "could_not_load_mcp_servers": "MCP-Server konnten nicht geladen werden.",
         "could_not_update_all_try_again": "Server konnten nicht aktualisiert werden. Es wurden keine Änderungen vorgenommen. Versuche es erneut.",
@@ -10207,6 +10208,7 @@
         "no_mcp_servers_configured": "Keine MCP-Server konfiguriert.",
         "pool": "{{name}} in den Pool aufnehmen",
         "poolable_mcp_servers": "Poolfähige MCP-Server",
+        "pool_all": "Alle in den Pool aufnehmen",
         "poolable_true": "poolable:true",
         "pooling_takes_effect_when_the_shared_mcp_gateway": "Das Pooling wird wirksam, wenn das gemeinsame MCP-Gateway aktiviert ist. Sie können hier in jedem Fall vorab konfigurieren, welche\n            Server poolfähig sind.",
         "shared": "· gemeinsam",

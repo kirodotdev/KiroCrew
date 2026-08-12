@@ -1,12 +1,21 @@
-import { describe, it, expect } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
+  McpPoolableServers,
   poolableRowLocked,
   poolableEligible,
   toggleAllChecked,
+  toggleAllNextValue,
+  toggleAllState,
   toggleAllTargets,
   pooledViaAgentConfig,
 } from '../pages/settings/McpPoolableServers'
-import type { McpPoolableServer } from '../api/client'
+import { api, type McpPoolableServer } from '../api/client'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 function srv(partial: Partial<McpPoolableServer>): McpPoolableServer {
   return {
@@ -75,6 +84,19 @@ describe('toggle all', () => {
     expect(toggleAllChecked([on, off])).toBe(false)
   })
 
+  it('represents a partially pooled list as mixed', () => {
+    expect(toggleAllState([on, off, lockedHttp, lockedDeny])).toBe('mixed')
+  })
+
+  it('clears a mixed list instead of briefly pooling every server', () => {
+    expect(toggleAllNextValue('mixed')).toBe(false)
+  })
+
+  it('moves uniform lists to their opposite state', () => {
+    expect(toggleAllNextValue('off')).toBe(true)
+    expect(toggleAllNextValue('on')).toBe(false)
+  })
+
   it('reads unchecked when nothing is eligible', () => {
     expect(toggleAllChecked([lockedHttp, lockedDeny])).toBe(false)
     expect(toggleAllChecked([])).toBe(false)
@@ -88,6 +110,76 @@ describe('toggle all', () => {
   it('targets nothing when the eligible rows already agree', () => {
     expect(toggleAllTargets([on, lockedHttp], true)).toEqual([])
     expect(toggleAllTargets([], false)).toEqual([])
+  })
+
+  it.each([
+    { state: 'off', servers: [off], name: 'Pool all', checked: false },
+    { state: 'on', servers: [on], name: 'Clear all', checked: true },
+  ])('renders the $state checkbox with an explicit $name action', async ({ servers, name, checked }) => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue({
+      enabled: true,
+      apps_enabled: false,
+      running: true,
+      ping_ok: true,
+      supported: true,
+    })
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <McpPoolableServers />
+      </QueryClientProvider>,
+    )
+
+    const master = await screen.findByRole('checkbox', { name })
+    expect(master).toHaveProperty('checked', checked)
+    expect((master as HTMLInputElement).indeterminate).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Pool all' })).not.toBeInTheDocument()
+  })
+
+  it('renders mixed state with explicit actions in both directions', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue({
+      enabled: true,
+      apps_enabled: false,
+      running: true,
+      ping_ok: true,
+      supported: true,
+    })
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [on, off] })
+    const setPoolableMany = vi.spyOn(api, 'mcpGatewaySetPoolableMany').mockResolvedValue({
+      ok: true,
+      names: ['on-mcp'],
+      poolable: false,
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <McpPoolableServers />
+      </QueryClientProvider>,
+    )
+
+    const master = await screen.findByRole('checkbox', { name: 'Clear all' })
+    expect(master).toHaveAttribute('aria-checked', 'mixed')
+    expect((master as HTMLInputElement).indeterminate).toBe(true)
+    expect(screen.getByRole('button', { name: 'Pool all' })).toBeEnabled()
+
+    fireEvent.click(master)
+
+    await waitFor(() => {
+      expect(setPoolableMany).toHaveBeenCalledWith(['on-mcp'], false)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pool all' }))
+
+    await waitFor(() => {
+      expect(setPoolableMany).toHaveBeenCalledWith(['off-mcp'], true)
+    })
   })
 })
 
