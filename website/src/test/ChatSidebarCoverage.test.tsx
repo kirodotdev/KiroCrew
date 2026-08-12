@@ -429,7 +429,7 @@ describe('ChatSidebar — Older Sessions pane', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderSidebar({ history: HISTORY })
     openHistory()
-    fireEvent.click(screen.getByText('Clear'))
+    fireEvent.click(screen.getByText('Delete all'))
     await waitFor(() => expect(mocks.clearSessions).toHaveBeenCalled())
     confirmSpy.mockRestore()
   })
