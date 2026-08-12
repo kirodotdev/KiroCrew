@@ -1724,6 +1724,8 @@ export const api = {
   agentDetail: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name)).then(j),
   agentPatch: (name: string, body: object) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   agentDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
+  agentCreate: (body: object) => post('/api/agents/installed', body).then(j),
+  agentUpdate: (name: string, body: object) => fetch('/api/agents/installed/' + encodeURIComponent(name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   // KiroCrew agents
   // sessionKey identifies the CHAT SLOT whose project scope applies. The
   // server resolves project-local agents through
