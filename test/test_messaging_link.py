@@ -1,8 +1,9 @@
-"""Tests for the two-level DM session-key builder in ``messaging.link``.
+"""Tests for the shared link helpers in ``messaging.link``.
 
-Covers the canonical channel-first shape, generation rotation, dmScope
-isolation vs unification, safe fallback on an unknown scope, and the reserved
-``group`` chat-type slot.
+Covers the two-level DM session-key builder — the canonical channel-first shape,
+generation rotation, dmScope isolation vs unification, safe fallback on an unknown
+scope, and the reserved ``group`` chat-type slot — plus the automatic origin-mirror
+bind the DM dispatchers share.
 """
 
 from __future__ import annotations
@@ -15,9 +16,12 @@ from kiro_crew.messaging.link import (
     DEFAULT_DM_SCOPE,
     DM_SCOPE_PER_CHANNEL_PEER,
     DM_SCOPE_UNIFIED,
+    ChannelLink,
+    bind_origin_mirror,
     build_dm_session_key,
     should_rotate_generation,
 )
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 
 class TestBuildDmSessionKey:
@@ -133,3 +137,149 @@ class TestShouldRotateGeneration:
         last = _local_epoch(2026, 7, 9, 3, 0)
         now = _local_epoch(2026, 7, 10, 5, 0)
         assert should_rotate_generation(last, now, daily_reset_hour=-1) is False
+
+
+class _Sessions:
+    """The narrow session-manager surface :func:`bind_origin_mirror` touches."""
+
+    def __init__(self, *, raise_on_set: BaseException | None = None) -> None:
+        self.mirror_links: dict[str, ChannelLink] = {}
+        self.opt_outs: set[str] = set()
+        self.writes = 0
+        self._raise_on_set = raise_on_set
+
+    def mirror_opt_out(self, key: str) -> bool:
+        return key in self.opt_outs
+
+    def get_mirror_link(self, key: str) -> ChannelLink | None:
+        return self.mirror_links.get(key)
+
+    def set_mirror_link(self, key: str, link: ChannelLink) -> None:
+        if self._raise_on_set is not None:
+            raise self._raise_on_set
+        self.writes += 1
+        self.mirror_links[key] = link
+
+
+_HERE = ChannelLink("discord", channel_id="c1")
+
+
+class TestBindOriginMirror:
+    def test_an_unbound_conversation_is_bound_to_itself(self) -> None:
+        sess = _Sessions()
+        assert bind_origin_mirror(sess, key="discord:kirocrew:direct:u1", location=_HERE) is True
+        assert sess.mirror_links == {"discord:kirocrew:direct:u1": _HERE}
+
+    def test_the_steady_state_is_a_read(self) -> None:
+        """The re-assert runs per turn, so the repeating path must not write.
+
+        A mutation rewrites the whole session map on the event loop; a per-turn
+        write would put that stall on every message.
+        """
+        sess = _Sessions()
+        for _ in range(5):
+            bind_origin_mirror(sess, key="k", location=_HERE)
+        assert sess.writes == 1
+
+    def test_an_explicit_bind_to_another_location_is_not_repointed(self) -> None:
+        """Nothing repoints a binding — a swept or rival-claimed one is REMOVED.
+
+        So a binding naming another conversation on this channel is deliberate
+        (the dashboard can bind a surfaced session anywhere), and re-pointing it
+        at the origin would undo an explicit action with no signal.
+        """
+        sess = _Sessions()
+        chosen = ChannelLink("discord", channel_id="c-elsewhere")
+        sess.mirror_links["k"] = chosen
+        assert bind_origin_mirror(sess, key="k", location=_HERE) is False
+        assert sess.mirror_links["k"] == chosen
+
+    def test_an_explicit_bind_on_ANOTHER_CHANNEL_is_preserved(self) -> None:
+        """The dashboard can aim a session's mirror at any surface.
+
+        A Discord conversation whose owner pointed its dashboard mirror at a
+        Telegram chat must keep that target: overwriting it on the next Discord
+        message would silently redirect their replies into this chat.
+        """
+        sess = _Sessions()
+        chosen = ChannelLink("telegram", channel_id="7", thread_id=None)
+        sess.mirror_links["k"] = chosen
+        assert bind_origin_mirror(sess, key="k", location=_HERE) is False
+        assert sess.mirror_links["k"] == chosen
+
+    def test_a_real_slack_mirror_is_preserved(self) -> None:
+        """The exception is the missing THREAD, not the channel type.
+
+        A Slack mirror that names its thread is routable and deliberate.
+        """
+        sess = _Sessions()
+        chosen = ChannelLink("slack", channel_id="C123", thread_id="1785370133.085469")
+        sess.mirror_links["k"] = chosen
+        assert bind_origin_mirror(sess, key="k", location=_HERE) is False
+        assert sess.mirror_links["k"] == chosen
+
+    def test_the_unrouted_slack_placeholder_does_not_block_the_bind(self) -> None:
+        """``set_channel`` writes the namespaced bucket into ``slack_channel_id``.
+
+        ``get_mirror_link`` synthesizes a Slack link from that field whenever no
+        explicit mirror row exists, so the first turn of every new channel session
+        reads one back. An empty thread is Slack's own clear sentinel and never
+        enters the reverse index, so nothing can be delivered through it — it is
+        bookkeeping, not a binding.
+        """
+        sess = _Sessions()
+        sess.mirror_links["k"] = ChannelLink("slack", channel_id="discord:c1")
+        assert bind_origin_mirror(sess, key="k", location=_HERE) is True
+        assert sess.mirror_links["k"] == _HERE
+
+    def test_a_unified_bucket_is_never_bound(self) -> None:
+        """``dm_scope="unified"`` collapses every user's DMs into one bucket.
+
+        The channel and the user drop out of the key, so "the origin conversation"
+        has no single answer and a binding there would deliver one user's
+        dashboard replies into another user's chat.
+        """
+        sess = _Sessions()
+        assert bind_origin_mirror(sess, key="unified:kirocrew", location=_HERE) is False
+        assert bind_origin_mirror(sess, key="unified:kirocrew:gen4", location=_HERE) is False
+        assert sess.mirror_links == {}
+
+    def test_a_per_channel_bucket_under_the_same_config_is_bound(self) -> None:
+        """The guard is read off the KEY, so only the collapsed shape is excluded.
+
+        A forum/thread route keeps its full bucket under any scope.
+        """
+        sess = _Sessions()
+        assert (
+            bind_origin_mirror(sess, key="discord:kirocrew:group:t9", location=_HERE) is True
+        )
+
+    def test_an_opted_out_conversation_is_not_bound(self) -> None:
+        sess = _Sessions()
+        sess.opt_outs.add("k")
+        assert bind_origin_mirror(sess, key="k", location=_HERE) is False
+        assert sess.mirror_links == {}
+
+    def test_the_opt_out_never_clears_a_binding_it_finds(self) -> None:
+        """Declining is ALL it does: an explicit dashboard link must survive."""
+        sess = _Sessions()
+        sess.opt_outs.add("k")
+        chosen = ChannelLink("discord", channel_id="c-elsewhere")
+        sess.mirror_links["k"] = chosen
+        assert bind_origin_mirror(sess, key="k", location=_HERE) is False
+        assert sess.mirror_links["k"] == chosen
+
+    def test_a_refused_claim_does_not_drop_the_turn(self) -> None:
+        """This runs on the turn path: an uncaught raise answers the user nothing.
+
+        Reachable for a transport declaring ``supports_session_resume`` — a
+        dashboard session resumed into this conversation holds the location while
+        the transport's in-memory resume registry is cold after a restart.
+        """
+        sess = _Sessions(raise_on_set=ConversationOwnershipConflict("held"))
+        assert bind_origin_mirror(sess, key="k", location=_HERE) is False
+        assert sess.mirror_links == {}
+
+    def test_no_exception_from_the_claim_escapes(self) -> None:
+        sess = _Sessions(raise_on_set=RuntimeError("session map on fire"))
+        assert bind_origin_mirror(sess, key="k", location=_HERE) is False

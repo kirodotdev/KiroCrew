@@ -40,8 +40,8 @@ from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
-    DM_SCOPE_UNIFIED,
     ChannelLink,
+    bind_origin_mirror,
     build_dm_session_key,
     legacy_dashboard_mirror_key,
     release_conversation_location,
@@ -87,11 +87,6 @@ logger = logging.getLogger(__name__)
 # explicit override nor agent.default_agent is configured. Mirrors the Slack
 # path's _DEFAULT_KIROCREW_AGENT.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
-
-# This dispatcher's surface, as it appears in a ``ChannelLink.channel_type`` and
-# in a session key's first segment. Named so the mirror checks compare against
-# one spelling rather than repeating the literal.
-_CHANNEL = "telegram"
 
 # Upper bound on how many queued messages collapse into a single combined turn.
 # A single human won't realistically burst past this mid-turn; anything beyond
@@ -392,9 +387,9 @@ class TelegramDispatcher:
             # later takes from the dashboard is delivered back here. Slack gets
             # this from its own per-turn thread binding; Telegram had it only
             # behind an explicit /link. Called ON the loop, like every other
-            # session-map mutation: the map holds no lock, so the loop's own
-            # serialization is what keeps a read-modify-write from interleaving
-            # with a concurrent turn's.
+            # session-map mutation: `_MAP_LOCK` is what orders it against a
+            # concurrent mutation, and the write is bounded — one whole-map
+            # rewrite, on a conversation's first turn only.
             self._bind_origin_mirror(session_key, route, chat_id)
             # ── Attachment ingestion (mirrors Discord) ──
             if msg.attachments:
@@ -1360,88 +1355,26 @@ class TelegramDispatcher:
             thread_id=(str(topic) if topic is not None else None),
         )
 
-    def _origin_mirror_is_ambiguous(self, route: tuple[str, str]) -> bool:
-        """True when this route's session key does not identify a single chat.
-
-        ``dm_scope="unified"`` collapses every allowed user's direct DMs into one
-        ``unified:{agent}`` bucket — the channel and the user drop out of the key —
-        so a mirror bound on that session belongs to no particular chat, and the
-        one that happens to be bound receives every other user's dashboard
-        replies. A forum route keeps its full bucket under any scope.
-        """
-        slot, _comp = route
-        return (
-            self.cfg.messaging.dm_scope == DM_SCOPE_UNIFIED and slot == CHAT_TYPE_DIRECT
-        )
-
     def _bind_origin_mirror(
         self, session_key: str, route: tuple[str, str], chat_id: int
     ) -> None:
         """Mirror this conversation's dashboard tab back to Telegram, unasked.
 
-        Deliberately synchronous and called on the loop, like every other
-        session-map mutation in the codebase: :class:`SessionMap` holds no lock,
-        so the loop's own serialization is what keeps one read-modify-write from
-        interleaving with another's.
+        The rule, the re-assert and the opt-out live in
+        :func:`~kiro_crew.messaging.link.bind_origin_mirror`, shared with the
+        Discord dispatcher; this only supplies Telegram's spelling of "this
+        conversation".
 
-        A channel conversation IS its own mirror: the person reading the chat is
-        the audience for every turn of that session, including the turns they
-        later take from the dashboard. Slack has always bound its own thread on
-        every inbound turn, and ``get_mirror_link`` synthesizes a mirror from
-        that binding, so a dashboard turn on a Slack conversation has always
-        reached Slack. Telegram wrote the binding only from an explicit
-        ``/link``, so the same turn reached nobody: ``_resolve_mirror_target``
-        found no ``telegram`` link and the chat sat there looking dead while the
-        conversation continued elsewhere.
-
-        Skipped entirely when the session key does not identify ONE chat. Under
-        ``dm_scope="unified"`` a direct DM collapses to a ``unified:{agent}``
-        bucket with the channel and the user dropped out, so every allowed user's
-        DMs share one key and "the origin chat" has no single answer: binding it
-        would point that session's mirror at whichever chat bound it, and deliver
-        one user's dashboard replies into another user's chat. ``/link`` stays
-        available there — it names the chat the user is actually in. A forum route
-        keeps its full bucket under any scope, so it is unaffected.
-
-        Re-asserted on EVERY turn rather than only on a new session, because the
-        binding is what a restart-cold session, an unlink at this location by
-        another session, or a rival claim can take away — and only a self-healing
-        bind cannot leave a live conversation silently unmirrored. Those all
-        REMOVE a binding; none of them repoints one. So with the ambiguous scope
-        excluded above, an existing binding for this channel is always deliberate,
-        and this leaves it alone whether it names this chat or another one:
-        re-pointing a user's chosen target at the origin would undo an explicit
-        action with no signal. A binding for a DIFFERENT channel does not answer
-        the question this bind asks, so it does not block the write.
-
-        Honours the persisted opt-out ``/unlink`` writes: without it, "off" would
-        last exactly until the user's next message. Declining is ALL this does —
-        it never clears a binding it finds. ``/unlink`` persists the flag and the
-        release in one session-map write, so "opted out with a live binding" is
-        not a state the unlink path can leave behind; and every explicit bind
-        (``/link``, the dashboard's mirror-link endpoint) withdraws the flag.
+        Synchronous and called ON the loop, like every other session-map
+        mutation. Interleaving is ordered by ``session_map._MAP_LOCK``, not by the
+        loop; what keeps the call here is that the write is BOUNDED — one
+        whole-map rewrite, on a conversation's first turn only.
         """
-        if self._origin_mirror_is_ambiguous(route):
-            return
-        if self.sessions.mirror_opt_out(session_key):
-            return
-        existing = self.sessions.get_mirror_link(session_key)
-        if existing is not None and existing.channel_type == _CHANNEL:
-            return
-        desired = self._origin_mirror_link(route, chat_id)
-        try:
-            self.sessions.set_mirror_link(session_key, desired)
-        except Exception:
-            # Best-effort: this runs on the turn path, and an uncaught raise here
-            # drops the turn and answers the user nothing.
-            # ConversationOwnershipConflict is unreachable while Telegram
-            # declares no session resume (two outbound-only mirrors on one
-            # conversation are permitted by design), but declaring it later would
-            # make this bind the raise site — so it is caught rather than relying
-            # on that capability staying false.
-            logger.debug(
-                "Telegram: origin mirror bind skipped for %s", session_key, exc_info=True
-            )
+        bind_origin_mirror(
+            self.sessions,
+            key=session_key,
+            location=self._origin_mirror_link(route, chat_id),
+        )
 
     async def _handle_link(self, route: tuple[str, str], chat_id: int) -> None:
         """Re-enable mirroring of this conversation's dashboard tab back here.

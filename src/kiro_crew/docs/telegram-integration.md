@@ -71,7 +71,9 @@ in Telegram offers them as autocomplete — `COMMAND_SPEC` in
   drive, so it expires on one clock everywhere. It does not weaken the
   PreToolUse gate: sensitive-path, governance-ceiling and deny-list blocks still
   refuse a tool.
-- `/link` / `/unlink` — mirror this conversation's dashboard tab here, or stop
+- `/link` / `/unlink` — resume or stop mirroring dashboard replies here; a
+  conversation is its own mirror by default, so `/link` only withdraws an
+  earlier `/unlink`
 - `/stop` (or `/cancel`) — stop the current reply and clear the queue
 - `/steer <msg>` — while a reply is generating, fold this message into it
   (overrides `queue_mode` for this message)

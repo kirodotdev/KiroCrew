@@ -60,6 +60,7 @@ from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.queue_receipt import receipt_text as _receipt_text
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.session import _opt_out_key
 from kiro_crew.session_map import ConversationOwnershipConflict
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -211,19 +212,14 @@ class FakeSessions:
         self.mirror_links: dict[str, Any] = {}
         self.origin_links: dict[str, Any] = {}
         self.inbound_mirror_keys: set[str] = set()
+        self.mirror_opt_outs: set[str] = set()
         # Batch bookkeeping, mirroring the real SessionManager: the unlink path
         # wraps its three clears in one batch, and a double without the context
-        # manager would make that path unreachable from these tests.
+        # manager would make that path unreachable from these tests. Each entry is
+        # True when that mirror mutation ran inside a batch, so a test can pin
+        # that one user-visible action costs one whole-map write.
         self.batch_depth = 0
         self.batched_writes: list[bool] = []
-
-    @contextmanager
-    def batched_save(self) -> Any:
-        self.batch_depth += 1
-        try:
-            yield
-        finally:
-            self.batch_depth -= 1
 
     async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
         self.last_agent = agent
@@ -276,11 +272,32 @@ class FakeSessions:
             raise ConversationOwnershipConflict(
                 f"{getattr(link, 'channel_type', '?')} conversation is already held"
             )
+        self.batched_writes.append(self.batch_depth > 0)
         self.mirror_links[key] = link
         if accepts_inbound:
             self.inbound_mirror_keys.add(key)
         else:
             self.inbound_mirror_keys.discard(key)
+
+    @contextmanager
+    def batched_save(self) -> Any:
+        self.batch_depth += 1
+        try:
+            yield
+        finally:
+            self.batch_depth -= 1
+
+    def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
+        # Bucket-keyed, like the real manager: the refusal is a preference about
+        # the CONVERSATION, so it must outlive a generation rotation.
+        self.batched_writes.append(self.batch_depth > 0)
+        if opted_out:
+            self.mirror_opt_outs.add(_opt_out_key(key))
+        else:
+            self.mirror_opt_outs.discard(_opt_out_key(key))
+
+    def mirror_opt_out(self, key: str) -> bool:
+        return _opt_out_key(key) in self.mirror_opt_outs
 
     def get_mirror_link(self, key: str) -> Any:
         return self.mirror_links.get(key)
@@ -301,6 +318,7 @@ class FakeSessions:
     def clear_mirror_link(self, key: str) -> bool:
         self.batched_writes.append(self.batch_depth > 0)
         self.inbound_mirror_keys.discard(key)
+        self.batched_writes.append(self.batch_depth > 0)
         return self.mirror_links.pop(key, None) is not None
 
     def clear_mirror_links_at(self, link: Any) -> list[str]:
@@ -353,12 +371,12 @@ class FakeCtx:
         return text, None
 
 
-def _cfg(soft: int = 80, default_agent: str = "") -> Any:
+def _cfg(soft: int = 80, default_agent: str = "", dm_scope: str = "per-channel-peer") -> Any:
     return SimpleNamespace(
         discord=SimpleNamespace(soft_threshold_pct=soft),
         agent=SimpleNamespace(default_agent=default_agent),
         messaging=SimpleNamespace(
-            dm_scope="per-channel-peer",
+            dm_scope=dm_scope,
             idle_reset_minutes=0,
             daily_reset_hour=-1,
             queue_mode="steer",
@@ -372,12 +390,13 @@ def _dispatcher(
     allowed_threads: set[str] | None = None,
     raise_on_get: bool = False,
     default_agent: str = "",
+    dm_scope: str = "per-channel-peer",
 ) -> tuple[DiscordDispatcher, FakeClient, FakeSessions]:
     sess = FakeSessions(raise_on_get=raise_on_get)
     d = DiscordDispatcher(
         sessions=sess,  # type: ignore[arg-type]
         ctx_builder=FakeCtx(),  # type: ignore[arg-type]
-        cfg=_cfg(default_agent=default_agent),
+        cfg=_cfg(default_agent=default_agent, dm_scope=dm_scope),
         allowed_user_ids=allowed,
         allowed_thread_ids=allowed_threads,
         agent=None,
@@ -1590,6 +1609,205 @@ class TestDispatcher:
         assert sess.mirror_links[key].channel_id == "c1"
         await d.handle_message(self._msg("!unlink"))
         assert key not in sess.mirror_links
+
+    # ── Automatic origin mirroring ────────────────────────────────────────
+    #
+    # A Discord conversation IS its own mirror. Without the per-turn bind the
+    # binding existed only after an explicit `!link`, so a turn later taken from
+    # the dashboard resolved no `discord` target and the chat sat there looking
+    # dead while the conversation continued elsewhere.
+
+    @pytest.mark.asyncio
+    async def test_a_turn_binds_this_conversation_as_its_own_mirror(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("hello"))
+        key = d._session_key("u1")
+        assert sess.mirror_links[key] == ChannelLink("discord", channel_id="c1", thread_id=None)
+
+    @pytest.mark.asyncio
+    async def test_a_thread_turn_binds_the_thread_channel(self) -> None:
+        # A Discord thread IS a channel with its own id, so channel_id already
+        # scopes the conversation and is also where the transport posts.
+        d, _cli, sess = _dispatcher({"u1"}, allowed_threads={"t9"})
+        await d.handle_message(
+            InboundMessage(
+                channel_type="discord",
+                user_id="u1",
+                conversation_id="t9",
+                text="hello",
+                thread_id="t9",
+            )
+        )
+        key = d._session_key("u1", "t9")
+        assert sess.mirror_links[key] == ChannelLink("discord", channel_id="t9", thread_id=None)
+
+    @pytest.mark.asyncio
+    async def test_the_second_turn_writes_nothing(self) -> None:
+        # The bind is re-asserted per turn, so the repeating path must be a READ:
+        # a session-map mutation rewrites the whole map on the event loop.
+        d, _cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("first"))
+        writes = len(sess.batched_writes)
+        await d.handle_message(self._msg("second"))
+        assert len(sess.batched_writes) == writes
+
+    @pytest.mark.asyncio
+    async def test_unlink_survives_the_users_next_message(self) -> None:
+        # The whole point of persisting the refusal: an entry with no binding is
+        # indistinguishable from one that was never linked, so without the flag
+        # "off" would last exactly one message.
+        d, _cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("hello"))
+        await d.handle_message(self._msg("!unlink"))
+        await d.handle_message(self._msg("hello again"))
+        assert sess.mirror_links == {}
+
+    @pytest.mark.asyncio
+    async def test_unlink_survives_a_generation_rotation(self) -> None:
+        # `!new` (and the configured idle/daily reset) rotate the :genN suffix.
+        # Keyed per generation the refusal would expire on rotation, so an idle
+        # reset would undo the user's `!unlink` with no action on their part.
+        d, _cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!unlink"))
+        await d.handle_message(self._msg("!new"))
+        await d.handle_message(self._msg("hello"))
+        assert sess.mirror_links == {}
+
+    @pytest.mark.asyncio
+    async def test_link_withdraws_the_refusal_so_the_bind_resumes(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!unlink"))
+        await d.handle_message(self._msg("!link"))
+        assert sess.mirror_opt_outs == set()
+        sess.mirror_links.clear()  # simulate a sweep / restart-cold binding
+        await d.handle_message(self._msg("hello"))
+        assert sess.mirror_links[d._session_key("u1")].channel_id == "c1"
+
+    @pytest.mark.asyncio
+    async def test_link_and_unlink_each_cost_one_batched_write(self) -> None:
+        # One user-visible action, one whole-map write — each mutation would
+        # otherwise rewrite the entire session map on the loop.
+        d, _cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!link"))
+        assert sess.batched_writes and all(sess.batched_writes)
+        sess.batched_writes.clear()
+        await d.handle_message(self._msg("!unlink"))
+        assert sess.batched_writes and all(sess.batched_writes)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_link_persists_nothing(self) -> None:
+        """Ordering guard inside the batch.
+
+        ``batched_save`` writes on the way out even when the block raises, so a
+        refusal raised AFTER the opt-out withdrawal would persist that withdrawal
+        for a link that never happened — silently turning mirroring back on. The
+        claim is refused before it mutates anything, so it goes first.
+        """
+        d, cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!unlink"))
+        self._occupy_ambiguously(sess)
+        await d.handle_message(self._msg("!link"))
+        assert any("already linked here" in t for t, _ in cli.sent)
+        assert sess.mirror_opt_outs == {_opt_out_key(d._session_key("u1"))}, (
+            "a refused link must not withdraw the refusal"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_bind_still_answers_the_turn(self) -> None:
+        # An uncaught raise on the turn path would drop the turn and answer the
+        # user nothing.
+        d, cli, sess = _dispatcher({"u1"})
+        self._occupy_ambiguously(sess)
+        await d.handle_message(self._msg("hello world"))
+        assert "Answer: hello world" in (cli.final_text() or "")
+        assert d._session_key("u1") not in sess.mirror_links
+
+    @pytest.mark.asyncio
+    async def test_a_unified_dm_scope_is_not_auto_bound(self) -> None:
+        # dm_scope=unified collapses every allowed user's DMs into one
+        # unified:{agent} bucket — channel and user drop out of the key — so an
+        # automatic bind would deliver one user's dashboard replies into another
+        # user's chat. `!link` stays available: it names the channel the user is in.
+        d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
+        await d.handle_message(self._msg("hello", user="u1"))
+        assert sess.mirror_links == {}
+
+    @pytest.mark.asyncio
+    async def test_a_thread_route_is_still_bound_under_a_unified_scope(self) -> None:
+        # A guild thread keys per-channel-peer regardless of dm_scope, so its
+        # bucket still names one conversation.
+        d, _cli, sess = _dispatcher({"u1"}, allowed_threads={"t9"}, dm_scope="unified")
+        await d.handle_message(
+            InboundMessage(
+                channel_type="discord",
+                user_id="u1",
+                conversation_id="t9",
+                text="hello",
+                thread_id="t9",
+            )
+        )
+        assert sess.mirror_links[d._session_key("u1", "t9")].channel_id == "t9"
+
+    @pytest.mark.asyncio
+    async def test_a_dashboard_mirror_aimed_at_another_channel_survives(self) -> None:
+        # The dashboard can aim this session's mirror at any surface. Overwriting
+        # it on the next Discord message would silently redirect the owner's
+        # replies from the chat they chose into this one.
+        d, _cli, sess = _dispatcher({"u1"})
+        key = d._session_key("u1")
+        chosen = ChannelLink("telegram", channel_id="7", thread_id=None)
+        sess.mirror_links[key] = chosen
+        await d.handle_message(self._msg("hello"))
+        assert sess.mirror_links == {key: chosen}
+
+    @pytest.mark.asyncio
+    async def test_a_resumed_session_is_not_bound_to_this_conversation(self) -> None:
+        """A resumed dashboard session's own surface owns its output.
+
+        Both writes live behind the ``resumed_key is None`` branch, which is what
+        keeps a dashboard entry from being stamped with Discord's identity;
+        ``set_origin_link`` is the observable half, since the mirror bind would
+        decline anyway on finding the resume binding for this same channel.
+        `!link` refuses in this state too, so the automatic path must not do what
+        the explicit one declines.
+        """
+        d, cli, sess = _dispatcher({"u1"})
+        resumed = ChannelLink("discord", channel_id="c1")
+        sess.mirror_links["dashboard:chat-1"] = resumed
+        sess.inbound_mirror_keys.add("dashboard:chat-1")
+        await d.handle_message(self._msg("hello world"))
+        assert "Answer: hello world" in (cli.final_text() or "")
+        assert sess.mirror_links == {"dashboard:chat-1": resumed}
+        assert sess.inbound_mirror_keys == {"dashboard:chat-1"}, "resume stayed two-way"
+        assert sess.origin_links == {}
+
+    @staticmethod
+    def _occupy_ambiguously(sess: FakeSessions) -> None:
+        """Occupy channel ``c1`` in the one state that reaches a refused claim.
+
+        Discord declares ``supports_session_resume``, so its conversations are
+        inbound-committable and an inbound-committed occupant refuses a claim. A
+        single such occupant never gets that far — the dispatcher routes the turn
+        to it and skips the bind, and `!link` refuses earlier. But
+        ``resumed_session`` fails CLOSED on duplicates: with two inbound bindings
+        it denies routing and reports none, so both paths proceed to a claim that
+        is then refused.
+        """
+        for key in ("dashboard:chat-9", "dashboard:chat-10"):
+            sess.mirror_links[key] = ChannelLink("discord", channel_id="c1")
+            sess.inbound_mirror_keys.add(key)
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_bind_to_another_channel_is_not_repointed(self) -> None:
+        # Nothing repoints a binding: a swept or rival-claimed one is REMOVED, not
+        # moved. So a discord binding naming another channel is deliberate (the
+        # dashboard can bind a surfaced session anywhere).
+        d, _cli, sess = _dispatcher({"u1"})
+        key = d._session_key("u1")
+        chosen = ChannelLink("discord", channel_id="c-elsewhere")
+        sess.mirror_links[key] = chosen
+        await d.handle_message(self._msg("hello"))
+        assert sess.mirror_links == {key: chosen}
 
     @pytest.mark.asyncio
     async def test_unlink_clears_binding_stranded_by_generation_rotation(self) -> None:

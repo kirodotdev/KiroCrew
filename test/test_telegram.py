@@ -3188,10 +3188,13 @@ class TestAutomaticOriginMirror:
         assert sess.successes == ["telegram:kirocrew:direct:7"]
 
     def test_the_binding_write_stays_on_the_loop_thread(self) -> None:
-        # SessionMap holds no lock, so the loop's own serialization is what keeps
-        # one read-modify-write from interleaving with another's. Offloading the
-        # write to a worker thread would remove that and let a late os.replace
-        # drop a persisted binding.
+        # The write is BOUNDED — one whole-map rewrite, on a conversation's first
+        # turn only — so the loop pays it inline rather than paying a thread hop.
+        # Interleaving is not the reason: `session_map._MAP_LOCK` orders every
+        # guarded mutation, `os.replace` included, so a worker could not drop a
+        # persisted binding. Offloading would therefore be safe but pointless
+        # here, and it would put an await between this bind and the turn it
+        # belongs to. Pinned so the placement is a decision, not an accident.
         d, _cli, sess = _dispatcher({7})
         wrote_on: list[int] = []
         original = sess.set_mirror_link

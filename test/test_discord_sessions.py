@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +11,7 @@ from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.session import _opt_out_key
 from kiro_crew.session_map import ConversationOwnershipConflict
 
 
@@ -93,6 +95,7 @@ class _Sessions:
         self.mirror_links: dict[str, ChannelLink] = {}
         self.origin_links: dict[str, ChannelLink] = {}
         self.inbound_keys: set[str] = set()
+        self.mirror_opt_outs: set[str] = set()
         self.last_key = ""
         self.provider = _Provider()
 
@@ -125,6 +128,19 @@ class _Sessions:
 
     def set_origin_link(self, key: str, link: ChannelLink) -> None:
         self.origin_links[key] = link
+
+    @contextmanager
+    def batched_save(self) -> Any:
+        yield
+
+    def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
+        if opted_out:
+            self.mirror_opt_outs.add(_opt_out_key(key))
+        else:
+            self.mirror_opt_outs.discard(_opt_out_key(key))
+
+    def mirror_opt_out(self, key: str) -> bool:
+        return _opt_out_key(key) in self.mirror_opt_outs
 
     def get_origin_link(self, key: str) -> ChannelLink | None:
         return self.origin_links.get(key)
