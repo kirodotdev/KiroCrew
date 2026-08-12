@@ -58,6 +58,7 @@ def _toml_available():
 def test_generic_fallback_on_empty_repo(tmp_path):
     prof = resolve_profile.resolve(str(tmp_path))
     assert prof["source"] == "generic"
+    assert prof["setup"] == []
     assert prof["gates"] == []
     assert prof["reviewers"] == []
     assert prof["readiness"] == {"status_context": None, "defer_label": None}
@@ -68,6 +69,7 @@ def test_autodetect_python_stack(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     prof = resolve_profile.resolve(str(tmp_path))
     assert prof["source"] == "auto-detect"
+    assert prof["setup"] == []
     assert "python -m pytest -q" in prof["gates"]
 
 
@@ -107,6 +109,8 @@ def test_kirocrew_markers_load_bundled_profile(tmp_path):
     assert prof["source"] == "kirocrew"
     assert prof["single_commit"] is True
     assert prof["base_branch"] == "main"
+    assert prof["setup"] == ["(cd website && npx playwright install chromium)"]
+    assert all("playwright install" not in gate for gate in prof["gates"])
     assert prof["readiness"]["status_context"] == "PR Readiness"
     models = {r["name"]: r["model"] for r in prof["reviewers"]}
     assert models["gpt"] == "gpt-5.6-sol"
@@ -211,20 +215,20 @@ def _ci_workflow_run_text() -> str:
     )
 
 
-def test_every_floor_gate_names_a_real_target():
-    """A gate naming a script that does not exist fails for the wrong reason.
+def test_every_floor_command_names_a_real_target():
+    """A floor command naming a missing script fails for the wrong reason.
 
     The floor is data, so nothing type-checks it: a renamed script or npm
     script turns a gate into a command-not-found, which reads as a defect in
     the branch under review rather than as rot in the floor.
     """
     data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
-    gates = "\n".join(data["gates"])
+    commands = "\n".join(data["setup"] + data["gates"])
 
-    for rel in sorted(set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", gates))):
-        assert (REPO_ROOT / rel).is_file(), f"gate references missing script {rel}"
+    for rel in sorted(set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", commands))):
+        assert (REPO_ROOT / rel).is_file(), f"floor references missing script {rel}"
 
-    npm_scripts = set(re.findall(r"\bnpm(?: --prefix \S+)? run ([a-z0-9:-]+)", gates))
+    npm_scripts = set(re.findall(r"\bnpm(?: --prefix \S+)? run ([a-z0-9:-]+)", commands))
     declared = json.loads(
         (REPO_ROOT / "website" / "package.json").read_text(encoding="utf-8")
     )["scripts"]
@@ -245,7 +249,7 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     """
     run_text = _ci_workflow_run_text()
     data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
-    gates = "\n".join(data["gates"])
+    floor = "\n".join(data["setup"] + data["gates"])
 
     exempt_scripts = {
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
@@ -259,17 +263,17 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     }
 
     invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))
-    missing = sorted(s for s in invoked - exempt_scripts if s not in gates)
+    missing = sorted(s for s in invoked - exempt_scripts if s not in floor)
     assert not missing, (
-        "ci.yml runs these scripts but the prepare-pr gate floor does not: "
+        "ci.yml runs these scripts but the prepare-pr floor does not: "
         f"{missing}. Add them to profiles/kirocrew.json gates[] in their "
         "CI-exact form, or exempt them here with a reason."
     )
 
     npm_invoked = set(re.findall(r"\bnpm run ([a-z0-9:-]+)", run_text))
-    npm_missing = sorted(n for n in npm_invoked if f"run {n}" not in gates)
+    npm_missing = sorted(n for n in npm_invoked if f"run {n}" not in floor)
     assert not npm_missing, (
-        f"ci.yml runs these npm scripts but the gate floor does not: {npm_missing}"
+        f"ci.yml runs these npm scripts but the floor does not: {npm_missing}"
     )
 
     # A blocking step can also be a bare binary -- `cfn-lint`, `mypy`, `flake8`
@@ -280,7 +284,7 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # Environment setup, not gates.
         "pip": "installs the pinned lint tool",
         "uv": "resolves/installs dependencies",
-        "sudo": "privileged provisioning -- belongs in setup, never in a gate",
+        "sudo": "privileged provisioning -- belongs in manual host setup",
         # Wrappers whose payload is already covered by another assertion.
         "npm": "covered by the npm-script scan above",
         "npx": "covered by the npm-script scan and the tsc/eslint assertions",
@@ -290,11 +294,11 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     }
     tools = set(re.findall(r"(?m)^\s*run: ([a-z][a-z0-9_-]+) ", run_text))
     tool_missing = sorted(
-        t for t in tools - set(exempt_tools) if not re.search(rf"\b{re.escape(t)}\b", gates)
+        t for t in tools - set(exempt_tools) if not re.search(rf"\b{re.escape(t)}\b", floor)
     )
     assert not tool_missing, (
-        f"ci.yml runs these tools but the gate floor does not: {tool_missing}. "
-        "Add each to profiles/kirocrew.json gates[] in its CI-exact form, or "
+        f"ci.yml runs these tools but the floor does not: {tool_missing}. "
+        "Add each to profiles/kirocrew.json setup[] or gates[] in its CI-exact form, or "
         "add it to exempt_tools here with the reason it is not a local gate."
     )
 
@@ -407,6 +411,7 @@ def test_gate_rationale_reference_exists_and_is_pointed_at():
 def test_bundled_kirocrew_profile_is_valid_json():
     data = json.loads((PROFILES_DIR / "kirocrew.json").read_text())
     assert data["name"] == "kirocrew"
+    assert isinstance(data["setup"], list)
     # Every reviewer must carry a served model id (no bare gpt-5.6).
     for r in data["reviewers"]:
         assert r["model"] and r["model"] != "gpt-5.6"
@@ -418,6 +423,8 @@ def test_toml_config_path(tmp_path):
         "[project]\n"
         'base_branch = "trunk"\n'
         "single_commit = true\n\n"
+        "[setup]\n"
+        'commands = ["make bootstrap"]\n\n'
         "[gates]\n"
         'commands = ["make check"]\n\n'
         "[review]\n"
@@ -432,6 +439,7 @@ def test_toml_config_path(tmp_path):
         prof = resolve_profile.resolve(str(tmp_path))
         assert prof["source"] == "config"
         assert prof["base_branch"] == "trunk"
+        assert prof["setup"] == ["make bootstrap"]
         assert prof["gates"] == ["make check"]
         assert prof["rule_files"] == ["AGENTS.md"]
         assert prof["reviewers"][0]["model"] == "gpt-5.6-sol"
@@ -455,14 +463,21 @@ def test_partial_toml_config_fills_gates_from_autodetect(tmp_path):
     prof = resolve_profile.resolve(str(tmp_path))
     assert prof["source"] == "config"
     assert prof["base_branch"] == "trunk"
+    assert prof["setup"] == []
     assert "python -m pytest -q" in prof["gates"]  # filled from auto-detect
 
 
 def test_normalize_defaults_fill_missing_keys():
     prof = resolve_profile.normalize({}, "generic")
-    for key in ("source", "base_branch", "single_commit", "gates",
+    for key in ("source", "base_branch", "single_commit", "setup", "gates",
                 "rule_files", "reviewers", "readiness"):
         assert key in prof
+
+
+def test_legacy_profile_without_setup_stays_compatible():
+    prof = resolve_profile.normalize({"gates": ["make check"]}, "config")
+    assert prof["setup"] == []
+    assert prof["gates"] == ["make check"]
 
 
 def test_single_commit_string_false_is_not_truthy():

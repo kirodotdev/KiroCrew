@@ -13,7 +13,7 @@ The `prepare-pr` skill is one of the most valuable pieces of Kiro Crew's own dev
 
 But the skill reads today as specific to **Kiro Crew**. Its prose bakes in one project's conventions, so an agent running it in any other repo would follow instructions that don't apply. We want two things at once, and they appear to be in tension:
 
-1. Keep the skill **built-in** and keep it **standardizing Kiro Crew development** (the tuned gates, review bots, labels, and single-commit rule that make our PRs consistent).
+1. Keep the skill **built-in** and keep it **standardizing Kiro Crew development** (the tuned setup, gates, review bots, labels, and single-commit rule that make our PRs consistent).
 2. Make the skill **useful in any `gh`-based repo**, so other projects benefit from the same commit→green loop.
 
 This doc shows the tension is only in the *prose*, not the mechanism, and proposes a pluggable **project profile** layer that resolves both goals without forking the skill.
@@ -21,7 +21,7 @@ This doc shows the tension is only in the *prose*, not the mechanism, and propos
 ## 2. Why it matters
 
 - **Reuse.** The commit→sync→squash→open→poll→fix→converge loop is genuinely project-agnostic. Locking it to Kiro Crew wastes a good abstraction.
-- **Standardization stays intact.** A profile lets Kiro Crew keep its exact gates/reviewers/labels as *data*, so Kiro Crew devs get zero-config standardization while other repos get a working default.
+- **Standardization stays intact.** A profile lets Kiro Crew keep its exact setup/gates/reviewers/labels as *data*, so Kiro Crew devs get zero-config standardization while other repos get a working default.
 - **No parallel systems.** Evolving the one proven skill outward (a discovered profile layer) beats spawning a second `kirocrew-prepare-pr` skill that drifts from the generic one.
 
 ## 3. Current state — what is actually coupled
@@ -73,7 +73,7 @@ Everything project-specific is prose the agent reads, not code:
 
 The profile is the single home for everything that varies per repo. The review bots are just the most visible slice:
 
-1. **Local gates** — the test/lint/type commands the Phase-2 local gate runs (Kiro Crew: `pytest`, `isort`, `flake8`, `mypy`, `tsc -b`, `vitest`).
+1. **Local setup and gates** — ordered setup commands that provision prerequisites once per worktree without judging the diff, followed by pure test/lint/type gates on every Phase-2 iteration (Kiro Crew: Playwright browser setup, then `pytest`, `isort`, `flake8`, `mypy`, `tsc -b`, `vitest`).
 2. **Local reviewers** — a list of local review subagents, **one spawned per entry** (each pinned to a concrete `spawn_run` **model id**, with a `model_tier` fallback). A reviewer is either **contract-backed** (it mirrors a specific CI gate by reading that workflow's contract, e.g. `codex-review.yml`) or **standalone** (it reviews against an inline `rubric` with no CI counterpart). Reviewers do **not** have to bind to CI — a repo can add local-only reviewers (security, performance, a11y, house style) that no server gate mirrors, and a repo with no CI reviewers at all can still define reviewers by rubric. All reviewers inherit the shared `rule_files` (AUTOSDE / AGENTS.md).
 3. **Conventions** — single-commit rule (on/off), the readiness status context name + managed labels, an optional long-term-defer label, and the base branch override.
 
@@ -86,7 +86,7 @@ The profile is the single home for everything that varies per repo. The review b
 4. Generic fallback  →  scripts' built-in behavior                   (lowest precedence)
 ```
 
-Key nuance: **the `kirocrew` profile is NOT an unconditional global default.** It is auto-selected only when the skill detects it is in the Kiro Crew repo (see markers in §5.4). This prevents Kiro Crew's gates/labels from misfiring in an unrelated repo.
+Key nuance: **the `kirocrew` profile is NOT an unconditional global default.** It is auto-selected only when the skill detects it is in the Kiro Crew repo (see markers in §5.4). This prevents Kiro Crew's setup/gates/labels from misfiring in an unrelated repo.
 
 ### 5.3 Auto-detection rules (config-free path)
 
@@ -98,6 +98,7 @@ When there is no `.prepare-pr.toml`:
   - `Cargo.toml` → `cargo test` / `cargo clippy`
   - `go.mod` → `go test ./...` / `go vet`
   - `Makefile` with a `check`/`test` target → `make check`
+- **Setup:** auto-detection does not infer provisioning; it defaults to `[]` unless the profile declares it explicitly.
 - **Reviewers:** glob `.github/workflows/*review*.yml` and create one contract-backed reviewer per gate found. A repo may also declare standalone `rubric` reviewers with no CI counterpart. If neither exists, skip local review and rely on the server poll (the scripts still gate via exit codes).
 - **Conventions:** default to single-commit *off* unless a marker says otherwise; base branch from `preflight.py`'s existing detection; readiness context via the `pr_status.py` fallback (full rollup) unless a profile names one.
 
@@ -114,8 +115,14 @@ A minimal, stdlib-parseable (Python 3.11 `tomllib`) file. All keys optional; any
 base_branch = "main"          # optional; else preflight.py auto-detects
 single_commit = true          # enforce one-commit-per-PR squash
 
+[setup]
+# ordered prerequisite commands; run once per worktree, not a diff verdict
+commands = [
+  "(cd website && npx playwright install chromium)",
+]
+
 [gates]
-# ordered list of shell commands; all must exit 0 before a push
+# ordered pure checks; all must exit 0 before a push
 commands = [
   "python -m pytest -q",
   "isort --check-only src test",
@@ -175,7 +182,7 @@ The bundled `profiles/kirocrew.json` encodes exactly this Kiro Crew configuratio
 
 ### 5.6 Script changes
 
-- **`resolve_profile.py`** (NEW): implements the §5.2 resolution order and emits the resolved profile as JSON (`{source, base_branch, single_commit, gates[], rule_files[], reviewers[], readiness{}}`). Stdlib only, Python 3.9+; parses an external `.prepare-pr.toml` via `tomllib` (3.11+) or `tomli`, and errors loudly (exit 2) rather than silently ignoring a config it cannot parse. The bundled Kiro Crew profile ships as `profiles/kirocrew.json` (stdlib `json`, so the marker path needs no TOML parser and works on the 3.10 CI leg).
+- **`resolve_profile.py`** (NEW): implements the §5.2 resolution order and emits the resolved profile as JSON (`{source, base_branch, single_commit, setup[], gates[], rule_files[], reviewers[], readiness{}}`). Stdlib only, Python 3.9+; parses an external `.prepare-pr.toml` via `tomllib` (3.11+) or `tomli`, and errors loudly (exit 2) rather than silently ignoring a config it cannot parse. The bundled Kiro Crew profile ships as `profiles/kirocrew.json` (stdlib `json`, so the marker path needs no TOML parser and works on the 3.10 CI leg). Missing `setup` is normalized to `[]` for backward compatibility.
 - **`pr_status.py`:** accepts an optional readiness-context name (`--readiness-context` / `PREPARE_PR_READINESS_CONTEXT`) so a profile can name a non-default aggregate status; **keeps today's fallback** to the full rollup when unset or absent.
 - All other scripts: unchanged.
 
@@ -186,6 +193,7 @@ The bundled `profiles/kirocrew.json` encodes exactly this Kiro Crew configuratio
 | `.prepare-pr.toml` present | Use it verbatim. |
 | Kiro Crew markers present | Load bundled `kirocrew` profile. |
 | Other repo, detectable stack | Auto-detected gates + globbed reviewers. |
+| Profile omits `setup` | Normalize it to `[]`; existing profiles keep their previous behavior. |
 | No reviewers (no workflows to mirror, none declared) | Skip local review; rely on server poll (scripts still gate via exit codes). |
 | No readiness status | `pr_status.py` uses the full check rollup (existing behavior). |
 
@@ -201,7 +209,8 @@ flowchart TB
     FIXB --> PF
 
     RES --> SYNC["Phase 1 — Sync<br/>commit · rebase · squash to 1"]
-    SYNC --> GATE["Phase 2 — local gates<br/>run profile gate commands"]
+    SYNC --> SETUP["Phase 2 — ensure setup ran once<br/>skip after first successful pass"]
+    SETUP --> GATE["Phase 2 — local gates<br/>run pure profile checks"]
     GATE -->|"red"| FIXG["fix locally · amend"]
     FIXG --> GATE
     GATE -->|"green"| MIRROR["Phase 2 — local reviewers<br/>N model-pinned subagents<br/>contract-backed or standalone rubric"]
@@ -232,13 +241,13 @@ flowchart TB
     class PF pf;
     class RES prof;
     class SYNC,FIND sync;
-    class GATE,MIRROR gate;
+    class SETUP,GATE,MIRROR gate;
     class PUSH,POLL,WAIT push;
     class FIXB,FIXG,FIXR fix;
     class CONV,AM,DONE done;
 ```
 
-Everything outside the green nodes is identical across repos. Swapping the profile re-skins the gates, the reviewers, and the readiness signal without touching the loop.
+Everything outside the green nodes is identical across repos. Swapping the profile re-skins setup, gates, reviewers, and the readiness signal without touching the loop.
 
 ### 5.9 Diagram — how configuration (the profile) is injected
 
@@ -259,11 +268,11 @@ flowchart TB
     P3 --> PROF
     P4 --> PROF
 
-    PROF --> A1["gates.commands"]
+    PROF --> A1["setup.commands · gates.commands"]
     PROF --> A2["review.reviewers<br/>contract or rubric · rule_files · model ids"]
     PROF --> A3["single_commit · base_branch<br/>readiness.status_context · defer_label"]
 
-    A1 --> N1(["Phase 2 · local gates"])
+    A1 --> N1(["Phase 2 · setup once, then local gates"])
     A2 --> N2(["Phase 2 · review subagents"])
     A3 --> N3(["Phase 1 squash · Phase 3 poll · labels"])
 
@@ -280,7 +289,7 @@ flowchart TB
     class N1,N2,N3 node;
 ```
 
-The three axes (§5.1) map one-to-one onto the loop's green nodes. Anything a profile omits falls back down the resolution ladder (§5.7), so a repo with no config still runs the loop on auto-detected gates and the scripts' generic behavior.
+The three axes (§5.1) map one-to-one onto the loop's green nodes. Anything a profile omits falls back down the resolution ladder (§5.7), so a repo with no config still runs the loop with empty setup, auto-detected gates, and the scripts' generic behavior.
 
 ## 6. Distribution — keep it built-in
 
@@ -296,7 +305,7 @@ Built-in and portable are **not** in conflict:
 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/
   SKILL.md                    # generic core loop + "Project profile" section
   profiles/
-    kirocrew.json             # bundled Kiro Crew profile (gates, reviewers, labels, single-commit)
+    kirocrew.json             # bundled Kiro Crew profile (setup, gates, reviewers, labels, single-commit)
   scripts/
     preflight.py
     resolve_profile.py        # NEW — resolves the profile to JSON
@@ -312,7 +321,8 @@ src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/
 
 ## 8. Migration & backward compatibility
 
-- Kiro Crew behavior is **unchanged**: the `kirocrew` profile reproduces today's exact gates/reviewers/labels, auto-selected by markers.
+- Kiro Crew validation behavior is **unchanged**: the `kirocrew` profile preserves the same setup/check commands, reviewers and labels, auto-selected by markers; it now distinguishes provisioning from verdict-producing gates.
+- Existing profiles remain compatible: an omitted `setup` section resolves to `setup = []`.
 - No `.prepare-pr.toml` is added to the Kiro Crew repo (the bundled profile covers it) — but one *may* be added later to make the config explicit/self-documenting.
 - The scripts remain backward-compatible; the readiness override is opt-in with the existing fallback intact.
 
