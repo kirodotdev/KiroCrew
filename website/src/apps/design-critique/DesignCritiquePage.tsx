@@ -303,12 +303,12 @@ export default function DesignCritiquePage() {
     // never by dropping the foreground run into an error state.
     const watching = isWatching(slotKey)
     if (flag && flag.timeout) {
-      if (watching) { setErr('Still working on this one. It’s kept running — come back in a minute.'); setPhase('error') }
+      if (watching) { setErr(i18nT('apps.designCritique.designCritiquePage.still_working_on_this_one_it_s_kept_running_come')); setPhase('error') }
       return
     }
     endRun(slotKey)
     setCritiques(dropPendingCritique(slotKey))
-    if (watching) { setErr(e instanceof Error ? e.message : 'something went wrong'); setPhase('error') }
+    if (watching) { setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.something_went_wrong')); setPhase('error') }
     notify('Critique failed: ' + (e instanceof Error ? e.message : String(e)), { type: 'error' })
   }
 
@@ -331,8 +331,8 @@ export default function DesignCritiquePage() {
   // One or many screenshots. Order is the order you gave them.
   const runImages = async (fileList: File[]) => {
     const files = Array.from(fileList || []).filter(f => /^image\//.test(f.type || ''))
-    if (!files.length) { setErr('Those weren’t image files.'); setPhase('error'); return }
-    if (files.length > 20) { setErr('That’s more than 20 screens — send fewer.'); setPhase('error'); return }
+    if (!files.length) { setErr(i18nT('apps.designCritique.designCritiquePage.those_weren_t_image_files')); setPhase('error'); return }
+    if (files.length > 20) { setErr(i18nT('apps.designCritique.designCritiquePage.that_s_more_than_20_screens_send_fewer')); setPhase('error'); return }
     const seq = ++runSeqRef.current
     setErr(''); setBlocked(null); setShowAuth(false); setMenuOpen(false); startClock(); setWriting(false); setPendingKind(null); setPhase('uploading')
     try {
@@ -346,7 +346,7 @@ export default function DesignCritiquePage() {
       await ask(IMAGES_PROMPT(paths), uploaded, mine)
     } catch (e) {
       // No slot exists yet at this point; ask() owns cleanup for the one it creates.
-      if (runSeqRef.current === seq) { setErr(e instanceof Error ? e.message : 'something went wrong'); setPhase('error') }
+      if (runSeqRef.current === seq) { setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.something_went_wrong')); setPhase('error') }
     }
   }
 
@@ -482,11 +482,11 @@ export default function DesignCritiquePage() {
           const flag = e as Flagged
           if (flag && flag.cancelled) return
           if (flag && flag.timeout) {
-            setErr('Still scanning. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.')
+            setErr(i18nT('apps.designCritique.designCritiquePage.still_scanning_it_s_kept_running_come_back_to_th'))
             setPhase('error'); return
           }
           endRun(job.slotKey); setSlot('')
-          setErr(e instanceof Error ? e.message : 'That scan didn’t finish.'); setPhase('error')
+          setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.that_scan_didn_t_finish')); setPhase('error')
         }
       })()
       return
@@ -506,11 +506,11 @@ export default function DesignCritiquePage() {
         const flag = e as Flagged
         if (flag && flag.cancelled) return
         if (flag && flag.timeout) {
-          setErr('Still working on this one. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.')
+          setErr(i18nT('apps.designCritique.designCritiquePage.still_working_on_this_one_it_s_kept_running_come_2'))
           setPhase('error'); return
         }
         endRun(job.slotKey)
-        setErr(e instanceof Error ? e.message : 'That critique didn’t finish.'); setPhase('error')
+        setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.that_critique_didn_t_finish')); setPhase('error')
       }
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -541,7 +541,7 @@ export default function DesignCritiquePage() {
   // ── staging ────────────────────────────────────────────────────────────
   const addFiles = (fileList: FileList | File[] | null) => {
     const imgs = Array.from(fileList || []).filter(f => /^image\//.test(f.type || ''))
-    if (!imgs.length) { setErr('Those weren’t image files.'); return }
+    if (!imgs.length) { setErr(i18nT('apps.designCritique.designCritiquePage.those_weren_t_image_files')); return }
     setErr('')
     setStaged(prev => {
       const room = MAX_SCREENS - prev.length
