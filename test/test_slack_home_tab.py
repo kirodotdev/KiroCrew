@@ -533,7 +533,7 @@ class TestPublishHomeTabSessions:
         """If the collector raises, the section degrades gracefully."""
         orch = _make_orch()
         with patch(
-            "kiro_crew.slack.events._collect_recent_sessions",
+            "kiro_crew.slack.sessions_view._collect_recent_sessions",
             side_effect=RuntimeError("disk error"),
         ):
             await _publish_home_tab(orch, "U123")
@@ -568,7 +568,7 @@ class TestPublishHomeTabSessions:
         orch = _make_orch()
         with (
             patch(
-                "kiro_crew.slack.events._collect_recent_sessions",
+                "kiro_crew.slack.sessions_view._collect_recent_sessions",
                 side_effect=RuntimeError("disk error"),
             ),
             patch("kiro_crew.slack.events.sel") as mock_sel,
@@ -613,7 +613,7 @@ class TestPublishHomeTabSessions:
         leaked_key = "AKIAIOSFODNN7EXAMPLE"
         with (
             patch(
-                "kiro_crew.slack.events._collect_recent_sessions",
+                "kiro_crew.slack.sessions_view._collect_recent_sessions",
                 side_effect=OSError(f"failed reading {leaked_key} from path"),
             ),
             patch("kiro_crew.slack.events.sel") as mock_sel,

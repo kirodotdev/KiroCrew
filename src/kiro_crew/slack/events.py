@@ -88,7 +88,7 @@ from kiro_crew.slack.sessions_view import (
     _SESSION_KIND_TASKRUNNER,
     _SESSIONS_DEFAULT_LIMIT,
     _build_sessions_blocks,
-    _collect_recent_sessions,
+    _collect_recent_sessions_off_loop,
 )
 from kiro_crew.slack.transport_dispatch import handle_message_transport
 from kiro_crew.stats import Stats
@@ -602,7 +602,7 @@ async def _handle_sessions(
     # pattern: capture the exception, redact-then-truncate the message,
     # and emit an ``error=`` audit field.
     try:
-        rows = _collect_recent_sessions(
+        rows = await _collect_recent_sessions_off_loop(
             orch.sessions if orch is not None else None,
             limit=_SESSIONS_DEFAULT_LIMIT,
         )
@@ -1092,7 +1092,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 except (AttributeError, TypeError):
                     per_kind = _HOME_TAB_SESSIONS_PER_KIND
                 # Single directory scan for both kinds; partition + cap in memory.
-                all_rows = _collect_recent_sessions(
+                all_rows = await _collect_recent_sessions_off_loop(
                     sess_mgr,
                     limit=per_kind * 10,
                     kind=(_SESSION_KIND_DASHBOARD, _SESSION_KIND_TASKRUNNER),

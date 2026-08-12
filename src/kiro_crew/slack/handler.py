@@ -119,7 +119,7 @@ from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.sessions_view import (
     _SESSIONS_DEFAULT_LIMIT,
     _build_sessions_blocks,
-    _collect_recent_sessions,
+    _collect_recent_sessions_off_loop,
 )
 from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
@@ -4855,7 +4855,8 @@ async def _handle_sessions_command(
 ) -> None:
     """Handle the ``sessions`` keyword in DMs.
 
-    Delegates to :func:`kiro_crew.slack.sessions_view._collect_recent_sessions`
+    Delegates to
+    :func:`kiro_crew.slack.sessions_view._collect_recent_sessions_off_loop`
     and :func:`kiro_crew.slack.sessions_view._build_sessions_blocks` so the
     keyword, the ``/<command> sessions`` slash command, and the App Home Tab
     all render the same Block Kit content with the same Resume button wiring.
@@ -4865,7 +4866,7 @@ async def _handle_sessions_command(
     # the access attempt would be invisible to the security pipeline.
     # Mirrors the slash and Home Tab error-path patterns.
     try:
-        rows = _collect_recent_sessions(sessions, limit=_SESSIONS_DEFAULT_LIMIT)
+        rows = await _collect_recent_sessions_off_loop(sessions, limit=_SESSIONS_DEFAULT_LIMIT)
     except Exception as exc:
         # Redact-then-truncate: redact() first so credential / exfil
         # patterns aren't split mid-string by the truncation step.

@@ -2713,7 +2713,11 @@ async def _handle_resume_choice(
             if not jsonl.exists() and not stem.startswith("dashboard_"):
                 jsonl = sess_dir / f"dashboard_{stem}.jsonl"
             if jsonl.exists():
-                lines = jsonl.read_text(encoding="utf-8").splitlines()
+                # Whole-transcript read, bounded only by conversation length
+                # (multi-MB for long sessions) — off-loop so it cannot stall
+                # the event loop and its watchdog heartbeat.
+                raw = await asyncio.to_thread(jsonl.read_text, encoding="utf-8")
+                lines = raw.splitlines()
                 msgs: list[tuple[str, str]] = []
                 for ln in lines:
                     try:

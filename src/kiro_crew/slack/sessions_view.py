@@ -20,6 +20,7 @@ The module has **no slack-internal dependencies** beyond
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterable
 from pathlib import Path
@@ -123,7 +124,21 @@ def _collect_recent_sessions(
     an iterable of kinds (the Home Tab uses this to fetch dashboard +
     taskrunner in a single directory scan), or ``None`` for no filter.
 
-    Sorted by mtime descending, capped at *limit*.
+    Sorted by mtime descending, capped at *limit*. The kind filter and the
+    mtime sort key are both derivable without opening a file (kind from the
+    filename stem, mtime from ``stat``), so only the newest *limit*
+    matching transcripts are actually read — the directory can hold an
+    unbounded number of historical sessions without the read cost growing
+    with it. Files that turn out to be empty or unreadable are skipped and
+    the scan continues down the mtime order, so the result still holds
+    *limit* rows whenever enough valid transcripts exist.
+
+    This function performs synchronous filesystem I/O (directory scan plus
+    up to *limit* whole-file reads, each bounded only by transcript size).
+    Callers on the asyncio event loop MUST use
+    :func:`_collect_recent_sessions_off_loop` instead of calling this
+    directly — a multi-MB transcript read on the loop stalls every other
+    task, including the loop-watchdog heartbeat.
     """
     sessions_dir = _sessions_dir()
     if not sessions_dir.exists():
@@ -136,7 +151,10 @@ def _collect_recent_sessions(
     else:
         kinds_set = set(kind)
 
-    rows: list[dict] = []
+    # Pre-scan: classify + stat every entry WITHOUT reading it, then sort
+    # newest-first so the read loop below opens at most ``limit`` valid
+    # transcripts instead of every file in the directory.
+    candidates: list[tuple[float, Path, str, str]] = []
     for jsonl in sessions_dir.glob("*.jsonl"):
         if jsonl.is_symlink():
             continue
@@ -150,6 +168,22 @@ def _collect_recent_sessions(
         row_kind = _classify_session_key(key)
         if kinds_set is not None and row_kind not in kinds_set:
             continue
+
+        try:
+            mtime = jsonl.stat().st_mtime
+        except OSError:
+            # Deleted between glob and stat — skip.
+            continue
+        candidates.append((mtime, jsonl, key, row_kind))
+
+    # Stable sort keyed on mtime only, so equal-mtime entries keep
+    # directory-enumeration order (same tie order the full-scan sort had).
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    rows: list[dict] = []
+    for mtime, jsonl, key, row_kind in candidates:
+        if len(rows) >= limit:
+            break
 
         try:
             lines = jsonl.read_text(encoding="utf-8").splitlines()
@@ -190,15 +224,36 @@ def _collect_recent_sessions(
                 "key": key,
                 "title": title[:80],
                 "agent": agent,
-                "mtime": jsonl.stat().st_mtime,
+                "mtime": mtime,
                 "active": active,
                 "kind": row_kind,
                 "msgs": msgs[-_SESSIONS_MAX_PREVIEW:],
             }
         )
 
-    rows.sort(key=lambda r: r["mtime"], reverse=True)
-    return rows[:limit]
+    return rows
+
+
+async def _collect_recent_sessions_off_loop(
+    sessions: "SessionManager | None" = None,
+    *,
+    limit: int = _SESSIONS_DEFAULT_LIMIT,
+    kind: "str | Iterable[str] | None" = None,
+) -> list[dict]:
+    """Run :func:`_collect_recent_sessions` in a worker thread.
+
+    The collector does synchronous filesystem I/O (a directory scan plus up
+    to *limit* whole-transcript reads, each bounded only by transcript
+    size). Run on the event loop, that starves every other task — including
+    the loop-watchdog heartbeat, which hard-exits the process after
+    sustained silence. This wrapper is the single chokepoint async callers
+    must use; it keeps the offload decision out of each call site.
+
+    The collector is safe to run off-loop: it is pure I/O + parsing, and
+    the only shared-state touch is ``SessionManager.has_session``, a plain
+    dict-membership read.
+    """
+    return await asyncio.to_thread(_collect_recent_sessions, sessions, limit=limit, kind=kind)
 
 
 # ---------------------------------------------------------------------------
