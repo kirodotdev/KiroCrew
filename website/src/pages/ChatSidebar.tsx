@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
@@ -26,7 +26,7 @@ import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { sessionRefBlockReason } from '../utils/sessionRefs'
-import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
+import { SearchInput, Input, Btn, IconButton, IconButtonGroup, Badge } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
 import ModelDropdownList from '../components/ModelDropdownList'
@@ -1965,6 +1965,15 @@ function ChatSidebar({
     onSuccess: focusComposer,
   })
 
+  // Crew Mode: multi-topic chat — the agent runs only in sub-sessions
+  // (topics); the session itself is an engineered routing pipeline.
+  const createCrewMutation = useMutation({
+    mutationFn: () => {
+      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'crew' })).unwrap()
+    },
+    onSuccess: () => { requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) },
+  })
+
   // Create default chat session mutation
   const createChatMutation = useMutation({
     mutationFn: () => {
@@ -2366,6 +2375,7 @@ function ChatSidebar({
                     {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
                   </>}
               {s.mode === 'orchestrator' && <span className="text-[11px] px-1 py-0 rounded bg-accent/15 text-accent font-medium" title={i18nT('pages.chatSidebar.autopilot_mode')}>{i18nT('pages.chatSidebar.autopilot')}</span>}
+              {s.mode === 'crew' && <Badge variant="warn" className="text-[11px] px-1 py-0 rounded font-sans" title={i18nT('pages.chatSidebar.crew_mode')}>{i18nT('pages.chatSidebar.crew')}</Badge>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
                *  margins would split the free space and strand the folder
                *  chip mid-row. */}
@@ -2956,7 +2966,11 @@ function ChatSidebar({
                   className="flex items-center justify-center w-6 h-7 cursor-pointer bg-transparent border-none text-accent-fg hover:bg-black/10 active:scale-95 transition-all"
                   title={i18nT('pages.chatSidebar.create')} aria-label={i18nT('pages.chatSidebar.more_create_options')}><ChevronDown size={13} /></button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[200px]" onCloseAutoFocus={onMenuCloseAutoFocus}>
+              {/* max-w bounds the menu: the mode descriptions below are full
+               *  sentences, and without an upper bound a flex item's automatic
+               *  min-width lets the longest one stretch the menu across the
+               *  session list instead of wrapping. */}
+              <DropdownMenuContent align="end" className="min-w-[200px] max-w-[264px]" onCloseAutoFocus={onMenuCloseAutoFocus}>
                 {/* The plain chat is what the button's main segment does, but a
                  *  menu that lists every OTHER way to create and omits the
                  *  ordinary one reads as if autopilot were the only kind of
@@ -2965,8 +2979,27 @@ function ChatSidebar({
                 <DropdownMenuItem disabled={creatingSlot} onClick={() => { createPlainChatMutation.mutate() }}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
                 </DropdownMenuItem>
-                <DropdownMenuItem disabled={creatingSlot} onClick={() => { createAutopilotMutation.mutate() }}>
-                  <Zap size={14} className="text-accent" /> {i18nT('pages.chatSidebar.new_autopilot_chat')}
+                {/* The two engineered modes carry a one-line description, because the
+                 *  moment a user cannot tell them apart is the moment this menu opens
+                 *  — and until now the only explanation lived in a native title= on
+                 *  the sidebar badge, i.e. after the session already existed. The
+                 *  plain entries stay single-line: "New chat" and "New folder" need
+                 *  no gloss, and describing them would bury the contrast that
+                 *  actually needs drawing. `items-start` so the icon aligns to the
+                 *  label, not to the middle of the two-line block. */}
+                <DropdownMenuItem className="items-start" disabled={creatingSlot} onClick={() => { createAutopilotMutation.mutate() }}>
+                  <Zap size={14} className="text-muted mt-[3px] shrink-0" />
+                  <span className="flex min-w-0 flex-col gap-px">
+                    <span>{i18nT('pages.chatSidebar.new_autopilot_chat')}</span>
+                    <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.autopilot_desc')}</span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem className="items-start" data-testid="new-crew-chat" onClick={() => { createCrewMutation.mutate() }}>
+                  <Users size={14} className="text-muted mt-[3px] shrink-0" />
+                  <span className="flex min-w-0 flex-col gap-px">
+                    <span>{i18nT('pages.chatSidebar.new_crew_chat')}</span>
+                    <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.crew_desc')}</span>
+                  </span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}>

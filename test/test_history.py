@@ -3765,3 +3765,34 @@ class TestMetadataReadSurvivesATransientSharingViolation:
         assert any(
             "could not read metadata" in r.getMessage() for r in caplog.records
         ), f"no warning recorded; got {[r.getMessage() for r in caplog.records]}"
+
+
+class TestAppendIfAbsentOffLoop:
+    """The returned future IS the contract: callers holding the only durable
+    copy of something await it to turn "scheduled" into "on disk"."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_executor_future_when_a_loop_is_running(self) -> None:
+        log = MagicMock()
+        fut = history.append_if_absent_off_loop(log, "dashboard:s1", "assistant", "body")
+        assert fut is not None, "the scheduled write was not handed back to the caller"
+        await fut
+        log.append_if_absent.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_the_returned_future_carries_the_append_failure(self) -> None:
+        log = MagicMock()
+        log.append_if_absent.side_effect = OSError("history lock contention")
+        fut = history.append_if_absent_off_loop(log, "dashboard:s1", "assistant", "body")
+        assert fut is not None
+        with pytest.raises(OSError):
+            await fut
+
+    def test_returns_none_when_written_inline(self) -> None:
+        # No running loop: the append already happened, so there is nothing to
+        # await and None is the correct answer, not a lost future.
+        log = MagicMock()
+        assert history.append_if_absent_off_loop(
+            log, "dashboard:s1", "assistant", "body"
+        ) is None
+        log.append_if_absent.assert_called_once()

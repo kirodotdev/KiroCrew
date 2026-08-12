@@ -8049,7 +8049,12 @@
       "untagged_2": "Sin etiquetar",
       "will_be_moved_to_older_sessions": "se moverán a sesiones antiguas.",
       "within": "Dentro de",
-      "yesterday": "Ayer"
+      "yesterday": "Ayer",
+      "new_crew_chat": "Nuevo chat de Crew Mode",
+      "crew_mode": "Crew Mode — los temas avanzan en subsesiones paralelas",
+      "crew": "Crew",
+      "autopilot_desc": "Una tarea, por etapas: primero planifica, tú apruebas y luego la ejecuta etapa por etapa.",
+      "crew_desc": "Varias tareas a la vez: cada tema avanza en su propia subsesión y responde en cuanto termina."
     },
     "connectionsPage": {
       "access": "Acceso",

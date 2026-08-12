@@ -306,6 +306,51 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
   })
 
+  it('keeps crew-mode answers out of the collapse pane', () => {
+    // Crew Mode inverts this component's core assumption: every forwarded
+    // completion is the FINAL answer for a different topic, so "last assistant
+    // message is the conclusion" would bury real answers behind the toggle.
+    // Marked via the persisted `crew-reply` class so it survives a reload.
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'assistant', content: 'Got it — working on that.', cls: 'msg msg-a', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: "Here's what's in flight: three topics running right now.", cls: 'msg msg-a crew-reply', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'assistant', content: '↩ re: "check why the stable feed returns 403"\n\nRoot cause: the origin rejects the stale signing key.', cls: 'msg msg-a crew-reply', ts: '3' }, idx: 2 },
+      { kind: 'single', msg: { role: 'assistant', content: '↩ re: "explain the TTL sweep"\n\nIt runs every 6h and compacts afterwards.', cls: 'msg msg-a crew-reply', ts: '4' }, idx: 3 },
+    ]
+    const { container } = render(
+      <TurnBlock
+        turn={makeTurn(items)}
+        renderItem={(it, i) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>}
+        collapseAll={true}
+      />
+    )
+    // All three answers render OUTSIDE the collapsible pane...
+    for (const i of [1, 2, 3]) {
+      const el = container.querySelector(`[data-testid="item-${i}"]`)
+      expect(el).not.toBeNull()
+      expect(el?.closest('[style*="overflow"]')).toBeNull()
+    }
+    // ...while the templated ack is still free to fold away.
+    expect(container.querySelector('[data-testid="item-0"]')?.closest('[style*="overflow"]')).not.toBeNull()
+  })
+
+  it('does not treat a stray class containing "crew-reply" as a marker', () => {
+    // Substring safety: the match is on a whole class token, so a class like
+    // "not-crew-reply-thing" must not smuggle a message past the collapse.
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'assistant', content: 'intermediate reasoning that should stay hidden', cls: 'msg msg-a not-crew-replyish', ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'assistant', content: 'the actual conclusion of this turn, long enough to count.', cls: 'msg msg-a', ts: '2' }, idx: 1 },
+    ]
+    const { container } = render(
+      <TurnBlock
+        turn={makeTurn(items)}
+        renderItem={(it, i) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>}
+        collapseAll={true}
+      />
+    )
+    expect(container.querySelector('[data-testid="item-0"]')?.closest('[style*="overflow"]')).not.toBeNull()
+  })
+
   it('the "Worked through N steps" count excludes the now-visible hand-back', () => {
     const items: TurnItem[] = [
       { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '1' }, idx: 0 },

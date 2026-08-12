@@ -7835,7 +7835,12 @@
       "untagged_2": "未标记",
       "will_be_moved_to_older_sessions": "将被移至较早的会话。",
       "within": "范围内",
-      "yesterday": "昨天"
+      "yesterday": "昨天",
+      "new_crew_chat": "新建 Crew Mode 聊天",
+      "crew_mode": "Crew Mode — 多话题并行子会话",
+      "crew": "Crew",
+      "autopilot_desc": "一件事分步做完 —— 先给计划，你批准后逐阶段执行。",
+      "crew_desc": "多件事同时推进 —— 每个话题各跑一个子会话，完成一个就回一条。"
     },
     "connectionsPage": {
       "access": "访问权限",

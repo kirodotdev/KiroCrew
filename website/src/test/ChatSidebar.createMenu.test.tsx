@@ -128,6 +128,34 @@ describe('create-button caret menu', () => {
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
   })
 
+  it('explains what each engineered mode does, at the point of choice', async () => {
+    // The moment a user cannot tell Autopilot from Crew Mode is the moment this
+    // menu opens. Before this, the only explanation was a native title= on the
+    // sidebar badge — i.e. visible only after the session already existed.
+    renderSidebar()
+    openCreateMenu()
+    await screen.findByText('New autopilot chat')
+    // The contrast that matters: one job in stages vs several at once.
+    expect(screen.getByText(/One job, done in steps/)).toBeTruthy()
+    expect(screen.getByText(/Several jobs at once/)).toBeTruthy()
+  })
+
+  it('leaves the plain entries single-line', async () => {
+    // "New chat" / "New folder" need no gloss, and describing them would bury
+    // the contrast between the two engineered modes.
+    renderSidebar()
+    openCreateMenu()
+    await screen.findByText('New chat')
+    // Assert on the menu ITEM (the role=menuitem ancestor), not the text node:
+    // "New chat" is a bare child of the menu container, so parentElement there
+    // is the whole menu and would sweep in every sibling's copy.
+    for (const label of ['New chat', 'New folder']) {
+      const item = screen.getByText(label).closest('[role="menuitem"]')
+      expect(item).not.toBeNull()
+      expect(item?.textContent?.trim()).toBe(label)
+    }
+  })
+
   it('"New chat" creates a plain session even when defaultAutopilot is on', async () => {
     cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
     renderSidebar()

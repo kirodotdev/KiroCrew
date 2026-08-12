@@ -21,7 +21,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Container, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -481,8 +481,13 @@ def append_if_absent_off_loop(
     content: str,
     *,
     agent: str | None = None,
-) -> None:
+    cls: str = "",
+) -> Any:
     """Idempotent, loop-safe variant of :func:`append_off_loop`.
+
+    Returns the executor future for the scheduled write, or None when the write
+    already happened inline (no running loop). A caller holding the ONLY durable
+    copy of something must await that future: scheduling is not durability.
 
     Routes :meth:`ConversationLog.append_if_absent` — which atomically skips a
     message already persisted under the same session lock — off the event loop
@@ -497,7 +502,7 @@ def append_if_absent_off_loop(
     """
 
     def _do() -> None:
-        conversation_log.append_if_absent(key, role, content, agent=agent)
+        conversation_log.append_if_absent(key, role, content, agent=agent, cls=cls)
 
     try:
         loop = asyncio.get_running_loop()
@@ -512,7 +517,7 @@ def append_if_absent_off_loop(
                 key,
                 exc_info=True,
             )
-        return
+        return None
 
     def _report(fut: "asyncio.Future[None]") -> None:
         exc = fut.exception()
@@ -523,7 +528,12 @@ def append_if_absent_off_loop(
                 exc,
             )
 
-    loop.run_in_executor(None, _do).add_done_callback(_report)
+    fut = loop.run_in_executor(None, _do)
+    fut.add_done_callback(_report)
+    # Hand the future BACK: a caller holding the only durable copy awaits this
+    # to turn "scheduled" into "on disk". Dropping it here made the barrier a
+    # no-op on every running-loop path, i.e. every real gateway path.
+    return fut
 
 
 def update_metadata_off_loop(
@@ -1830,8 +1840,14 @@ class ConversationLog:
         source_user: str | None = None,
         agent: str | None = None,
         tab_id: str | None = None,
+        cls: str = "",
     ) -> None:
         """Append a message with optional provenance to the session log.
+
+        *cls* persists the message's presentation class. The in-memory slot
+        carries one (``_ChatSlot.append``) but this durable copy had nowhere to
+        put it, so any class-borne distinction silently vanished the moment a
+        session's rows had to be replayed from disk after a restart.
 
         If the session file does not yet exist, it will be created with an
         initial metadata line.  When *agent* is supplied, the agent name is
@@ -1866,6 +1882,7 @@ class ConversationLog:
             msg: dict = {
                 "role": role,
                 "content": _redact_at_write_boundary(role, content),
+                **({"cls": cls} if cls else {}),
                 # Strictly after the row already on disk, so the pair written by
                 # one turn stays ordered on a host whose clock cannot separate
                 # them (see monotonic_transcript_ts). Consulting the file here is
@@ -1917,6 +1934,7 @@ class ConversationLog:
         *,
         agent: str | None = None,
         tab_id: str | None = None,
+        cls: str = "",
     ) -> bool:
         """Append a message only if an identical one is not already persisted.
 
@@ -1949,7 +1967,7 @@ class ConversationLog:
             # Reentrant: ``append`` re-enters ``_locked`` for the same key on
             # this thread (RLock + refcounted flock), so the write stays inside
             # the critical section we already hold.
-            self.append(key, role, content, agent=agent, tab_id=tab_id)
+            self.append(key, role, content, agent=agent, tab_id=tab_id, cls=cls)
             return True
 
     def recent(

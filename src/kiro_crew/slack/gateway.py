@@ -4748,6 +4748,37 @@ class GatewayOrchestrator:
             # Channel, no tab → channel thread + dashboard notification
             # Cron/no parent  → dashboard notification only
 
+            # Crew-mode ownership (RFC orchestrator-chat-sessions): runs
+            # dispatched by the CrewOrchestrator deliver through its
+            # forward/attribution pipeline, never the default injection —
+            # placed after batch accounting so wave bookkeeping stays intact.
+            # isinstance (not truthiness): dashboard_state may be a test double
+            # whose .crew is an auto-created attribute; only a real
+            # CrewOrchestrator owns runs.
+            _crew = getattr(self.dashboard_state, "crew", None) if self.dashboard_state else None
+            # Imported HERE, not at module scope: this module is on the gateway's
+            # boot path and `--no-dashboard` must not pay for a dashboard-only
+            # subsystem before it is ready to serve. By the time a subagent
+            # completes with a live `.crew`, `crew_chat` is already imported, so
+            # this costs a sys.modules hit. `_crew is None` short-circuits first,
+            # which is the whole API-only case.
+            if _crew is not None:
+                from kiro_crew.crew_chat import CrewOrchestrator
+            if _crew is not None and isinstance(_crew, CrewOrchestrator) and _crew.owns(info.id):
+                try:
+                    await _crew.on_subagent_done(info)
+                    return
+                except Exception:
+                    # Do NOT swallow-and-return: fall through to the default
+                    # injection path so the result still reaches the user
+                    # (a crew-store write failure must not silently discard
+                    # the completion — GPT review finding on 76d35e37).
+                    logger.warning(
+                        "crew: completion delivery failed for %s — falling back to default injection",
+                        info.id,
+                        exc_info=True,
+                    )
+
             _slot_name = dashboard_slot_key(parent_key)
             if _slot_name and self.dashboard_state:
                 # Route the result through _run_chat for full streaming, tool
@@ -5494,6 +5525,34 @@ class GatewayOrchestrator:
             completion_keep_chars=self._cfg.agent.completion_keep_chars,
         )
         self.subagent_mgr.start_reaper()
+
+    def _init_crew(self) -> None:
+        """Attach the Crew Mode control plane (engineered pipeline;
+        decision-only agent) to dashboard_state so api_chat can route
+        crew-slot messages to it. MUST run after _init_dashboard() —
+        dashboard_state is None until then (GPT review finding on
+        faf5a127: attaching from _init_subagents silently skipped crew
+        setup in every real gateway boot)."""
+        if self.dashboard_state is None:
+            return
+        try:
+            # Deferred import: `gateway` is on the boot path and this subsystem is
+            # dashboard-only, so `--no-dashboard` must not pay for it. This method
+            # is already dashboard-gated by the return above.
+            from kiro_crew.crew_chat import CrewOrchestrator
+
+            self.dashboard_state.crew = CrewOrchestrator(
+                state=self.dashboard_state,
+                sessions=self.sessions,
+                subagents=self.subagent_mgr,
+                cfg=self._cfg,
+            )
+            # Attaching is not resuming. Without this, a request acknowledged
+            # before a restart stayed pending with nothing scheduled to act on
+            # it — the user saw the ack and then silence forever.
+            self.dashboard_state.crew.resume_persisted_slots()
+        except Exception:
+            logger.warning("CrewOrchestrator init failed — crew mode disabled", exc_info=True)
 
     def _init_task_runner(self) -> None:
         """Initialize the task runner."""
@@ -6587,6 +6646,7 @@ class GatewayOrchestrator:
         self._init_task_runner()
         if not self._no_dashboard:
             await self._init_dashboard()
+            self._init_crew()
         else:
             await self._init_api_server()
         # Record this gateway's own kirocrew launcher, keyed by the port it

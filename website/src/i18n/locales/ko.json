@@ -7835,7 +7835,12 @@
       "untagged_2": "태그 없음",
       "will_be_moved_to_older_sessions": "이전 세션으로 이동됩니다.",
       "within": "이내",
-      "yesterday": "어제"
+      "yesterday": "어제",
+      "crew": "Crew",
+      "crew_mode": "Crew Mode — 주제별로 병렬 하위 세션에서 실행",
+      "new_crew_chat": "새 Crew Mode 채팅",
+      "autopilot_desc": "한 가지 작업을 단계별로 — 먼저 계획을 제시하고, 승인하면 단계별로 실행합니다.",
+      "crew_desc": "여러 작업을 동시에 — 주제마다 별도 하위 세션에서 진행하고 끝나는 대로 답변합니다."
     },
     "connectionsPage": {
       "access": "액세스",

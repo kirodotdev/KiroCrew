@@ -1177,6 +1177,24 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
         slot = state._slots.pop(normalized, None)
     if slot:
         pin_slot_keys.add(slot.key)
+    # Crew persists independently of the transcript, so a permanent delete has to
+    # reach into it too: its durable queue holds the user's own request texts and
+    # its dispatched subagents keep running whether or not a tab is open. Purging
+    # every candidate key rather than just the slot's, because the slot may already
+    # be gone (closed tab, restart) while the store on disk is not.
+    crew = getattr(state, "crew", None)
+    if crew is not None:
+        # Deferred: `handlers.sessions` loads with the dashboard package, which the
+        # gateway imports on its boot path. Crew is dashboard-only, and a delete
+        # with no live crew never needs the class at all.
+        from kiro_crew.crew_chat import CrewOrchestrator
+    if crew is not None and isinstance(crew, CrewOrchestrator):
+        for candidate in pin_slot_keys:
+            try:
+                await crew.purge_slot(candidate)
+            except Exception:
+                logger.warning("History delete: crew purge failed for %s",
+                               candidate, exc_info=True)
     try:
         await state.remove_chat_pins_for_slots(pin_slot_keys)
     except Exception:

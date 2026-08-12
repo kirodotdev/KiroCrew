@@ -7942,7 +7942,12 @@
       "untagged_2": "Ohne Tag",
       "will_be_moved_to_older_sessions": "werden zu älteren Sitzungen verschoben.",
       "within": "Innerhalb von",
-      "yesterday": "Gestern"
+      "yesterday": "Gestern",
+      "new_crew_chat": "Neuer Crew-Mode-Chat",
+      "crew_mode": "Crew Mode — Themen laufen parallel in Untersitzungen",
+      "crew": "Crew",
+      "autopilot_desc": "Eine Aufgabe in Schritten — erst der Plan, dann deine Freigabe, dann Phase für Phase.",
+      "crew_desc": "Mehrere Aufgaben gleichzeitig — jedes Thema läuft in einer eigenen Untersitzung und antwortet, sobald es fertig ist."
     },
     "connectionsPage": {
       "access": "Zugriff",

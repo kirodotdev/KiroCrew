@@ -198,6 +198,133 @@ class TestBatchIdentity:
         assert "w2" not in mgr._batch_submitted
 
     @pytest.mark.asyncio
+    async def test_a_drained_rejection_is_announced(self):
+        """A drained spawn has no synchronous reader, so a terminal rejection there
+        used to vanish: no completion event, and the caller still believed the run
+        was going (crew left the topic `running` forever). `_announce_rejection`
+        gates on batch_id because a DIRECT caller reads the error off the return
+        value -- that does not hold for a timer-driven drain.
+        """
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        announced: list[SubagentInfo] = []
+
+        async def _on_done(info):  # type: ignore[no-untyped-def]
+            announced.append(info)
+
+        mgr._on_done = _on_done
+        mgr._queue = [{"task": "waited too long", "_preassigned_id": "q-reject",
+                       "parent_session_key": "dashboard:chat-1", "batch_id": ""}]
+        mgr._running_count = 0
+        mgr._spawn_stagger_secs = 0.0
+        mgr._last_spawn_ts = 0.0
+        mgr._emit_queue_depth = MagicMock()
+        rejected = SubagentInfo(id="q-reject", task="waited too long", done=True,
+                                error="cwd does not exist or is not a directory")
+        mgr.spawn = lambda **kw: rejected
+
+        mgr._drain_queue()
+        assert "reject-q-reject" in mgr._tasks, (
+            "a rejection at drain time was dropped on the floor"
+        )
+        await mgr._tasks["reject-q-reject"]
+        assert [i.id for i in announced] == ["q-reject"]
+
+    def test_a_drained_batch_rejection_is_not_double_announced(self):
+        """`_announce_rejection` announces batch members ITSELF, from inside spawn.
+
+        So the drain must cover only the set it skips -- non-batch runs. Announcing
+        regardless counted a queued batch rejection twice: the wave's accounting
+        closed early and emitted a duplicate or incomplete digest.
+        """
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        mgr._on_done = AsyncMock()
+        mgr._queue = [{"task": "wave member", "_preassigned_id": "q-batch",
+                       "parent_session_key": "dashboard:chat-1", "batch_id": "wv"}]
+        mgr._running_count = 0
+        mgr._spawn_stagger_secs = 0.0
+        mgr._last_spawn_ts = 0.0
+        mgr._emit_queue_depth = MagicMock()
+        # Rejected AND a batch member: spawn's own `_announce_rejection` owns this.
+        mgr.spawn = lambda **kw: SubagentInfo(
+            id="q-batch", task="wave member", done=True, batch_id="wv",
+            error="cwd does not exist or is not a directory",
+        )
+
+        mgr._drain_queue()
+        assert "reject-q-batch" not in mgr._tasks, (
+            "the drain announced a batch rejection that spawn already announced"
+        )
+
+    def test_a_drained_success_is_not_announced_twice(self):
+        """The announce is for TERMINAL rejections only -- a run that actually
+        started reports through its own completion path."""
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        mgr._on_done = AsyncMock()
+        mgr._queue = [{"task": "fine", "_preassigned_id": "q-ok",
+                       "parent_session_key": "dashboard:chat-1", "batch_id": ""}]
+        mgr._running_count = 0
+        mgr._spawn_stagger_secs = 0.0
+        mgr._last_spawn_ts = 0.0
+        mgr._emit_queue_depth = MagicMock()
+        mgr.spawn = lambda **kw: SubagentInfo(id="q-ok", task="fine")
+
+        mgr._drain_queue()
+        assert "reject-q-ok" not in mgr._tasks
+
+    def test_a_queued_run_cancelled_while_waiting_never_starts(self):
+        """A waiting run has NO `_agents` record: `spawn` returns its queued
+        SubagentInfo without registering it. So cancelling one has to unqueue it --
+        the earlier drain-side guard keyed on the info and was therefore dead code
+        for exactly the state it was meant to cover, which a test that seeded
+        `_agents` by hand could not reveal.
+        """
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        mgr._queue = [
+            {"task": "cancelled while waiting", "_preassigned_id": "q-stopped",
+             "parent_session_key": "dashboard:chat-1", "batch_id": ""},
+            {"task": "still wanted", "_preassigned_id": "q-live",
+             "parent_session_key": "dashboard:chat-1", "batch_id": ""},
+        ]
+        mgr._running_count = 0
+        mgr._spawn_stagger_secs = 0.0
+        mgr._last_spawn_ts = 0.0
+        mgr._emit_queue_depth = MagicMock()
+        assert "q-stopped" not in mgr._agents, "premise: a queued run is unregistered"
+
+        assert asyncio.run(mgr.cancel("q-stopped")) is True, (
+            "cancel reported failure for a run it can still prevent"
+        )
+        assert [p["_preassigned_id"] for p in mgr._queue] == ["q-live"]
+        # The chip must stop counting a run that will never start.
+        assert mgr._emit_queue_depth.called
+
+        spawned: list[str] = []
+        mgr.spawn = lambda **kw: spawned.append(str(kw.get("_preassigned_id")))
+        mgr._drain_queue()
+        assert spawned == ["q-live"], spawned
+
+    def test_cancel_still_reports_false_for_an_unknown_id(self):
+        """Unqueueing must not turn every unknown id into a successful cancel.
+
+        Asserted against a NON-EMPTY queue: with an empty one, a broken filter that
+        drops everything is indistinguishable from a correct one, so the obvious
+        version of this test cannot see the mutation it exists to catch.
+        """
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        mgr._queue = [
+            {"task": "someone else's work", "_preassigned_id": "q-other",
+             "parent_session_key": "dashboard:chat-1", "batch_id": ""},
+        ]
+        mgr._emit_queue_depth = MagicMock()
+        assert asyncio.run(mgr.cancel("never-existed")) is False
+        assert [p["_preassigned_id"] for p in mgr._queue] == ["q-other"], (
+            "cancelling an unknown id evicted an unrelated queued run"
+        )
+        assert not mgr._emit_queue_depth.called
+        mgr._queue = []
+        assert asyncio.run(mgr.cancel("never-existed")) is False
+
+    @pytest.mark.asyncio
     async def test_spawn_counts_submissions_once_per_member(self):
         """spawn() increments the submission counter exactly once per member —
         a queued member re-entering via _drain_queue must not double-count,

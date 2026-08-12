@@ -14,7 +14,6 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.browser.auth import ensure as browser_auth_ensure
 from kiro_crew.browser.command_bus import (
     DEFAULT_COMMAND_TIMEOUT_MS,
@@ -39,7 +38,6 @@ from kiro_crew.browser.setup import (
     set_browser_engine,
     set_browser_mode_enabled,
 )
-from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.channel_folders import (
     LIVE_RELOAD_FIELDS,
@@ -61,7 +59,6 @@ from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     DashboardState,
 )
-from kiro_crew.executors import discovery_executor
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
@@ -70,7 +67,7 @@ from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exf
 from kiro_crew.session_pid_sig import verify_session_pid
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
-from kiro_crew.subagent import validate_cwd
+from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
@@ -92,45 +89,6 @@ def _sel():
 
 
 # ── Subagents ──
-
-
-async def _warm_project_agents_for_spawn(state: Any, cwd: str) -> None:
-    """Warm the project agent-name cache for a spawn-shaped request, safely.
-
-    ``_validate_agent`` runs on the loop and therefore reads ONLY
-    ``cached_project_agent_names()``; without this warm, a spawn that names a
-    project agent is refused ("not found") until some unrelated session happens
-    to warm that project's cache. Best-effort and never raises.
-
-    A caller-supplied cwd MUST pass the same ``validate_cwd()`` gate ``spawn()``
-    itself applies BEFORE any discovery read touches it — warming first would
-    read ``<cwd>/.kiro`` from a path the allowlist rejects. That applies to a
-    STORED cwd on retry as much as a fresh one: the allowlist can have changed
-    since the original spawn (a removed root must not stay warm-able forever),
-    so the check is against the CURRENT config on every call. On rejection the
-    cwd is simply not warmed and ``spawn()`` refuses it with the real error.
-    The pool cwd is Kiro Crew's own default project dir and needs no allowlist.
-    Config load + ``validate_cwd`` (realpath/isdir) are blocking filesystem
-    work, so the whole check runs on the discovery pool.
-    """
-    warm_dir = ""
-    if cwd:
-
-        def _validated_warm_dir() -> str:
-            try:
-                allowed_roots = KiroCrewConfig.load().agent.subagent_cwd_allowed_roots
-            except Exception:
-                allowed_roots = []  # fail closed, mirroring spawn()
-            resolved, _err = validate_cwd(cwd, allowed_roots)
-            return resolved
-
-        warm_dir = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), _validated_warm_dir
-        )
-    else:
-        warm_dir = str(getattr(state.sessions, "_pool_cwd", "") or "")
-    if warm_dir:
-        await warm_project_agent_names(warm_dir)
 
 
 async def api_spawn(request: web.Request) -> web.Response:
@@ -205,7 +163,7 @@ async def api_spawn(request: web.Request) -> web.Response:
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
-        await _warm_project_agents_for_spawn(state, cwd)
+        await warm_project_agents_for_spawn(state, cwd)
     info = state.subagents.spawn(
         task,
         parent_session_key=parent_session,
@@ -276,6 +234,12 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         max_turns = max(0, min(int(body.get("max_turns", 0) or 0), 1000))
     except (TypeError, ValueError):
         max_turns = 0
+    # The run's own cwd, resolved OFF the event loop: a continuation has to run
+    # where the run ran (a project-local agent does not resolve against the pool
+    # project), but reading state.json and probing the path are blocking calls and
+    # `continue_conversation` is synchronous. Doing it here keeps the gateway
+    # responsive even when the recorded path lives on a stalled mount.
+    resumed_cwd = await asyncio.to_thread(state.subagents.recorded_cwd, conv_id)
     info = state.subagents.continue_conversation(
         conv_id,
         task,
@@ -283,6 +247,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         agent=agent,
         model=model or None,
         max_turns=max_turns,
+        cwd=resumed_cwd,
     )
     if not info:
         return web.json_response(
@@ -677,7 +642,7 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
     # gateway restart leaves the cache cold), so it is re-checked against the
     # current config before any discovery read.
     if old.agent:
-        await _warm_project_agents_for_spawn(state, old.cwd or "")
+        await warm_project_agents_for_spawn(state, old.cwd or "")
     info = state.subagents.spawn(
         old._raw_task or old.task,
         parent_session_key=old.parent_session_key,

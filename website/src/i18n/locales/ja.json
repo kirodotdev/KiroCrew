@@ -7835,7 +7835,12 @@
       "untagged_2": "タグなし",
       "will_be_moved_to_older_sessions": "以前のセッションに移動されます。",
       "within": "期間内",
-      "yesterday": "昨日"
+      "yesterday": "昨日",
+      "crew": "Crew",
+      "crew_mode": "Crew Mode — トピックごとに並列のサブセッションで実行",
+      "new_crew_chat": "新しい Crew Mode チャット",
+      "autopilot_desc": "1 つの作業を段階的に — まず計画を示し、承認後に段階ごとに実行します。",
+      "crew_desc": "複数の作業を同時に — トピックごとに別のサブセッションで進み、終わり次第返答します。"
     },
     "connectionsPage": {
       "access": "アクセス",

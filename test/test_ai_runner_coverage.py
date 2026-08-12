@@ -21,6 +21,7 @@ touches a POSIX-only primitive.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 import threading
@@ -215,7 +216,43 @@ def _await_status(sup: Any, wanted: set[str], timeout: float = WAIT_S) -> dict[s
     raise AssertionError(f"supervisor never reached {wanted}; last={snapshot}")
 
 
+def _await_log(fragment: str, caplog: Any, timeout: float = WAIT_S) -> None:
+    """Wait until *fragment* appears in the captured log, or fail with a deadline.
+
+    A terminal status is written BEFORE the work that logs after it, so waiting on
+    status and then reading `caplog` is a race the reader can lose. Waiting on the
+    record is the same shape as `_await_status`: bounded, and loud if it never
+    arrives rather than silently asserting on an empty buffer.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if fragment in caplog.text:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"log never carried {fragment!r}; got: {caplog.text[-400:]!r}")
+
+
 # ── config coercion ──────────────────────────────────────────────────────────
+
+
+class TestAwaitLog:
+    """The log waiter must stay load-bearing.
+
+    Its own failure mode -- returning unconditionally -- would make every caller
+    assert on an empty buffer again, and on a fast host nothing would notice. The
+    race it absorbs is only observable on a slow worker (the Windows runners), so
+    this pins the two properties that ARE deterministic: it returns once the record
+    is there, and it raises when it never arrives.
+    """
+
+    def test_it_returns_once_the_record_arrives(self, caplog: Any) -> None:
+        with caplog.at_level("ERROR"):
+            logging.getLogger("test.awaitlog").error("late but present")
+            _await_log("late but present", caplog, timeout=1.0)
+
+    def test_it_raises_when_the_record_never_arrives(self, caplog: Any) -> None:
+        with pytest.raises(AssertionError, match="log never carried"):
+            _await_log("nothing ever logs this", caplog, timeout=0.05)
 
 
 class TestCoercion:
@@ -1000,6 +1037,12 @@ class TestCalibrate:
         with caplog.at_level("ERROR"):
             sup.calibrate(config)
             snapshot = _await_status(sup, {R.STATUS_DONE, R.STATUS_ERROR})
+            # The worker writes the terminal STATUS before it runs the post-write
+            # cross-check that logs, so `_await_status` returning is not proof the
+            # record exists yet — a fixed assertion here read an empty `caplog`
+            # whenever the worker thread lost that gap, which Windows runners did
+            # consistently. Wait for the record itself, with a real deadline.
+            _await_log("ruler.json disagrees with the calibration result", caplog)
         assert snapshot["status"] == R.STATUS_DONE
         assert self._ruler_doc(config)["status"] == "calibrated"
         assert "ruler.json disagrees with the calibration result" in caplog.text

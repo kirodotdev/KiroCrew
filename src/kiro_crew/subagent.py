@@ -3262,8 +3262,15 @@ class SubagentManager:
         agent: str = "",
         model: str | None = None,
         max_turns: int = 0,
+        cwd: str = "",
+        _preassigned_id: str = "",
     ) -> SubagentInfo | None:
         """Dispatch a follow-up *task* into conversation *conv_id*.
+
+        ``_preassigned_id`` mirrors ``spawn``: a caller that must persist the
+        dispatch identity BEFORE the side effect (so a crash in between is
+        recoverable rather than ambiguous) supplies the id it already wrote
+        down, instead of discovering the minted one only on return.
 
         Retain-by-default: works on ANY completed run whose session files are
         still on disk — no keep flag needed at spawn time. Every run's sid /
@@ -3340,18 +3347,52 @@ class SubagentManager:
         # The conversation TTL sweep / spawn_release owns deletion from here.
         self._promote_conversation(conv_id, conv_key)
         inc_memory, inc_lessons, inc_project = self._inherited_context_groups(conv_id)
+        # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
+        # cwd to the pool project before it validates the agent name, so a run
+        # spawned against a project-local agent (defined under that project's
+        # .kiro/agents/) came back "unknown agent" here — and the caller reads any
+        # non-busy error as unresumable and respawns from the digest alone,
+        # silently dropping the conversation this call exists to preserve.
+        #
+        # The cwd must come from the CALLER, not be discovered here. This method is
+        # synchronous and runs on the gateway's event loop, so probing the recorded
+        # path (`is_dir()`) would freeze the gateway for as long as a stalled
+        # network mount takes to answer. Async callers resolve it off-loop instead:
+        # crew passes its slot project, and `recorded_cwd()` gives the others the
+        # run's own recorded path to hand back in.
         return self.spawn(
             task,
+            _preassigned_id=_preassigned_id,
             parent_session_key=parent_session_key,
             agent=agent,
             model=model,
             max_turns=max_turns,
             keep=True,
+            cwd=cwd,
             conversation_key=conv_key,
             include_memory=inc_memory,
             include_lessons=inc_lessons,
             include_project=inc_project,
         )
+
+    def recorded_cwd(self, conv_id: str) -> str:
+        """The cwd run *conv_id* executed in, or "" if it never had one.
+
+        `continue_conversation` deliberately does NOT discover this itself: it is
+        synchronous and runs on the gateway's event loop, where the state read would
+        block for as long as a stalled network mount takes to answer. This helper
+        does the blocking work in one place so an async caller can hand it to
+        `asyncio.to_thread` and pass the result in.
+
+        A path that no longer exists is returned ANYWAY, so `spawn` refuses it.
+        Round 35 filtered it to "" to keep such a continuation working, which was
+        the wrong trade: an empty cwd resolves to the POOL project, so a follow-up
+        whose task names relative files would have edited an unrelated project's
+        working tree. A loud refusal is recoverable; a silent write to the wrong
+        repository is not. Only a run that never recorded a cwd returns "" — for it
+        the pool default is correct, because there is no project to miss.
+        """
+        return str((read_state(conv_id) or {}).get("cwd") or "")
 
     def _inherited_context_groups(self, conv_id: str) -> tuple[bool, bool, bool]:
         """Recover the context scope of the run being continued.
@@ -3773,6 +3814,21 @@ class SubagentManager:
                 pass  # no running loop (sync/test context)
             return
         params = self._queue.pop(0)
+        # A run can be cancelled WHILE it waits here — a user stop, or a session
+        # deleted out from under it. Starting it anyway would execute tools for
+        # work already reported as stopped, so skip it and drain the next one
+        # instead: `cancel()` marks the info terminal but cannot unqueue this.
+        queued_id = str(params.get("_preassigned_id") or "")
+        if queued_id:
+            waiting = self._agents.get(queued_id)
+            if waiting is not None and (waiting.done or waiting.user_stopped or waiting.reaped):
+                logger.info("Skipping queued spawn %s: cancelled while waiting", queued_id)
+                self._emit_queue_depth(
+                    str(params.get("parent_session_key", "")), str(params.get("batch_id", ""))
+                )
+                if self._queue:
+                    self._drain_queue()
+                return
         logger.info(
             "Draining queue: spawning '%s' (%d left)",
             str(params.get("task", ""))[:40],
@@ -3791,7 +3847,31 @@ class SubagentManager:
         # the queue round-trip — including `_preassigned_id`, which makes the agent
         # start under the id its caller was already told (and, if the gate re-queues
         # it, keeps that id across the second round-trip too).
-        self.spawn(**params, _from_queue=True)
+        drained = self.spawn(**params, _from_queue=True)
+        # A drained spawn has NO synchronous reader: this call site is a timer
+        # callback, and the original caller was handed a queued info long ago. So a
+        # terminal rejection here — the cwd was deleted while the run waited, the
+        # agent stopped resolving — was dropped on the floor: no completion event,
+        # and the caller's own bookkeeping showed the run as still going. Crew left
+        # such a topic `running` forever.
+        #
+        # Only for NON-batch runs, which is exactly the set `_announce_rejection`
+        # skips (it announces batch members itself, from inside `spawn`). Announcing
+        # regardless double-counted a queued batch rejection: the wave's own
+        # accounting closed early and emitted a duplicate or incomplete digest.
+        if (
+            drained is not None
+            and drained.done
+            and drained.error
+            and not drained.batch_id
+            and self._on_done
+        ):
+            try:
+                self._tasks[f"reject-{drained.id}"] = asyncio.ensure_future(
+                    self._safe_announce(drained)
+                )
+            except RuntimeError:
+                pass  # no running loop (sync/test context)
         if self._queue and self._running_count < self._max_concurrent:
             try:
                 asyncio.get_event_loop().call_later(self._spawn_stagger_secs, self._drain_queue)
@@ -5386,6 +5466,29 @@ class SubagentManager:
                 info._cancel_retry_used = True
         task.cancel()
 
+    def _unqueue(self, agent_id: str) -> bool:
+        """Drop a not-yet-started spawn from the stagger queue. True if removed.
+
+        The queue is the only record of a waiting run — `spawn` returns its queued
+        SubagentInfo without registering it in ``_agents`` — so removing the entry
+        is what makes a cancel take effect before the work exists. Also re-emits the
+        parent's queued depth, or the chip keeps counting an agent that will never
+        run.
+        """
+        keep = [p for p in self._queue if str(p.get("_preassigned_id") or "") != agent_id]
+        if len(keep) == len(self._queue):
+            return False
+        dropped = [p for p in self._queue if str(p.get("_preassigned_id") or "") == agent_id]
+        self._queue = keep
+        for p in dropped:
+            try:
+                self._emit_queue_depth(
+                    str(p.get("parent_session_key", "")), str(p.get("batch_id", ""))
+                )
+            except Exception:
+                logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
+        return True
+
     async def cancel(self, agent_id: str) -> bool:
         """Cancel a single running subagent. Returns True if found and cancelled.
 
@@ -5396,6 +5499,15 @@ class SubagentManager:
         """
         info = self._agents.get(agent_id)
         if not info or info.done:
+            # A run still WAITING behind the stagger has no `_agents` record at
+            # all: `spawn` builds its queued SubagentInfo and returns it without
+            # registering. So this used to answer False and leave the entry in the
+            # queue, which the drain later started — the stop was reported as
+            # ineffective while the work ran anyway, and a purge on a deleted
+            # session could not reach it. Unqueueing IS the cancel for that state.
+            if self._unqueue(agent_id):
+                logger.info("Cancelled queued subagent %s before it started", agent_id)
+                return True
             return False
         info.user_stopped = True
         # Neutral semantics live in the RECORD, not just the live event: a user

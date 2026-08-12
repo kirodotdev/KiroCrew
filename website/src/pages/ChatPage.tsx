@@ -716,12 +716,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const provider = useProvider()
   const [searchParams, setSearchParams] = useSearchParams()
   const slots = useAppSelector(s => s.dashboard.slots)
-  // Unified chat view: show both default and orchestrator slots together.
+  // Unified chat view: show default, orchestrator and crew slots together.
   // App-owned worker slots (s.app) are excluded by the sidebar itself.
   const filteredSlots = useMemo(
     () => slots.filter(s => {
       const sk = s.surface ?? s.mode ?? ''
-      return sk === '' || sk === 'orchestrator'
+      return sk === '' || sk === 'orchestrator' || sk === 'crew'
     }),
     [slots],
   )

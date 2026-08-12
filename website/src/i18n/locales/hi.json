@@ -7942,7 +7942,12 @@
       "untagged_2": "अनटैग्ड",
       "will_be_moved_to_older_sessions": "पुराने सत्रों में ले जाया जाएगा।",
       "within": "इसके अंदर",
-      "yesterday": "कल"
+      "yesterday": "कल",
+      "new_crew_chat": "नई Crew Mode चैट",
+      "crew_mode": "Crew Mode — विषय समानांतर उप-सत्रों में चलते हैं",
+      "crew": "Crew",
+      "autopilot_desc": "एक काम, चरणों में — पहले योजना, फिर मंज़ूरी, फिर चरण-दर-चरण अमल।",
+      "crew_desc": "कई काम साथ-साथ — हर विषय अपने अलग सब-सेशन में चलता है और पूरा होते ही जवाब देता है।"
     },
     "connectionsPage": {
       "access": "ऐक्सेस",

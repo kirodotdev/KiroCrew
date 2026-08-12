@@ -105,8 +105,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     at_index = body.get("at_message_index")
     prompt = body.get("prompt")
     mode_override = body.get("mode")
-    if mode_override is not None and mode_override not in ("", "orchestrator"):
-        return web.json_response({"error": "mode must be '' or 'orchestrator'"}, status=400)
+    if mode_override is not None and mode_override not in ("", "orchestrator", "crew"):
+        return web.json_response({"error": "mode must be '', 'orchestrator' or 'crew'"}, status=400)
     direction = body.get("direction", _FORK_DIRECTION_HEAD)
     if direction not in _FORK_DIRECTIONS:
         return web.json_response(

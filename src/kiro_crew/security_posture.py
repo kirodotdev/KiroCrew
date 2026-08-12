@@ -450,6 +450,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Workflow progress summaries injected back into a session.",
     ),
     (
+        "Crew Mode delivery",
+        "crew_chat.py",
+        "Every crew-slot post (`_post`): forwarded subagent summaries/errors, "
+        "decision-agent questions, and topic-meta renders — all LLM-authored — "
+        "written to the transcript, broadcast over WS, and persisted to the "
+        "conversation log.",
+    ),
+    (
         "Onboarding import",
         "onboarding_import.py",
         "Imported foreign-agent history and config before it enters Kiro Crew.",

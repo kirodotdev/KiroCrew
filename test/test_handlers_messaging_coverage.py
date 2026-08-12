@@ -277,6 +277,20 @@ class TestApiSpawnContinue:
         assert resp.status == 200
         assert mgr.continue_conversation.call_args.kwargs["max_turns"] == 0
 
+    def test_the_runs_own_cwd_is_resolved_off_loop_and_forwarded(self) -> None:
+        """A continuation has to run where the run ran, or a project-local agent
+        fails to resolve and the caller respawns from a digest -- losing the
+        conversation. `continue_conversation` is synchronous and on the event loop,
+        so the lookup happens here, in a thread, and is passed in.
+        """
+        mgr = _mgr()
+        mgr.recorded_cwd = MagicMock(return_value="/proj/alpha")
+        mgr.continue_conversation.return_value = _info(id="run2")
+        resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x"}))
+        assert resp.status == 200
+        assert mgr.continue_conversation.call_args.kwargs["cwd"] == "/proj/alpha"
+        mgr.recorded_cwd.assert_called_once_with("conv1")
+
 
 # ── api_spawn_steer / release ──
 

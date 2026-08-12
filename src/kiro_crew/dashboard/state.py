@@ -2121,6 +2121,7 @@ class DashboardState:
     # shared by every __new__-built instance. __init__ and the restore each
     # assign a fresh set(), so mutation only ever touches an instance attribute.
     unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
+    crew: Any = None  # Crew Mode control plane (set by gateway; None = unavailable)
 
     def __init__(
         self,
@@ -2149,6 +2150,9 @@ class DashboardState:
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
+        # Crew Mode control plane; attached by the gateway after
+        # SubagentManager construction (None = crew mode unavailable).
+        self.crew: Any = None
         self.channel_manager: Any = None  # lazy-init in server.py
         self.tunnel_manager: Any = None  # lazy-init in server.py (TunnelManager)
         self.instances_manager: Any = None  # lazy-init in server.py (SshTunnelManager)

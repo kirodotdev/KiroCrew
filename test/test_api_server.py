@@ -126,11 +126,11 @@ class TestApiServerSpawn:
         """
         order: list[str] = []
         warm = AsyncMock(side_effect=lambda _d: order.append("warm"))
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging.warm_project_agent_names", warm)
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         # The warm only ever touches an ALLOWLISTED cwd; stand in for a config
         # whose allowed_roots admit tmp_path.
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.messaging.validate_cwd",
+            "kiro_crew.spawn_warm.validate_cwd",
             lambda cwd, roots: (cwd, ""),
         )
         mock_mgr = MagicMock()
@@ -159,9 +159,9 @@ class TestApiServerSpawn:
         path spawn() itself was about to refuse.
         """
         warm = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging.warm_project_agent_names", warm)
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.messaging.validate_cwd",
+            "kiro_crew.spawn_warm.validate_cwd",
             lambda cwd, roots: ("", "cwd not under an allowed root"),
         )
         mock_mgr = MagicMock()
@@ -186,9 +186,9 @@ class TestApiServerSpawn:
         from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
 
         warm = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging.warm_project_agent_names", warm)
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.messaging.validate_cwd",
+            "kiro_crew.spawn_warm.validate_cwd",
             lambda cwd, roots: ("", "root no longer allowed"),
         )
         old = MagicMock(
@@ -213,7 +213,7 @@ class TestApiServerSpawn:
     async def test_spawn_without_agent_skips_the_warm(self, tmp_path, monkeypatch):
         """No agent name -> nothing to validate -> no warm round-trip added."""
         warm = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging.warm_project_agent_names", warm)
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         mock_mgr = MagicMock()
         mock_mgr.spawn.return_value = MagicMock(id="test-790", done=False, error="")
         state = _make_state(tmp_path, subagents=mock_mgr)
