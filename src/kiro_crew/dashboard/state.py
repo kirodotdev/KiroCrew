@@ -3674,6 +3674,27 @@ class DashboardState:
         slot = self._slots.get(slot_name)
         if not slot:
             return
+        # A thread handoff is ONE action with TWO persisted writes: the previous
+        # owner's link is cleared and this slot's is claimed. Each write rewrites
+        # the whole session map, so as two separate writes they are separately
+        # interruptible — a failure or a concurrent writer in between leaves the
+        # thread with no owner (the clear landed, the claim did not) or with two
+        # (the reverse). Batching makes the pair one critical section and one
+        # write, matching the same guarantee ``SessionMap.set_slack_link``
+        # already gives its own eviction-and-claim.
+        with self.sessions.batched_save() if self.sessions else contextlib.nullcontext():
+            self._link_slack_persisted(slot, slot_name, thread_ts, channel_id)
+        self.push_slots_update()
+
+    def _link_slack_persisted(
+        self, slot: Any, slot_name: str, thread_ts: str, channel_id: str
+    ) -> None:
+        """The link handoff itself: in-memory indexes plus both persisted writes.
+
+        Split out only so :meth:`link_slack` can wrap the whole sequence in one
+        ``batched_save``; the dashboard push stays OUTSIDE that block because it
+        is not a map mutation.
+        """
         # Remove stale mapping if slot was previously linked to a different thread
         old_ts = slot._slack_thread_ts
         if old_ts and old_ts != thread_ts:
@@ -3707,7 +3728,6 @@ class DashboardState:
             from kiro_crew.dashboard.chat_utils import effective_session_key
 
             self.sessions.set_slack_link(effective_session_key(slot), thread_ts, channel_id)
-        self.push_slots_update()
 
     def get_or_create_slot(
         self,

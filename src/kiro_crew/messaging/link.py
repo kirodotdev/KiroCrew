@@ -414,10 +414,19 @@ def release_conversation_location(
 
     Returns ``(reply_text, swept_keys)``. A non-empty sweep is the caller's
     cue to refresh any dashboard projection of the cleared bindings.
+
+    The three clears are ONE critical section and one whole-map write: they are
+    one user-visible action ("nothing mirrors here anymore"), and each of them
+    would otherwise rewrite the entire map and be individually interruptible, so
+    a failure or a concurrent writer partway through could leave the location
+    half-freed while the reply already claimed ✅. Nesting is counted, so a
+    caller that batches a wider sequence around this one (Telegram pairs it with
+    the opt-out write) still gets a single write.
     """
-    cleared = int(sessions.clear_mirror_link(key))
-    cleared += int(sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)))
-    swept = sessions.clear_mirror_links_at(location)
+    with sessions.batched_save():
+        cleared = int(sessions.clear_mirror_link(key))
+        cleared += int(sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)))
+        swept = sessions.clear_mirror_links_at(location)
     if swept:
         logger.info(
             "%s: unlink swept %d mirror binding(s) at this conversation: %s",

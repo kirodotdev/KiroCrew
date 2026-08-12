@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -210,6 +211,19 @@ class FakeSessions:
         self.mirror_links: dict[str, Any] = {}
         self.origin_links: dict[str, Any] = {}
         self.inbound_mirror_keys: set[str] = set()
+        # Batch bookkeeping, mirroring the real SessionManager: the unlink path
+        # wraps its three clears in one batch, and a double without the context
+        # manager would make that path unreachable from these tests.
+        self.batch_depth = 0
+        self.batched_writes: list[bool] = []
+
+    @contextmanager
+    def batched_save(self) -> Any:
+        self.batch_depth += 1
+        try:
+            yield
+        finally:
+            self.batch_depth -= 1
 
     async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
         self.last_agent = agent
@@ -285,10 +299,12 @@ class FakeSessions:
         ]
 
     def clear_mirror_link(self, key: str) -> bool:
+        self.batched_writes.append(self.batch_depth > 0)
         self.inbound_mirror_keys.discard(key)
         return self.mirror_links.pop(key, None) is not None
 
     def clear_mirror_links_at(self, link: Any) -> list[str]:
+        self.batched_writes.append(self.batch_depth > 0)
         cleared = self.find_mirror_sessions(link)
         for key in cleared:
             self.inbound_mirror_keys.discard(key)

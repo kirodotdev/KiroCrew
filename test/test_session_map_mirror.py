@@ -331,6 +331,32 @@ class TestReleaseConversationLocation:
         assert reply == "✅ Unlinked."
         assert swept == []
 
+    def test_the_three_clears_are_one_write(self, session_map):
+        # Freeing a location is ONE action. Its three clears each rewrite the
+        # whole map, so unbatched they are three writes and three separately
+        # interruptible steps — a crash or a concurrent writer partway through
+        # leaves the location half-freed while the reply already said ✅.
+        plant_binding(session_map, self.KEY, self.LINK)
+        plant_binding(session_map, f"{self.KEY}:gen1", self.LINK)
+        with patch.object(SessionMap, "_write", autospec=True) as write:
+            release_conversation_location(
+                session_map, key=self.KEY, location=self.LINK, channel="discord"
+            )
+        assert write.call_count == 1
+
+    def test_an_outer_batch_still_collapses_to_one_write(self, session_map):
+        # Telegram wraps this call together with its opt-out write. Nesting is
+        # counted, so the wider sequence must stay a single write rather than
+        # this function's batch flushing early inside it.
+        plant_binding(session_map, self.KEY, self.LINK)
+        with patch.object(SessionMap, "_write", autospec=True) as write:
+            with session_map.batched_save():
+                session_map.set_flag(self.KEY, "mirror_opt_out", True)
+                release_conversation_location(
+                    session_map, key=self.KEY, location=self.LINK, channel="discord"
+                )
+        assert write.call_count == 1
+
 
 class TestPrunePreservesMirror:
     def test_mirror_only_entry_survives_prune(self, tmp_path):
