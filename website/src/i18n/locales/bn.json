@@ -6878,7 +6878,8 @@
       "update_one": "{{count}}টি আপডেট",
       "update_other": "{{count}}টি আপডেট",
       "updating_progress": "আপডেট হচ্ছে {{done}}/{{total}}…",
-      "v": "v"
+      "v": "v",
+      "installed_app_find_in_library_and_enable": "{{name}} ইনস্টল হয়েছে। সক্রিয় করতে নিচে এটি চালু করুন।"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/মাস",

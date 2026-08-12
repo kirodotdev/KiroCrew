@@ -6784,7 +6784,8 @@
       "update_all": "全部更新",
       "update_other": "{{count}} 项更新",
       "updating_progress": "正在更新 {{done}}/{{total}}…",
-      "v": "v"
+      "v": "v",
+      "installed_app_find_in_library_and_enable": "已安装 {{name}}。在下方打开开关即可启用。"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",

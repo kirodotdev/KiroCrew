@@ -506,7 +506,22 @@ export default function AppsPage() {
             className="w-[220px]"
             aria-label={i18nT('pages.appsPage.search_apps')}
           />
-          <SourcesPopover open={sourcesOpen} onOpenChange={setSourcesOpen} onError={setError} />
+          <SourcesPopover
+            open={sourcesOpen}
+            onOpenChange={setSourcesOpen}
+            onError={setError}
+            onInstalled={(name) => {
+              // A path-installed app lands DISABLED, so it never shows in the
+              // sidebar — steer to Library (where disabled apps live) and
+              // confirm, instead of the popover silently closing. Clear any
+              // Discover search first: the Library list filters on the same
+              // `query`, so a stale non-matching term would hide the new app.
+              setQuery('')
+              setTab('library')
+              setSuccessMsg(i18nT('pages.appsPage.installed_app_find_in_library_and_enable', { name }))
+              setTimeout(() => setSuccessMsg(''), 6000)
+            }}
+          />
         </>}
       />
 

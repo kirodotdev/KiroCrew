@@ -6784,7 +6784,8 @@
       "update_all": "すべて更新",
       "update_other": "{{count}} 更新",
       "updating_progress": "更新中 {{done}}/{{total}}…",
-      "v": "v"
+      "v": "v",
+      "installed_app_find_in_library_and_enable": "{{name}} をインストールしました。下でオンにして有効化してください。"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",
