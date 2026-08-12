@@ -105,6 +105,17 @@ _STDOUT_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB
 _DROP_IDS_IN_LOG = 8
 _INIT_TIMEOUT = 30.0
 _REQUEST_TIMEOUT = 30.0
+# Session start (session/new, session/load) gets its own budget because kiro-cli
+# blocks the response while it initializes the session's MCP servers, and a
+# remote server pending OAuth holds that initialization for its FULL 30s
+# authorization wait. _REQUEST_TIMEOUT is also 30s, so sharing it turns session
+# start into a race the client usually loses: kiro-cli creates the session, the
+# client gives up a beat earlier, and the slot dies. This must stay comfortably
+# ABOVE the backend's 30s OAuth wait plus the initialization tail that follows
+# it (observed: remaining servers register within ~1s after the wait; a
+# 71-server agent with no pending OAuth completes in ~14s) — do NOT "tidy" it
+# back down to _REQUEST_TIMEOUT. See issue #2946.
+_SESSION_NEW_TIMEOUT = 90.0
 _INIT_NOTIFICATION_BUFFER_LIMIT = 100
 # Teardown must be snappy: a session is usually terminated on a hot path
 # (background task done, subagent reaped). kiro-cli's terminate handler responds
@@ -1462,7 +1473,9 @@ class AcpRuntime:
         self._session_inits_in_flight += 1
         session_id = ""
         try:
-            resp = await self._send_and_await(METHOD_SESSION_NEW, params)
+            resp = await self._send_and_await(
+                METHOD_SESSION_NEW, params, timeout=_SESSION_NEW_TIMEOUT
+            )
             session_id = str(resp.get("sessionId") or "")
             if not session_id:
                 raise AcpRuntimeError(f"session/new did not return sessionId: {resp}")
@@ -1574,7 +1587,16 @@ class AcpRuntime:
         self._session_inits_in_flight += 1
         loaded_session_id = ""
         try:
-            resp = await self._send_and_await(METHOD_SESSION_LOAD, load_params)
+            # session/load is gated by the SAME MCP (re-)initialization as
+            # session/new — kiro-cli re-initializes the session's servers on
+            # load, and the runtime stages mcp/oauth_request frames while
+            # EITHER request is in flight (the _session_inits_in_flight-keyed
+            # staging in _reader_loop, closed by _finish_session_init; see
+            # docs/system-specs/modules/acp-client.md "loading a session
+            # triggers MCP re-initialization") — so it gets the same budget.
+            resp = await self._send_and_await(
+                METHOD_SESSION_LOAD, load_params, timeout=_SESSION_NEW_TIMEOUT
+            )
 
             # A genuine resume echoes "modes" in the response (same signal AcpClient
             # keys on). Anything else means load did not actually restore state.
@@ -1696,7 +1718,9 @@ class AcpRuntime:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             self._pending_requests.pop(req_id, None)
-            raise AcpRuntimeError(f"Request {method} timed out")
+            # Name the budget: a session-start timeout (90s) must be
+            # distinguishable from a generic control-plane one (30s).
+            raise AcpRuntimeError(f"Request {method} timed out after {timeout:g}s")
 
     async def _drain_stderr(self) -> None:
         """Drain stderr to prevent subprocess blocking."""
