@@ -812,6 +812,62 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     expect(dirty.defaultPrevented).toBe(true)
   })
 
+  it('flushes a pending autosave once when the page unmounts', async () => {
+    const view = await mountOnFakeTimersWithNote()
+    fireEvent.click(screen.getByRole('button', { name: 'Markdown source' }))
+    fireEvent.change(rawEditor(), { target: { value: 'unsaved work' } })
+
+    view.unmount()
+    expect(api.saveNote).toHaveBeenCalledWith('v1', 'One.md', 'unsaved work', 4)
+    expect(api.saveNote).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
+    })
+
+    // The cancelled debounce must not fire a second, post-unmount save.
+    expect(api.saveNote).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for an active autosave before flushing the final edit on unmount', async () => {
+    const first = deferred<{ ok: boolean; mtime: number }>()
+    const second = deferred<{ ok: boolean; mtime: number }>()
+    const third = deferred<{ ok: boolean; mtime: number }>()
+    api.saveNote
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+      .mockImplementationOnce(() => third.promise)
+
+    const view = await mountOnFakeTimersWithNote()
+    fireEvent.click(screen.getByRole('button', { name: 'Markdown source' }))
+    fireEvent.change(rawEditor(), { target: { value: 'first edit' } })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
+    })
+
+    fireEvent.change(rawEditor(), { target: { value: 'second edit' } })
+    await act(async () => first.settle({ ok: true, mtime: 5 }))
+    expect(api.saveNote).toHaveBeenNthCalledWith(2, 'v1', 'One.md', 'second edit', 5)
+
+    fireEvent.change(rawEditor(), { target: { value: 'third edit' } })
+    await act(async () => second.settle({ ok: true, mtime: 6 }))
+    expect(api.saveNote).toHaveBeenNthCalledWith(3, 'v1', 'One.md', 'third edit', 6)
+
+    // Change the buffer during the final bounded retry. Teardown must not race
+    // that request with the old mtime; it waits, then saves the latest snapshot.
+    fireEvent.change(rawEditor(), { target: { value: 'final edit' } })
+    view.unmount()
+    expect(api.saveNote).toHaveBeenCalledTimes(3)
+
+    await act(async () => third.settle({ ok: true, mtime: 7 }))
+    expect(api.saveNote).toHaveBeenNthCalledWith(4, 'v1', 'One.md', 'final edit', 7)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
+    })
+    expect(api.saveNote).toHaveBeenCalledTimes(4)
+  })
+
   // ── panel ─────────────────────────────────────────────────────────────────
 
   it('drags the notes panel wider and remembers the width', async () => {
@@ -934,10 +990,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
     // The alert's presence IS the proof the Sync path consumed the rejection:
     // had the debounced autosave consumed it instead, runSync's setError(null)
-    // would have erased the banner before this query could see it. A saveNote
-    // call-count assertion would NOT be a stronger pin — earlier tests in this
-    // file leave real 1000ms debounce timers running past their own teardown,
-    // and one landing here inflates the shared mock's count nondeterministically.
+    // would have erased the banner before this query could see it.
     const alert = await screen.findByRole('alert', { timeout: 5_000 })
     expect(alert.textContent).toContain('no space left on device')
   })
