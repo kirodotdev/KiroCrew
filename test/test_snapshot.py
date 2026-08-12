@@ -416,6 +416,151 @@ class TestRestoreMerge:
         assert (dst / "plan_memory/plan1.json").is_file()
         assert (dst / "plan_memory/local_plan.json").read_text(encoding="utf-8") == "local plan"
 
+    def test_merge_refuses_a_malformed_incoming_crons_file(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A corrupt incoming crons.json is refused, not raised."""
+        src = tmp_path / "src-bad-crons"
+        _setup_fake_kirocrew(src)
+        (src / "crons.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        tarball = _make_snapshot(src, tmp_path / "out-bad-crons")
+
+        dst = tmp_path / "dst-bad-crons"
+        _setup_fake_kirocrew(dst)
+        keep = (dst / "crons.json").read_text(encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "crons.json" in out and "skipping" in out.lower()
+        assert (dst / "crons.json").read_text(encoding="utf-8") == keep
+
+    def test_merge_refuses_a_malformed_local_crons_file(
+        self, env, capsys, monkeypatch
+    ):
+        """The same for a corrupt file on the receiving side."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst-bad-local-crons"
+        _setup_fake_kirocrew(dst)
+        (dst / "crons.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "crons.json" in out and "skipping" in out.lower()
+        # The local file is kept as-is rather than replaced or truncated.
+        assert (dst / "crons.json").read_text(encoding="utf-8") == "{not json"
+
+    def test_merge_still_imports_other_components_after_a_crons_refusal(
+        self, tmp_path, monkeypatch
+    ):
+        """One unreadable component must not abort the whole merge."""
+        src = tmp_path / "src-partial"
+        _setup_fake_kirocrew(src)
+        (src / "crons.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        tarball = _make_snapshot(src, tmp_path / "out-partial")
+
+        dst = tmp_path / "dst-partial"
+        _setup_fake_kirocrew(dst)
+        (dst / "telemetry_salt").unlink()
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        assert restore_main([str(tarball), "--mode", "merge", "--force"]) == 0
+        assert (dst / "telemetry_salt").is_file()
+
+    def test_merge_refuses_a_crons_file_that_is_not_an_object(
+        self, env, capsys, monkeypatch
+    ):
+        """Valid JSON is not a valid cron file; `jobs` is looked up on it."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst-list-crons"
+        _setup_fake_kirocrew(dst)
+        (dst / "crons.json").write_text('["not", "a", "cron file"]', encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert ret == 0
+        assert "skipping" in capsys.readouterr().out.lower()
+
+    @pytest.mark.parametrize("body", [
+        '{"jobs": null}',           # present but not iterable
+        '{"jobs": "not-a-list"}',   # iterable, but of characters
+        '{"jobs": [123]}',          # a list whose entries have no .get
+        '{"jobs": [{"name": []}]}',  # a present name must be hashable text
+    ])
+    def test_merge_refuses_a_crons_file_whose_jobs_are_the_wrong_shape(
+        self, env, capsys, monkeypatch, body
+    ):
+        """The merge reads each job and hashes present names, so the shape it
+        relies on has to hold before it starts."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / f"dst-shape-{abs(hash(body))}"
+        _setup_fake_kirocrew(dst)
+        (dst / "crons.json").write_text(body, encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert ret == 0
+        assert "skipping" in capsys.readouterr().out.lower()
+        assert (dst / "crons.json").read_text(encoding="utf-8") == body
+
+    def test_merge_refuses_an_incoming_crons_file_with_a_non_object_job(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Same contract on the incoming side."""
+        src = tmp_path / "src-bad-job"
+        _setup_fake_kirocrew(src)
+        (src / "crons.json").write_text('{"jobs": [123]}', encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        tarball = _make_snapshot(src, tmp_path / "out-bad-job")
+
+        dst = tmp_path / "dst-bad-job"
+        _setup_fake_kirocrew(dst)
+        keep = (dst / "crons.json").read_text(encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert ret == 0
+        assert "skipping" in capsys.readouterr().out.lower()
+        assert (dst / "crons.json").read_text(encoding="utf-8") == keep
+
+    def test_merge_treats_a_missing_jobs_key_as_empty(self, env, monkeypatch):
+        """Preservation: absent `jobs` already meant "no jobs" and still does."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst-no-jobs-key"
+        _setup_fake_kirocrew(dst)
+        (dst / "crons.json").write_text('{"version": 1}', encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        assert restore_main([str(tarball), "--mode", "merge", "--force"]) == 0
+
+        merged = json.loads((dst / "crons.json").read_text(encoding="utf-8"))
+        assert len(merged["jobs"]) == 1
+
+    def test_merge_still_imports_a_well_formed_crons_file(self, env, monkeypatch):
+        """Preservation: the guard must not change the ordinary merge."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst-good-crons"
+        _setup_fake_kirocrew(dst)
+        d = json.loads((dst / "crons.json").read_text(encoding="utf-8"))
+        d["jobs"][0]["name"] = "different-job"
+        (dst / "crons.json").write_text(json.dumps(d))
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert len(json.loads(
+            (dst / "crons.json").read_text(encoding="utf-8"))["jobs"]) == 2
+
     def test_merge_restores_missing_security(self, env, capsys, monkeypatch):
         """TEST 16"""
         _, _, tarball, tmp_path = env
