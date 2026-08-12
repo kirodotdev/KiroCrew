@@ -239,6 +239,7 @@ _THEME_ALLOWED_DIRS = {
 _THEME_ENTRIES_BY_LEVEL = {0: 32, 1: 64, 2: 160}
 _THEME_TOTAL_BYTES_BY_LEVEL = {0: 256 * 1024, 1: 2 * 1024 * 1024, 2: 5 * 1024 * 1024}
 _THEME_MAX_FONTS = 3
+_THEME_FONT_ROLES: frozenset[str] = frozenset({"sans", "mono", "system"})
 _THEME_MAX_OVERLAYS = 5
 _THEME_PERSONA_MAX_CHARS = 2000
 _THEME_BOTNAME_MAX = 48  # branding bot-name display cap (plain text)
@@ -1193,7 +1194,7 @@ def _validate_theme_dir(path: Path) -> tuple[dict[str, Any] | None, str | None]:
 
 
 def _theme_asset_descriptor(
-    theme_dir: Path, manifest: dict[str, Any], level: int
+    theme_dir: Path, manifest: dict[str, Any], level: int, *, installing: bool = False
 ) -> dict[str, Any]:
     """Build the frontend asset descriptor for an installed L1/L2 theme.
 
@@ -1201,6 +1202,12 @@ def _theme_asset_descriptor(
     at/below ``level``. Font families and the bot name are sanitised to
     CSS/text-safe tokens; a manifest that names a missing/oversized asset simply
     yields no entry (the loader degrades gracefully). L0 themes return ``{}``.
+
+    When *installing* is True the descriptor is being built as part of a
+    theme-pack install.  Unknown font ``role`` values raise ``ValueError``
+    instead of silently coercing to ``"sans"`` so the pack author gets early
+    feedback.  The read path (installing=False) stays lenient for forward
+    compatibility with packs written for newer Kiro Crew versions.
     """
     desc: dict[str, Any] = {}
     if level < 1:
@@ -1255,8 +1262,16 @@ def _theme_asset_descriptor(
                 weight = 400
             style = f.get("style") if f.get("style") in ("normal", "italic") else "normal"
             fmt = "truetype" if file_l.endswith(".ttf") else "woff2"
+            role = f.get("role", "sans")
+            if not isinstance(role, str) or role not in _THEME_FONT_ROLES:
+                if installing:
+                    raise ValueError(
+                        f"font '{fam}' declares unknown role {role!r}; "
+                        f"valid roles are: {', '.join(sorted(_THEME_FONT_ROLES))}"
+                    )
+                role = "sans"
             out_fonts.append(
-                {"family": fam, "src": rel, "weight": weight, "style": style, "format": fmt}
+                {"family": fam, "src": rel, "weight": weight, "style": style, "format": fmt, "role": role}
             )
     if out_fonts:
         desc["fonts"] = out_fonts

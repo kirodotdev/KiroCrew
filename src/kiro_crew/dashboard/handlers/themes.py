@@ -427,6 +427,21 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
         try:
             _copy_installed_theme(src, stage)
             summary, err = _validate_theme_dir(stage)
+            if err is None and summary is not None:
+                # Run the asset descriptor in install mode so unknown font roles
+                # are rejected eagerly (raises ValueError on invalid role).
+                manifest_path = stage / _THEME_MANIFEST_NAME
+                _manifest: dict[str, Any] = {}
+                if manifest_path.is_file():
+                    try:
+                        _manifest = json.loads(manifest_path.read_bytes())
+                    except (OSError, ValueError):
+                        pass
+                    if not isinstance(_manifest, dict):
+                        _manifest = {}
+                _theme_asset_descriptor(
+                    stage, _manifest, summary["level"], installing=True
+                )
         except ValueError as ve:
             shutil.rmtree(stage, ignore_errors=True)
             return None, str(ve), 400
