@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -55,6 +56,7 @@ def _run_entrypoint(
     home: Path,
     *args: str,
     probe_backend_available: bool = False,
+    credential_keys_available: bool = True,
     resolver_python: str | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -83,6 +85,8 @@ def _run_entrypoint(
         '#!/bin/sh\n'
         'case "${2:-}" in\n'
         '  *ensure_data_home*) exec "$ENTRYPOINT_TEST_REAL_PYTHON" "$@" ;;\n'
+        '  *_CREDENTIAL_KEYS*) [ "$ENTRYPOINT_TEST_CREDENTIAL_KEYS_AVAILABLE" = 1 ]'
+        ' || exit 1; exec "$ENTRYPOINT_TEST_REAL_PYTHON" "$@" ;;\n'
         f'  *detect_backend*) exit {0 if probe_backend_available else 1} ;;\n'
         '  *) exec "$ENTRYPOINT_TEST_REAL_PYTHON" "$@" ;;\n'
         'esac\n',
@@ -99,6 +103,7 @@ def _run_entrypoint(
         "PATH": f"{shim_dir}:{os.environ.get('PATH', '')}",
         "ENTRYPOINT_TEST_ENV_CAPTURE": str(home / "captured-env"),
         "ENTRYPOINT_TEST_REAL_PYTHON": resolver_python or sys.executable,
+        "ENTRYPOINT_TEST_CREDENTIAL_KEYS_AVAILABLE": "1" if credential_keys_available else "0",
     }
     if extra_env:
         env.update(extra_env)
@@ -344,6 +349,19 @@ def test_broken_resolver_falls_back_to_default_home(tmp_path: Path) -> None:
 # ── Credential env -> .env sync + scrub ─────────────────────────────────
 
 
+def test_credential_fallback_matches_authoritative_key_list() -> None:
+    """The emergency literal must change whenever the product list changes."""
+    from kiro_crew.config.loader import _CREDENTIAL_KEYS
+
+    script = ENTRYPOINT.read_text(encoding="utf-8")
+    match = re.search(r'^CRED_KEYS_FALLBACK="([A-Z0-9_ ]+)"$', script, re.MULTILINE)
+
+    assert match is not None, "entrypoint credential fallback literal is missing"
+    fallback_keys = match.group(1).split()
+    assert len(fallback_keys) == len(set(fallback_keys)), "fallback contains duplicate keys"
+    assert set(fallback_keys) == set(_CREDENTIAL_KEYS)
+
+
 def test_channel_credentials_move_to_env_file_and_leave_environ(tmp_path: Path) -> None:
     """Credentials delivered as container env must land in the product's
     .env file (0600) and be ABSENT from the environment the gateway is
@@ -372,6 +390,56 @@ def test_channel_credentials_move_to_env_file_and_leave_environ(tmp_path: Path) 
     assert "WECOM_SECRET" not in captured
     # The secret value itself must not be echoed to stdout/stderr (docker
     # logs are readable indefinitely).
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+
+
+def test_new_credential_keys_are_derived_and_scrubbed(tmp_path: Path) -> None:
+    """Keys added to the backend list are picked up without a shell edit."""
+    new_credentials = {
+        key: f"{key.lower()}-test-value"
+        for key in (
+            "MICROSOFT_APP_ID",
+            "MICROSOFT_APP_PASSWORD",
+            "MICROSOFT_APP_TENANT_ID",
+            "WEIXIN_TOKEN",
+        )
+    }
+    result = _run_entrypoint(
+        tmp_path,
+        probe_backend_available=False,
+        extra_env=new_credentials,
+    )
+    assert result.returncode == 0, result.stderr
+
+    env_file = tmp_path / ".kiro" / "crew" / ".env"
+    content = env_file.read_text(encoding="utf-8")
+    captured = (tmp_path / "captured-env").read_text(encoding="utf-8")
+    for key, value in new_credentials.items():
+        assert f"{key}={value}" in content
+        assert key not in captured
+        assert value not in result.stdout
+        assert value not in result.stderr
+
+
+def test_credential_fallback_still_scrubs_when_product_import_fails(
+    tmp_path: Path,
+) -> None:
+    """A broken import must fail safe rather than retain known credentials."""
+    secret = "weixin-token-test-value"
+    result = _run_entrypoint(
+        tmp_path,
+        probe_backend_available=False,
+        credential_keys_available=False,
+        extra_env={"WEIXIN_TOKEN": secret},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "using the built-in fallback" in result.stderr
+
+    env_file = tmp_path / ".kiro" / "crew" / ".env"
+    assert f"WEIXIN_TOKEN={secret}" in env_file.read_text(encoding="utf-8")
+    captured = (tmp_path / "captured-env").read_text(encoding="utf-8")
+    assert "WEIXIN_TOKEN" not in captured
     assert secret not in result.stdout
     assert secret not in result.stderr
 

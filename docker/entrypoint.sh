@@ -66,11 +66,18 @@ CONFIG="$ACTIVE_HOME/config.json"
 ENV_FILE="$ACTIVE_HOME/.env"
 
 # ── 1. Credential sync: env -> .env file, then scrub ─────────────────────
-# Keys mirror the product's credential key list (config/loader.py
-# _CREDENTIAL_KEYS). Replace-or-append line-wise so operator-added lines
-# and comments in .env survive; grep -v (not sed) avoids escaping issues
-# with arbitrary secret bytes.
-CRED_KEYS="SLACK_BOT_TOKEN SLACK_APP_TOKEN KIROCREW_OWNER_ID DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN WECOM_BOT_ID WECOM_SECRET WEBEX_BOT_TOKEN"
+# Derive keys from the product's authoritative credential list. The fallback
+# keeps a broken installation diagnosable instead of leaving credentials in the
+# gateway environment; a regression test pins it to _CREDENTIAL_KEYS so it
+# cannot silently drift. Replace-or-append line-wise so operator-added lines
+# and comments in .env survive; grep -v (not sed) avoids escaping issues with
+# arbitrary secret bytes.
+CRED_KEYS_FALLBACK="SLACK_APP_TOKEN SLACK_BOT_TOKEN KIROCREW_OWNER_ID WECOM_BOT_ID WECOM_SECRET TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN WEBEX_BOT_TOKEN MICROSOFT_APP_ID MICROSOFT_APP_PASSWORD MICROSOFT_APP_TENANT_ID WEIXIN_TOKEN"
+if ! CRED_KEYS=$(python3 -c 'from kiro_crew.config.loader import _CREDENTIAL_KEYS; print(" ".join(_CREDENTIAL_KEYS))' 2>/dev/null) || [ -z "$CRED_KEYS" ]; then
+    CRED_KEYS="$CRED_KEYS_FALLBACK"
+    echo "[entrypoint] WARNING: could not load the product credential key list;" \
+         "using the built-in fallback." >&2
+fi
 for KEY in $CRED_KEYS; do
     VAL=$(eval "printf '%s' \"\${$KEY:-}\"")
     if [ -n "$VAL" ]; then
