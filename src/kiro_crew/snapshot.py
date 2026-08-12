@@ -491,6 +491,41 @@ def _merge_memory(src_db: Path, dst_db: Path) -> None:
         conn.close()
 
 
+def _usable_cron_shape(parsed: object, path: Path) -> bool:
+    """Refuse a crons file that parsed but is not shaped like a cron file.
+
+    The merge looks ``jobs`` up on the result and calls ``.get`` on every
+    entry, so valid JSON of the wrong shape -- a top level that is not an
+    object, a ``jobs`` that is not a list, a job that is not an object, or a
+    present name that is not encodable text -- would raise TypeError,
+    AttributeError, or UnicodeEncodeError a line or two further down: the
+    same crash the read guard exists to prevent, just moved. Only the structure the merge itself relies on is
+    checked; the fields of a job are the cron loader's business, not this
+    one's. A missing ``jobs`` key keeps its existing meaning of "no jobs".
+    """
+    if not isinstance(parsed, dict):
+        print(f"  ⚠️  {path} is not a cron file — skipping cron merge")
+        return False
+    jobs = parsed.get("jobs", [])
+    if not isinstance(jobs, list) or not all(
+        isinstance(job, dict)
+        and (
+            "name" not in job
+            or (
+                isinstance(job["name"], str)
+                # json.loads accepts lone-surrogate escapes, and a present name
+                # is UTF-8 encoded when the import id is hashed: a surrogate
+                # would raise UnicodeEncodeError there, the same crash moved.
+                and not any("\ud800" <= ch <= "\udfff" for ch in job["name"])
+            )
+        )
+        for job in jobs
+    ):
+        print(f"  ⚠️  {path} has an unusable job list — skipping cron merge")
+        return False
+    return True
+
+
 def _merge_crons(src_path: Path, dst_path: Path) -> None:
     try:
         src = json.loads(src_path.read_text(encoding="utf-8"))
@@ -501,6 +536,8 @@ def _merge_crons(src_path: Path, dst_path: Path) -> None:
         dst = json.loads(dst_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         print(f"  ⚠️  Could not read {dst_path}: {exc} — skipping cron merge")
+        return
+    if not _usable_cron_shape(src, src_path) or not _usable_cron_shape(dst, dst_path):
         return
     existing = {j.get("name") for j in dst.get("jobs", [])}
     imported = 0
