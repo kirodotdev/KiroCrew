@@ -86,18 +86,65 @@ jobs:
           head_sha="$WR_HEAD_SHA"
           if [ -z "$head_sha" ]; then echo "::error::no workflow_run head_sha"; exit 1; fi
 
+          # Bounded retry for the read-only resolver queries below. A single-shot
+          # `gh api` aborts on a transient TLS / 5xx / rate-limit error, and this
+          # lane then reported that as "no such PR" -- the wrong cause, on a PR
+          # that exists. Mirrors the gh_retry convention pr-readiness.yml adopted
+          # for the same single-shot failure mode (#2753). stderr is deliberately
+          # NOT discarded any more, so a failing query says why.
+          gh_read() {
+            local attempt rc=1 out
+            for attempt in 1 2 3; do
+              if out="$("$@")"; then
+                printf '%s' "$out"
+                return 0
+              else
+                # Capture INSIDE the else: after `fi`, `$?` is the status of the
+                # whole if-statement, which is 0 when a false condition has no
+                # else branch -- that would report a failed query as success.
+                rc=$?
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "resolver query attempt $attempt failed; retrying" >&2
+                sleep $((attempt * 5))
+              fi
+            done
+            return "$rc"
+          }
+
           # Resolve the PR by matching the open PR whose head SHA equals the
           # trigger head_sha (workflow_run.pull_requests is empty for forks).
-          pr="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-            --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty" 2>/dev/null || true)"
+          #
+          # An empty result has TWO causes that need OPPOSITE reporting, and
+          # collapsing them into one message made this abort unfalsifiable: the
+          # same text and the same exit 1 were emitted whether the query FAILED
+          # or whether it SUCCEEDED and matched nothing, while `2>/dev/null`
+          # discarded the only evidence of which.
+          #   * query FAILED -> nothing is known about this head. Retried above;
+          #     if it still fails, say the QUERY failed and fail closed.
+          #   * query SUCCEEDED with no match -> the push was superseded, or its
+          #     PR closed, while CI was queued. There is nothing to review.
+          # Both still exit 1, so the fail-closed finalize step is unchanged and
+          # no verdict is withheld; what changes is that the log names the cause.
+          if ! pr="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+            --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty")"; then
+            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
+            exit 1
+          fi
           if [ -z "$pr" ]; then
-            echo "::error::could not resolve an open PR whose head SHA is $head_sha"
+            echo "::error::no open PR has head $head_sha - superseded or closed while CI was queued; nothing to review"
             exit 1
           fi
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
-          base_sha="$(gh api "repos/$REPO/pulls/$pr" --jq '.base.sha' 2>/dev/null || true)"
-          if [ -z "$base_sha" ]; then echo "::error::could not read base.sha for PR #$pr"; exit 1; fi
+          if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
+            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
+            exit 1
+          fi
+          if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
+            echo "::error::PR #$pr reported an empty base.sha; failing closed"
+            exit 1
+          fi
 
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
