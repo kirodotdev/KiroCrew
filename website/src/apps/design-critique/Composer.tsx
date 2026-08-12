@@ -36,8 +36,8 @@ export default function Composer(p: Props) {
   const canStart = !busy && (staged.length > 0 || !!refText.trim())
   const det = detectKind(refText)
   const startLabel = staged.length > 1
-    ? 'Critique this flow · ' + staged.length + ' screens'
-    : staged.length === 1 ? 'Critique this screen'
+    ? i18nT('apps.designCritique.composer.critique_this_flow_count_screens', { count: staged.length })
+    : staged.length === 1 ? i18nT('apps.designCritique.composer.critique_this_screen')
     : refText.trim() ? 'Critique ' + (KIND_LABEL[(det || {}).kind as string] || 'this') : 'Critique'
 
   // What did they paste? Worked out live so we can say it back before they commit.

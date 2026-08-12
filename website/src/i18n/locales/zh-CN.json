@@ -1143,6 +1143,8 @@
       "composer": {
         "add_screens": "添加界面",
         "clear_all": "全部清除",
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "拖入截图，或点击浏览",
         "fix_the_link": "修正链接",
         "move_earlier": "前移",
@@ -1251,11 +1253,14 @@
         "page_label": "设计评审"
       },
       "scopingPicker": {
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "拖动重新排序",
         "move_earlier": "前移",
         "move_later": "后移",
         "optional_brief_who_is_it_for_and_what_is_the_mai": "可选说明：面向谁，主要任务是什么？",
         "optional_who_is_it_for_and_what_s_the_main_task": "可选：面向谁，主要任务是什么？",
+        "pick_at_least_one_screen": "Pick at least one screen",
         "screens": "界面",
         "start_over": "重新开始",
         "suggested_flows": "推荐流程",

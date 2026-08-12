@@ -1172,6 +1172,8 @@
       "composer": {
         "add_screens": "স্ক্রিন যোগ করুন",
         "clear_all": "সব মুছুন",
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "স্ক্রিনশট ড্রপ করুন — বা ব্রাউজ করতে ক্লিক করুন",
         "fix_the_link": "লিঙ্কটি ঠিক করুন",
         "move_earlier": "আগে সরান",
@@ -1280,11 +1282,14 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "ক্রম পাল্টাতে টেনে আনুন",
         "move_earlier": "আগে সরান",
         "move_later": "পরে সরান",
         "optional_brief_who_is_it_for_and_what_is_the_mai": "ঐচ্ছিক ব্রিফ: এটি কার জন্য, এবং মূল কাজটি কী?",
         "optional_who_is_it_for_and_what_s_the_main_task": "ঐচ্ছিক: এটি কার জন্য, এবং মূল কাজটি কী?",
+        "pick_at_least_one_screen": "Pick at least one screen",
         "screens": "স্ক্রিন",
         "start_over": "আবার শুরু করুন",
         "suggested_flows": "প্রস্তাবিত ফ্লো",

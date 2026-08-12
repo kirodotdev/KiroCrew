@@ -1172,6 +1172,8 @@
       "composer": {
         "add_screens": "स्क्रीन जोड़ें",
         "clear_all": "सभी हटाएँ",
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "स्क्रीनशॉट यहाँ छोड़ें — या ब्राउज़ करने के लिए क्लिक करें",
         "fix_the_link": "लिंक ठीक करें",
         "move_earlier": "पहले ले जाएँ",
@@ -1280,11 +1282,14 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "क्रम बदलने के लिए खींचें",
         "move_earlier": "पहले ले जाएँ",
         "move_later": "बाद में ले जाएँ",
         "optional_brief_who_is_it_for_and_what_is_the_mai": "वैकल्पिक ब्रीफ़: यह किसके लिए है, और मुख्य काम क्या है?",
         "optional_who_is_it_for_and_what_s_the_main_task": "वैकल्पिक: यह किसके लिए है, और मुख्य काम क्या है?",
+        "pick_at_least_one_screen": "Pick at least one screen",
         "screens": "स्क्रीन",
         "start_over": "फिर से शुरू करें",
         "suggested_flows": "सुझाए गए फ़्लो",

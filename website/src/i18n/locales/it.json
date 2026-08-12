@@ -1201,6 +1201,8 @@
       "composer": {
         "add_screens": "Aggiungi schermate",
         "clear_all": "Cancella tutto",
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "Trascina gli screenshot — o clicca per sfogliare",
         "fix_the_link": "Correggi il link",
         "move_earlier": "Sposta prima",
@@ -1309,11 +1311,14 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "Trascina per riordinare",
         "move_earlier": "Sposta prima",
         "move_later": "Sposta dopo",
         "optional_brief_who_is_it_for_and_what_is_the_mai": "Brief facoltativo: a chi è rivolto e qual è il compito principale?",
         "optional_who_is_it_for_and_what_s_the_main_task": "Facoltativo: a chi è rivolto e qual è il compito principale?",
+        "pick_at_least_one_screen": "Pick at least one screen",
         "screens": "Schermate",
         "start_over": "Ricomincia",
         "suggested_flows": "Flussi suggeriti",
