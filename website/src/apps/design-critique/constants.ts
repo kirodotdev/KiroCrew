@@ -109,16 +109,16 @@ export const KIND_LABEL_KEY: Record<string, string> = {
  * persisted job record, so a stored `'toString'` would otherwise resolve to an
  * Object.prototype member and hand a function to i18next.
  *
- * NOT yet wired — the three UI call sites still read `KIND_LABEL` directly, and
- * two of them are string concatenations that this function alone cannot fix:
+ * PARTLY wired. The bare render in `Composer.tsx` now calls this
+ * function: a lone bold token carries no English scaffolding, so the noun
+ * could be swapped on its own without inventing a sentence key. The other two
+ * call sites are string concatenations that this function alone cannot fix:
  *
- *   - `Composer.tsx:143`   `{KIND_LABEL[kind] || ''}` — a bare render; swap to
- *                          `kindLabel(kind)` and it is done.
  *   - `Composer.tsx:41`    `'Critique ' + (KIND_LABEL[kind] || 'this')`
- *   - `DesignCritiquePage.tsx:1008`
+ *   - `DesignCritiquePage.tsx:1005`
  *                          `'A ' + (KIND_LABEL[kind] || 'design') + ' — …'`
  *
- * The last two need a WHOLE-SENTENCE key with the kind interpolated
+ * Those two need a WHOLE-SENTENCE key with the kind interpolated
  * (`i18nT('…critique_kind', { kind: kindLabel(kind) })`). Dropping a localised
  * noun into those English fragments would produce a half-translated sentence and
  * hard-code English word order.

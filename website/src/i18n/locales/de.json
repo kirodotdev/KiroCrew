@@ -1180,6 +1180,7 @@
         "remove": "Entfernen",
         "send_screenshots": "Screenshots senden",
         "try_again": "Erneut versuchen",
+        "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "Stattdessen einen lokalen Ordner verwenden"
       },
       "constants": {

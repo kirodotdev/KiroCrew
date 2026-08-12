@@ -1151,6 +1151,7 @@
         "remove": "삭제",
         "send_screenshots": "스크린샷 보내기",
         "try_again": "다시 시도",
+        "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "대신 로컬 폴더 사용"
       },
       "constants": {

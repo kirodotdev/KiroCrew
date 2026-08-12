@@ -743,6 +743,7 @@
         "remove": "Remove",
         "send_screenshots": "Send screenshots",
         "try_again": "Try again",
+        "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "Use a local folder instead"
       },
       "designCritiquePage": {

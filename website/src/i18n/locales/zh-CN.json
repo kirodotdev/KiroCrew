@@ -1151,6 +1151,7 @@
         "remove": "移除",
         "send_screenshots": "发送截图",
         "try_again": "重试",
+        "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "改用本地文件夹"
       },
       "constants": {

@@ -1209,6 +1209,7 @@
         "remove": "Eliminar",
         "send_screenshots": "Enviar capturas",
         "try_again": "Reintentar",
+        "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "Usar una carpeta local en su lugar"
       },
       "constants": {

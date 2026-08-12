@@ -1,6 +1,6 @@
 import type { RefObject } from 'react'
 import { Upload, Plus, X, ChevronLeft, ChevronRight, PencilRuler } from 'lucide-react'
-import { KIND_LABEL } from './constants'
+import { KIND_LABEL, kindLabel } from './constants'
 import { detectKind, recognise } from './utils'
 import { S } from './styles'
 import type { Blocked, StagedItem } from './types'
@@ -140,7 +140,7 @@ export default function Composer(p: Props) {
         </button>
         {recog ? (
           <p style={{ ...S.cardHint, color: recog.ok ? 'var(--muted)' : 'var(--error, #e5484d)' }}>
-            <b style={{ color: recog.ok ? 'var(--text)' : 'inherit' }}>{recog.ok ? (KIND_LABEL[(det || {}).kind as string] || '') : 'Unrecognised'}</b>
+            <b style={{ color: recog.ok ? 'var(--text)' : 'inherit' }}>{recog.ok ? kindLabel((det || {}).kind as string) : i18nT('apps.designCritique.composer.unrecognised')}</b>
             {recog.ok ? ' · ' : ' — '}
             {recog.text.replace(/^[^—]*— /, '')}
           </p>

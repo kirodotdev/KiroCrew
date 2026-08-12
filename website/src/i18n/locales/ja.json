@@ -1151,6 +1151,7 @@
         "remove": "削除",
         "send_screenshots": "スクリーンショットを送信",
         "try_again": "もう一度試す",
+        "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "代わりにローカルフォルダーを使用"
       },
       "constants": {

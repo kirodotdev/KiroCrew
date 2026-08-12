@@ -1238,6 +1238,7 @@
         "remove": "Удалить",
         "send_screenshots": "Отправить скриншоты",
         "try_again": "Повторить",
+        "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "Использовать локальную папку"
       },
       "constants": {
