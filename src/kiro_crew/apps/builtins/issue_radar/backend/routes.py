@@ -2231,13 +2231,36 @@ def _item_kind(raw: object) -> str | None:
     return raw if isinstance(raw, str) and raw in provider.ITEM_KINDS else None
 
 
+def _record_verb(raw: object) -> tuple[str | None, web.Response | None]:
+    """Validate the record's session-verb field, absent meaning the item's primary
+    record. Returns ``(verb, error)`` -- the same shape as ``_parse_item_number``,
+    because ``None`` is a VALID verb here and so cannot double as "invalid".
+
+    An unknown verb is refused rather than folded to the primary record: the whole
+    point of the field is that two verbs on one item must not share a ``slot_key``,
+    so silently ignoring a typo would resume the wrong session -- the exact defect
+    the dimension exists to prevent.
+    """
+    if raw is None or raw == "":
+        return None, None
+    if isinstance(raw, str) and raw in store.RECORD_VERBS:
+        return raw, None
+    allowed = ", ".join(sorted(store.RECORD_VERBS))
+    return None, web.json_response(
+        {"error": f"'verb' must be omitted or one of: {allowed}"}, status=400
+    )
+
+
 async def _handle_get_investigation(request: web.Request) -> web.Response:
-    """GET /investigation?owner=<o>&repo=<r>&number=<n>[&kind=issue|pull] — the
-    local investigation record for one item (session link + status + findings), or
-    ``null`` when it has never been investigated. Read-only, no permission gate.
+    """GET /investigation?owner=<o>&repo=<r>&number=<n>[&kind=issue|pull][&verb=<v>]
+    — the local investigation record for one item (session link + status +
+    findings), or ``null`` when it has never been investigated. Read-only, no
+    permission gate.
 
     ``kind`` defaults to ``issue`` and only changes the answer on GitLab, where
-    issues and merge requests have independent number sequences."""
+    issues and merge requests have independent number sequences. ``verb`` selects
+    a per-session-verb record on the same item (``store.RECORD_VERBS``); omitted,
+    the answer is the item's primary record."""
     key = _key_from_request(request)
     owner, repo = key.owner, key.repo
     number_raw = (request.query.get("number") or "").strip()
@@ -2255,26 +2278,41 @@ async def _handle_get_investigation(request: web.Request) -> web.Response:
     item_kind = _item_kind(request.query.get("kind"))
     if item_kind is None:
         return web.json_response({"error": "'kind' must be 'issue' or 'pull'"}, status=400)
+    verb, verb_error = _record_verb(request.query.get("verb"))
+    if verb_error is not None:
+        return verb_error
 
     record = await _st(
         key, store.read_investigation, owner, repo, number,
-        kind=provider.investigation_kind(key, item_kind),
+        kind=provider.investigation_kind(key, item_kind), verb=verb,
     )
     return web.json_response({
-        **_identity(key), "number": number, "kind": item_kind,
+        **_identity(key), "number": number, "kind": item_kind, "verb": verb,
         "investigation": record,
     })
 
 
 async def _handle_put_investigation(request: web.Request) -> web.Response:
-    """PUT /investigation {"owner","repo","number", kind?, slot_key?, folder_id?,
-    status?, findings?} — upsert one item's investigation record.
+    """PUT /investigation {"owner","repo","number", kind?, verb?, slot_key?,
+    folder_id?, status?, findings?} — upsert one item's investigation record.
 
     ``kind`` (``issue`` / ``pull``, default ``issue``) is part of the record's
     identity on GitLab, where a merge request's number is drawn from a different
     sequence than an issue's. An agent PUT that omits it therefore addresses the
     ISSUE with that number -- which is why the seed prompts emit it (see
     ``lib/links.ts:recordIdentityJson``).
+
+    ``verb`` (one of ``store.RECORD_VERBS``) addresses the record for one session
+    verb on that item, so two verbs running concurrently do not overwrite each
+    other's ``slot_key``. Omitted -- as every agent-side write leaves it -- the
+    target is the item's primary record, which is where findings belong.
+
+    ``expected_slot_key`` makes a session-link write a compare-and-set against the
+    stored link, answering 409 with the live record when it has moved. A re-entry
+    guard lives in one browser tab and cannot see a click in another, so without it
+    two tabs both read "no session", both create one, and the later write replaces
+    the first tab's link -- leaving an agent running that nothing points at. Omit it
+    to keep last-writer-wins.
 
     Called by the Investigate button to link the freshly-created chat session
     (``slot_key`` + ``folder_id``), and again on resume to bump the "last opened"
@@ -2319,14 +2357,46 @@ async def _handle_put_investigation(request: web.Request) -> web.Response:
     item_kind = _item_kind(body.get("kind"))
     if item_kind is None:
         return web.json_response({"error": "'kind' must be 'issue' or 'pull'"}, status=400)
+    verb, verb_error = _record_verb(body.get("verb"))
+    if verb_error is not None:
+        return verb_error
 
     patch = {k: body[k] for k in ("slot_key", "folder_id", "status", "findings") if k in body}
-    saved = await _st(
-        key, store.write_investigation, owner, repo, number, patch,
-        kind=provider.investigation_kind(key, item_kind),
-    )
+    # A session-link write may claim the record: it proceeds only if the stored
+    # link still matches what the caller last saw. A re-entry guard is per-tab, so
+    # two tabs would otherwise both read "no session", both create one, and the
+    # later write would replace the first tab's link, leaving an agent running that
+    # nothing points at. Absent -- as every agent-side findings write leaves it --
+    # the write stays last-writer-wins.
+    claim: object = store._NO_CLAIM
+    if "expected_slot_key" in body:
+        raw_claim = body.get("expected_slot_key")
+        if raw_claim is not None and not isinstance(raw_claim, str):
+            return web.json_response(
+                {"error": "'expected_slot_key' must be a string or null"}, status=400
+            )
+        claim = raw_claim
+    try:
+        saved = await _st(
+            key, store.write_investigation, owner, repo, number, patch,
+            kind=provider.investigation_kind(key, item_kind), verb=verb,
+            expected_slot_key=claim,
+        )
+    except store.SlotClaimConflict as conflict:
+        # 409 carries the LIVE record so the caller can adopt the winner's session
+        # rather than starting a second one.
+        return web.json_response(
+            {
+                "error": "this item's session link changed since it was read",
+                "code": "investigation_slot_conflict",
+                **_identity(key), "number": number, "kind": item_kind, "verb": verb,
+                "investigation": conflict.record or None,
+            },
+            status=409,
+        )
     return web.json_response({
-        **_identity(key), "number": number, "kind": item_kind, "investigation": saved,
+        **_identity(key), "number": number, "kind": item_kind, "verb": verb,
+        "investigation": saved,
     })
 
 

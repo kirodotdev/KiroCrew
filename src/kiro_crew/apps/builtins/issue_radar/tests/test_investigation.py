@@ -186,5 +186,198 @@ class TestInvestigationStore(unittest.TestCase):
         self.assertIsNone(store.read_investigation("o", "r", 7, self.tmp))
 
 
+class TestRecordVerbNamespace(unittest.TestCase):
+    """One item can carry two concurrent session verbs.
+
+    The record holds exactly one ``slot_key``, so reviewing a change request and
+    answering the feedback it received must not share a record: the second click
+    would resume the first verb's session and overwrite its link. ``verb`` is
+    orthogonal to ``kind`` -- ``kind`` says which number sequence the item comes
+    from, ``verb`` says which job is being done on it.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_verb_record_does_not_share_the_primary_records_session_link(self):
+        store.write_investigation("o", "r", 5, {"slot_key": "review-slot"}, root=self.tmp)
+        store.write_investigation(
+            "o", "r", 5, {"slot_key": "respond-slot"}, root=self.tmp, verb="respond"
+        )
+
+        primary = store.read_investigation("o", "r", 5, self.tmp)
+        respond = store.read_investigation("o", "r", 5, self.tmp, verb="respond")
+        assert primary is not None and respond is not None
+        self.assertEqual(primary["slot_key"], "review-slot")
+        self.assertEqual(respond["slot_key"], "respond-slot")
+
+    def test_the_primary_record_keeps_the_historical_filename(self):
+        # An omitted verb must resolve to the file every existing record already
+        # lives in, so nothing needs migrating.
+        self.assertEqual(
+            store.investigation_path("o", "r", 5, self.tmp).name, "investigation-5.json"
+        )
+        self.assertEqual(
+            store.investigation_path("o", "r", 5, self.tmp, verb="respond").name,
+            "investigation-respond-5.json",
+        )
+
+    def test_a_verb_record_is_absent_until_written(self):
+        store.write_investigation("o", "r", 5, {"slot_key": "review-slot"}, root=self.tmp)
+        self.assertIsNone(store.read_investigation("o", "r", 5, self.tmp, verb="respond"))
+
+    def test_an_unknown_verb_is_refused_rather_than_folded(self):
+        # Folding an unrecognized verb to the primary record would silently produce
+        # the collision the dimension exists to prevent, so the store fails closed
+        # behind the route validation.
+        with self.assertRaises(ValueError):
+            store.investigation_path("o", "r", 5, self.tmp, verb="reviwe")
+        with self.assertRaises(ValueError):
+            store.write_investigation("o", "r", 5, {}, root=self.tmp, verb="reviwe")
+        with self.assertRaises(ValueError):
+            store.read_investigation("o", "r", 5, self.tmp, verb="reviwe")
+
+    def test_a_verb_write_leaves_no_stray_lock_beside_the_primary_record(self):
+        # The write resolves the path three times (lock, read-back, atomic write).
+        # If any one of them drops the verb, the record splits across two files.
+        store.write_investigation(
+            "o", "r", 5, {"slot_key": "respond-slot"}, root=self.tmp, verb="respond"
+        )
+        self.assertFalse(store.investigation_path("o", "r", 5, self.tmp).is_file())
+        self.assertTrue(
+            store.investigation_path("o", "r", 5, self.tmp, verb="respond").is_file()
+        )
+
+    def test_the_write_lock_is_per_record(self):
+        # A lock shared with the primary record would serialize two independent
+        # records against each other, so the lock's identity tracks the record's.
+        store.write_investigation("o", "r", 5, {}, root=self.tmp, verb="respond")
+        locks = {p.name for p in self.tmp.rglob("*.lock")}
+        self.assertIn("investigation-respond-5.lock", locks)
+        self.assertNotIn("investigation-5.lock", locks)
+
+    def test_a_verb_write_does_not_inherit_the_primary_records_fields(self):
+        # The read-back that feeds the merge must target the SAME record the write
+        # lands in. Reading the primary record here would leak one verb's findings
+        # and folder into the other -- invisible in any field the patch overwrites,
+        # which is why this asserts on fields the patch omits.
+        store.write_investigation(
+            "o", "r", 5,
+            {
+                "slot_key": "review-slot",
+                "folder_id": "review-folder",
+                "findings": {"verdict": "review-verdict"},
+            },
+            root=self.tmp,
+        )
+        respond = store.write_investigation(
+            "o", "r", 5, {"slot_key": "respond-slot"}, root=self.tmp, verb="respond"
+        )
+        self.assertEqual(respond["slot_key"], "respond-slot")
+        self.assertIsNone(respond["folder_id"])
+        self.assertIsNone(respond["findings"])
+
+    def test_findings_merge_independently_per_verb(self):
+        store.write_investigation(
+            "o", "r", 5, {"findings": {"verdict": "primary-verdict"}}, root=self.tmp
+        )
+        store.write_investigation(
+            "o", "r", 5, {"findings": {"verdict": "respond-verdict"}},
+            root=self.tmp, verb="respond",
+        )
+        primary = store.read_investigation("o", "r", 5, self.tmp)
+        respond = store.read_investigation("o", "r", 5, self.tmp, verb="respond")
+        assert primary is not None and respond is not None
+        self.assertEqual(primary["findings"]["verdict"], "primary-verdict")
+        self.assertEqual(respond["findings"]["verdict"], "respond-verdict")
+
+    def test_a_verb_record_is_removed_with_the_repo_cache(self):
+        store.add_connected_repo("o", "r", root=self.tmp)
+        store.write_investigation("o", "r", 7, {"slot_key": "s"}, root=self.tmp, verb="respond")
+        store.remove_connected_repo("o", "r", root=self.tmp)
+        self.assertIsNone(store.read_investigation("o", "r", 7, self.tmp, verb="respond"))
+
+
+class TestSlotClaim(unittest.TestCase):
+    """Claiming the session link is how two browser tabs stop double-creating.
+
+    A re-entry guard lives in one tab's memory, so it cannot see a click in
+    another. Without a compare-and-set both tabs read "no session", both create
+    one, and the later write replaces the first tab's link -- leaving an agent
+    running that nothing points at.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_claiming_an_unclaimed_record_succeeds(self):
+        rec = store.write_investigation(
+            "o", "r", 5, {"slot_key": "tab-one"}, root=self.tmp, expected_slot_key=None,
+        )
+        self.assertEqual(rec["slot_key"], "tab-one")
+
+    def test_the_second_tab_is_refused_and_told_who_won(self):
+        store.write_investigation(
+            "o", "r", 5, {"slot_key": "tab-one"}, root=self.tmp, expected_slot_key=None,
+        )
+        with self.assertRaises(store.SlotClaimConflict) as caught:
+            store.write_investigation(
+                "o", "r", 5, {"slot_key": "tab-two"}, root=self.tmp, expected_slot_key=None,
+            )
+        # The loser needs the winner's link to adopt that session instead.
+        self.assertEqual(caught.exception.record["slot_key"], "tab-one")
+        stored = store.read_investigation("o", "r", 5, self.tmp)
+        assert stored is not None
+        self.assertEqual(stored["slot_key"], "tab-one")
+
+    def test_naming_the_stale_link_allows_a_deliberate_replacement(self):
+        # Resuming a session whose slot was deleted legitimately rewrites the link;
+        # the caller proves it is not racing by naming the value it saw.
+        store.write_investigation(
+            "o", "r", 5, {"slot_key": "dead-slot"}, root=self.tmp, expected_slot_key=None,
+        )
+        rec = store.write_investigation(
+            "o", "r", 5, {"slot_key": "fresh-slot"}, root=self.tmp,
+            expected_slot_key="dead-slot",
+        )
+        self.assertEqual(rec["slot_key"], "fresh-slot")
+
+    def test_a_cleared_link_compares_equal_to_an_absent_one(self):
+        store.write_investigation("o", "r", 5, {"slot_key": ""}, root=self.tmp)
+        rec = store.write_investigation(
+            "o", "r", 5, {"slot_key": "tab-one"}, root=self.tmp, expected_slot_key=None,
+        )
+        self.assertEqual(rec["slot_key"], "tab-one")
+
+    def test_omitting_the_claim_keeps_last_writer_wins(self):
+        # Every agent-side findings write omits it and must never fail on somebody
+        # else's session link.
+        store.write_investigation(
+            "o", "r", 5, {"slot_key": "tab-one"}, root=self.tmp, expected_slot_key=None,
+        )
+        rec = store.write_investigation(
+            "o", "r", 5, {"findings": {"verdict": "a dupe"}}, root=self.tmp,
+        )
+        self.assertEqual(rec["slot_key"], "tab-one")
+        self.assertEqual(rec["findings"]["verdict"], "a dupe")
+
+    def test_the_claim_is_scoped_to_the_verb_record(self):
+        store.write_investigation(
+            "o", "r", 5, {"slot_key": "review-slot"}, root=self.tmp, expected_slot_key=None,
+        )
+        # The respond record is a different file, so its first claim is unclaimed.
+        rec = store.write_investigation(
+            "o", "r", 5, {"slot_key": "respond-slot"}, root=self.tmp,
+            verb="respond", expected_slot_key=None,
+        )
+        self.assertEqual(rec["slot_key"], "respond-slot")
+
+
 if __name__ == "__main__":
     unittest.main()

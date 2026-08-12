@@ -1545,6 +1545,36 @@ class TestItemKind(unittest.TestCase):
             self.assertIsNone(routes._item_kind(raw))
 
 
+class TestRecordVerb(unittest.TestCase):
+    """``None`` is a VALID verb (the item's primary record), so this returns an
+    ``(verb, error)`` pair rather than using None to mean invalid."""
+
+    def test_absent_and_empty_mean_the_primary_record(self):
+        for raw in (None, ""):
+            verb, error = routes._record_verb(raw)
+            self.assertIsNone(verb)
+            self.assertIsNone(error)
+
+    def test_the_known_verbs_pass_through(self):
+        for verb in store.RECORD_VERBS:
+            self.assertEqual(routes._record_verb(verb), (verb, None))
+
+    def test_an_unknown_verb_is_refused_not_folded(self):
+        # Folding a typo to the primary record would resume the wrong session,
+        # which is the defect the dimension exists to prevent.
+        for raw in ("Respond", "reviwe", 7, [], True):
+            verb, error = routes._record_verb(raw)
+            self.assertIsNone(verb)
+            assert error is not None
+            self.assertEqual(error.status, 400)
+
+    def test_the_refusal_names_the_allowed_verbs(self):
+        _, error = routes._record_verb("reviwe")
+        assert error is not None
+        for verb in store.RECORD_VERBS:
+            self.assertIn(verb, _body(error)["error"])
+
+
 class TestPutInvestigationRoute(unittest.IsolatedAsyncioTestCase):
     """Local triage state only — nothing is written to the provider. The number
     becomes part of the record's FILENAME, so the bound matters more here than on
@@ -1618,6 +1648,93 @@ class TestPutInvestigationRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(write.call_args[0][3], {})
         self.assertEqual(response.status, 200)
 
+    async def test_an_unknown_verb_is_400(self):
+        with _connected(), mock.patch.object(store, "write_investigation") as write:
+            response = await routes._handle_put_investigation(
+                _json_request("PUT", "investigation", {**self.GOOD, "verb": "reviwe"})
+            )
+        self.assertEqual(response.status, 400)
+        write.assert_not_called()
+
+    async def test_a_known_verb_selects_that_verbs_record(self):
+        with _connected(), mock.patch.object(
+            store, "write_investigation", return_value={}
+        ) as write:
+            response = await routes._handle_put_investigation(
+                _json_request(
+                    "PUT", "investigation", {**self.GOOD, "verb": "respond", "slot_key": "s1"}
+                )
+            )
+        self.assertEqual(write.call_args.kwargs["verb"], "respond")
+        self.assertEqual(_body(response)["verb"], "respond")
+
+    async def test_omitting_the_verb_targets_the_primary_record(self):
+        # Every agent-side write goes through the MCP tool, which sends no verb.
+        # Findings therefore land on the item's primary record, not a verb record.
+        with _connected(), mock.patch.object(
+            store, "write_investigation", return_value={}
+        ) as write:
+            response = await routes._handle_put_investigation(
+                _json_request("PUT", "investigation", {**self.GOOD, "findings": "a dupe"})
+            )
+        self.assertIsNone(write.call_args.kwargs["verb"])
+        self.assertIsNone(_body(response)["verb"])
+
+
+class TestPutInvestigationSlotClaim(unittest.IsolatedAsyncioTestCase):
+    """A session-link write may claim the record, so two browser tabs cannot both
+    create a session and leave one of the agents unreferenced."""
+
+    GOOD = {"owner": "o", "repo": "r", "number": 7}
+
+    async def test_the_claim_is_threaded_to_the_store(self):
+        with _connected(), mock.patch.object(
+            store, "write_investigation", return_value={}
+        ) as write:
+            await routes._handle_put_investigation(
+                _json_request("PUT", "investigation", {
+                    **self.GOOD, "slot_key": "tab-one", "expected_slot_key": None,
+                })
+            )
+        self.assertIsNone(write.call_args.kwargs["expected_slot_key"])
+
+    async def test_omitting_the_claim_leaves_last_writer_wins(self):
+        # The MCP findings write must not start failing on someone else's session.
+        with _connected(), mock.patch.object(
+            store, "write_investigation", return_value={}
+        ) as write:
+            await routes._handle_put_investigation(
+                _json_request("PUT", "investigation", {**self.GOOD, "findings": "a dupe"})
+            )
+        self.assertIs(write.call_args.kwargs["expected_slot_key"], store._NO_CLAIM)
+
+    async def test_a_lost_race_is_409_carrying_the_winning_record(self):
+        winner = {"owner": "o", "repo": "r", "number": 7, "slot_key": "tab-one"}
+        with _connected(), mock.patch.object(
+            store, "write_investigation", side_effect=store.SlotClaimConflict(winner)
+        ):
+            response = await routes._handle_put_investigation(
+                _json_request("PUT", "investigation", {
+                    **self.GOOD, "slot_key": "tab-two", "expected_slot_key": None,
+                })
+            )
+        self.assertEqual(response.status, 409)
+        payload = _body(response)
+        self.assertEqual(payload["code"], "investigation_slot_conflict")
+        # Without the winner's link the loser cannot adopt that session and would
+        # start a second one, which is the whole defect.
+        self.assertEqual(payload["investigation"]["slot_key"], "tab-one")
+
+    async def test_a_non_string_claim_is_400_and_writes_nothing(self):
+        with _connected(), mock.patch.object(store, "write_investigation") as write:
+            response = await routes._handle_put_investigation(
+                _json_request("PUT", "investigation", {
+                    **self.GOOD, "expected_slot_key": 7,
+                })
+            )
+        self.assertEqual(response.status, 400)
+        write.assert_not_called()
+
 
 class TestGetInvestigationRoute(unittest.IsolatedAsyncioTestCase):
     async def test_missing_query_parameters_are_400(self):
@@ -1641,6 +1758,31 @@ class TestGetInvestigationRoute(unittest.IsolatedAsyncioTestCase):
         payload = _body(response)
         self.assertIsNone(payload["investigation"])
         self.assertEqual(payload["kind"], "issue")
+        self.assertIsNone(payload["verb"])
+
+    async def test_an_unknown_verb_is_400_and_reads_nothing(self):
+        with _connected(), mock.patch.object(store, "read_investigation") as read:
+            response = await routes._handle_get_investigation(
+                _get("investigation", {
+                    "owner": "o", "repo": "r", "number": "7", "verb": "reviwe",
+                })
+            )
+        self.assertEqual(response.status, 400)
+        read.assert_not_called()
+
+    async def test_a_known_verb_reads_that_verbs_record(self):
+        with _connected(), mock.patch.object(
+            store, "read_investigation", return_value={"slot_key": "respond-slot"}
+        ) as read:
+            response = await routes._handle_get_investigation(
+                _get("investigation", {
+                    "owner": "o", "repo": "r", "number": "7", "verb": "respond",
+                })
+            )
+        self.assertEqual(read.call_args.kwargs["verb"], "respond")
+        payload = _body(response)
+        self.assertEqual(payload["verb"], "respond")
+        self.assertEqual(payload["investigation"]["slot_key"], "respond-slot")
 
 
 # ── remaining guards on the list, tagging and bulk-apply routes ──────────────

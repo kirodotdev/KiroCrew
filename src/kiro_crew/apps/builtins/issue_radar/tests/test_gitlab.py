@@ -843,6 +843,42 @@ class TestInvestigationNamespace(unittest.TestCase):
         self.assertEqual(issue_record["slot_key"], "issue-slot")
         self.assertEqual(mr_record["slot_key"], "mr-slot")
 
+    def test_a_verb_record_is_orthogonal_to_the_kind_namespace(self):
+        # A GitLab merge request being ANSWERED is a third distinct record: the
+        # kind namespace and the session verb compose rather than override, so
+        # neither the issue's record nor the MR's own primary record is touched.
+        gl = provider.key_from_parts("group", "project", "gitlab", "gitlab.com")
+        issue_kind = provider.investigation_kind(gl, "issue")
+        mr_kind = provider.investigation_kind(gl, "pull")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            names = {
+                store.investigation_path("group", "project", 5, root, kind=issue_kind).name,
+                store.investigation_path("group", "project", 5, root, kind=mr_kind).name,
+                store.investigation_path(
+                    "group", "project", 5, root, kind=mr_kind, verb="respond"
+                ).name,
+            }
+            self.assertEqual(len(names), 3, names)
+            self.assertIn("investigation-mr-respond-5.json", names)
+
+            store.write_investigation(
+                "group", "project", 5, {"slot_key": "mr-slot"}, root=root, kind=mr_kind
+            )
+            store.write_investigation(
+                "group", "project", 5, {"slot_key": "mr-respond-slot"},
+                root=root, kind=mr_kind, verb="respond",
+            )
+            mr_record = store.read_investigation("group", "project", 5, root, kind=mr_kind)
+            respond_record = store.read_investigation(
+                "group", "project", 5, root, kind=mr_kind, verb="respond"
+            )
+
+        assert mr_record is not None and respond_record is not None
+        self.assertEqual(mr_record["slot_key"], "mr-slot")
+        self.assertEqual(respond_record["slot_key"], "mr-respond-slot")
+
     def test_the_issue_record_keeps_the_legacy_path_on_gitlab_too(self):
         # Only the namespace that has never been written to changes, so a GitLab
         # issue record written before this fix is still found.

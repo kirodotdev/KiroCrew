@@ -1548,6 +1548,22 @@ def apply_state_change_to_caches(
 
 _INVESTIGATION_STATUSES = ("investigating", "resolved", "archived")
 
+# A second SESSION VERB on one item needs its own record, because the record holds
+# exactly one ``slot_key``. Reviewing a change request and answering the feedback
+# that change request received are two different jobs a person runs concurrently
+# on the same number, so sharing one record would make the second click resume the
+# first job's session and overwrite its link.
+#
+# This is orthogonal to ``kind``: ``kind`` says which number SEQUENCE the item
+# belongs to (see ``provider.investigation_kind``), while a verb says which job is
+# being done on that item. ``None`` is the item's primary record and keeps the
+# historical filename, so nothing that exists needs migrating.
+#
+# Every verb here is change-request-only. If a verb is ever added that also
+# applies to issues, it needs its own thought about the GitHub case, where an
+# issue and a change request cannot share a number but a verb record would.
+RECORD_VERBS = frozenset({"respond"})
+
 
 def _now_iso() -> str:
     """UTC timestamp, microsecond precision, ``Z`` suffix — stable, sortable, and
@@ -1563,7 +1579,13 @@ now_iso = _now_iso
 
 
 def investigation_path(
-    owner: str, repo: str, number: int, root: Path | None = None, *, kind: str = "issue"
+    owner: str,
+    repo: str,
+    number: int,
+    root: Path | None = None,
+    *,
+    kind: str = "issue",
+    verb: str | None = None,
 ) -> Path:
     """Path of one item's investigation record.
 
@@ -1575,19 +1597,36 @@ def investigation_path(
     Sharing one file between them would make "Review MR !5" resume issue #5's
     session and overwrite its findings.
 
-    ``"issue"`` deliberately keeps the historical filename, so every existing
-    record (all of which are GitHub's, where the namespace is shared) is found
-    exactly where it was written and nothing needs migrating.
+    ``verb`` separates two SESSION VERBS on the same item (see ``RECORD_VERBS``);
+    it is orthogonal to ``kind``, so a GitLab merge request being answered is
+    ``mr-respond-``. ``None`` is the item's primary record.
+
+    ``"issue"`` with no verb deliberately keeps the historical filename, so every
+    existing record (all of which are GitHub's, where the namespace is shared) is
+    found exactly where it was written and nothing needs migrating.
+
+    Raises ``ValueError`` on an unknown verb. Both values land in a filename with
+    no further sanitization, so this is the fail-closed backstop behind the route
+    validation rather than the only gate.
     """
+    if verb is not None and verb not in RECORD_VERBS:
+        raise ValueError(f"unknown investigation record verb: {verb!r}")
     suffix = "" if kind == "issue" else f"{kind}-"
-    return repo_data_dir(owner, repo, root) / f"investigation-{suffix}{int(number)}.json"
+    verb_suffix = "" if verb is None else f"{verb}-"
+    return repo_data_dir(owner, repo, root) / f"investigation-{suffix}{verb_suffix}{int(number)}.json"
 
 
 def read_investigation(
-    owner: str, repo: str, number: int, root: Path | None = None, *, kind: str = "issue"
+    owner: str,
+    repo: str,
+    number: int,
+    root: Path | None = None,
+    *,
+    kind: str = "issue",
+    verb: str | None = None,
 ) -> dict | None:
     """Return an item's investigation record, or None if never investigated."""
-    path = investigation_path(owner, repo, number, root, kind=kind)
+    path = investigation_path(owner, repo, number, root, kind=kind, verb=verb)
     if not path.is_file():
         return None
     try:
@@ -1675,9 +1714,28 @@ def _merge_findings(existing: Any, raw: Any) -> dict[str, Any] | None:
     return _normalize_findings(combined)
 
 
+class SlotClaimConflict(Exception):
+    """A session-link write lost a race for the record.
+
+    Carries the record as it actually stands, so the caller can adopt the winner's
+    session instead of creating a second one.
+    """
+
+    def __init__(self, record: dict[str, Any]):
+        super().__init__("the record's session link changed under this write")
+        self.record = record
+
+
+# Sentinel distinguishing "claim nothing, last-writer-wins" (the historical
+# behaviour every findings write relies on) from "claim only if the stored link is
+# still None", which cannot be expressed with None alone.
+_NO_CLAIM = object()
+
+
 def write_investigation(
     owner: str, repo: str, number: int, patch: dict[str, Any], *,
-    root: Path | None = None, kind: str = "issue",
+    root: Path | None = None, kind: str = "issue", verb: str | None = None,
+    expected_slot_key: Any = _NO_CLAIM,
 ) -> dict[str, Any]:
     """Upsert an issue's investigation record, MERGING ``patch`` into any
     existing record (last-writer-wins per field). ``started_at`` is stamped once
@@ -1687,14 +1745,34 @@ def write_investigation(
     ``findings`` (merged per key by :func:`_merge_findings`, so a patch carrying
     only ``verdict`` keeps the stored ``root_cause``/``summary``/labels; an
     explicit ``None`` clears them). A partial patch (even ``{}``, which just bumps
-    the open stamp) is valid. Returns the stored record."""
+    the open stamp) is valid. Returns the stored record.
+
+    ``expected_slot_key`` turns a session-link write into a compare-and-set:
+    the write proceeds only if the STORED link still equals what the caller last
+    saw, and otherwise raises :class:`SlotClaimConflict` carrying the live record.
+    A re-entry guard in one browser tab cannot see a click in another, so without
+    this two tabs both read "no session", both create one, and the later write
+    replaces the first tab's link — leaving an agent running that nothing points
+    at. The comparison happens inside the same exclusive lock as the read-back, so
+    the check and the write cannot be interleaved.
+
+    Omitted means no claim, which is what every agent-side findings write wants:
+    those do not touch ``slot_key`` and must not fail on someone else's session."""
     number = int(number)
     now = _now_iso()
-    lock_path = investigation_path(owner, repo, number, root, kind=kind).with_suffix(".lock")
+    lock_path = investigation_path(
+        owner, repo, number, root, kind=kind, verb=verb
+    ).with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
-            existing = read_investigation(owner, repo, number, root, kind=kind) or {}
+            existing = read_investigation(owner, repo, number, root, kind=kind, verb=verb) or {}
+            if expected_slot_key is not _NO_CLAIM:
+                stored = existing.get("slot_key")
+                # Normalize "" to None so a cleared link and an absent one compare
+                # equal, matching how the patch path treats them.
+                if (stored or None) != (expected_slot_key or None):
+                    raise SlotClaimConflict(existing)
 
             record: dict[str, Any] = {
                 "owner": owner,
@@ -1722,7 +1800,7 @@ def write_investigation(
                 )
 
             atomic_write(
-                investigation_path(owner, repo, number, root, kind=kind),
+                investigation_path(owner, repo, number, root, kind=kind, verb=verb),
                 json.dumps(record, indent=2),
             )
     return record
