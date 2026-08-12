@@ -1687,7 +1687,11 @@
           "search_2": "搜索 {{label}}",
           "select_for_bulk": "选择 {{subject}} #{{number}} 以执行批量操作",
           "time_since_the_pr_list_was_last_fetched_from_git": "距上次从 GitHub 获取 PR 列表的时间",
-          "updated": "更新时间"
+          "updated": "更新时间",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "取消 {{name}} 运行",
@@ -1734,6 +1738,11 @@
           "connect_repo": "连接仓库",
           "general": "通用",
           "repository_settings": "仓库设置"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {

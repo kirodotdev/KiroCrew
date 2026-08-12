@@ -1727,7 +1727,11 @@
           "search_2": "{{label}} খোঁজো",
           "select_for_bulk": "একগুচ্ছ কাজের জন্য {{subject}} #{{number}} নির্বাচন করুন",
           "time_since_the_pr_list_was_last_fetched_from_git": "GitHub থেকে সর্বশেষ PR তালিকা আনার পর কত সময় গেছে",
-          "updated": "আপডেট হয়েছে"
+          "updated": "আপডেট হয়েছে",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "{{name}} রান বাতিল করুন",
@@ -1774,6 +1778,11 @@
           "connect_repo": "রিপো সংযুক্ত করুন",
           "general": "সাধারণ",
           "repository_settings": "রিপোজিটরি সেটিংস"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {

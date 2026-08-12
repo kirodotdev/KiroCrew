@@ -1687,7 +1687,11 @@
           "search_2": "{{label}} 검색",
           "select_for_bulk": "일괄 작업을 위해 {{subject}} #{{number}} 선택",
           "time_since_the_pr_list_was_last_fetched_from_git": "PR 목록을 GitHub에서 마지막으로 가져온 후 경과한 시간",
-          "updated": "업데이트됨"
+          "updated": "업데이트됨",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "{{name}} 실행 취소",
@@ -1734,6 +1738,11 @@
           "connect_repo": "저장소 연결",
           "general": "일반",
           "repository_settings": "저장소 설정"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {

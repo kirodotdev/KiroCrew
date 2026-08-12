@@ -1807,7 +1807,11 @@
           "search_2": "Искать {{label}}",
           "select_for_bulk": "Выбрать {{subject}} #{{number}} для массового действия",
           "time_since_the_pr_list_was_last_fetched_from_git": "Время с момента последней загрузки списка PR из GitHub",
-          "updated": "Обновлено"
+          "updated": "Обновлено",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "Отменить запуск {{name}}",
@@ -1854,6 +1858,11 @@
           "connect_repo": "Подключить репозиторий",
           "general": "Общие",
           "repository_settings": "Настройки репозитория"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {

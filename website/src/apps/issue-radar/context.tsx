@@ -13,7 +13,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   issueRadarApi, DEFAULT_REPO_SETTINGS,
-  type ConnectedRepo, type Crew, type CrewCounts, type CrewSettings, type Issue, type PullRequest, type RepoLabel, type RepoMember, type RepoPermissions, type RepoSettings,
+  type ConnectedRepo, type Crew, type CrewCounts, type CrewSettings, type DispatchReadiness, type Issue, type PullRequest, type RepoLabel, type RepoMember, type RepoPermissions, type RepoSettings,
 } from './api'
 import type {
   ActiveRepo, CrewFilter, CrewSortKey, CrewView, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
@@ -116,6 +116,19 @@ export interface IssueRadarContextValue {
    * (triage/push/maintain/admin) — gates the label edit + close/reopen UI.
    * A read-only repo degrades to suggest-only (writes are hidden/disabled). */
   canWrite: boolean
+  /** Whether this repo has a usable local checkout, so work that edits code can
+   * be handed to an agent. Undefined until the read resolves, and every consumer
+   * must treat absent as NOT ready: a session with nowhere to work is the failure
+   * the readiness gate exists to prevent.
+   *
+   * This is a cached HINT for enabling a control, not the authority a session acts
+   * on. A cache cannot be authoritative here: react-query keeps the last successful
+   * value through a failed refetch and reports the failure through NO observable
+   * flag (measured: status stays `success`, `isError` false, `error` null,
+   * `errorUpdatedAt` 0), so a checkout that broke after the last good read would
+   * keep reporting ready. Anything that hands the path to an agent must therefore
+   * re-read it at the moment it acts. */
+  dispatchReadiness?: DispatchReadiness | null
 
   // ── data ──
   me: string | null
@@ -594,6 +607,17 @@ export function IssueRadarProvider({
     queryFn: () => issueRadarApi.getSettings(active),
   })
   const repoSettings = settingsQuery.data?.settings ?? DEFAULT_REPO_SETTINGS
+
+  // Whether this repo has a usable local checkout for work that edits code. It is
+  // a property of the REPO, so it is read once here rather than per row — a
+  // per-row query on the change-request list would be one identical subscription
+  // per card. Kept in the context (not in the list column) so the list stays free
+  // of data dependencies.
+  const dispatchReadinessQuery = useQuery({
+    queryKey: ['issue-radar', 'dispatch-readiness', scopeKey],
+    queryFn: () => issueRadarApi.getDispatchReadiness(active),
+    staleTime: 30_000,
+  })
 
   // ── crews ──
   //
@@ -1146,7 +1170,7 @@ export function IssueRadarProvider({
 
   const value: IssueRadarContextValue = useMemo(() => ({
     repos, active, switchRepo, onAddRepo,
-    activePermissions, canWrite,
+    activePermissions, canWrite, dispatchReadiness: dispatchReadinessQuery.data ?? null,
     me, issues, repoLabels,
     // The skeleton clears as soon as EITHER the full list or the cold-start first
     // page has rows: the whole point of the first page is to end the blank wait.
@@ -1232,7 +1256,7 @@ export function IssueRadarProvider({
     crewView, setCrewView, crewFilter, setCrewFilter, openCrews,
     crewSortKey, crewSortDir, cycleCrewSort,
   }), [
-    repos, active, switchRepo, onAddRepo, activePermissions, canWrite,
+    repos, active, switchRepo, onAddRepo, activePermissions, canWrite, dispatchReadinessQuery.data,
     me, issues, repoLabels, issuesQuery.isLoading, issuesQuery.error, issuesQuery.dataUpdatedAt,
     issuesPartial, labelsQuery.isLoading, labelsQuery.error, refresh, refreshMutation.isPending,
     repoSettings, needsTriage, isGoodFirstIssue,

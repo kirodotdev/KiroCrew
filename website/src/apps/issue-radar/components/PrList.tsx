@@ -13,12 +13,24 @@ import LabelChip from './LabelChip'
 import ListSkeleton from './ListSkeleton'
 import ListEmptyState from './ListEmptyState'
 import PrBulkBar from './PrBulkBar'
+import PrRespondButton from './PrRespondButton'
 import { providerTerms } from '../lib/links'
 
 import { i18nT } from '../../../i18n/t'
 /** Above this many rendered rows we skip the per-card enter/layout animation
  * (same rationale as IssueList — Framer's layout pass janks on large lists). */
 const ANIM_CAP = 200
+
+/** Whether answering this change request's feedback is a coherent request.
+ *
+ * The state filter includes merged and closed, so a row can be a DEAD change
+ * request. Answering feedback on one means fixing findings and pushing its head to
+ * green, which cannot apply once it is merged or closed — a session started there
+ * would burn a real agent run on work that can never land. A draft is answerable: it
+ * still collects review comments and checks. */
+function isAnswerable(pr: PullRequest): boolean {
+  return pr.state === 'open' && !pr.merged_at
+}
 
 /** Icon + colour for a PR row/detail by its lifecycle: merged (purple) →
  * closed-unmerged (red) → draft (muted) → open (green). Derived purely from the
@@ -125,7 +137,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
     prStateFilter, colorByName,
     selectedPull, setSelectedPull, refreshPulls, pullsRefreshing,
     prQuery, setPrQuery, pullsUpdatedAt, prPersonFilterActive, prSearchTruncatedAt,
-    active, canWrite, checkedPulls, togglePullChecked, clearCheckedPulls,
+    active, canWrite, checkedPulls, togglePullChecked, clearCheckedPulls, dispatchReadiness,
   } = useIssueRadar()
   // Provider vocabulary: GitLab calls these merge requests, and calling them
   // pull requests in a GitLab workspace is simply wrong copy.
@@ -151,23 +163,37 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [checkedPulls.size, clearCheckedPulls])
 
+  // Readiness is repo-scoped and read once in the context, not here: a query per
+  // row would be one identical subscription per card, and keeping the fetch out of
+  // this column leaves it free of data dependencies. Absent (still loading, failed,
+  // or a caller that supplies no readiness) means NOT ready — a session with
+  // nowhere to work is the failure the gate exists to prevent, so it fails closed.
+  const respondReady = dispatchReadiness?.ready === true
+  const respondNotReadyReason = !dispatchReadiness
+    ? i18nT('apps.issueRadar.components.prList.respond_checking')
+    : dispatchReadiness.reason === 'checkout_unusable'
+      ? i18nT('apps.issueRadar.components.prList.respond_checkout_unusable')
+      : i18nT('apps.issueRadar.components.prList.respond_no_local_path')
+
   const cardClass = (isSel: boolean) =>
     `w-full text-left rounded-lg border p-2.5 cursor-pointer bg-card hover:bg-bg-hover transition-colors ${
       isSel ? 'border-accent' : 'border-border'
     }`
 
-  /** One row: the select checkbox beside the card, not inside it.
+  /** One row: the select checkbox and the respond control beside the card, not
+   * inside it.
    *
-   * A checkbox nested in the card's `<button>` would be invalid HTML (interactive
+   * A control nested in the card's `<button>` would be invalid HTML (interactive
    * content inside a button) and unreachable by keyboard, so the row is a flex
-   * container holding two siblings. The checkbox only renders on a writable repo —
-   * on a read-only one every bulk action would 403, so offering the selection at
-   * all would be a dead end.
+   * container holding siblings. The checkbox only renders on a writable repo — on a
+   * read-only one every bulk action would 403, so offering the selection at all
+   * would be a dead end. Respond is not gated that way: it reads the change request
+   * and works a local checkout, so it is useful on a repo this user cannot write
+   * through the provider, and its own gate is whether that checkout exists.
    */
-  const row = (pr: PullRequest, children: React.ReactNode) => {
-    if (!canWrite) return children
-    return (
-      <div className="flex items-start gap-1.5">
+  const row = (pr: PullRequest, children: React.ReactNode) => (
+    <div className="flex items-start gap-1.5">
+      {canWrite && (
         <input
           type="checkbox"
           checked={checkedPulls.has(pr.number)}
@@ -175,10 +201,18 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           aria-label={i18nT('apps.issueRadar.components.prList.select_for_bulk', { subject: terms.changeRequestShort, number: pr.number })}
           className="mt-3 flex-shrink-0 cursor-pointer accent-[var(--accent)]"
         />
-        <div className="min-w-0 flex-1">{children}</div>
-      </div>
-    )
-  }
+      )}
+      <div className="min-w-0 flex-1">{children}</div>
+      {isAnswerable(pr) && (
+        <PrRespondButton
+          repoRef={active}
+          pull={pr}
+          ready={respondReady}
+          notReadyReason={respondNotReadyReason}
+        />
+      )}
+    </div>
+  )
 
   const cardInner = (pr: PullRequest) => {
     const { Icon, color } = prStateVisual(pr)

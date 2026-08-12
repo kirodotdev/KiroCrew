@@ -225,10 +225,34 @@ the same exclusive lock as the read-back**, refusing with `409`
 leaving an agent running that nothing points at.
 
 The 409 carries the live record, because the loser needs the winner's `slot_key` to
-adopt that session instead of starting a second one. The frontend therefore claims
-**before seeding the first turn**: at that point its own slot has no turn yet, so
-losing is recoverable by removing it, whereas claiming after the seed would leave a
-running agent to either destroy or orphan.
+adopt that session instead of starting a second one. The dashboard's session-open path
+therefore claims **before seeding the first turn**: at that point its own slot has no
+turn yet, so losing is recoverable by removing it, whereas claiming after the seed
+would leave a running agent to either destroy or orphan. A first turn that never
+starts releases the link it claimed, or the record would point at a slot with no turn
+and every later click would resume that empty session.
+
+That release is only complete because the claim is a **pure reservation**: it writes
+link fields and no user-visible state. The lifecycle moves to `investigating` in a
+separate write, once the session is actually running. A claim that also stamped the
+lifecycle could not be fully released — clearing the link cannot restore a status the
+record may never have had, so a rejected first turn would strand a finished item
+reading as under investigation with nothing running.
+
+Recovery from a stranded reservation is **deliberately not automatic**. A reservation whose
+first turn never landed leaves the record pointing at a turn-less slot, and releasing the
+claim is not reliably possible: the release is itself a network call, and the failure that
+strands a reservation is the kind that fails it too. Repairing it forward is not possible
+either, because an empty slot is indistinguishable from one whose seed is in flight in
+another tab — both read as "no turn yet". Acting on that guess deletes a session that is
+starting, and for a verb that pushes commits and posts replies, two agents racing on one
+change request is far worse than one empty session the user clears by hand.
+
+So a linked slot that still exists is always resumed. Telling an *active* reservation from
+an *abandoned* one requires the reservation to record when it was made, so a young claim
+reads as active and an old one as abandoned — a server-side lease, not a client heuristic.
+Until that exists, a stranded reservation is a visible empty session rather than a repair
+the client cannot make safely.
 
 Naming a stale link is how a deliberate replacement is expressed — resuming a
 session whose slot was deleted rewrites the link, and the caller proves it is not

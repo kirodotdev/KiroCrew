@@ -1727,7 +1727,11 @@
           "search_2": "{{label}} durchsuchen",
           "select_for_bulk": "{{subject}} #{{number}} für eine Sammelaktion auswählen",
           "time_since_the_pr_list_was_last_fetched_from_git": "Zeit seit dem letzten Abruf der PR-Liste von GitHub",
-          "updated": "Aktualisiert"
+          "updated": "Aktualisiert",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "Den Lauf {{name}} abbrechen",
@@ -1774,6 +1778,11 @@
           "connect_repo": "Repo verbinden",
           "general": "Allgemein",
           "repository_settings": "Repository-Einstellungen"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {

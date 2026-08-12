@@ -1687,7 +1687,11 @@
           "search_2": "{{label}} を検索",
           "select_for_bulk": "一括操作の{{subject}} #{{number}}を選択",
           "time_since_the_pr_list_was_last_fetched_from_git": "PRリストが GitHub から最後に取得されてからの時間",
-          "updated": "更新"
+          "updated": "更新",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "{{name}}実行をキャンセル",
@@ -1734,6 +1738,11 @@
           "connect_repo": "リポジトリを接続",
           "general": "一般",
           "repository_settings": "リポジトリ設定"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {

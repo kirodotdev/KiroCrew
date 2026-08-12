@@ -30,8 +30,21 @@ const api = {
   pullRuns: vi.fn(),
   pullRunAction: vi.fn(),
   bulkPrAction: vi.fn(),
+  getDispatchReadiness: vi.fn(),
+  getInvestigation: vi.fn(),
 }
 vi.mock('../apps/issue-radar/api', () => ({ issueRadarApi: api }))
+
+// The respond hook reaches the redux store and the router through
+// lib/agentSession; the contract this file asserts is what the ROW control asks it
+// for, so the hook itself is stubbed rather than dragging both providers in.
+const respondToPr = vi.fn()
+// Mutable so a test can express the hook REPORTING a failure. A hardcoded `error: null`
+// makes any assertion about the failed-open surface pass vacuously.
+const respondState = { busy: false, error: null as Error | null }
+vi.mock('../apps/issue-radar/lib/respond', () => ({
+  useRespondToPr: () => ({ respondToPr, ...respondState }),
+}))
 
 const ctx = { value: {} as Record<string, unknown> }
 vi.mock('../apps/issue-radar/context', () => ({
@@ -41,6 +54,7 @@ vi.mock('../apps/issue-radar/context', () => ({
 const PrActionsBar = (await import('../apps/issue-radar/components/PrActionsBar')).default
 const PrBulkBar = (await import('../apps/issue-radar/components/PrBulkBar')).default
 const PrRunActions = (await import('../apps/issue-radar/components/PrRunActions')).default
+const PrList = (await import('../apps/issue-radar/components/PrList')).default
 const { BULK_PR_CLOSE_TOKEN, SEQUENTIAL_MERGE_TOKEN } = await import('../apps/issue-radar/components/PrBulkBar')
 
 const REF = { owner: 'o', repo: 'r' }
@@ -94,6 +108,8 @@ function setCtx(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  respondState.busy = false
+  respondState.error = null
   setCtx()
   api.setPrState.mockResolvedValue({ ...REF, number: 7, state: 'closed', merged: false, draft: false })
   api.submitPrReview.mockResolvedValue({ ...REF, number: 7, id: 1, state: 'APPROVED', submitted_at: 't' })
@@ -1547,5 +1563,292 @@ describe('PrRunActions', () => {
     await userEvent.click(await screen.findByRole('button', { name: /re-run Nightly/i }))
     await waitFor(() =>
       expect(api.pullRunAction).toHaveBeenCalledWith(REF, 7, 3, 'rerun', false))
+  })
+})
+
+// ── the respond control on a list row ────────────────────────────────────────
+//
+// Answering the feedback a change request received is the AUTHOR's seat, and a
+// different job from Review, which drafts a review of somebody else's change and is
+// forbidden from writing anything. The two run concurrently on one number, so the
+// load-bearing assertions here are about not confusing them, and about not offering
+// a session that has nowhere to do the work:
+//
+//  * The record read carries BOTH kind 'pull' and verb 'respond'. Dropping the verb
+//    addresses Review's record, so "Resume" would reattach to the review session and
+//    the link write would overwrite it.
+//  * Readiness fails CLOSED. A session with no local checkout cannot push, and
+//    guessing a directory is the failure the gate exists to prevent — so loading and
+//    errored both read as not-ready, not as ready.
+//  * A FAILED record lookup opens nothing. Treating it as "no session exists" would
+//    start a second session and orphan the one the user already has.
+//  * Readiness is read ONCE per list. It is a property of the repo, so a per-row
+//    query would be up to 200 identical subscriptions.
+//  * The control survives a read-only repo. It reads the change request and works a
+//    local checkout, so provider write permission is not its gate — unlike the bulk
+//    checkbox beside it, which would only ever 403.
+const READY = { owner: 'o', repo: 'r', ready: true, reason: 'ok' as const, local_path: '/repos/r' }
+
+describe('PrList — the respond control', () => {
+  const listCtx = (over: Record<string, unknown> = {}) => ({
+    filteredPulls: [PULL],
+    sortedPulls: [PULL],
+    pullsLoading: false,
+    pullsError: null,
+    pullsPartial: false,
+    prStateFilter: 'open',
+    colorByName: new Map<string, string>(),
+    selectedPull: null,
+    setSelectedPull: vi.fn(),
+    refreshPulls: vi.fn(),
+    pullsRefreshing: false,
+    prQuery: '',
+    setPrQuery: vi.fn(),
+    pullsUpdatedAt: null,
+    prPersonFilterActive: false,
+    prSearchTruncatedAt: null,
+    active: REF,
+    canWrite: true,
+    checkedPulls: new Set<number>(),
+    togglePullChecked: vi.fn(),
+    clearCheckedPulls: vi.fn(),
+    dispatchReadiness: READY,
+    ...over,
+  })
+
+  beforeEach(() => {
+    respondToPr.mockReset()
+    respondToPr.mockResolvedValue(null)
+    api.getDispatchReadiness.mockReset()
+    api.getInvestigation.mockReset()
+    api.getDispatchReadiness.mockResolvedValue(READY)
+    api.getInvestigation.mockResolvedValue({ ...REF, number: 7, investigation: null })
+    ctx.value = listCtx()
+  })
+
+  const control = () => screen.findByRole('button', { name: /answer the feedback/i })
+
+  it('reads the record for the respond verb, not the review verb', async () => {
+    wrap(<PrList />)
+    await userEvent.click(await control())
+    await waitFor(() =>
+      expect(api.getInvestigation).toHaveBeenCalledWith(REF, 7, 'pull', 'respond'))
+  })
+
+  it('resumes the existing respond session and names the local repository', async () => {
+    const record = { owner: 'o', repo: 'r', number: 7, slot_key: 'chat-9', folder_id: 'f1' }
+    api.getInvestigation.mockResolvedValue({ ...REF, number: 7, investigation: record })
+    wrap(<PrList />)
+    await userEvent.click(await control())
+    await waitFor(() =>
+      expect(respondToPr).toHaveBeenCalledWith(REF, PULL, '/repos/r', record))
+  })
+
+  it('hands over the FRESHLY read path, not the cached hint', async () => {
+    // The cached hint can be stale in a way react-query exposes no flag for, so the
+    // path the agent is told to work in comes from the click-time read.
+    ctx.value = listCtx({ dispatchReadiness: { ...READY, local_path: '/stale/path' } })
+    api.getDispatchReadiness.mockResolvedValue({ ...READY, local_path: '/repos/moved' })
+    wrap(<PrList />)
+    await userEvent.click(await control())
+    await waitFor(() =>
+      expect(respondToPr).toHaveBeenCalledWith(REF, PULL, '/repos/moved', null))
+  })
+
+  it('refuses with the SERVER\'s reason when the fresh read disagrees', async () => {
+    // The cached hint said ready, so its sentence is stale by definition; the reason
+    // shown has to come from the read that actually refused.
+    ctx.value = listCtx({ dispatchReadiness: READY })
+    api.getDispatchReadiness.mockResolvedValue({
+      ...READY, ready: false, reason: 'checkout_unusable', local_path: '',
+    })
+    wrap(<PrList />)
+    await userEvent.click(await control())
+    await waitFor(() => expect(api.getDispatchReadiness).toHaveBeenCalled())
+    expect(respondToPr).not.toHaveBeenCalled()
+    await waitFor(async () =>
+      expect((await control()).getAttribute('title')).toMatch(/no longer usable/i))
+  })
+
+  it('reports a failed session open instead of discarding it', async () => {
+    // The hook's error was previously destructured away, so a rejected seed left the
+    // icon briefly dim and then nothing -- indistinguishable from a dead control.
+    respondState.error = new Error('could not seed the session (HTTP 503)')
+    wrap(<PrList />)
+    await waitFor(async () =>
+      expect((await control()).getAttribute('title')).toMatch(/HTTP 503/))
+    // And it is carried in the accessible name, not only the hover title.
+    expect((await control()).getAttribute('aria-label')).toMatch(/HTTP 503/)
+    // Still clickable: a failure is not a latched state.
+    expect((await control()).getAttribute('aria-disabled')).not.toBe('true')
+  })
+
+  it('accepts the retry it tells the user to make', async () => {
+    // The refusal copy ends in "try again", so latching the control off would leave the
+    // row permanently dead while still instructing the user to click it.
+    ctx.value = listCtx({ dispatchReadiness: READY })
+    api.getDispatchReadiness.mockRejectedValue(new Error('gateway gone'))
+    wrap(<PrList />)
+    await userEvent.click(await control())
+    await waitFor(() => expect(api.getDispatchReadiness).toHaveBeenCalledTimes(1))
+    expect((await control()).getAttribute('aria-disabled')).not.toBe('true')
+
+    // Second click gets through, and the read is retried rather than short-circuited.
+    api.getDispatchReadiness.mockResolvedValue(READY)
+    await userEvent.click(await control())
+    await waitFor(() => expect(api.getDispatchReadiness).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(respondToPr).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not blame setup when the readiness read simply FAILED', async () => {
+    // A failed read taught us nothing about the checkout. Reusing the cached hint's
+    // sentence here would tell the user to set a repository location they already
+    // set, sending them to redo the wrong thing over a transient error.
+    ctx.value = listCtx({ dispatchReadiness: READY })
+    api.getDispatchReadiness.mockRejectedValue(new Error('gateway gone'))
+    wrap(<PrList />)
+    await userEvent.click(await control())
+    await waitFor(() => expect(api.getDispatchReadiness).toHaveBeenCalled())
+    expect(respondToPr).not.toHaveBeenCalled()
+    expect(api.getInvestigation).not.toHaveBeenCalled()
+    const title = (await control()).getAttribute('title') ?? ''
+    expect(title).toMatch(/try again/i)
+    expect(title).not.toMatch(/in Settings/i)
+  })
+
+  it('opens nothing when the record lookup fails', async () => {
+    api.getInvestigation.mockRejectedValue(new Error('boom'))
+    wrap(<PrList />)
+    await userEvent.click(await control())
+    await waitFor(() => expect(api.getInvestigation).toHaveBeenCalled())
+    expect(respondToPr).not.toHaveBeenCalled()
+  })
+
+  it('is disabled with the reason when no local repository is recorded', async () => {
+    ctx.value = listCtx({
+      dispatchReadiness: { ...READY, ready: false, reason: 'no_local_path', local_path: '' },
+    })
+    wrap(<PrList />)
+    expect(await control()).toHaveAttribute('aria-disabled', 'true')
+    expect((await control()).getAttribute('title')).toMatch(/in Settings/i)
+  })
+
+  it('says the recorded repository broke, rather than that none is set', async () => {
+    ctx.value = listCtx({
+      dispatchReadiness: {
+        ...READY, ready: false, reason: 'checkout_unusable', local_path: '/gone',
+      },
+    })
+    wrap(<PrList />)
+    expect((await control()).getAttribute('title')).toMatch(/no longer usable/i)
+  })
+
+  it('fails closed when readiness is absent', async () => {
+    // Covers loading, a failed read, and a caller that supplies no readiness at
+    // all: the three are indistinguishable here, and all three must refuse.
+    for (const absent of [undefined, null]) {
+      ctx.value = listCtx({ dispatchReadiness: absent })
+      const view = wrap(<PrList />)
+      expect(await control()).toHaveAttribute('aria-disabled', 'true')
+      // Focusable, so the refusal has to come from the handler, not the DOM.
+      await userEvent.click(await control())
+      expect(respondToPr).not.toHaveBeenCalled()
+      view.unmount()
+    }
+  })
+
+  it('starts only one session when the control is double-clicked', async () => {
+    // `busy` is owned by openSession, which does not run until the record read
+    // resolves, so without a synchronous guard a second click during that read
+    // starts a second session and the later link write orphans the first.
+    //
+    // Both clicks are dispatched natively inside ONE act(), so no re-render happens
+    // between them. That is the real shape of the bug: awaiting userEvent between
+    // clicks flushes React, the `pending` state disables the button, and the second
+    // click is swallowed by the DOM -- which passes with the guard deleted and so
+    // proves nothing.
+    let release: (v: unknown) => void = () => {}
+    api.getInvestigation.mockReturnValue(new Promise((r) => { release = r }))
+    wrap(<PrList />)
+    const btn = await control()
+    await act(async () => {
+      btn.click()
+      btn.click()
+    })
+    expect(api.getInvestigation).toHaveBeenCalledTimes(1)
+
+    // While the session opens the control reports aria-disabled and the handler
+    // refuses: it stays focusable (so its state is reachable), which means the DOM no
+    // longer swallows the click and the guard has to hold on its own.
+    let finish: (v: unknown) => void = () => {}
+    respondToPr.mockReturnValue(new Promise((r) => { finish = r }))
+    await act(async () => {
+      release({ ...REF, number: 7, investigation: null })
+    })
+    await waitFor(() => expect(respondToPr).toHaveBeenCalledTimes(1))
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    await act(async () => { btn.click() })
+    expect(respondToPr).toHaveBeenCalledTimes(1)
+    await act(async () => { finish(null) })
+    await waitFor(() => expect(btn).not.toHaveAttribute('aria-disabled'))
+  })
+
+  it('is not offered on a merged or closed change request', async () => {
+    // The state filter includes merged and closed, so a dead change request can be
+    // on screen. Answering feedback there means pushing its head to green, which can
+    // never land -- a session started on one burns a real agent run for nothing.
+    for (const dead of [
+      { ...PULL, merged_at: '2026-08-01T00:00:00Z' },
+      { ...PULL, state: 'closed' },
+      { ...PULL, state: 'closed', merged_at: '2026-08-01T00:00:00Z' },
+    ]) {
+      ctx.value = listCtx({ filteredPulls: [dead], sortedPulls: [dead] })
+      const view = wrap(<PrList />)
+      expect(screen.queryByRole('button', { name: /answer the feedback/i })).toBeNull()
+      view.unmount()
+    }
+  })
+
+  it('is offered on a draft, which still collects feedback', async () => {
+    const draft = { ...PULL, draft: true }
+    ctx.value = listCtx({ filteredPulls: [draft], sortedPulls: [draft] })
+    wrap(<PrList />)
+    expect(await control()).toBeInTheDocument()
+  })
+
+  it('stays focusable when blocked, so its reason is reachable', async () => {
+    // A `disabled` button leaves the tab order, so a keyboard or screen-reader user
+    // could never reach the control to learn the action exists or why it is off.
+    ctx.value = listCtx({
+      dispatchReadiness: { ...READY, ready: false, reason: 'no_local_path', local_path: '' },
+    })
+    wrap(<PrList />)
+    const btn = await control()
+    expect(btn).not.toBeDisabled()
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
+    // The reason travels in the accessible NAME, not only the hover tooltip.
+    expect(btn.getAttribute('aria-label')).toMatch(/in Settings/i)
+    // ...and it still refuses to act.
+    await userEvent.click(btn)
+    expect(respondToPr).not.toHaveBeenCalled()
+    expect(api.getDispatchReadiness).not.toHaveBeenCalled()
+  })
+
+  it('renders one control per row and fetches no readiness itself', async () => {
+    // The list column must own no data dependency: it is mounted without a
+    // QueryClient elsewhere, so a fetch here would throw on render.
+    ctx.value = listCtx({ filteredPulls: [PULL, PULL_8], sortedPulls: [PULL, PULL_8] })
+    wrap(<PrList />)
+    expect(screen.getAllByRole('button', { name: /answer the feedback/i })).toHaveLength(2)
+    // Nothing is fetched by RENDERING. The authoritative read happens on click, so
+    // mounting 200 rows still costs zero requests.
+    expect(api.getDispatchReadiness).not.toHaveBeenCalled()
+  })
+
+  it('is offered on a read-only repo, where the bulk checkbox is not', async () => {
+    ctx.value = listCtx({ canWrite: false })
+    wrap(<PrList />)
+    expect(await control()).toBeEnabled()
+    expect(screen.queryByRole('checkbox', { name: /select/i })).toBeNull()
   })
 })
