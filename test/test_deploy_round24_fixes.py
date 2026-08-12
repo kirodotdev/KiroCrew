@@ -29,7 +29,7 @@ def test_f1_pending_schema_carries_override_flag(tmp_path, monkeypatch):
 
 
 def test_f1_mcp_blocked_path_distinguishes_credential():
-    src = (_ROOT / "src/kiro_crew/mcp_core.py").read_text(encoding="utf-8")
+    src = (_ROOT / "src/kiro_crew/mcp_tools/artifacts.py").read_text(encoding="utf-8")
     blocked = src.split('if d.get("blocked"):', 1)[1][:2000]
     # Credential findings: hard block, no pending.
     assert 'if d.get("credential"):' in blocked

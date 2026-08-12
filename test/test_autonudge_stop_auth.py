@@ -42,6 +42,7 @@ from kiro_crew.autonudge import (
 )
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.mcp_core import _call_tool_inner
+from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.validation import ValidationError
 
 # ── Tool-contract fixtures ────────────────────────────────────────────────────
@@ -93,7 +94,7 @@ def test_monitor_start_defaults_interval_300_and_bounded_cap(default_install):
     result = _call_tool_inner("monitor_start", {"message": "watch CI"})
     args = session_directive.decode(result, "monitor_start")
     assert args["idle_secs"] == 300
-    assert args["max_cycles"] == mcp_core._MONITOR_DEFAULT_MAX_CYCLES
+    assert args["max_cycles"] == _MONITOR_DEFAULT_MAX_CYCLES
     assert args["max_cycles"] == 24
     assert "no cycle cap" not in result.lower()
 
