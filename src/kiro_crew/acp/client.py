@@ -871,6 +871,17 @@ _NOT_LOGGED_IN_MESSAGE = (
 # string); throttle, auth, and the 5xx family match the combined
 # `data + message` haystack so a 5xx token in either field is caught.
 _RE_MODEL_UNAVAILABLE = re.compile(r"[Tt]he model '([^']+)' is not available")
+# kiro-cli >= 2.16 rewording of the same capacity/rollout rejection, which
+# names NO model: "The model you've selected is temporarily unavailable.
+# Please use '/model' to select a different model and try again." Without its
+# own pattern this wording fell through to the unknown-shape branch and was
+# classified terminal, so unattended callers (cron, subagents, consolidation)
+# failed fast on a momentary blip their retry ladder exists to absorb — the
+# exact drift hazard the marker-coupling note above warns about. The quote
+# class covers both the straight and typographic apostrophe in "you've".
+_RE_MODEL_TEMP_UNAVAILABLE = re.compile(
+    r"[Tt]he model you['\u2019]ve selected is temporarily unavailable"
+)
 # MPS ValidationException wording for a model the partition/account does not
 # serve — distinct from the "is not available" capacity string above. Covers the
 # ``auto`` sentinel in partitions that do not serve it.
@@ -1043,6 +1054,13 @@ def _is_transient_raw_error(
         # check so limit wording that also reads as rate-limiting stays terminal.
         return False
     if _RE_MODEL_UNAVAILABLE.search(data):
+        return True
+    if _RE_MODEL_TEMP_UNAVAILABLE.search(data):
+        # Nameless capacity rejection (kiro-cli >= 2.16 wording). Matched
+        # against `data` only, like its named sibling above, so a phrase echo
+        # in the JSON-RPC `message` can't flip an otherwise-terminal error.
+        # No entitlement check is possible (the wording names no model), but
+        # the bounded retry budget caps the cost if one ever slips through.
         return True
     if _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
         return True
@@ -1225,6 +1243,21 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
                 f"different model in the model picker, (2) set agent.model to "
                 f"'auto' in ~/.kiro/crew/config.json, or (3) wait a minute and "
                 f"retry."
+                f"{req_id_suffix}"
+            )
+        elif _RE_MODEL_TEMP_UNAVAILABLE.search(data):
+            # Same capacity/rollout rejection as above in kiro-cli >= 2.16
+            # wording, which names no model. Rewritten for the same reasons as
+            # its named sibling: the provider's advice quotes the '/model' TUI
+            # command, which does nothing in the dashboard, Slack, or a cron —
+            # and the "is unavailable on the backend" prose keeps the
+            # _TRANSIENT_MARKERS string fallback recognising it for free.
+            formatted = (
+                "The selected model is unavailable on the backend right now "
+                "(capacity throttle or region rollout). Try: (1) pick a "
+                "different model in the model picker, (2) set agent.model to "
+                "'auto' in ~/.kiro/crew/config.json, or (3) wait a minute and "
+                "retry."
                 f"{req_id_suffix}"
             )
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):

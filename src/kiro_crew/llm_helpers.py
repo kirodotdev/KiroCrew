@@ -76,6 +76,13 @@ _TRANSIENT_MARKERS = (
     # would resurrect the pointless retry loop #1550 removed.
     "is unavailable on the backend",
     "is unavailable on bedrock",
+    # kiro-cli >= 2.16 nameless capacity wording ("The model you've selected
+    # is temporarily unavailable..."). The formatter now rewrites it into the
+    # "on the backend" prose above, but a transcript or history line written
+    # by a pre-rewrite gateway carries the raw passthrough — this marker keeps
+    # those classifying. Deliberately skips the "you've" apostrophe so
+    # straight and typographic quotes both match the substring.
+    "selected is temporarily unavailable",
     "transient error (http 5xx)",  # _format_acp_error's generic-5xx message
 )
 
