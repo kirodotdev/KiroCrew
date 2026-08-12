@@ -1773,7 +1773,7 @@ def process_owner_uid(pid: int) -> int | None:
     must decide what to do with ``None`` explicitly rather than assume a match.
 
     Used to confirm that a pid a client is about to trust belongs to the calling
-    user (see ``cli_server._gateway_owns_port``), which is what makes pid
+    user (see ``port_resolution._gateway_owns_port``), which is what makes pid
     recycling into a *foreign* user's process non-exploitable.
     """
     try:

@@ -1241,7 +1241,7 @@ def _export_bound_port(runner: web.AppRunner, port: int) -> None:
     frozen into a service install run from a gateway-descended shell, and
     would leak between tests through the process environment.
     ``KIROCREW_BOUND_PORT`` carries ephemeral truth only: consumed by
-    ``cli_server.resolve_client_port`` one step below the operator override,
+    ``port_resolution.resolve_client_port`` one step below the operator override,
     never persisted.
 
     *port* is ``0`` for an OS-assigned ephemeral bind (``--port auto``); the

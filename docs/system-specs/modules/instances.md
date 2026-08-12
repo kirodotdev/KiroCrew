@@ -674,7 +674,7 @@ marker is inert there, but the *filename* still matters to consumer 2.
 
 The marker's filename advertises which port a gateway serves, so `marker_ports()`
 lets a local client command (`token` / `status` / `logout` / `stop`, via
-`cli_server.resolve_client_port`) find a gateway on a non-default port with no
+`port_resolution.resolve_client_port`) find a gateway on a non-default port with no
 configuration. That path reads only the filename and ignores marker *contents*
 entirely. Resolution order is `--port`, then `KIROCREW_PORT`, then a port named
 by `dashboard.url`, then the sole gateway-owned marker, then the default 5476.
@@ -683,7 +683,7 @@ by `dashboard.url`, then the sole gateway-owned marker, then the default 5476.
 graceful shutdown, so a crash or SIGKILL leaves the file behind and an unrelated
 process may since have bound that port. Because client commands send the local
 secret (`X-Local-Secret`) to whatever answers, the consumer must verify the
-listener before trusting a discovered port. `cli_server._gateway_owns_port()`
+listener before trusting a discovered port. `port_resolution._gateway_owns_port()`
 does that in four fail-closed steps: the recorded pid must exist, must be among
 `platform_compat.find_listening_pids(port)`, must be owned by the caller's uid
 (which closes pid recycling into another user's process), and must look like a

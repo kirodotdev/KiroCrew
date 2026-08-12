@@ -67,6 +67,7 @@ from kiro_crew.mcp_shared import (
 from kiro_crew.members import record_activity
 from kiro_crew.messaging.link import is_legacy_slack_key, legacy_key
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.security import (
     BINARY_MIME_ALLOWLIST,
     redact_credentials,
@@ -144,8 +145,8 @@ from kiro_crew.validation import (
 def _resolve_api_port() -> tuple[int, bool]:
     """Resolve the gateway API port a callback should aim at.
 
-    Delegates to :func:`kiro_crew.cli_server.resolve_client_port`, the same
-    precedence every client CLI command applies: ``KIROCREW_PORT``, then a
+    Delegates to :func:`kiro_crew.port_resolution.resolve_client_port_ex`, the
+    same precedence every client CLI command applies: ``KIROCREW_PORT``, then a
     port **explicitly written** in ``dashboard.url``, then the sole
     gateway-owned run-marker, then the documented default. The marker step is
     what keeps a portless ``dashboard.url`` from collapsing to the default
@@ -153,15 +154,9 @@ def _resolve_api_port() -> tuple[int, bool]:
     substitutes the default for the *server's* benefit (it must bind
     something), which is exactly the wrong guess for a client callback.
 
-    The import is lazy on purpose: ``cli_server`` fans out into CLI-only
-    dependencies this stdio server otherwise never loads, and paying that once
-    on the first gateway call keeps the hot MCP-stdio import path lean.
-
     Returns ``(port, positive)`` — ``positive`` is ``False`` when resolution
     fell through to the default with no evidence behind it.
     """
-    from kiro_crew.cli_server import resolve_client_port_ex
-
     return resolve_client_port_ex(None)
 
 

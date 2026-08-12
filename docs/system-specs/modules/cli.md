@@ -522,7 +522,8 @@ Each step checks if the tool is already installed and skips if present.
 ## Client Port Resolution
 
 `kirocrew token` / `status` / `logout` / `stop` / `restart` must find the port
-the gateway is actually bound to. `cli_server.resolve_client_port()` resolves it
+the gateway is actually bound to. `port_resolution.resolve_client_port()`
+(re-exported by `cli_server`) resolves it
 in this order, first hit wins. The MCP stdio servers (`mcp_core` /
 `mcp_computer`) resolve their gateway API base through the same helper —
 lazily, on the first gateway call, and cached for the process lifetime — so a

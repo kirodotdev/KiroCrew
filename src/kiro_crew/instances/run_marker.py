@@ -32,7 +32,7 @@ executable file (``-x``), the same boundary as the pre-existing
 Second consumer — port discovery:
     The marker's *filename* also advertises which port a gateway is serving, so
     :func:`marker_ports` lets a local client command (``token`` / ``status`` /
-    ``logout`` / ``stop``, via ``cli_server.resolve_client_port``) find a gateway
+    ``logout`` / ``stop``, via ``port_resolution.resolve_client_port``) find a gateway
     on a non-default port with zero configuration. That path reads only the
     filename, never the recorded launcher path.
 
@@ -42,7 +42,7 @@ Second consumer — port discovery:
     send the local secret (``X-Local-Secret``) to whatever is listening, the
     consumer MUST verify the listener before trusting a discovered port, using
     the pid sidecar this module writes beside the marker (:func:`read_pid`) — see
-    ``cli_server._gateway_owns_port``. This module deliberately does not offer a
+    ``port_resolution._gateway_owns_port``. This module deliberately does not offer a
     bare "is something listening" helper, so no caller can mistake reachability
     for identity.
 """
@@ -104,7 +104,7 @@ def read_pid(port: int) -> int | None:
     tools cannot write it either): another local user cannot point it at a
     process of theirs. It is NOT proof of liveness — a crashed gateway leaves
     its pid behind — so the caller must also confirm that pid currently holds
-    the port. See ``cli_server._gateway_owns_port``.
+    the port. See ``port_resolution._gateway_owns_port``.
 
     Read-only: never creates ``run/``.
     """

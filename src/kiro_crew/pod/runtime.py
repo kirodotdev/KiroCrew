@@ -1200,7 +1200,7 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
 #                    `chat --tui` branches straight into `_tui` (cli.py:1818), so
 #                    excluding only `tui` left the same hole open. Every OTHER
 #                    client verb (`status`, `logout`, and the credential verb) goes
-#                    through `cli_server.resolve_client_port`, which DOES honour
+#                    through `port_resolution.resolve_client_port`, which DOES honour
 #                    `KIROCREW_PORT` — so this hazard is confined to `_tui`.
 #   logs           — `cli_server._logs_cmd` runs `journalctl -u <SERVICE_NAME>`,
 #                    the HOST service unit, so inside a pod it would show the LIVE

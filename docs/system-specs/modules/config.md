@@ -1159,7 +1159,7 @@ port and no config field ever names it). It is a **distinct variable from
 `KIROCREW_PORT`** on purpose: `KIROCREW_PORT` means operator intent and is
 persisted by `service_environment()` into unit files, while
 `KIROCREW_BOUND_PORT` is ephemeral observed truth that must never be frozen
-into persistent config. Clients read it via `cli_server.resolve_client_port`,
+into persistent config. Clients read it via `port_resolution.resolve_client_port`,
 one precedence step below the operator override.
 
 ## Model Resolution Chain
