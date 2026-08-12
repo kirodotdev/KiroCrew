@@ -360,7 +360,21 @@ describe('ChatSidebar — header menu view + tag entries', () => {
 })
 
 describe('ChatSidebar — Older Sessions pane', () => {
-  const daysAgo = (n: number) => Math.floor((Date.now() - n * 86400_000) / 1000)
+  // Pin the clock for the date-bucket assertions (issue #2919): a raw
+  // `Date.now() - n days` fixture slides across local midnight when the suite
+  // runs just after 00:00, moving the `daysAgo(1)` row from Yesterday into
+  // Last 7 Days. The pin is LOCAL midday — the farthest point from both
+  // midnight edges in any timezone — and fixtures are built here at
+  // collection time from the PIN constant, not the faked clock (the
+  // beforeEach below only pins what the component reads at render). Faking
+  // ONLY `Date` leaves real timers driving waitFor/promises. Mid-January
+  // avoids DST transitions inside the lookback window.
+  const PIN = new Date(2026, 0, 15, 12, 0, 0) // local midday, not 12:00Z
+  const daysAgo = (n: number) => Math.floor((PIN.getTime() - n * 86400_000) / 1000)
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(PIN)
+  })
   const HISTORY: TestHistoryItem[] = [
     { key: 'h1', title: 'Fresh history', modified: daysAgo(0), agent: 'builder' },
     { key: 'h2', title: 'Yesterday history', modified: daysAgo(1) },
