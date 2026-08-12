@@ -540,7 +540,7 @@ class TestWaitTool:
         with patch.object(mcp_core, "time", clock):
             with patch.object(mcp_core, "_resolve_session_key_strict", return_value=strict_key):
                 with patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:c"):
-                    with patch.object(mcp_core, "is_tool_cancelled", return_value=False):
+                    with patch("kiro_crew.mcp_tools.control.is_tool_cancelled", return_value=False):
                         with patch.object(mcp_core, "sel", lambda: rec):
                             with patch.object(mcp_core, "_post", post) as p:
                                 out = _call_tool_inner("wait", dict(args))
@@ -647,7 +647,7 @@ class TestWaitTool:
         rec = _RecordingSel()
         with patch.object(mcp_core, "time", clock):
             with patch.object(mcp_core, "_resolve_session_key_strict", return_value=""):
-                with patch.object(mcp_core, "is_tool_cancelled", return_value=True):
+                with patch("kiro_crew.mcp_tools.control.is_tool_cancelled", return_value=True):
                     with patch.object(mcp_core, "sel", lambda: rec):
                         with patch.object(mcp_core, "_post", lambda *a, **k: {}):
                             with pytest.raises(ToolCancelled) as ei:
@@ -947,8 +947,8 @@ class TestResourceStatusTool:
             else (lambda _c: cap)
         )
         with patch("kiro_crew.resource_status.probe", return_value=rstatus):
-            with patch.object(mcp_core, "KiroCrewConfig", cfg):
-                with patch.object(mcp_core, "resolve_max_subagents", resolver):
+            with patch("kiro_crew.mcp_tools.spawn.KiroCrewConfig", cfg):
+                with patch("kiro_crew.mcp_tools.spawn.resolve_max_subagents", resolver):
                     return _call_tool_inner("resource_status", {})
 
     def test_the_probe_summary_and_cap_are_reported(self) -> None:
