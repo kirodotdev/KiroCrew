@@ -40,6 +40,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import format_schedule
+from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
@@ -293,12 +294,12 @@ async def _handle_agent(
     if args:
         name = args.strip().split()[0]
         if name.lower() in ("off", "default"):
-            _set_default_agent("")
+            await run_config_write(_set_default_agent, "")
             await respond("🔄 Reset to default agent.")
             return
         resolved = _resolve_agent_name(name)
         if resolved:
-            _set_default_agent(resolved)
+            await run_config_write(_set_default_agent, resolved)
             await respond(f"🔄 Switched to agent: *{resolved}*")
             return
         await respond(f"❌ Unknown agent `{name}`. Pick one below:")

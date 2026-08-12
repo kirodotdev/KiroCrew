@@ -265,10 +265,10 @@ class TestConfigSubmission:
     async def test_unreadable_config_fails_closed(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(_path: Any) -> dict:
+        def boom(_path: Any, **_kw: Any) -> dict:
             raise ConfigReadError("corrupt")
 
-        monkeypatch.setattr(ix, "read_config_for_update", boom)
+        monkeypatch.setattr(ix, "update_config_locked", boom)
         await ix._handle_config_submission(self._view(["C9"]))
         # Runtime state must NOT move ahead of an unwritable disk.
         assert orch._tracking_channels == set()
@@ -277,10 +277,10 @@ class TestConfigSubmission:
     async def test_write_failure_leaves_runtime_untouched(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(_path: Any, _data: Any) -> None:
+        def boom(_path: Any, **_kw: Any) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(ix, "write_config_atomically", boom)
+        monkeypatch.setattr(ix, "update_config_locked", boom)
         await ix._handle_config_submission(self._view(["C9"]))
         assert orch._tracking_channels == set()
 
@@ -879,10 +879,10 @@ class TestVoiceConfigSubmission:
     async def test_unreadable_config_fails_closed(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(_path: Any) -> dict:
+        def boom(_path: Any, **_kw: Any) -> dict:
             raise ConfigReadError("corrupt")
 
-        monkeypatch.setattr(ix, "read_config_for_update", boom)
+        monkeypatch.setattr(ix, "update_config_locked", boom)
         sh._vc.global_enabled = False
         await ix._handle_voice_config_submission(_voice_view(tts=["enabled"]))
         # Live TTS must not be driven by a refused save.
@@ -892,10 +892,10 @@ class TestVoiceConfigSubmission:
     async def test_write_failure_leaves_live_config_untouched(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(_path: Any, _data: Any) -> None:
+        def boom(_path: Any, **_kw: Any) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(ix, "write_config_atomically", boom)
+        monkeypatch.setattr(ix, "update_config_locked", boom)
         sh._vc.global_enabled = False
         await ix._handle_voice_config_submission(_voice_view(tts=["enabled"]))
         assert sh._vc.global_enabled is False
@@ -1221,10 +1221,10 @@ class TestUsersSelect:
     async def test_unreadable_config_fails_closed(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(_path: Any) -> dict:
+        def boom(_path: Any, **_kw: Any) -> dict:
             raise ConfigReadError("corrupt")
 
-        monkeypatch.setattr(ix, "read_config_for_update", boom)
+        monkeypatch.setattr(ix, "update_config_locked", boom)
         action = {"action_id": "mc_users_select", "selected_users": ["Ua"]}
         await ix._handle_users_select(_payload(), action, "C1", "m1", "U1")
         assert orch._allowed_users == set()
@@ -1233,10 +1233,10 @@ class TestUsersSelect:
     async def test_write_failure_leaves_runtime_untouched(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(_path: Any, _data: Any) -> None:
+        def boom(_path: Any, **_kw: Any) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(ix, "write_config_atomically", boom)
+        monkeypatch.setattr(ix, "update_config_locked", boom)
         action = {"action_id": "mc_users_select", "selected_users": ["Ua"]}
         await ix._handle_users_select(_payload(), action, "C1", "m1", "U1")
         assert orch._allowed_users == set()
@@ -1275,10 +1275,10 @@ class TestChannelsSelect:
     async def test_unreadable_config_fails_closed(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(_path: Any) -> dict:
+        def boom(_path: Any, **_kw: Any) -> dict:
             raise ConfigReadError("corrupt")
 
-        monkeypatch.setattr(ix, "read_config_for_update", boom)
+        monkeypatch.setattr(ix, "update_config_locked", boom)
         action = {"action_id": "mc_channels_select", "selected_channels": ["Ca"]}
         await ix._handle_channels_select(_payload(), action, "C1", "m1", "U1")
         assert orch._tracking_channels == set()
@@ -1287,10 +1287,10 @@ class TestChannelsSelect:
     async def test_write_failure_leaves_runtime_untouched(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom(_path: Any, _data: Any) -> None:
+        def boom(_path: Any, **_kw: Any) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(ix, "write_config_atomically", boom)
+        monkeypatch.setattr(ix, "update_config_locked", boom)
         action = {"action_id": "mc_channels_select", "selected_channels": ["Ca"]}
         await ix._handle_channels_select(_payload(), action, "C1", "m1", "U1")
         assert orch._tracking_channels == set()

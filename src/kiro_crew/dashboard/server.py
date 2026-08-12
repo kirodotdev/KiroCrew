@@ -29,7 +29,11 @@ from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.browser.setup import migrate_owned_playwright_registration
 from kiro_crew.channel_transcript_migration import migrate_channel_transcripts
 from kiro_crew.config import data_home
-from kiro_crew.config.loader import KiroCrewConfig, refresh_materialized_agents
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    refresh_config_meta_stamp,
+    refresh_materialized_agents,
+)
 from kiro_crew.dashboard import (
     cautious_boot,
     channel_slots,
@@ -2997,6 +3001,28 @@ async def start_dashboard(
     # gets its own launch window instead of landing on top of the app backends.
     await cautious_boot.pause_before("MCP server probe")
     asyncio.create_task(handlers._bg_mcp_probe())
+
+    # Refresh config.json's meta stamp when an upgrade left it naming the
+    # previous build (#3102). Post-bind and fire-and-forget (never awaited on
+    # the boot path), and the file I/O runs in a thread so the version check —
+    # one small fixed-path file, O(1), rewrite only on mismatch — never holds
+    # the event loop. Two locks cover both writer generations: the refresh
+    # itself goes through update_config_locked (sidecar advisory lock), and
+    # the loop-side asyncio config lock is held around the off-thread call so
+    # the legacy writers that serialize on that lock alone cannot land inside
+    # the refresh's read→write window. Best-effort: a stale stamp is a
+    # diagnostic blemish, so a failure here is logged and boot proceeds.
+    async def _refresh_meta_stamp() -> None:
+        try:
+            async with handlers._get_config_lock():
+                if await asyncio.to_thread(refresh_config_meta_stamp):
+                    logger.info("config.json meta stamp refreshed to the running version")
+        except Exception:
+            logger.debug("config meta stamp refresh failed", exc_info=True)
+
+    _stamp_task = asyncio.create_task(_refresh_meta_stamp())
+    state._background_tasks.add(_stamp_task)
+    _stamp_task.add_done_callback(state._background_tasks.discard)
 
     # Start terminal orphan reaper (kills PTYs with no WS past the reaper window)
     _reaper = asyncio.create_task(handlers.reap_orphaned_terminals(app))

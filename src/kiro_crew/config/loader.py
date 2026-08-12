@@ -833,6 +833,77 @@ def stamp_config_meta(data: dict) -> dict:
     }
 
 
+def refresh_config_meta_stamp() -> bool:
+    """Re-stamp ``config.json``'s ``meta`` block when it names another build.
+
+    The stamp is only ever written as a side effect of a config write, so an
+    upgrade that never touches ``config.json`` leaves ``lastTouchedVersion``
+    naming the *previous* build indefinitely. That contradicts the field's
+    documented meaning ("the build that wrote the bytes now on disk") and
+    sends anyone debugging a version question chasing a build that is no
+    longer installed (#3102). Called once per gateway start, off the boot
+    path: a version check on one small file, a rewrite only when it differs.
+
+    Deliberately a plain field refresh, not a migration hook: the stamp is
+    replaced, every other key is preserved, and nothing else changes. When
+    the stored version already matches, the file is not rewritten at all
+    (no mtime churn, no ``lastTouchedAt`` bump).
+
+    The read-modify-write goes through :func:`update_config_locked` — the
+    required path for new ``config.json`` mutations — so the refresh holds
+    the sidecar advisory lock and can never revert a concurrent settings
+    write with its own earlier snapshot. Callers that run while the
+    dashboard serves requests must ALSO hold the in-process asyncio config
+    lock (``_get_config_lock``) around the call, because the legacy writers
+    serialize on that lock alone.
+
+    Best-effort by design — a stale stamp is a diagnostic blemish, never
+    worth failing a boot over. Returns ``True`` when a refresh was written,
+    ``False`` when nothing needed doing (absent/empty file, current stamp)
+    or the file could not be safely read (an unreadable/torn config must
+    never be replaced with a stamped-but-empty one).
+    """
+    path = config_path()
+    if not path.exists():
+        return False
+
+    wrote = False
+
+    def _stamp_if_stale(data: dict) -> dict | None:
+        nonlocal wrote
+        if not data:
+            # Absent or emptied between the exists() check and the lock hold:
+            # there is nothing to refresh, and writing would CREATE a config
+            # holding only a meta block.
+            return None
+        meta = data.get("meta")
+        stored = meta.get("lastTouchedVersion") if isinstance(meta, dict) else None
+        if stored == __version__:
+            return None  # current: skip the write entirely
+        wrote = True
+        return data  # update_config_locked stamps the meta block itself
+
+    try:
+        update_config_locked(path, mutate=_stamp_if_stale)
+    except ConfigReadError:
+        logger.debug(
+            "config meta stamp refresh skipped: %s unreadable; leaving it untouched",
+            path,
+            exc_info=True,
+        )
+        return False
+    except OSError:
+        logger.debug(
+            "config meta stamp refresh failed: could not lock or write %s",
+            path,
+            exc_info=True,
+        )
+        return False
+    if wrote:
+        _invalidate_config_cache()
+    return wrote
+
+
 def workspace_dir_for(workspace: str | None = None) -> Path:
     """Resolve a named workspace to its directory path.
 

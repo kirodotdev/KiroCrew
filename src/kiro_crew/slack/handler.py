@@ -42,8 +42,7 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
     config_path,
-    read_config_for_update,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.context import (
@@ -64,6 +63,7 @@ from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
     options_control_is_stale,
     remember_slack_options,
+    run_config_write,
 )
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import ConversationLog, HistoryConsolidator
@@ -1057,15 +1057,19 @@ def _set_default_agent(name: str) -> None:
     path = config_path()
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
+
+    def _apply(data: dict) -> dict:
+        data.setdefault("agent", {})["default_agent"] = name
+        return data
+
     try:
-        data = read_config_for_update(path)
+        # Locked read-modify-write: holds the sidecar advisory lock so a
+        # concurrent config writer (dashboard PATCH, CLI, the boot-time meta
+        # refresh) cannot land between this read and write and get reverted.
+        update_config_locked(path, mutate=_apply)
     except ConfigReadError as e:
         # Fail closed: writing back a {} baseline would drop every other setting.
         raise ValueError(f"Failed to read config: {e}") from e
-    data.setdefault("agent", {})["default_agent"] = name
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_config_atomically(path, data)
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
     _cached_default_agent = name
@@ -1080,20 +1084,25 @@ def _persist_channel_config(
     path = config_path()
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
+
+    def _apply(data: dict) -> dict:
+        slack_data = data.setdefault("slack", {})
+        channels = slack_data.setdefault("channels", {})
+        ch = channels.setdefault(channel_id, {})
+        if activation is not None:
+            ch["activation"] = activation
+        if agent is not None:
+            ch["agent"] = agent
+        return data
+
     try:
-        data = read_config_for_update(path)
+        # Locked read-modify-write (see _set_default_agent): without the
+        # sidecar lock, a `!channel always` racing any other config writer
+        # could be silently reverted by the loser's stale snapshot.
+        update_config_locked(path, mutate=_apply)
     except ConfigReadError as e:
         # Fail closed: writing back a {} baseline would drop every other setting.
         raise ValueError(f"Failed to read config: {e}") from e
-    slack_data = data.setdefault("slack", {})
-    channels = slack_data.setdefault("channels", {})
-    ch = channels.setdefault(channel_id, {})
-    if activation is not None:
-        ch["activation"] = activation
-    if agent is not None:
-        ch["agent"] = agent
-    try:
-        write_config_atomically(path, data)
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
 
@@ -1641,7 +1650,7 @@ async def _handle_slash_command(
         agent_name = parts[1]
         if agent_name.lower() in ("default", "off"):
             try:
-                _set_default_agent("")
+                await run_config_write(_set_default_agent, "")
             except ValueError as e:
                 await slack.post_message(channel, f"❌ {e}", reply_ts)
                 return ""
@@ -1665,7 +1674,7 @@ async def _handle_slash_command(
             )
             return ""
         try:
-            _set_default_agent(resolved)
+            await run_config_write(_set_default_agent, resolved)
         except ValueError as e:
             await slack.post_message(channel, f"❌ {e}", reply_ts)
             return ""
@@ -2009,7 +2018,7 @@ async def _handle_slash_command(
                     )
                     return ""
                 agent_name = resolved
-            _persist_channel_config(channel, agent=agent_name)
+            await run_config_write(_persist_channel_config, channel, agent=agent_name)
             _reload_orch_cfg()
             sel().log_api_access(
                 caller=user_id,
@@ -2031,7 +2040,7 @@ async def _handle_slash_command(
             )
             return ""
 
-        _persist_channel_config(channel, activation=subcmd)
+        await run_config_write(_persist_channel_config, channel, activation=subcmd)
         _reload_orch_cfg()
         sel().log_api_access(
             caller=user_id,

@@ -256,51 +256,48 @@ class TestConfigWriteFailures:
         return cfg
 
     def test_set_default_agent_read_error(self, monkeypatch):
-        def _boom(_path):
+        def _boom(_path, *, mutate):
             raise ConfigReadError("config.json is not valid JSON")
 
-        monkeypatch.setattr(h, "read_config_for_update", _boom)
+        monkeypatch.setattr(h, "update_config_locked", _boom)
         with pytest.raises(ValueError, match="Failed to read config"):
             h._set_default_agent("kirocrew")
         assert h._cached_default_agent is None
 
     def test_set_default_agent_write_error(self, monkeypatch):
-        monkeypatch.setattr(h, "read_config_for_update", lambda _p: {})
-
-        def _boom(_path, _data):
+        def _boom(_path, *, mutate):
             raise OSError("disk full")
 
-        monkeypatch.setattr(h, "write_config_atomically", _boom)
+        monkeypatch.setattr(h, "update_config_locked", _boom)
         with pytest.raises(ValueError, match="Failed to write config"):
             h._set_default_agent("kirocrew")
         # Cache must NOT advance past a failed write.
         assert h._cached_default_agent is None
 
     def test_persist_channel_config_read_error(self, monkeypatch):
-        def _boom(_path):
+        def _boom(_path, *, mutate):
             raise ConfigReadError("truncated file")
 
-        monkeypatch.setattr(h, "read_config_for_update", _boom)
+        monkeypatch.setattr(h, "update_config_locked", _boom)
         with pytest.raises(ValueError, match="Failed to read config"):
             h._persist_channel_config("C1", activation="mention")
 
     def test_persist_channel_config_write_error(self, monkeypatch):
-        monkeypatch.setattr(h, "read_config_for_update", lambda _p: {})
-
-        def _boom(_path, _data):
+        def _boom(_path, *, mutate):
             raise OSError("read-only filesystem")
 
-        monkeypatch.setattr(h, "write_config_atomically", _boom)
+        monkeypatch.setattr(h, "update_config_locked", _boom)
         with pytest.raises(ValueError, match="Failed to write config"):
             h._persist_channel_config("C1", agent="kirocrew")
 
-    def test_persist_channel_config_merges_both_fields(self, monkeypatch):
-        written: dict = {}
-        monkeypatch.setattr(h, "read_config_for_update", lambda _p: {"slack": {"bot": "x"}})
-        monkeypatch.setattr(
-            h, "write_config_atomically", lambda _p, data: written.update(data)
-        )
+    def test_persist_channel_config_merges_both_fields(self, monkeypatch, tmp_path):
+        # Real file through the real locked primitive: the write must merge
+        # into existing settings, not overwrite them.
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"slack": {"bot": "x"}}), encoding="utf-8", newline="\n")
+        monkeypatch.setattr(h, "config_path", lambda: cfg)
         h._persist_channel_config("C9", activation="always", agent="kirocrew")
+        written = json.loads(cfg.read_text(encoding="utf-8"))
         ch = written["slack"]["channels"]["C9"]
         assert ch == {"activation": "always", "agent": "kirocrew"}
         # Sibling keys survive the merge.

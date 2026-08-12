@@ -59,6 +59,31 @@ from kiro_crew.validation import (
 
 logger = logging.getLogger(__name__)
 
+
+async def run_config_write(fn, /, *args, **kwargs):
+    """Run a blocking ``config.json`` writer under BOTH config locks.
+
+    Every ``config.json`` read-modify-write must serialize against two writer
+    generations at once: the sidecar advisory flock that ``update_config_locked``
+    takes (covering CLI / boot-refresh / other-process writers), and the
+    loop-side :func:`_get_config_lock` asyncio lock that the dashboard's legacy
+    handlers still rely on *alone* (bare ``read_config_for_update`` +
+    ``write_config_atomically`` — e.g. the memory-settings PUT). A writer that
+    holds only one of the two can interleave with the other family and silently
+    revert its settings from a stale snapshot.
+
+    This helper is the one async entry point that holds both: the asyncio lock
+    is acquired on the event loop, then ``fn`` (a sync callable that itself
+    routes through ``update_config_locked``) runs in a worker thread so the
+    flock wait never blocks the loop. Mirrors the boot-time meta-stamp refresh
+    in ``server.py``, which established the pattern.
+    """
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # lazy: import cycle
+
+    async with _get_config_lock():
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+
 # Per-turn compaction-failure backoff. See
 # _broadcast_compaction_result for the full rationale. Kept small: this is a
 # UX/spam guard, not a correctness gate — the underlying compaction attempt
