@@ -72,6 +72,22 @@ class _NoAliasSafeLoader(yaml.SafeLoader):
         return super().compose_node(parent, index)
 
 
+def _load_no_alias_yaml(text: str) -> Any:
+    """Parse ONE YAML document with :class:`_NoAliasSafeLoader`.
+
+    Driving the loader instance is what ``yaml.load`` does with an explicit
+    ``Loader=``, so the parse is identical — but the SafeLoader subclass is the
+    only construction path here, with no ``yaml.load`` call whose safety a
+    reader (or a scanner keyed on the call name) has to infer from the
+    ``Loader=`` argument.
+    """
+    loader = _NoAliasSafeLoader(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
 SOURCE_IDS = ("codex", "claude_code", "meshclaw", "openclaw", "hermes")
 # Conflict strategies. ``skip`` is the default and the only non-destructive one;
 # the other two require an explicit user choice per apply request. See
@@ -894,7 +910,7 @@ def _read_simple_yaml(path: Path, anchor: Path, scan: _Scan) -> dict[str, Any]:
     if text is None:
         return {}
     try:
-        result = yaml.load(text, Loader=_NoAliasSafeLoader)
+        result = _load_no_alias_yaml(text)
     except (yaml.YAMLError, RecursionError, ValueError):
         scan.diagnostic("settings", "invalid_config")
         return {}

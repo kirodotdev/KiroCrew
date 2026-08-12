@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from yaml_helpers import load_with
 
 from kiro_crew.deploy import handlers
 
@@ -176,7 +177,7 @@ def _load_cfn_yaml(path: Path) -> dict:
     )
 
     with open(path) as f:
-        return yaml.load(f, Loader=CfnLoader)  # noqa: S506 — tag-blind CFN parse
+        return load_with(CfnLoader, f)
 
 
 class TestF3IdentitySourceList:

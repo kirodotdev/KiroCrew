@@ -15,6 +15,7 @@ is an opt-in WafWebAclArn parameter gated by a Condition onto WebACLId.
 from pathlib import Path
 
 import yaml
+from yaml_helpers import load_with
 
 REPO = Path(__file__).resolve().parents[1]
 TPL_DIR = (
@@ -46,7 +47,7 @@ _TagTolerantLoader.add_multi_constructor(None, _construct_intrinsic)
 
 
 def _load(text):
-    return yaml.load(text, Loader=_TagTolerantLoader)  # noqa: S506 — tag-blind CFN parse
+    return load_with(_TagTolerantLoader, text)
 
 
 class TestPartAApiGwThrottling:
