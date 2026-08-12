@@ -11,6 +11,7 @@ time-decay retrieval via FAISS (falls back to FTS5 without embeddings).
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import heapq
 import json
@@ -168,9 +169,26 @@ def _get_snowball():
     return stemmer
 
 
+# The same words recur across many entries, so stemming per occurrence repeats
+# work that depends only on the word. Memoize on the word: one stem per distinct
+# word for the life of the process rather than one per occurrence per retrieval.
+# The win grows with the store, which only ever appends.
+#
+# The cache holds the resulting STRING, never the stemmer. The stemmer itself
+# must stay thread-local (see above) because it carries mutable cursor state;
+# caching its output is safe because stemming is deterministic per word.
+_STEM_CACHE_SIZE = 100_000
+
+
+@functools.lru_cache(maxsize=_STEM_CACHE_SIZE)
+def _stem_one(word: str) -> str:
+    """Return the Snowball stem of *word*, memoized per distinct word."""
+    return str(_get_snowball().stemWords([word])[0])
+
+
 def _stem_words(words: set[str]) -> set[str]:
     """Stem a set of words, returning both original and stemmed forms."""
-    return words | set(_get_snowball().stemWords(list(words)))
+    return words | {_stem_one(word) for word in words}
 
 
 _BUILTIN_PREFIXES = [

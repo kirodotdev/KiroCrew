@@ -16,8 +16,10 @@ from kiro_crew.vector_memory import (
     SemanticRejectCode,
     VectorMemoryStore,
     _contains_injection,
+    _get_snowball,
     _jaccard,
     _mmr_rerank,
+    _stem_one,
     _stem_words,
     _tokenize,
 )
@@ -818,6 +820,36 @@ class TestStemWords:
     def test_short_words_unchanged(self) -> None:
         result = _stem_words({"bug", "run", "fix"})
         assert {"bug", "run", "fix"} <= result
+
+    def test_memoized_stem_matches_the_batch_stemmer(self) -> None:
+        """The per-word cache must not change what stemming produces.
+
+        The previous implementation stemmed a whole set in one ``stemWords``
+        call. Memoizing per word is only safe if it yields the same set, so
+        pin that against the stemmer directly rather than against itself.
+        """
+        words = {
+            "testing", "deployment", "shipped", "fixes", "running", "caches",
+            "relevance", "ranked", "lessons", "workspaces", "bug", "run",
+        }
+        direct = words | set(_get_snowball().stemWords(sorted(words)))
+
+        assert _stem_words(words) == direct
+        # And per single word, where a batch call cannot mask an ordering bug.
+        for word in words:
+            assert _stem_words({word}) == {word} | set(_get_snowball().stemWords([word]))
+
+    def test_repeated_words_are_stemmed_once(self) -> None:
+        """A word seen again is served from the cache instead of re-stemmed."""
+        _stem_one.cache_clear()
+        _stem_words({"provisioning"})
+        after_first = _stem_one.cache_info()
+        _stem_words({"provisioning"})
+        after_second = _stem_one.cache_info()
+
+        assert after_first.misses == 1
+        assert after_second.misses == 1, "second call must not re-stem"
+        assert after_second.hits == after_first.hits + 1
 
 
 class TestEmbedFnLazyRebind:
