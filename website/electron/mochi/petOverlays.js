@@ -555,6 +555,18 @@ function createOverlayForDisplay(display) {
     y: display.bounds.y,
     width: display.bounds.width,
     height: display.bounds.height,
+    // A NON-ACTIVATING panel, macOS only (NSWindowStyleMaskNonactivatingPanel).
+    // Without it, a click on the pet activates the app, and the shell's
+    // app.on("activate") pulls a deliberately-hidden dashboard back up -- the
+    // user petted the cat and the whole app resurfaced. It also removes the
+    // knock-on where closing the chat panel revealed the dashboard: that only
+    // happened because the app had already been activated by the pet click, so
+    // hiding the panel handed key status to the dashboard window.
+    //
+    // Gated on darwin because `type` values are per-platform: "panel" is not
+    // one of Linux's (desktop/dock/toolbar/splash/notification) nor Windows'
+    // (toolbar) legal values, so passing it there would be rejected.
+    ...(process.platform === "darwin" ? { type: "panel" } : {}),
     frame: false,
     transparent: true,
     alwaysOnTop: true,

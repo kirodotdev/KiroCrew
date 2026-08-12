@@ -524,3 +524,62 @@ test("panelLeftForWidth pulls a growing panel back inside the work area", () => 
   // Non-zero work-area origin (secondary display / menu bar offsets).
   assert.strictEqual(mod.panelLeftForWidth(1500, 600, { x: 1000, y: 0, width: 1000, height: 900 }), 1400);
 });
+
+test("closing the panel shields the dashboard from macOS window promotion (darwin)", (t) => {
+  // Force darwin so the guard runs regardless of the CI runner's OS.
+  const origPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+  t.after(() => Object.defineProperty(process, "platform", { value: origPlatform, configurable: true }));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+
+  const { mod, ipcHandlers } = loadModule();
+
+  // Stand-in dashboard BaseWindow: visible but behind another app (not focused),
+  // and focusable -- exactly the state where hiding the key panel would let
+  // macOS promote it to the front.
+  const calls = [];
+  const fakeMain = {
+    destroyed: false,
+    focusable: true,
+    focused: false,
+    isDestroyed() { return this.destroyed; },
+    isFocusable() { return this.focusable; },
+    isFocused() { return this.focused; },
+    setFocusable(v) { this.focusable = v; calls.push(v); },
+  };
+  mod.setMainWindowGetter(() => fakeMain);
+  mod.bindPanelIpc(BASE);
+  mod.openPanelWindow(BASE);
+
+  // The X button's IPC. It must make the dashboard non-focusable BEFORE the
+  // hide (so there is nothing for macOS to promote), then restore it.
+  ipcHandlers["mochi-panel:close"]();
+  assert.deepStrictEqual(calls, [false], "dashboard made non-focusable across the hide");
+
+  t.mock.timers.tick(300);
+  assert.deepStrictEqual(calls, [false, true], "dashboard focusability restored after the settle delay");
+});
+
+test("closing the panel does NOT touch a dashboard that is itself focused", (t) => {
+  const origPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+  t.after(() => Object.defineProperty(process, "platform", { value: origPlatform, configurable: true }));
+
+  const { mod, ipcHandlers } = loadModule();
+  const calls = [];
+  const fakeMain = {
+    destroyed: false,
+    focusable: true,
+    focused: true, // dashboard is frontmost -- leave it alone
+    isDestroyed() { return this.destroyed; },
+    isFocusable() { return this.focusable; },
+    isFocused() { return this.focused; },
+    setFocusable(v) { this.focusable = v; calls.push(v); },
+  };
+  mod.setMainWindowGetter(() => fakeMain);
+  mod.bindPanelIpc(BASE);
+  mod.openPanelWindow(BASE);
+
+  ipcHandlers["mochi-panel:close"]();
+  assert.deepStrictEqual(calls, [], "a focused dashboard is never de-focused");
+});

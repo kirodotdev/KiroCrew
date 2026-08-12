@@ -1185,6 +1185,11 @@ function initMochi(deps) {
   BACKEND_URL = deps.backendUrl;
   fetchLocalToken = deps.fetchLocalToken;
   glog = deps.glog;
+  try {
+    require("./panelWindow").setMainWindowGetter(deps.getMainWindow);
+  } catch {
+    /* module shape changed */
+  }
   startMochiWatcher();
 }
 

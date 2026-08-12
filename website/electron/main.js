@@ -3202,7 +3202,7 @@ app.whenReady().then(async () => {
   // be answering before we ask it whether Mochi is on, and the pet page is
   // loaded from the gateway origin. Best-effort -- a failure here must never
   // block the dashboard, so everything is inside a catch that only logs.
-  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
+  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog, getMainWindow: () => mainWindow });
   // Same shape and the same best-effort contract: the companion's windows follow
   // the app's enabled state, and a failure here must never block the dashboard.
   try {

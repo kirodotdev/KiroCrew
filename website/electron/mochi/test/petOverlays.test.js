@@ -1,5 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
+const path = require("path");
+const Module = require("module");
 const {
   _inRect,
   isPetWindowOpen,
@@ -142,5 +144,95 @@ test("a stale closed handler does not evict the replacement overlay", () => {
     assert.equal(_getOverlays().get(DID), newWin, "replacement must survive a stale close");
   } finally {
     _getOverlays().delete(DID);
+  }
+});
+
+// The overlay covers a whole display and, when its hitbox says so, receives
+// real clicks. A click on a NORMAL window activates the app, and the shell's
+// app.on("activate") re-shows a deliberately-hidden dashboard -- so petting the
+// cat would resurface the whole app. NSWindowStyleMaskNonactivatingPanel
+// (type: "panel") is the fix, and dropping it regresses that SILENTLY, so the
+// shipped BrowserWindow option is what this pins.
+function stubElectronForOpen() {
+  const created = [];
+  class FakeWebContents {
+    on() {}
+    send() {}
+    isDestroyed() { return false; }
+    isLoading() { return true; }
+    setWindowOpenHandler() {}
+  }
+  class FakeWindow {
+    constructor(opts) {
+      this.opts = opts;
+      this.webContents = new FakeWebContents();
+      created.push(this);
+    }
+    setFocusable() {}
+    setAcceptFirstMouse() {}
+    setIgnoreMouseEvents() {}
+    setVisibleOnAllWorkspaces() {}
+    setAlwaysOnTop() {}
+    loadURL() {}
+    isVisible() { return false; }
+    isDestroyed() { return false; }
+    showInactive() {}
+    close() {}
+    on() {}
+  }
+  const DISPLAY = { id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } };
+  return {
+    created,
+    electron: {
+      app: { on() {}, setActivationPolicy() {}, dock: { show() {} } },
+      BrowserWindow: FakeWindow,
+      ipcMain: { on() {}, handle() {} },
+      shell: { openExternal() {}, showItemInFolder() {} },
+      screen: {
+        getPrimaryDisplay: () => DISPLAY,
+        getAllDisplays: () => [DISPLAY],
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        on() {},
+      },
+    },
+  };
+}
+
+function loadPetOverlays() {
+  const stub = stubElectronForOpen();
+  const modPath = path.join(__dirname, "..", "petOverlays.js");
+  const panelPath = path.join(__dirname, "..", "panelWindow.js");
+  delete require.cache[require.resolve(modPath)];
+  delete require.cache[require.resolve(panelPath)]; // bindIpc requires it fresh
+  const origLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === "electron") return stub.electron;
+    return origLoad(request, parent, isMain);
+  };
+  try {
+    // petOverlays requires ./panelWindow LAZILY (inside openPetWindow). Load it
+    // now, while the stub is active, so it caches with the fake electron rather
+    // than resolving the real one after the override is torn down.
+    require(panelPath);
+    return { mod: require(modPath), ...stub };
+  } finally {
+    Module._load = origLoad;
+  }
+}
+
+test("the pet overlay is a non-activating panel on macOS only", () => {
+  const { mod, created } = loadPetOverlays();
+  try {
+    mod.openPetWindow("http://localhost:6777", "tok");
+    assert.strictEqual(created.length, 1, "one overlay for the single display");
+    const { type } = created[0].opts;
+    if (process.platform === "darwin") {
+      assert.strictEqual(type, "panel");
+    } else {
+      // "panel" is not a legal `type` off macOS; the option must be omitted.
+      assert.strictEqual(type, undefined);
+    }
+  } finally {
+    mod.closePetWindow();
   }
 });
