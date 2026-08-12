@@ -49,6 +49,88 @@ const PET_H = 128;
 /** Force-stop a drag that never saw a mouseup (upstream value). */
 const DRAG_SAFETY_MS = 10_000;
 
+// ── Overlay error-page recovery ────────────────────────────────────────────
+//
+// A pet overlay covers a WHOLE display and is frameless, click-through and
+// always-on-top. If its `pet.html` load is answered with a gateway error page
+// (a token-required 401/403 — e.g. the session cookie expired while the machine
+// slept and a reconnected display builds a fresh overlay — or any other
+// 4xx/5xx), that opaque page blankets the entire display with no title bar to
+// close and no click target: the only escape is force-quitting the whole app.
+//
+// An error page is a COMPLETED navigation (the gateway serves an HTML/JSON
+// body), so `did-fail-load` never fires and `did-finish-load` DOES — meaning
+// the overlay would happily show it. `did-navigate`'s httpResponseCode is the
+// only signal that the page is an error, not the pet.
+//
+// Recovery is owned entirely by the host's 5s reconcile tick. The handler here
+// only HIDES an error page and latches the overlay; the host re-arms it with a
+// token it already resolved for the current target (rearmBlankedOverlays). One
+// recovery path, living inside the loop that owns target/switch state — so there
+// is no provider seam, no retry budget, and no superseded-window race to guard.
+
+/** True for ANY gateway error page on the main frame (4xx/5xx) — the signal to
+ * hide, since an error body is a completed navigation, not a did-fail-load. */
+function isOverlayErrorPage(httpResponseCode) {
+  return typeof httpResponseCode === "number" && httpResponseCode >= 400;
+}
+
+/**
+ * Overlays hidden because their last main-frame navigation was a gateway error
+ * page, so the load-finished handler knows NOT to reveal them and the reconcile
+ * tick knows which to re-arm. A WeakSet so a closed/GC'd window drops out on its
+ * own and never pins a dead BrowserWindow.
+ * @type {WeakSet<object>}
+ */
+const overlayBlanked = new WeakSet();
+
+/**
+ * React to a completed main-frame navigation: an error page (>=400) latches the
+ * overlay as blanked and hides it so it can never cover the display; any other
+ * status clears the latch. Reloading is NOT done here — the reconcile tick owns
+ * it (rearmBlankedOverlays), so there is no async work and no switch race.
+ */
+function handleOverlayNavigation(win, httpResponseCode) {
+  if (win.isDestroyed()) return;
+  if (isOverlayErrorPage(httpResponseCode)) {
+    overlayBlanked.add(win);
+    win.hide();
+  } else {
+    overlayBlanked.delete(win);
+  }
+}
+
+/** True when any live overlay is currently hidden on an error page, so the host
+ * only re-mints a token when there is actually one to heal. */
+function hasBlankedOverlay() {
+  for (const win of overlays.values()) {
+    if (!win.isDestroyed() && overlayBlanked.has(win)) return true;
+  }
+  return false;
+}
+
+/**
+ * Re-arm every overlay hidden on an error page by reloading it with the
+ * (baseUrl, token) the host ALREADY resolved for the current target this
+ * reconcile tick. The host owns target resolution AND switches, so this takes
+ * concrete values rather than resolving again — no provider seam, no retry
+ * budget, and no superseded-window race (the reload is synchronous inside the
+ * tick). An empty token means no usable credential yet: stay blank and let the
+ * next tick try. Recovering an expired cookie and a transient 5xx share this one
+ * path.
+ */
+function rearmBlankedOverlays(baseUrl, token) {
+  if (!baseUrl || !token) return;
+  for (const [, win] of overlays) {
+    if (win.isDestroyed() || !overlayBlanked.has(win)) continue;
+    // Refresh the shared target so overlays built LATER for other displays load
+    // the same fresh origin + token.
+    currentBaseUrl = baseUrl;
+    currentToken = token;
+    win.loadURL(mochiPageUrl(currentBaseUrl, "pet.html", token));
+  }
+}
+
 // ── Overlay registry (broadcastService.ts, overlay half) ───────────────────
 
 /** @type {Map<number, BrowserWindow>} displayId -> overlay */
@@ -602,6 +684,14 @@ function createOverlayForDisplay(display) {
     const safeUrl = String(url || "").split("?")[0];
     console.warn(`Mochi pet: load failed (${code} ${desc}) for ${safeUrl}`);
   });
+
+  // A gateway error page (any status >= 400) is a COMPLETED navigation, not a
+  // did-fail-load, so without this the frameless full-display overlay would
+  // reveal it with no way to close it. Hide + latch here; the reconcile tick
+  // re-arms the overlay with a fresh token (rearmBlankedOverlays).
+  win.webContents.on("did-navigate", (_e, _url, httpResponseCode) => {
+    handleOverlayNavigation(win, httpResponseCode);
+  });
   win.webContents.on("render-process-gone", (_e, details) => {
     console.warn("Mochi pet: renderer gone —", details && details.reason);
     // Tear down so the reconcile loop recreates it: isDestroyed() stays false
@@ -651,7 +741,11 @@ function wireHandshake(win, displayId, pos) {
     };
     send();
     setTimeout(send, 300);
-    if (!win.isVisible()) win.showInactive();
+    // Never reveal an overlay currently hidden on a gateway error page (see the
+    // did-navigate latch): showing it would blanket the display with an
+    // uncloseable page. A healed reload clears the latch and re-fires
+    // did-finish-load, which then shows the pet.
+    if (!overlayBlanked.has(win) && !win.isVisible()) win.showInactive();
     startHitPoll();
     assertHostStaysInDock();
   });
@@ -787,7 +881,11 @@ function showPetWindow() {
   for (const win of overlays.values()) {
     if (win.isDestroyed()) continue;
     win.setAlwaysOnTop(true, "screen-saver");
-    if (!win.isVisible()) win.showInactive();
+    // Honor the error-page latch: the hide-all restore must not re-reveal an
+    // overlay currently hidden on a gateway error page (same guard as the
+    // load-finished handler), or CMD+SHIFT+H would bring the uncloseable page
+    // back after a persisted auth failure.
+    if (!overlayBlanked.has(win) && !win.isVisible()) win.showInactive();
   }
 }
 
@@ -871,7 +969,9 @@ async function transferPetToDisplayById(displayId, localX, localY) {
           resolve(true);
         }, 300);
       });
-      win.showInactive();
+      // Do not reveal an overlay hidden on a gateway error page (see the
+      // did-navigate latch); a healed reload clears the latch and shows it.
+      if (!overlayBlanked.has(win) && !win.isVisible()) win.showInactive();
     });
   }
 
@@ -893,11 +993,16 @@ module.exports = {
   transferPetToDisplayById,
   getSavedPetPos,
   broadcastToOverlays,
+  rearmBlankedOverlays,
+  hasBlankedOverlay,
   // Exported for tests: the pure geometry decisions, no Electron needed.
   _inRect: inRect,
   _shouldIgnoreAt: shouldIgnoreAt,
   _clampLocal: clampLocal,
   _findNearestDisplay: findNearestDisplay,
+  // Exported for tests: the error-page recovery policy + navigation handler.
+  _isOverlayErrorPage: isOverlayErrorPage,
+  _handleOverlayNavigation: handleOverlayNavigation,
   // Exported for tests: overlay-map lifecycle (identity-checked cleanup).
   _registerOverlay: registerOverlay,
   _getOverlays: getOverlays,

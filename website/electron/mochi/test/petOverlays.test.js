@@ -236,3 +236,139 @@ test("the pet overlay is a non-activating panel on macOS only", () => {
     mod.closePetWindow();
   }
 });
+
+// ── Overlay error-page recovery ────────────────────────────────────────────
+// A pet overlay covers a whole frameless, click-through display, so a gateway
+// error page (401/403/4xx/5xx) rendered in it would trap the user behind an
+// uncloseable full-screen page (the reported "403 after sleep" bug). An error
+// page is a COMPLETED navigation, so the status code is the only signal; the
+// handler only hides+latches, and recovery is owned by the host's reconcile tick.
+const fs = require("node:fs");
+const {
+  _isOverlayErrorPage,
+  _handleOverlayNavigation,
+  hasBlankedOverlay,
+  rearmBlankedOverlays,
+  _registerOverlay,
+  _getOverlays,
+} = require("../petOverlays");
+
+// A fake overlay window: identity for the WeakSet, plus the methods the handler
+// and re-arm touch. Registered in the real overlays map so hasBlankedOverlay /
+// rearmBlankedOverlays see it, then removed in a finally.
+function fakeWin() {
+  return {
+    destroyed: false,
+    hidden: false,
+    loadedUrl: null,
+    isDestroyed() { return this.destroyed; },
+    hide() { this.hidden = true; },
+    showInactive() { this.hidden = false; },
+    isVisible() { return !this.hidden; },
+    loadURL(u) { this.loadedUrl = u; },
+    on() {},
+  };
+}
+
+test("any >=400 status is an error page; success and redirects are not", () => {
+  // The reported harm is "an opaque page blankets the display" — a 404/500 body
+  // traps the user identically to a 401/403, so hiding must cover all of them.
+  for (const code of [400, 401, 403, 404, 500, 503]) {
+    assert.equal(_isOverlayErrorPage(code), true, `${code} is an error page`);
+  }
+  for (const code of [200, 301, 304, undefined, null, "500"]) {
+    assert.equal(_isOverlayErrorPage(code), false, `${code} is not an error page`);
+  }
+});
+
+test("handleOverlayNavigation hides+latches an error page and clears on a good load", () => {
+  const DID = 99311;
+  const win = fakeWin();
+  _registerOverlay(DID, win);
+  try {
+    _handleOverlayNavigation(win, 403);
+    assert.equal(win.hidden, true, "an error page must hide the overlay");
+    assert.equal(hasBlankedOverlay(), true, "the overlay is latched as blanked");
+
+    _handleOverlayNavigation(win, 200); // a healed reload lands on 200
+    assert.equal(hasBlankedOverlay(), false, "a good load clears the latch");
+
+    _handleOverlayNavigation(win, 500); // a 5xx also latches, not only auth codes
+    assert.equal(hasBlankedOverlay(), true, "a 5xx error page also latches");
+
+    win.destroyed = true; // a destroyed window is a no-op, never throws
+    assert.doesNotThrow(() => _handleOverlayNavigation(win, 200));
+  } finally {
+    _getOverlays().delete(DID);
+  }
+});
+
+test("rearmBlankedOverlays reloads only blanked windows, with the token the host resolved", () => {
+  const BLANK = 99312;
+  const OK = 99313;
+  const blanked = fakeWin();
+  const healthy = fakeWin();
+  _registerOverlay(BLANK, blanked);
+  _registerOverlay(OK, healthy);
+  try {
+    _handleOverlayNavigation(blanked, 403); // latch the blanked one; healthy never errored
+    rearmBlankedOverlays("http://localhost:5476", "tok123");
+    assert.match(blanked.loadedUrl || "", /token=tok123/, "blanked overlay reloads with the host's token");
+    assert.equal(healthy.loadedUrl, null, "a non-blanked overlay is left untouched");
+  } finally {
+    _getOverlays().delete(BLANK);
+    _getOverlays().delete(OK);
+  }
+});
+
+test("rearmBlankedOverlays refuses to reload with an empty/missing token", () => {
+  const DID = 99314;
+  const win = fakeWin();
+  _registerOverlay(DID, win);
+  try {
+    _handleOverlayNavigation(win, 403);
+    rearmBlankedOverlays("http://localhost:5476", ""); // no usable credential
+    assert.equal(win.loadedUrl, null, "an empty token must not trigger a reload (it would 403 again)");
+    rearmBlankedOverlays("", "tok"); // no base url
+    assert.equal(win.loadedUrl, null, "a missing base url must not trigger a reload");
+  } finally {
+    _getOverlays().delete(DID);
+  }
+});
+
+// Source guards for invariants that cannot be exercised without Electron.
+const fsSrc = fs.readFileSync(path.join(__dirname, "..", "petOverlays.js"), "utf8");
+const idxSrc = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+
+test("did-navigate delegates to the single navigation handler (no inline retry path)", () => {
+  assert.match(fsSrc, /did-navigate/, "must hook did-navigate (an error page is not a did-fail-load)");
+  assert.match(fsSrc, /handleOverlayNavigation\(win, httpResponseCode\)/,
+    "did-navigate must delegate to handleOverlayNavigation");
+  // The inline fast-retry machinery is gone (Fable: one reconcile-owned path).
+  for (const gone of ["setPetReauthProvider", "fastReauthOverlay", "reloadOverlayForCurrentTarget", "overlayReauthAttempts", "isRegisteredOverlay"]) {
+    assert.ok(!fsSrc.includes(gone), `${gone} must be removed (single reconcile-owned recovery path)`);
+  }
+  assert.ok(!idxSrc.includes("setPetReauthProvider"), "index.js must not wire a reauth provider anymore");
+});
+
+test("every showInactive reveal is guarded by the blanked latch", () => {
+  const reveals = fsSrc.match(/win\.showInactive\(\)/g) || [];
+  const guarded = fsSrc.match(/!overlayBlanked\.has\(win\)[\s\S]{0,80}win\.showInactive\(\)/g) || [];
+  assert.ok(reveals.length >= 3, "expected the three overlay reveal sites (handshake, showPetWindow, transfer)");
+  assert.equal(guarded.length, reveals.length, "every showInactive reveal must be latch-guarded");
+});
+
+test("reconcile re-arms with a current-target token: remote its own, self the cached local token", () => {
+  // The host passes the token it ALREADY resolved this tick; for self it reuses
+  // the probe-maintained cached token (empty-cookie case), only when something
+  // is actually blanked — and NEVER mints here, or a persistent non-auth error
+  // would churn a fresh session token every tick.
+  const callAt = idxSrc.indexOf("rearmBlankedOverlays(mochiPetBaseUrl");
+  assert.ok(callAt >= 0, "reconcile must call rearmBlankedOverlays with the resolved base url + token");
+  const region = idxSrc.slice(idxSrc.indexOf("if (hasBlankedOverlay())"), callAt + 60);
+  assert.match(region, /hasBlankedOverlay\(\)/, "only re-arm when an overlay is actually blanked");
+  assert.match(region, /SELF_INSTANCE/, "self supplies a local token (empty-cookie case)");
+  assert.match(region, /gatewayToken\(\)/, "self reuses the probe-maintained cached token");
+  assert.ok(!region.includes('cachedGatewayToken = ""'),
+    "must NOT clear the token cache in the rearm path — probe-driven invalidation only, or a persistent non-auth error mints every tick");
+});
