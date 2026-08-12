@@ -392,8 +392,8 @@ class FolderWatcher:
             if idx and idx % _PAUSE_RECHECK_FILES == 0:
                 paused = self._is_paused(source_id)
             if paused:
-                self._flush_last_seen(last_seen_batch)
-                self.store.db.commit()
+                await asyncio.to_thread(
+                    self._flush_last_seen_and_commit, last_seen_batch)
                 return {**stats, "status": "paused"}
 
             state = existing.get(file_path)
@@ -467,10 +467,14 @@ class FolderWatcher:
             # file has changed, so that claim now points at the wrong document and
             # has to go before the new content lands.
             if state:
-                self.store.release_stale_claim(
-                    source_id, state.get("content_hash"), content_hash,
+                await asyncio.to_thread(
+                    self.store.release_stale_claim,
+                    source_id,
+                    state.get("content_hash"),
+                    content_hash,
                     json.loads(state.get("item_ids", "[]") or "[]"),
-                    state.get("text_hash"))
+                    state.get("text_hash"),
+                )
 
             # New or changed file — ingest
             if state and state.get("status") == "done":
@@ -530,8 +534,8 @@ class FolderWatcher:
                         stats["budget_reached"] = 1
                         break
 
-        self._flush_last_seen(last_seen_batch)
-        self.store.db.commit()  # Batch commit for all non-crash-recovery updates
+        await asyncio.to_thread(
+            self._flush_last_seen_and_commit, last_seen_batch)
         # Always report chunks consumed so the caller can track global budget.
         stats["chunks_ingested"] = chunks_ingested
         # Targeted cross-source dedup for each newly ingested/changed file, so a folder
@@ -790,6 +794,22 @@ class FolderWatcher:
             "UPDATE folder_file_state SET last_seen = ? WHERE source_id = ? AND file_path = ?",
             batch)
         batch.clear()
+
+    def _flush_last_seen_and_commit(self, batch: list[tuple[str, str, str]]) -> None:
+        """Apply the accumulated last-seen touches and commit them.
+
+        Exists so the caller can offload BOTH in a single ``asyncio.to_thread``
+        hop. ``store.db`` is a thread-local connection, so two separate hops are
+        not equivalent to one: the default executor is free to run them on
+        different workers, and the commit would then land on a different
+        connection than the ``executemany`` it is meant to commit.
+
+        The commit deliberately does not run in a ``finally``. A failed flush has
+        nothing to commit, and the exception propagates to the caller exactly as
+        it did when both statements ran inline.
+        """
+        self._flush_last_seen(batch)
+        self.store.db.commit()
 
     def _is_paused(self, source_id: str) -> bool:
         """Check if source has scan_paused flag set."""

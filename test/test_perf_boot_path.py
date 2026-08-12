@@ -327,7 +327,6 @@ class _CountingDb:
         self._db = db
         self.select_sources = 0
         self.last_seen_execute = 0
-        self.last_seen_executemany = 0
 
     def execute(self, sql, *args, **kwargs):
         if "FROM sources WHERE id" in sql:
@@ -335,12 +334,6 @@ class _CountingDb:
         if "SET last_seen" in sql:
             self.last_seen_execute += 1
         return self._db.execute(sql, *args, **kwargs)
-
-    def executemany(self, sql, seq, *args, **kwargs):
-        seq = list(seq)
-        if "SET last_seen" in sql:
-            self.last_seen_executemany += 1
-        return self._db.executemany(sql, seq, *args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._db, name)
@@ -391,8 +384,18 @@ class TestFolderWatcherScanQueryCount:
 
         counting = _CountingDb(store.db)
         # ``KnowledgeStore.db`` is a read-only property backed by a per-thread
-        # connection; the scan runs on this thread, so swap the thread-local.
+        # connection. This wrapper covers the on-loop pause reads; the batched
+        # write now runs on a worker connection and is observed at its method
+        # boundary below instead.
         store._thread_local.conn = counting
+        batch_sizes: list[int] = []
+        original_flush = fw._flush_last_seen
+
+        def _counting_flush(batch):
+            batch_sizes.append(len(batch))
+            original_flush(batch)
+
+        fw._flush_last_seen = _counting_flush  # type: ignore[method-assign]
         await fw.scan_source(source)
 
         assert counting.select_sources <= 2, (
@@ -402,7 +405,9 @@ class TestFolderWatcherScanQueryCount:
         assert counting.last_seen_execute == 0, (
             "last_seen touches must be batched, not issued one per file"
         )
-        assert counting.last_seen_executemany == 1
+        assert batch_sizes == [n_files], (
+            "all unchanged-file last_seen touches must land in one worker batch"
+        )
 
     @pytest.mark.asyncio
     async def test_last_seen_is_still_written(self, tmp_path: Path) -> None:
