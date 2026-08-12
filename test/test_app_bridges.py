@@ -975,6 +975,576 @@ class TestMCPRegistration:
 
 
 # ---------------------------------------------------------------------------
+# Stdio interpreter resolution (one policy shared with the backend launcher)
+# ---------------------------------------------------------------------------
+
+
+def _fake_venv_python(app_root: Path) -> Path:
+    """Create a runnable venv interpreter at the platform's expected location.
+
+    Non-empty and executable on purpose: the resolver rejects zero-byte files
+    (the Microsoft-Store-stub / interrupted-copy shape) and files without the
+    execute bit.
+    """
+    if platform_compat.IS_WINDOWS:
+        py = app_root / ".venv" / "Scripts" / "python.exe"
+    else:
+        py = app_root / ".venv" / "bin" / "python3"
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text("#!/bin/sh\n")
+    py.chmod(0o755)
+    return py
+
+
+class TestStdioInterpreterResolution:
+    """The stdio MCP registration path must apply the SAME interpreter policy as the
+    app backend launcher: the app's own venv interpreter first (that is where its
+    requirements were installed), else the gateway's ``sys.executable`` — never a bare
+    PATH-resolved name. The rewrite predicate is deliberately narrow; both sides of
+    the boundary are pinned here because getting it wrong breaks working apps."""
+
+    def _register_stdio(self, tmp_path, app_env, monkeypatch, server_cfg, *, setup=None):
+        """Install an app with one stdio server and return its written entry.
+
+        ``setup(app_root)`` runs AFTER install (install_app removes a
+        pre-existing dest dir, so a venv must be created post-install).
+        """
+        import kiro_crew.apps.bridges as bmod
+
+        mcp_path = tmp_path / "mcp.json"
+        monkeypatch.setattr(bmod, "_mcp_json_path", lambda: mcp_path)
+        src = _make_app_source(tmp_path, mcpServers={"srv": server_cfg})
+        install_app(src)
+        if setup is not None:
+            setup(app_env["home"] / "apps" / "test-app")
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        registered = _register_mcp_servers("test-app", manifest)
+        assert registered == ["test-app:srv"]
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
+        return data["mcpServers"]["test-app:srv"]
+
+    def test_bare_python_resolves_to_the_app_venv_interpreter(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import sys
+
+        created: list[Path] = []
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3", "args": ["-m", "myapp.server"]},
+            setup=lambda root: created.append(_fake_venv_python(root)),
+        )
+        assert entry["command"] == str(created[0])
+        assert entry["command"] != sys.executable
+        # args survive untouched — the module path is what makes it the app's server.
+        assert entry["args"] == ["-m", "myapp.server"]
+
+    def test_bare_python_falls_back_to_sys_executable_without_a_venv(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import sys
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3", "args": ["-m", "myapp.server"]},
+        )
+        assert entry["command"] == sys.executable
+
+    def test_an_absolute_command_is_never_rewritten(self, tmp_path, app_env, monkeypatch):
+        # Even with a venv present: an explicit path was a deliberate choice.
+        cmd = "C:\\tools\\srv.exe" if platform_compat.IS_WINDOWS else "/usr/local/bin/srv"
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"command": cmd, "args": []},
+            setup=_fake_venv_python,
+        )
+        assert entry["command"] == cmd
+
+    def test_a_bare_path_dependency_the_venv_lacks_is_left_alone(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # `node` is a legitimate PATH dependency; the app's venv does not provide
+        # it, so rewriting would break a working app.
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"command": "node", "args": ["server.js"]},
+            setup=_fake_venv_python,
+        )
+        assert entry["command"] == "node"
+
+    def test_a_path_carrying_command_never_reaches_the_venv_lookup(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # The no-path-separator guard is a security boundary, not a nicety: a
+        # traversal-shaped command (`../data/evil`) must never be joined under
+        # `.venv/bin/` and rewritten to an absolute path outside the venv, even
+        # when the joined target happens to exist.
+        def plant_traversal_target(app_root: Path) -> None:
+            # A real venv layout (bin/ exists), plus a RUNNABLE file OUTSIDE
+            # bin/ that a naive `.venv/bin / <command>` join would reach via
+            # `..` — executable, so the separator guard is the only defence.
+            _fake_venv_python(app_root)
+            target = (app_root / ".venv" / "bin" / ".." / "data" / "evil").resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("#!/bin/sh\n")
+            target.chmod(0o755)
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "../data/evil", "args": []},
+            setup=plant_traversal_target,
+        )
+        assert entry["command"] == "../data/evil"
+
+    def test_a_venv_provided_console_script_is_resolved(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # A console script pip installed into the app venv is invisible to PATH
+        # (the venv is never activated) — resolving it is what makes such a
+        # manifest work at all.
+        created: list[Path] = []
+
+        def make_script(app_root: Path) -> None:
+            if platform_compat.IS_WINDOWS:
+                script = app_root / ".venv" / "Scripts" / "my-mcp-server.exe"
+            else:
+                script = app_root / ".venv" / "bin" / "my-mcp-server"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text("#!/bin/sh\n")
+            script.chmod(0o755)
+            created.append(script)
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"command": "my-mcp-server", "args": []},
+            setup=make_script,
+        )
+        assert entry["command"] == str(created[0])
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS, reason="Windows has no execute bit to drop"
+    )
+    def test_a_non_executable_venv_interpreter_is_not_used(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # A venv python that lost its execute bit (truncated copy, permissions
+        # dropped in transit) must not displace the always-runnable
+        # sys.executable fallback — rewriting to it guarantees EACCES at spawn.
+        import sys
+
+        def make_broken_venv(app_root: Path) -> None:
+            py = _fake_venv_python(app_root)
+            py.chmod(0o644)
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"command": "python3", "args": []},
+            setup=make_broken_venv,
+        )
+        assert entry["command"] == sys.executable
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS, reason="Windows has no execute bit to drop"
+    )
+    def test_a_non_executable_venv_file_never_displaces_a_path_command(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # A non-runnable venv file with a matching name (a data artifact, a
+        # partial pip install) must not hijack a command PATH would satisfy.
+        def make_data_artifact(app_root: Path) -> None:
+            artifact = app_root / ".venv" / "bin" / "node"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text("not a binary")
+            artifact.chmod(0o644)
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"command": "node", "args": ["server.js"]},
+            setup=make_data_artifact,
+        )
+        assert entry["command"] == "node"
+
+    def test_a_gateway_module_server_is_pinned_to_the_gateway_interpreter(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # A stdio server that runs Kiro Crew's OWN code (`-m kiro_crew...`) must
+        # run under the gateway's interpreter even when the app has a venv: app
+        # venvs are created without --system-site-packages, so kiro_crew is not
+        # importable there and the venv interpreter dies on import — silently,
+        # since the rewritten venv path exists and no warning fires.
+        import sys
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3", "args": ["-s", "-m", "kiro_crew.apps.builtins.x.server"]},
+            setup=_fake_venv_python,
+        )
+        assert entry["command"] == sys.executable
+
+    def test_a_windows_exe_spelling_of_python_gets_the_interpreter_policy(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # `python.exe` is an ordinary Windows spelling of the same launcher; it
+        # must resolve through the interpreter policy, not miss the venv via a
+        # doubled `.exe` probe and fall through to PATH.
+        created: list[Path] = []
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python.exe", "args": []},
+            setup=lambda root: created.append(_fake_venv_python(root)),
+        )
+        assert entry["command"] == str(created[0])
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_WINDOWS,
+        reason="drive-qualified names are a Windows path form",
+    )
+    def test_a_drive_qualified_command_is_never_rewritten(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # `D:foo` carries no separator but names a different drive; joining it
+        # under `.venv\Scripts` would DISCARD the venv anchor (pathlib treats
+        # the right operand as a new anchor), so the guard must reject it.
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"command": "D:foo", "args": []},
+            setup=_fake_venv_python,
+        )
+        assert entry["command"] == "D:foo"
+
+    def test_a_zero_byte_venv_interpreter_is_not_used(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # The interrupted-copy / Store-stub shape: a zero-byte python.exe
+        # passes the Windows extension check (there is no execute bit), so the
+        # resolver must reject empty files on every platform.
+        import sys
+
+        def make_stub_venv(app_root: Path) -> None:
+            py = _fake_venv_python(app_root)
+            py.write_text("")  # truncate to zero bytes, still chmod +x
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"command": "python3", "args": []},
+            setup=make_stub_venv,
+        )
+        assert entry["command"] == sys.executable
+
+    def test_a_script_argument_named_dash_m_does_not_trigger_the_gateway_pin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # `python3 server.py -m kiro_crew.mode`: the -m belongs to the SCRIPT
+        # (CPython stops parsing its own options at the first operand), so the
+        # entry must resolve venv-first — pinning it to sys.executable would
+        # strand a venv-dependent server without its dependencies.
+        created: list[Path] = []
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3", "args": ["server.py", "-m", "kiro_crew.mode"]},
+            setup=lambda root: created.append(_fake_venv_python(root)),
+        )
+        assert entry["command"] == str(created[0])
+
+    def test_interpreter_options_before_dash_m_still_trigger_the_pin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import sys
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3", "args": ["-s", "-u", "-m", "kiro_crew.apps.x"]},
+            setup=_fake_venv_python,
+        )
+        assert entry["command"] == sys.executable
+
+    def test_separate_value_options_do_not_break_the_pin_scan(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # -X / -W / --check-hash-based-pycs consume the NEXT token as a value;
+        # the scanner must skip that value instead of reading it as the script
+        # operand and missing the -m that follows.
+        import sys
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3",
+             "args": ["-X", "dev", "-W", "ignore", "-m", "kiro_crew.apps.x"]},
+            setup=_fake_venv_python,
+        )
+        assert entry["command"] == sys.executable
+
+    def test_an_attached_module_spelling_triggers_the_pin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # CPython accepts -mMODULE in one token.
+        import sys
+
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3", "args": ["-mkiro_crew.apps.x"]},
+            setup=_fake_venv_python,
+        )
+        assert entry["command"] == sys.executable
+
+    def test_a_dash_c_program_never_triggers_the_pin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # -c consumes the rest as an inline program; an -m after it belongs to
+        # that program's argv, not to CPython. The attached spelling
+        # (-cPROGRAM) followed directly by dash tokens is the case where only
+        # the -c stop prevents a wrong pin — the following token is not a
+        # non-dash operand, so no other branch would halt the scan.
+        created: list[Path] = []
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3",
+             "args": ["-cimport server", "-m", "kiro_crew.x"]},
+            setup=lambda root: created.append(_fake_venv_python(root)),
+        )
+        assert entry["command"] == str(created[0])
+
+    def test_an_option_value_that_looks_like_a_script_stays_venv_first(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # `-X importtime server.py`: the scan must not treat `importtime` as
+        # the operand, but `server.py` IS one — no pin, venv-first applies.
+        created: list[Path] = []
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3", "args": ["-X", "importtime", "server.py"]},
+            setup=lambda root: created.append(_fake_venv_python(root)),
+        )
+        assert entry["command"] == str(created[0])
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_WINDOWS,
+        reason="drive-qualified names are a Windows path form",
+    )
+    def test_a_missing_drive_qualified_command_logs_the_warning(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        # `D:missing` carries no separator but names a location; it is never
+        # rewritten AND it must not silently skip the unresolvable diagnostic.
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            entry = self._register_stdio(
+                tmp_path, app_env, monkeypatch, {"command": "D:missing", "args": []},
+            )
+        assert entry["command"] == "D:missing"
+        assert "resolves to no existing executable" in caplog.text
+
+    def test_the_host_cli_pin_still_wins(self, tmp_path, app_env, monkeypatch):
+        import sys
+
+        # `kirocrew` is pinned to `sys.executable -m kiro_crew` by
+        # _pin_host_cli_command BEFORE stdio resolution; the venv must not
+        # override that (the host CLI is gateway code, not app code).
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "kirocrew", "args": ["app", "mcp", "test-app"]},
+            setup=_fake_venv_python,
+        )
+        assert entry["command"] == sys.executable
+        assert entry["args"][:3] == ["-s", "-m", "kiro_crew"]
+
+    def test_an_http_entry_is_unaffected(self, tmp_path, app_env, monkeypatch):
+        import kiro_crew.apps.backend as backend_mod
+
+        monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: 9000)
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"url": "http://localhost:9000/mcp"}
+        )
+        assert "command" not in entry
+
+    def test_no_cwd_key_is_emitted_for_stdio_entries(self, tmp_path, app_env, monkeypatch):
+        # kiro-cli's documented local-server schema has no `cwd` property and
+        # (verified empirically against kiro-cli 2.17.0) a `cwd` key is parsed
+        # but IGNORED at spawn time — the server starts in the invocation dir
+        # regardless. Writing a key that claims to set the working directory but
+        # provably does nothing would be a standing lie in the agent config, and
+        # risks a stricter future parser rejecting the whole agent file. Keep
+        # the entry schema-clean until kiro-cli grows real support.
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch, {"command": "python3", "args": []},
+            setup=_fake_venv_python,
+        )
+        assert "cwd" not in entry
+
+    def test_an_unresolvable_path_command_logs_a_warning_and_still_registers(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        # The missing diagnostic the issue names: kiro-cli reports nothing when a
+        # spawn fails, so registration is the one place a bad command can be
+        # surfaced. Warn — but never raise, and still write the entry. Only a
+        # path-carrying command is probed (one stat): a bare name is not, because
+        # PATH at spawn time is not the gateway's PATH, the binary may be
+        # installed later (onEnable, node_modules/.bin), and walking PATH with
+        # shutil.which from this event-loop-reachable path can block on a
+        # network-mounted PATH entry.
+        missing = str(tmp_path / "definitely" / "not-a-real-binary-1807")
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            entry = self._register_stdio(
+                tmp_path, app_env, monkeypatch,
+                {"command": missing, "args": []},
+            )
+        assert entry["command"] == missing
+        warning = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        )
+        assert "test-app" in warning
+        assert "srv" in warning
+        # The message renders the command with %r, so Windows backslashes appear
+        # escaped — compare against the repr form, not the raw path.
+        assert repr(missing) in warning
+
+    def test_a_bare_name_is_not_probed_and_logs_no_warning(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            entry = self._register_stdio(
+                tmp_path, app_env, monkeypatch,
+                {"command": "definitely-not-a-real-binary-1807", "args": []},
+            )
+        assert entry["command"] == "definitely-not-a-real-binary-1807"
+        assert "resolves to no existing executable" not in caplog.text
+
+    def test_the_probe_is_offloaded_when_an_event_loop_is_running(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # The probe stats a caller-supplied path, which can block in the
+        # kernel on a dead network mount; on the loop thread that freezes
+        # every task until the stall watchdog kills the gateway. With a
+        # running loop the probe must go to the maintenance pool; with none
+        # (this test's own direct call) it runs inline.
+        import kiro_crew.apps.bridges as bmod
+
+        dispatched: list[tuple] = []
+
+        class _FakeLoop:
+            def run_in_executor(self, executor, fn, *args):
+                dispatched.append((executor, fn, args))
+
+        monkeypatch.setattr(
+            bmod.asyncio, "get_running_loop", lambda: _FakeLoop()
+        )
+        cfg = {"command": str(tmp_path / "nope" / "bin"), "args": []}
+        bmod._schedule_unresolvable_warning("app", "srv", cfg)
+        assert len(dispatched) == 1
+        _, fn, args = dispatched[0]
+        assert fn is bmod._warn_unresolvable_stdio_command
+        # The entry is snapshotted: registration mutates cfg after scheduling.
+        assert args[2] is not cfg and args[2] == cfg
+
+        # No loop -> inline (RuntimeError path).
+        monkeypatch.setattr(
+            bmod.asyncio, "get_running_loop",
+            lambda: (_ for _ in ()).throw(RuntimeError("no loop")),
+        )
+        dispatched.clear()
+        bmod._schedule_unresolvable_warning("app", "srv", cfg)
+        assert dispatched == []
+
+    def test_a_resolvable_command_logs_no_unresolvable_warning(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            self._register_stdio(
+                tmp_path, app_env, monkeypatch, {"command": "python3", "args": []},
+                setup=_fake_venv_python,
+            )
+        assert "resolves to no existing executable" not in caplog.text
+
+    def test_one_bad_server_does_not_block_its_siblings(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import kiro_crew.apps.bridges as bmod
+
+        mcp_path = tmp_path / "mcp.json"
+        monkeypatch.setattr(bmod, "_mcp_json_path", lambda: mcp_path)
+        src = _make_app_source(
+            tmp_path,
+            mcpServers={
+                "bad": {"command": "definitely-not-a-real-binary-1807", "args": []},
+                "good": {"command": "python3", "args": ["-m", "x"]},
+            },
+        )
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        registered = _register_mcp_servers("test-app", manifest)
+        assert sorted(registered) == ["test-app:bad", "test-app:good"]
+
+
+class TestBackendSharesTheInterpreterPolicy:
+    """The backend launcher and the stdio MCP registration must keep answering
+    identically — two divergent interpreter policies is the defect #1807 names.
+    These pin the shared helper to the backend's historical behaviour, so a
+    change to the helper's answer fails here rather than shipping a silent
+    policy fork."""
+
+    def test_venv_present_resolves_to_the_venv_interpreter(self, tmp_path):
+        from kiro_crew.apps.interpreter import resolve_app_python
+
+        venv_py = _fake_venv_python(tmp_path)
+        assert resolve_app_python(tmp_path) == str(venv_py)
+
+    def test_venv_absent_resolves_to_sys_executable(self, tmp_path):
+        import sys
+
+        from kiro_crew.apps.interpreter import resolve_app_python
+
+        assert resolve_app_python(tmp_path) == sys.executable
+
+    def test_no_app_context_resolves_to_sys_executable(self):
+        import sys
+
+        from kiro_crew.apps.interpreter import resolve_app_python
+
+        assert resolve_app_python(None) == sys.executable
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS, reason="pins the backend's historical POSIX layout"
+    )
+    def test_helper_matches_the_backend_historical_posix_policy(self, tmp_path):
+        # Literal reconstruction of the resolution backend.py carried inline
+        # before the extraction, checked on the two normal shapes (runnable
+        # venv interpreter present / no venv). One deliberate divergence is
+        # out of scope here and pinned by its own test: a venv python that
+        # exists but is NOT executable now falls back to sys.executable
+        # instead of being returned as a guaranteed-EACCES spawn target.
+        import sys
+
+        from kiro_crew.apps.interpreter import resolve_app_python
+
+        def historical(root: Path) -> str:
+            venv_python = str(root / ".venv" / "bin" / "python3")
+            return (
+                venv_python
+                if (root / ".venv" / "bin" / "python3").is_file()
+                else sys.executable
+            )
+
+        with_venv = tmp_path / "with-venv"
+        _fake_venv_python(with_venv)
+        without_venv = tmp_path / "without-venv"
+        without_venv.mkdir()
+        for root in (with_venv, without_venv):
+            assert resolve_app_python(root) == historical(root)
+
+    def test_the_backend_spawn_uses_the_shared_helper(self):
+        # Wiring check: the extraction is only real if backend.py CALLS the
+        # helper. Grepping the source keeps this honest without spawning.
+        import inspect
+
+        import kiro_crew.apps.backend as backend_mod
+
+        source = inspect.getsource(backend_mod)
+        assert source.count("resolve_app_python(") >= 2, (
+            "backend.py no longer routes both Python branches through the "
+            "shared interpreter helper"
+        )
+        assert '".venv" / "bin" / "python3").is_file()' not in source, (
+            "backend.py grew back an inline copy of the interpreter policy"
+        )
+
+
+# ---------------------------------------------------------------------------
 # MCP property tests
 # ---------------------------------------------------------------------------
 
