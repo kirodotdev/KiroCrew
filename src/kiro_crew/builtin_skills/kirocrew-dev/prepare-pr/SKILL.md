@@ -175,7 +175,32 @@ Every PR body MUST contain these (fill-in template: `$SKILL_DIR/assets/pr-body-t
 3. **Fix (symptoms → root cause → change)** — a short chain of thought from symptom → root cause → the specific change, so the reader sees *why this is the right fix*, not just what changed.
 4. **Tests** — automated tests added/updated and what each locks in.
 5. **Manual verification** — steps done/needed where unit tests fall short, or "N/A — unit coverage sufficient" with a one-line why.
-6. **Screenshots — MANDATORY for any user-visible UI change** (new/changed panels, components, layouts, themes). Capture each affected surface in its meaningful variants (e.g. desktop vs browser, empty vs populated). **Capture them by looking at the change yourself** — the `web-verify` skill (navigate the loopback URL of your dev server / pod, screenshot, read the frame) — so the PR's evidence is the same evidence you used to verify, and a broken render is caught before a reviewer finds it. Embedding recipe that works for private repos and survives merge:
+6. **Screenshots — MANDATORY for any user-visible UI change** (new/changed panels, components, layouts, themes). Capture each affected surface in its meaningful variants (e.g. desktop vs browser, empty vs populated). **Capture them by looking at the change yourself** — the `web-verify` skill (navigate the loopback URL of your dev server / pod, screenshot, read the frame) — so the PR's evidence is the same evidence you used to verify, and a broken render is caught before a reviewer finds it.
+   
+   **Waiving screenshots (the `<!-- no-visual-delta -->` marker):**
+   If the PR has NO user-visible UI delta, you must use the no-visual-delta marker to waive the screenshot requirement. **Add this marker during Phase 1 step 5 (description reconciliation)** when `diff_signals.py` shows zero frontend-render-path files changed.
+   
+   Both lines are required together:
+   ```markdown
+   <!-- no-visual-delta -->
+   **Why no screenshot:** <one-line reason explaining why no visual surface changed>
+   ```
+   
+   **When to use it:**
+   - Backend-only changes (new API routes, bug fixes in Python, config changes)
+   - CI/workflow changes (`.github/workflows/`, test infrastructure)
+   - Refactors that don't touch rendered surfaces (string builders, internal data structures)
+   - Documentation-only changes
+   - Dependency updates with no UI side effects
+   
+   **When NOT to use it (screenshots still required):**
+   - Any change to `.tsx`/`.css`/`.scss` files that render in the dashboard
+   - Layout, theme, or styling changes
+   - New or modified UI components, panels, pages, or modals
+   - Changes to i18n strings that appear in the rendered UI
+   - Accessibility changes that affect visual presentation
+   
+   Embedding recipe that works for private repos and survives merge (for when screenshots ARE required):
    - Commit the images into the PR branch under **`temp-screenshots/<feature>/`** (a deliberately top-level, ephemeral dir; see [its README](../../../../../temp-screenshots/README.md) for the full convention) and amend them into the single commit (`--force-with-lease=<branch>:<lease_sha>`; see Phase 3 step 1 for the SHA-pinned protocol). **Never** put screenshots under `docs/` or `src/kiro_crew/**` — those trees ship in the wheel/sdist and the desktop DMG; `temp-screenshots/` is outside every packaged path, so review images never ride into a shipped artifact. The dir is pruned periodically, so screenshots persist only long enough for the PR to be reviewed.
    - Embed with **commit-SHA-pinned** same-origin URLs: `![alt](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.png)`. Branch-pinned URLs break when the branch is deleted on merge; external image hosts leak content and are camo-blocked for private repos. The SHA-pinned URL keeps resolving even after periodic cleanup removes the file from `main`'s tip (the blob stays reachable via the pinned historical commit).
    - After any amend that changes the images, re-pin the URLs to the new SHA.
