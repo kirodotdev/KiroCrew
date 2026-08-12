@@ -1534,6 +1534,22 @@ class MessagingConfig:
         ),
     )
 
+    connection_governance: bool = field(
+        default=True,
+        metadata=_meta(
+            "Connection Governance",
+            "Require a chat connection to be enrolled on the trust roster "
+            "(<data home>/channel_trust.json) before it may attach, and read the "
+            "allowed-sender list from the security policy in addition to this "
+            "channel's own config. When OFF, attachment is decided by "
+            "credentials + config alone and the connection surfaces are hidden — "
+            "the behaviour before the roster existed. An enterprise ceiling can "
+            "pin this off un-liftably via the capabilities.channel_connections "
+            "scope, which is how a fleet whose per-surface scoping will come from "
+            "crew members disables the whole surface rather than half-adopting it.",
+        ),
+    )
+
     def __post_init__(self) -> None:
         # Fail safe on hand-edited values (mirrors WeComConfig): an unknown scope
         # or mode falls back to the safe default, and the reset windows clamp to
@@ -5503,6 +5519,9 @@ class KiroCrewConfig:
                 idle_reset_minutes=_coerce_int(messaging_data.get("idle_reset_minutes"), 0),
                 daily_reset_hour=_coerce_int(messaging_data.get("daily_reset_hour"), -1),
                 queue_mode=str(messaging_data.get("queue_mode", "steer")),
+                connection_governance=bool(
+                    messaging_data.get("connection_governance", True)
+                ),
             ),
             # orchestrator/watchdog are advertised in config-baseline.json,
             # served by /api/config/schema, and read by real consumers

@@ -49,6 +49,7 @@ import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgen
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
+import SessionConnectionLock from '../components/SessionConnectionLock'
 import TagManagerList from '../components/TagManagerList'
 import { DndDraggable, DndDroppable } from '../components/dnd'
 import { collectFolderSubtreeIds } from '../utils/folderTree'
@@ -2342,6 +2343,7 @@ function ChatSidebar({
                   </span>
                 )
               })()}
+              <SessionConnectionLock slotKey={s.key} />
               {/* Live mirroring, per channel. The origin glyph above is derived
                *  from the slot KEY (channelOrigin.ts) and already says where the
                *  conversation STARTED, so this renders only `out` links — a real
@@ -3868,6 +3870,7 @@ function ChatSidebar({
                       <div className="flex-1 min-w-0 overflow-hidden">
                         <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
                           <span className="truncate">{agentName || '\u00A0'}</span>
+                          <SessionConnectionLock slotKey={s.key} />
                           {s.clean_mode
                             ? <span className="text-accent" title={i18nT('pages.chatSidebar.clean_agent_only_no_kirocrew_context_or_mcp')}><Droplet size={10} /></span>
                             : <>

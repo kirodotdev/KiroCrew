@@ -214,6 +214,37 @@ def _match_mcp(item: str, pattern: str) -> bool:
     return False
 
 
+def _match_channel(item: str, pattern: str) -> bool:
+    """Match a channel CONNECTION where a transport grant covers all its bots.
+
+    ``item`` is a fully-qualified connection item — ``telegram/ops-bot`` (see
+    :meth:`kiro_crew.messaging.connections.ConnectionRef.governance_item`, which
+    qualifies even the default connection as ``telegram/default``).  A bare
+    ``telegram`` PATTERN covers every connection on that transport;
+    ``telegram/ops-bot`` matches only that one.
+
+    The whole-transport pattern is what makes this change invisible to an
+    existing policy: every ``channels`` rule written before connections existed
+    names a bare transport, and under this matcher it keeps covering the traffic
+    it always covered — in allow mode it still admits the transport's bots, and
+    in deny mode it still shuts all of them out.  Without it, an
+    ``allow: ["telegram"]`` policy would start denying its own bot the moment the
+    queried item became qualified.
+
+    Deliberately the same shape as :func:`_match_mcp` rather than a second
+    convention: "a container pattern covers its members, a member pattern matches
+    only itself" is already this module's answer for ``@server`` / ``@server/tool``,
+    and one rule an operator learns once beats two that differ by scope.
+    """
+    it = item.strip().casefold()
+    pat = pattern.strip().casefold()
+    if it == pat:
+        return True
+    if "/" not in pat:
+        return it.startswith(pat + "/")
+    return False
+
+
 CU_CLASS_OBSERVE = "observe"
 CU_CLASS_MUTATE = "mutate"
 CU_CLASS_POINTER = "pointer"
@@ -304,6 +335,7 @@ _MATCHERS: Dict[str, Callable[[str, str], bool]] = {
     "path": _match_path,
     "host": _match_host,
     "mcp": _match_mcp,
+    "channel": _match_channel,
 }
 _DEFAULT_MATCHER = "identifier"
 
@@ -863,14 +895,22 @@ class ScopedMap:
     members: RulesetLike
     # member id -> {leaf name -> ScopedRuleset}
     posture: Mapping[str, Mapping[str, ScopedRuleset]] = field(default_factory=dict)
+    #: Matcher name shared by ``members`` AND by posture-key resolution, so a
+    #: container key covers its members in both (see :meth:`posture_permits`).
+    member_matcher: str = _DEFAULT_MATCHER
 
     @staticmethod
-    def from_dict(d: Mapping[str, object], *, allow_posture: bool) -> "ScopedMap":
+    def from_dict(
+        d: Mapping[str, object],
+        *,
+        allow_posture: bool,
+        member_matcher: str = _DEFAULT_MATCHER,
+    ) -> "ScopedMap":
         _reject_unknown_keys(d, {"members", "posture"}, "ScopedMap")
         raw_members = d.get("members")
         if not isinstance(raw_members, dict):
             raise PlatformCompositionError("ScopedMap.members is required and must be an object")
-        members = ScopedRuleset.from_dict(raw_members, matcher="identifier")
+        members = ScopedRuleset.from_dict(raw_members, matcher=member_matcher)
         raw_posture = d.get("posture")
         if raw_posture and not allow_posture:
             # Rule 6: posture is policy-only; a profile carrying it is rejected.
@@ -893,19 +933,47 @@ class ScopedMap:
                     for leaf, val in leaves.items()
                     if isinstance(val, dict)
                 }
-        return ScopedMap(members=members, posture=posture)
+        return ScopedMap(members=members, posture=posture, member_matcher=member_matcher)
 
     def compose(self, narrower: "ScopedMap") -> "ScopedMap":
         # members intersect; posture is policy-only so the ceiling's wins.
         base = self.members
         composed = base.compose(narrower.members) if isinstance(base, ScopedRuleset) else base
-        return ScopedMap(members=composed, posture=self.posture)
+        return ScopedMap(
+            members=composed, posture=self.posture, member_matcher=self.member_matcher
+        )
 
     def permits_member(self, member: str) -> Decision:
         return self.members.permits(member)
 
+    def _resolve_posture(self, member: str) -> Mapping[str, ScopedRuleset]:
+        """The posture leaves that apply to *member*, exact key before container.
+
+        A posture is authored against whatever granularity the operator cared
+        about — ``"slack"`` for a whole transport, ``"telegram/ops-bot"`` for one
+        bot — while the QUERIED member is always fully qualified. A plain
+        ``dict.get`` would therefore miss every container-authored posture and
+        fall through to "no posture" (a silent PERMIT), quietly dropping a ceiling
+        the operator wrote. So resolution mirrors ``members``:
+
+        1. an exact key wins — the most specific rule the operator wrote;
+        2. otherwise the member's matcher decides which container keys cover it,
+           and the LONGEST such key wins, so ``telegram/ops-bot`` beats
+           ``telegram`` when both are present.
+
+        Returns an empty mapping when nothing applies (an ungoverned member).
+        """
+        exact = self.posture.get(member)
+        if exact is not None:
+            return exact
+        match = _MATCHERS.get(self.member_matcher, _match_identifier)
+        covering = [key for key in self.posture if match(member, key)]
+        if not covering:
+            return {}
+        return self.posture[max(covering, key=len)]
+
     def posture_permits(self, member: str, leaf: str, item: str) -> Decision:
-        member_posture = self.posture.get(member)
+        member_posture = self._resolve_posture(member)
         if not member_posture:
             return Decision(True, f"no posture for member {member!r}", rule="scopedmap")
         ruleset = member_posture.get(leaf)
@@ -927,6 +995,13 @@ SCOPEDMAP = "scopedmap"
 
 # SCOPE_CATALOG key whose deny-mode deny list is force-pinned (un-opt-out-able).
 COMMANDS_SCOPE = "commands"
+
+#: Separates a ScopedMap member from a posture leaf in a QUERIED item:
+#: ``telegram/ops-bot#senders:u_9931``.  Not ``/``, because a member id may itself
+#: contain ``/`` (a channel member is a connection) — see the note in
+#: ``_query_level``.  Never appears in a policy DOCUMENT: there the member and the
+#: leaf are separate JSON keys, so this is purely the query-string encoding.
+POSTURE_SEP = "#"
 
 
 @dataclass(frozen=True)
@@ -952,7 +1027,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "folders.read": ScopeSpec(RULESET, matcher="path"),
     "folders.write": ScopeSpec(RULESET, matcher="path"),
     "network.egress": ScopeSpec(RULESET, matcher="host"),
-    "channels": ScopeSpec(SCOPEDMAP),
+    # Chat surfaces, addressed per CONNECTION (``telegram/ops-bot``) rather than
+    # per transport, so two bots on one protocol can carry different ceilings.
+    # The ``channel`` matcher keeps a bare-transport pattern covering all of that
+    # transport's connections, which is what makes every pre-connection policy
+    # keep its exact meaning (see ``_match_channel``).
+    "channels": ScopeSpec(SCOPEDMAP, matcher="channel"),
     "approval_mode": ScopeSpec(ORDINAL, ordinal_scale="approval"),
     "sandbox.min_level": ScopeSpec(ORDINAL, ordinal_scale="sandbox"),
     # Admin control over the auto-approve (YOLO) durations a user may select.
@@ -972,6 +1052,18 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}
     ),
     "capabilities.memory_writes": ScopeSpec(CAPABILITY, capability_default=True),
+    # Requiring a chat connection to be ENROLLED before it may attach, and
+    # reading its allowed-sender list from the policy. Default True: an install
+    # with no policy keeps the roster gate, which is the point of shipping it. A
+    # fleet whose per-surface scoping will arrive as crew members can pin this off
+    # in the trust-root policy and get the pre-roster behaviour back — an
+    # un-liftable off, because the operator-facing switch
+    # (``messaging.connection_governance``) is reachable from config.json, the
+    # config.local.json overlay and the CLI, so the running app and its agent can
+    # lift that one. Consulted at the attach gate, the per-message inbound gate,
+    # the roster seed, and the read model behind the connection surfaces, so a
+    # pinned-off fleet neither writes a roster file nor renders a surface about it.
+    "capabilities.channel_connections": ScopeSpec(CAPABILITY, capability_default=True),
     "capabilities.script_hooks": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.cron": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.messaging": ScopeSpec(CAPABILITY, capability_default=False),
@@ -1308,7 +1400,9 @@ def deny_all_profile(name: str = "_deny_all") -> Profile:
         # canonical target, so emitting the alias key too is dead config.
         if spec.kind == RULESET and scope not in _SCOPE_ALIASES
     }
-    controls["channels"] = ScopedMap(members=ScopedRuleset(mode=MODE_ALLOW, allow=()))
+    controls["channels"] = ScopedMap(
+        members=ScopedRuleset(mode=MODE_ALLOW, allow=(), matcher="channel")
+    )
     for scope, spec in SCOPE_CATALOG.items():
         if spec.kind == CAPABILITY:
             controls[scope] = CapabilityGate(enabled=False)
@@ -1371,7 +1465,7 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
             raw, default_enabled=spec.capability_default, scope_matchers=spec.scope_matchers
         )
     if spec.kind == SCOPEDMAP:
-        return ScopedMap.from_dict(raw, allow_posture=is_policy)
+        return ScopedMap.from_dict(raw, allow_posture=is_policy, member_matcher=spec.matcher)
     raise PlatformCompositionError(f"scope {scope!r} has unknown archetype {spec.kind!r}")
 
 
@@ -1958,8 +2052,16 @@ def _query_level(control: object, scope: str, item: str) -> Decision:
             else Decision(False, "capability disabled", rule="gate")
         )
     if isinstance(control, ScopedMap):
-        # item is a member id, or "member/leaf:value" for a posture query.
-        member, sep, rest = item.partition("/")
+        # item is a member id, or "member#leaf:value" for a posture query.
+        #
+        # ``#`` — not ``/`` — separates the posture leaf because a member id may
+        # itself contain ``/``: a channel member is a CONNECTION
+        # (``telegram/ops-bot``), so splitting on the first ``/`` would read the
+        # member as ``telegram`` and the leaf as ``ops-bot/senders``, silently
+        # evaluating one connection's posture rule against the whole transport.
+        # ``#`` cannot appear in a member id (connection names are validated
+        # against ``connections._NAME_RE``), so the split is unambiguous.
+        member, sep, rest = item.partition(POSTURE_SEP)
         if not sep:
             return control.permits_member(item)
         leaf, _, value = rest.partition(":")
@@ -2556,6 +2658,7 @@ __all__ = [
     "MODE_ALLOW",
     "MODE_DENY",
     "COMMANDS_SCOPE",
+    "POSTURE_SEP",
     "SIGNATURE_VERIFIED",
     "SIGNATURE_UNVERIFIED",
     "SIGNATURE_UNSIGNED",

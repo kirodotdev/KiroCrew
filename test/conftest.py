@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import pathlib
 import shutil
@@ -553,6 +554,48 @@ def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
     # a test that wants it sets it via monkeypatch (which still wins).
     monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
     monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
+
+
+@pytest.fixture(autouse=True)
+def _seed_channel_trust_roster(_isolate_kirocrew_home, _isolation_dirs):
+    """Give every test a SEEDED channel trust roster, like a real install has.
+
+    Chat connections must be enrolled before they may attach
+    (``messaging.trust``), and an absent roster fails closed. A fresh tmp home has
+    no roster, so without this fixture every test that starts a transport or
+    checks the start gate would exercise the tamper path instead of the ordinary
+    one — 16 pre-existing chokepoint tests turned red on exactly that.
+
+    Production reaches the same state on its first start (the gateway seeds the
+    roster from the configured channels before the first admission decision), so
+    seeding here makes the default test posture match the default runtime posture.
+    A test that wants the fail-closed path unlinks this file, and one that wants a
+    narrower roster rewrites it.
+    """
+    from kiro_crew.channels import builtin_channel_descriptors
+    from kiro_crew.messaging import registry as _registry
+
+    home = _isolation_dirs("kirocrew-home")
+    path = home / "channel_trust.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    members = _registry.governed_members(builtin_channel_descriptors())
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "connections": [f"{m}/default" for m in members],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # The seed marker too, so a code path that calls ``seed_roster`` in-test does
+    # not rewrite the roster this fixture just authored.
+    marker = home / ".migrations" / "channel_trust_seeded"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("test-fixture\n", encoding="utf-8")
+    return path
 
 
 @pytest.fixture(autouse=True)

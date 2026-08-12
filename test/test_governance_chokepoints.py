@@ -608,7 +608,7 @@ class TestChannelTransportStartGate:
         monkeypatch.setattr(gw, "governance_permits", _capture)
         assert gw._channel_transport_permitted("telegram") is True
         assert seen["scope"] == "channels"
-        assert seen["member"] == "telegram"
+        assert seen["member"] == "telegram/default"
         assert seen["session_key"] == HOST_SESSION_KEY
         assert seen["fail_closed"] is True
 
@@ -672,7 +672,7 @@ class TestChannelTransportStartGate:
         assert rec["session_key"] == HOST_SESSION_KEY
         assert rec["tool_name"] == "start_transport:telegram"
         assert rec["scope"] == "channels"
-        assert rec["item"] == "telegram"
+        assert rec["item"] == "telegram/default"
         assert rec["outcome"] == "denied"
 
     def test_unexpected_error_emits_failed_closed_degrade_audit(self, monkeypatch):
@@ -724,7 +724,7 @@ class TestChannelTransportStartGate:
         assert rec["session_key"] == HOST_SESSION_KEY
         assert rec["tool_name"] == "start_transport:telegram"
         assert rec["scope"] == "channels"
-        assert rec["item"] == "telegram"
+        assert rec["item"] == "telegram/default"
         assert rec["outcome"] == "allowed"
         # Governed allow → critical=True (audit-or-deny).
         assert rec["critical"] is True

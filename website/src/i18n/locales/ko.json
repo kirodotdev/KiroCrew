@@ -4461,6 +4461,18 @@
       "retrying": "다시 시도하는 중…",
       "unknown": "알 수 없음"
     },
+    "channelGovernanceCard": {
+      "action_failed": "신뢰 목록을 업데이트할 수 없습니다: {{reason}}",
+      "confirm_revoke": "{{id}} 연결을 중단하시겠습니까? 다음 메시지부터 거부됩니다.",
+      "denied_by_policy": "채널 정책이 이 연결을 거부하므로 등록해도 접속할 수 없습니다.",
+      "enrol": "등록",
+      "enrolled_ok": "이 연결은 접속이 허용되어 있습니다.",
+      "not_enrolled_actionable": "이 연결은 아직 접속이 허용되지 않았습니다. 등록하면 연결할 수 있습니다.",
+      "revoke": "해제",
+      "roster_unreadable": "{{path}} 의 채널 신뢰 목록을 읽을 수 없어 어떤 연결도 허용되지 않습니다. 파일을 수정하거나 삭제하세요 — 이 페이지는 덮어쓰지 않습니다.",
+      "senders_pinned": "허용된 보낸 사람이 보안 정책으로 고정되어 아래 보낸 사람 필드는 편집할 수 없습니다.",
+      "title": "거버넌스"
+    },
     "chatInput": {
       "add_files_options": "파일 및 옵션 추가",
       "agent": "에이전트: {{name}}",
@@ -4744,6 +4756,34 @@
       "shrink": "축소",
       "shrink_live_desktop_view": "라이브 데스크톱 뷰 축소",
       "updated": "업데이트됨"
+    },
+    "connectionChip": {
+      "aria_detail": "연결 {{id}}의 거버넌스 세부 정보",
+      "denied_by_policy": "채널 정책이 이 연결을 거부했습니다.",
+      "not_enrolled": "이 연결은 신뢰 목록에 없으므로 연결할 수 없습니다.",
+      "read_only_note": "읽기 전용입니다. 등록은 신뢰 목록에, 상한은 보안 정책에 있습니다.",
+      "restricted": "제한됨",
+      "roster_unreadable": "채널 신뢰 목록을 읽을 수 없어 어떤 연결도 허용되지 않습니다.",
+      "senders_from_config": "허용된 보낸 사람은 이 채널의 구성에서 옵니다.",
+      "senders_from_policy": "허용된 보낸 사람은 보안 정책에서 오며 설정에서 변경할 수 없습니다.",
+      "senders_pinned": "이 연결로 보낼 수 있는 사람은 정책으로 고정됩니다.",
+      "tooltip": "이 세션은 {{id}} 연결을 통해 들어오며 거버넌스로 범위가 제한됩니다"
+    },
+    "connectionGovernanceList": {
+      "allowed": "허용됨",
+      "decided_by": "결정 계층",
+      "denied": "거부됨",
+      "enrolment": "등록 상태",
+      "from_config": "채널 구성에서",
+      "intro": "다음 채팅 연결은 제한되어 있습니다. 펼치면 제한 내용을 볼 수 있습니다.",
+      "intro_roster_unreadable": "{{path}} 의 채널 신뢰 목록을 읽을 수 없어 채팅 연결이 허용되지 않습니다.",
+      "not_enrolled": "미등록",
+      "off_the_roster": "신뢰 목록에 없음",
+      "on_the_roster": "신뢰 목록에 있음",
+      "pinned_by_policy": "정책으로 고정",
+      "roster_unreadable": "목록 읽기 불가",
+      "senders": "보낸 사람",
+      "unavailable": "사용할 수 없음"
     },
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "입력하는 동안 변경 사항이 미리보기에 반영됩니다.",
@@ -5834,6 +5874,9 @@
     },
     "sessionColorSwatches": {
       "no_color": "색 없음"
+    },
+    "sessionConnectionLock": {
+      "tooltip": "{{id}} 연결은 거버넌스로 제한됩니다 — 자세한 내용은 세션을 여세요"
     },
     "sessionGridView": {
       "close_cell": "셀 닫기",

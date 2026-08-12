@@ -16,6 +16,7 @@ import { DiscordPanel } from './DiscordPanel'
 import { TelegramPanel } from './TelegramPanel'
 import { WebexPanel } from './WebexPanel'
 import { WeComPanel } from './WeComPanel'
+import ChannelGovernanceCard from '../../components/ChannelGovernanceCard'
 import { ChannelDisabledPanel } from './ChannelDisabledPanel'
 import { TeamsPanel } from './TeamsPanel'
 import { WeixinPanel } from './WeixinPanel'
@@ -232,7 +233,15 @@ export function ChannelsPanel() {
             // corresponding notice instead, so a user never edits (or the page
             // never flashes) a form whose config wouldn't take effect.
             channelGov(selected.key) === 'allowed'
-              ? <selected.Panel key={selected.key} />
+              ? (
+                <>
+                  {/* Above the panel, because it governs the fields inside it: a
+                      sender list pinned by policy is not editable, and learning
+                      that after typing into the form is being misled by it. */}
+                  <ChannelGovernanceCard transport={selected.key} />
+                  <selected.Panel key={selected.key} />
+                </>
+              )
               : <ChannelDisabledPanel
                   key={`${selected.key}-gov`}
                   label={selected.name}

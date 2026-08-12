@@ -478,6 +478,47 @@ export interface TodoList {
   current: string
 }
 
+/** One credentialed attachment of a chat app to this instance.
+ *
+ * Governance facts only. Whether a channel is configured and connected has its
+ * own per-channel endpoint that the Channels page already reads; joining the two
+ * client-side keeps a single source for each fact.
+ */
+export interface ChannelConnection {
+  /** Fully-qualified governance item, e.g. `telegram/default`. */
+  id: string
+  transport: string
+  name: string
+  /** On the operator's trust roster — may attach at all. */
+  enrolled: boolean
+  /** `channels` ceiling verdict; `null` = evaluation transiently unavailable,
+   *  which must never render as an explicit admin deny. */
+  permitted: boolean | null
+  /** The `senders` posture leaf is a pinned allowlist, so who may talk to this
+   *  connection is set in policy and not editable in Settings. */
+  senders_pinned: boolean
+  /** Which level decided: `policy` | `profile` | `both` | `default` | ``. */
+  layer: string
+}
+
+export interface ChannelTrustRoster {
+  /** False = the roster could not be read, so nothing is admitted. Distinct from
+   *  an operator who enrolled nobody — the UI must not conflate them. */
+  loaded: boolean
+  error: string
+  path: string
+}
+
+export interface ConnectionsPayload {
+  /** False when connection governance is switched off — by the operator's config
+   *  or pinned by an enterprise ceiling. Every connection surface renders nothing
+   *  in that case: the roster is not consulted, so its contents would describe a
+   *  gate that is not running. */
+  enabled: boolean
+  roster: ChannelTrustRoster
+  connections: ChannelConnection[]
+}
+
 export interface SessionLink {
   channel: string
   label: string

@@ -21,7 +21,10 @@ import logging
 from typing import Any
 
 from kiro_crew.executors import governance_executor, maintenance_executor
+from kiro_crew.messaging import trust
+from kiro_crew.messaging.connections import DEFAULT_CONNECTION, make_connection
 from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.governance import POSTURE_SEP
 from kiro_crew.platform.governance_profiles import (
     HOST_SESSION_KEY,
     audit_governance_degraded,
@@ -53,7 +56,11 @@ async def publish_turn_identity(sessions: Any, session_key: str) -> None:
         logger.debug("publish_turn_identity failed for %s", session_key, exc_info=True)
 
 
-def _channel_inbound_permitted_sync(channel_type: str) -> bool:
+def _channel_inbound_permitted_sync(
+    channel_type: str,
+    sender: str = "",
+    connection: str = "",
+) -> bool:
     """Blocking ``channels`` governance check for an INBOUND message (worker only).
 
     Mirrors the connect-time host gate (``slack.gateway._channel_transport_permitted``)
@@ -64,17 +71,78 @@ def _channel_inbound_permitted_sync(channel_type: str) -> bool:
     startup-only gate left open: the transport can be denied for reasons the connect
     gate never saw, and the message is dropped before it drives a turn.
 
+    Three questions, in widening-cost order, all fail-closed:
+
+    1. **Enrolment** — is this connection on the operator's trust roster
+       (:mod:`kiro_crew.messaging.trust`)? Re-checked per message, not just at
+       connect, so revoking a bot's enrolment takes effect on the next message
+       instead of at the next restart.
+    2. **Member** — does the ``channels`` ceiling permit the connection?
+    3. **Sender** — when the caller knows WHO sent the message, does the
+       policy-only ``channels.posture.<connection>.senders`` ruleset permit them?
+       This is the ceiling counterpart to the per-transport ``allowed_user_ids``
+       in ``config.json``: config stays in force, and the two INTERSECT, so a
+       posture can only narrow the configured list. The posture lives in the
+       trust-root policy (Rule 6 rejects a profile carrying it), which is what a
+       config allowlist cannot offer — the agent can rewrite ``config.json``, and
+       it can neither read nor write the policy.
+
     Fail-CLOSED: an inbound message is externally reachable, so an internal
     governance-evaluation error DENIES (returns False) rather than dispatching an
-    ungoverned turn. Default OSS build (no ``channels`` policy) → permits, so inbound
-    handling is unchanged. Does blocking profile-file I/O, so callers
-    MUST offload it (see :func:`channel_inbound_permitted`).
+    ungoverned turn. Default OSS build (seeded roster, no ``channels`` policy) →
+    permits, so inbound handling is unchanged. Does blocking profile-file I/O, so
+    callers MUST offload it (see :func:`channel_inbound_permitted`).
     """
     try:
+        ref = make_connection(channel_type, connection or DEFAULT_CONNECTION)
+        item = ref.governance_item()
+        governance_on = trust.feature_enabled()
+        roster = trust.load_roster() if governance_on else None
+        if roster is not None and not roster.admits(ref):
+            # Enrolment refusal is recorded BEST-EFFORT: the message is dropped
+            # either way, so availability must not hinge on SEL disk health. The
+            # rule/layer name the operator's roster rather than the ceiling, so a
+            # reader can tell "nobody enrolled this bot" from "policy refused it".
+            try:
+                sel().log_governance_decision(
+                    session_key=HOST_SESSION_KEY,
+                    tool_name=f"inbound:{channel_type}",
+                    scope="channels",
+                    item=item,
+                    outcome="denied",
+                    rule="trust-roster",
+                    layer="operator",
+                    reason=f"connection not enrolled ({roster.error or 'not listed'})",
+                )
+            except Exception:
+                logger.debug("inbound enrolment deny audit failed", exc_info=True)
+            return False
         decision = governance_permits(
-            "channels", channel_type, session_key=HOST_SESSION_KEY, fail_closed=True
+            "channels", item, session_key=HOST_SESSION_KEY, fail_closed=True
         )
         permitted = bool(getattr(decision, "permitted", False))
+        if permitted and sender and governance_on:
+            sender_decision = governance_permits(
+                "channels",
+                f"{item}{POSTURE_SEP}senders:{sender}",
+                session_key=HOST_SESSION_KEY,
+                fail_closed=True,
+            )
+            if not bool(getattr(sender_decision, "permitted", False)):
+                try:
+                    sel().log_governance_decision(
+                        session_key=HOST_SESSION_KEY,
+                        tool_name=f"inbound:{channel_type}",
+                        scope="channels",
+                        item=f"{item}{POSTURE_SEP}senders",
+                        outcome="denied",
+                        rule=getattr(sender_decision, "rule", ""),
+                        layer=getattr(sender_decision, "layer", ""),
+                        reason="sender not permitted by the channels posture",
+                    )
+                except Exception:
+                    logger.debug("inbound sender deny audit failed", exc_info=True)
+                return False
         # Durable SEL audit. EVERY inbound decision is recorded (the codebase
         # invariant: audit every permission decision). A GOVERNED ALLOW (layer ∈
         # {policy,profile,both}) is AUDIT-OR-DENY, matching the host transport-start
@@ -108,7 +176,7 @@ def _channel_inbound_permitted_sync(channel_type: str) -> bool:
                 session_key=HOST_SESSION_KEY,
                 tool_name=f"inbound:{channel_type}",
                 scope="channels",
-                item=channel_type,
+                item=item,
                 outcome="allowed",
                 rule=getattr(decision, "rule", ""),
                 layer=layer,
@@ -123,7 +191,7 @@ def _channel_inbound_permitted_sync(channel_type: str) -> bool:
                     session_key=HOST_SESSION_KEY,
                     tool_name=f"inbound:{channel_type}",
                     scope="channels",
-                    item=channel_type,
+                    item=item,
                     outcome="denied",
                     rule=getattr(decision, "rule", ""),
                     layer=layer,
@@ -151,7 +219,12 @@ def _channel_inbound_permitted_sync(channel_type: str) -> bool:
         return False
 
 
-async def channel_inbound_permitted(channel_type: str) -> bool:
+async def channel_inbound_permitted(
+    channel_type: str,
+    *,
+    sender: str = "",
+    connection: str = "",
+) -> bool:
     """Return True only if the ``channels`` policy permits inbound via *channel_type*.
 
     Off-loop wrapper around :func:`_channel_inbound_permitted_sync` — the check
@@ -167,5 +240,5 @@ async def channel_inbound_permitted(channel_type: str) -> bool:
     sweeps need.
     """
     return await asyncio.get_running_loop().run_in_executor(
-        governance_executor(), _channel_inbound_permitted_sync, channel_type
+        governance_executor(), _channel_inbound_permitted_sync, channel_type, sender, connection
     )

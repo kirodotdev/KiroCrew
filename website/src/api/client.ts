@@ -1,6 +1,7 @@
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type {
+  ConnectionsPayload,
   IssueSource,
   McpApplyChange,
   PullRequestCheck,
@@ -2341,6 +2342,11 @@ export const api = {
   // All-true when no policy governs channels (standard build). Drives the Settings
   // channel-tab "Off by admin" greying — the editable panel is replaced by a
   // disabled/unavailable state.
+  getConnections: () => get('/api/connections').then(j) as Promise<ConnectionsPayload>,
+  enrolConnection: (id: string) =>
+    post('/api/connections/enrol', { id }).then(j) as Promise<ConnectionsPayload>,
+  revokeConnection: (id: string) =>
+    post('/api/connections/revoke', { id }).then(j) as Promise<ConnectionsPayload>,
   getGovernanceChannels: () => get('/api/governance/channels').then(j) as Promise<Record<string, boolean | null>>,
   getTeamsConfig: () => get('/api/teams/config').then(j) as Promise<TeamsConfigData>,
   saveTeamsConfig: (body: Partial<TeamsConfigSave>) => put('/api/teams/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,

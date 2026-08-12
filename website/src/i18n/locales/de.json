@@ -4534,6 +4534,18 @@
       "retrying": "Wird wiederholt...",
       "unknown": "unbekannt"
     },
+    "channelGovernanceCard": {
+      "action_failed": "Vertrauensliste konnte nicht aktualisiert werden: {{reason}}",
+      "confirm_revoke": "{{id}} das Verbinden untersagen? Ab der nächsten Nachricht wird sie abgewiesen.",
+      "denied_by_policy": "Die Kanalrichtlinie verweigert diese Verbindung; eine Aufnahme lässt sie trotzdem nicht zu.",
+      "enrol": "Aufnehmen",
+      "enrolled_ok": "Diese Verbindung darf sich verbinden.",
+      "not_enrolled_actionable": "Diese Verbindung darf sich noch nicht verbinden. Nehmen Sie sie auf, damit sie es kann.",
+      "revoke": "Entziehen",
+      "roster_unreadable": "Die Kanal-Vertrauensliste unter {{path}} konnte nicht gelesen werden, daher wird keine Verbindung zugelassen. Datei reparieren oder entfernen — diese Seite überschreibt sie nicht.",
+      "senders_pinned": "Zugelassene Absender sind per Sicherheitsrichtlinie festgelegt, daher ist das Absenderfeld unten nicht bearbeitbar.",
+      "title": "Geregelt durch"
+    },
     "chatInput": {
       "add_files_options": "Dateien & Optionen hinzufügen",
       "agent": "Agent: {{name}}",
@@ -4819,6 +4831,34 @@
       "shrink": "Verkleinern",
       "shrink_live_desktop_view": "Live-Desktop-Ansicht verkleinern",
       "updated": "aktualisiert"
+    },
+    "connectionChip": {
+      "aria_detail": "Governance-Details für Verbindung {{id}}",
+      "denied_by_policy": "Die Kanalrichtlinie verweigert diese Verbindung.",
+      "not_enrolled": "Diese Verbindung steht nicht auf der Vertrauensliste und darf sich nicht verbinden.",
+      "read_only_note": "Nur Lesen. Die Aufnahme steht in der Vertrauensliste, die Obergrenze in der Sicherheitsrichtlinie.",
+      "restricted": "Eingeschränkt",
+      "roster_unreadable": "Die Kanal-Vertrauensliste konnte nicht gelesen werden, daher wird keine Verbindung zugelassen.",
+      "senders_from_config": "Zugelassene Absender stammen aus der Konfiguration dieses Kanals.",
+      "senders_from_policy": "Zugelassene Absender stammen aus der Sicherheitsrichtlinie und sind in den Einstellungen nicht änderbar.",
+      "senders_pinned": "Wer an diese Verbindung senden darf, ist per Richtlinie festgelegt.",
+      "tooltip": "Diese Sitzung läuft über {{id}}, deren Reichweite durch Governance begrenzt ist"
+    },
+    "connectionGovernanceList": {
+      "allowed": "Zugelassen",
+      "decided_by": "Entschieden durch",
+      "denied": "Verweigert",
+      "enrolment": "Aufnahme",
+      "from_config": "Aus der Kanalkonfiguration",
+      "intro": "Diese Chat-Verbindungen sind eingeschränkt. Aufklappen zeigt, was sie begrenzt.",
+      "intro_roster_unreadable": "Die Kanal-Vertrauensliste unter {{path}} konnte nicht gelesen werden, daher wird keine Chat-Verbindung zugelassen.",
+      "not_enrolled": "Nicht aufgenommen",
+      "off_the_roster": "Nicht auf der Vertrauensliste",
+      "on_the_roster": "Auf der Vertrauensliste",
+      "pinned_by_policy": "Per Richtlinie festgelegt",
+      "roster_unreadable": "Liste nicht lesbar",
+      "senders": "Absender",
+      "unavailable": "Nicht verfügbar"
     },
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "Änderungen aktualisieren die Vorschau während der Eingabe.",
@@ -5920,6 +5960,9 @@
     },
     "sessionColorSwatches": {
       "no_color": "Keine Farbe"
+    },
+    "sessionConnectionLock": {
+      "tooltip": "{{id}} ist durch Governance eingeschränkt — Sitzung für Details öffnen"
     },
     "sessionGridView": {
       "close_cell": "Zelle schließen",

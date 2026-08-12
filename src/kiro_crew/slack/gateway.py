@@ -162,7 +162,8 @@ from kiro_crew.mcp_gateway.rewriter import (
     rewrite_agents,
 )
 from kiro_crew.memory import MemoryStore
-from kiro_crew.messaging import registry
+from kiro_crew.messaging import registry, trust
+from kiro_crew.messaging.connections import make_connection
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import (
     CHANNEL_SESSION_NAMESPACES,
@@ -807,12 +808,44 @@ def _channel_transport_permitted(member: str) -> bool:
       abort, not silently deny).
     """
     try:
+        # Enrolment comes FIRST, and it is not part of the ceiling. The roster
+        # answers "may this connection attach to this instance at all" — an
+        # operator-owned question — while the ``channels`` ceiling answers "and
+        # what may it then do". A connection nobody enrolled has no business
+        # reaching the policy evaluator, and stopping here also keeps the deny
+        # reason honest: the refusal is "not enrolled", not "denied by policy".
+        ref = make_connection(member)
+        item = ref.governance_item()
+        roster = trust.load_roster() if trust.feature_enabled() else None
+        if roster is not None and not roster.admits(ref):
+            logger.warning(
+                "%s transport not started: connection %s is not on the channel trust "
+                "roster (%s). Add it to %s to allow it to attach.",
+                member,
+                item,
+                roster.error or "not listed",
+                trust.roster_path(),
+            )
+            try:
+                sel().log_governance_decision(
+                    session_key=HOST_SESSION_KEY,
+                    tool_name=f"start_transport:{member}",
+                    scope="channels",
+                    item=item,
+                    outcome="denied",
+                    rule="trust-roster",
+                    layer="operator",
+                    reason=f"connection not enrolled ({roster.error or 'not listed'})",
+                )
+            except Exception:
+                logger.debug("transport-start enrolment deny audit failed", exc_info=True)
+            return False
         # A bare member id queries the ``channels`` ScopedMap ``members`` ruleset.
         # session_key=HOST_SESSION_KEY: honour a surface:host profile (empty key
         # → "unknown" would silently ignore it), matching apps/manager.
         # fail_closed=True: an internal governance error DENIES (network surface).
         decision = governance_permits(
-            "channels", member, session_key=HOST_SESSION_KEY, fail_closed=True
+            "channels", item, session_key=HOST_SESSION_KEY, fail_closed=True
         )
         if not getattr(decision, "permitted", False):
             logger.warning(
@@ -826,7 +859,7 @@ def _channel_transport_permitted(member: str) -> bool:
                     session_key=HOST_SESSION_KEY,
                     tool_name=f"start_transport:{member}",
                     scope="channels",
-                    item=member,
+                    item=item,
                     outcome="denied",
                     rule=getattr(decision, "rule", ""),
                     layer=getattr(decision, "layer", ""),
@@ -864,7 +897,7 @@ def _channel_transport_permitted(member: str) -> bool:
                 session_key=HOST_SESSION_KEY,
                 tool_name=f"start_transport:{member}",
                 scope="channels",
-                item=member,
+                item=item,
                 outcome="allowed",
                 rule=getattr(decision, "rule", ""),
                 layer=getattr(decision, "layer", ""),
@@ -7017,7 +7050,26 @@ class GatewayOrchestrator:
             d.channel_type: bool(getattr(self, f"_{d.channel_type}_enabled", False))
             for d in boot
         }
+        # Seed the trust roster from what is ALREADY configured, once, before the
+        # first admission decision is taken. This is what makes the enrolment gate
+        # transparent to an upgrade: an install whose channels worked before the
+        # roster existed keeps working, because what it had configured becomes what
+        # it trusts. Seeded here rather than in first-run setup because this is the
+        # only place that knows which transports are enabled AND credentialed, and
+        # it runs before every start — including Slack's, which connects later in
+        # ``_connect_slack``. Marker-guarded inside ``seed_roster``, so a roster
+        # deleted afterwards is NOT re-created (that deletion is the tamper signal
+        # the loader fails closed on).
+        seed_members = [
+            m
+            for m in registry.governed_members(descriptors)
+            if bool(getattr(self, f"_{m}_enabled", False)) or (m == "slack" and self._socket_client)
+        ]
         loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            maintenance_executor(),
+            lambda: trust.seed_roster([make_connection(m) for m in seed_members]),
+        )
         permitted = await loop.run_in_executor(
             maintenance_executor(),
             lambda: {

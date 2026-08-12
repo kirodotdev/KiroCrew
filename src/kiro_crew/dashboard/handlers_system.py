@@ -829,6 +829,99 @@ def _collect_channel_governance() -> dict[str, object]:
     return result
 
 
+#: Sender id that cannot collide with a real one, used to PROBE whether the
+#: ``senders`` posture leaf is a pinned allowlist. A leaf that denies this
+#: sentinel is an allow-mode allowlist (so the connection's senders are
+#: restricted); one that permits it is ungoverned, deny-mode, or allow-any. The
+#: same technique the Slack enterprise-id posture check uses, for the same reason:
+#: there is no API for "is this leaf pinned", only "does it permit X".
+_SENDER_PROBE = "\x00__unpinned_probe__"
+
+
+def _collect_connections() -> dict[str, object]:
+    """Per-connection governance state for the Settings + session surfaces.
+
+    Deliberately reports only the GOVERNANCE facts — enrolment, the ceiling
+    decision, whether senders are pinned. Whether a channel is configured and
+    connected already has an endpoint per channel (``/api/<channel>/config``,
+    which the Channels page reads), and duplicating that credential-state logic
+    here would give the UI two sources that can disagree.
+
+    Runs in the governance executor: it walks the ProfileStore and reads the trust
+    roster, both filesystem work.
+    """
+    from kiro_crew.messaging import trust
+    from kiro_crew.messaging.connections import make_connection
+    from kiro_crew.platform.governance import POSTURE_SEP
+    from kiro_crew.platform.governance_profiles import (
+        GOVERNANCE_ERROR_REASON,
+        HOST_SESSION_KEY,
+        governance_permits,
+    )
+
+    roster = trust.load_roster()
+    connections: list[dict[str, object]] = []
+    enabled = trust.feature_enabled()
+    for member in _channel_members():
+        ref = make_connection(member)
+        item = ref.governance_item()
+        decision = governance_permits(
+            "channels", item, session_key=HOST_SESSION_KEY, fail_closed=True
+        )
+        permitted_flag = bool(getattr(decision, "permitted", False))
+        reason = str(getattr(decision, "reason", "") or "")
+        # Same three-state rule as the sibling channel map: a transient evaluation
+        # failure must render as "unavailable", never as an explicit admin deny.
+        permitted: object = (
+            None if (not permitted_flag and GOVERNANCE_ERROR_REASON in reason) else permitted_flag
+        )
+        probe = governance_permits(
+            "channels",
+            f"{item}{POSTURE_SEP}senders:{_SENDER_PROBE}",
+            session_key=HOST_SESSION_KEY,
+            fail_closed=True,
+        )
+        senders_pinned = not bool(getattr(probe, "permitted", True))
+        connections.append(
+            {
+                "id": item,
+                "transport": ref.transport,
+                "name": ref.name,
+                "enrolled": roster.admits(ref),
+                "permitted": permitted,
+                "senders_pinned": senders_pinned,
+                "layer": str(getattr(decision, "layer", "") or ""),
+            }
+        )
+    return {
+        "enabled": enabled,
+        "roster": {
+            # ``loaded`` is what tells a human "the roster says nobody" apart from
+            # "we could not read the roster, so nobody" — the UI must not render
+            # a fail-closed instance as an operator who trusts no one.
+            "loaded": roster.loaded,
+            "error": roster.error,
+            "path": str(trust.roster_path()),
+        },
+        "connections": connections,
+    }
+
+
+async def api_connections(request: web.Request) -> web.Response:
+    """GET /api/connections — per-connection enrolment + ceiling state.
+
+    Read-only, behind the same dashboard token auth as the sibling GETs. Offloaded
+    to the dedicated ``governance_executor`` for the same reason as
+    :func:`api_governance_channels`: it is browser-triggerable and touches the
+    filesystem, so it must not pin the default pool the loop shares for DNS.
+    """
+    from kiro_crew.executors import governance_executor
+
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(governance_executor(), _collect_connections)
+    return web.json_response(data)
+
+
 async def api_governance_channels(request: web.Request) -> web.Response:
     """GET /api/governance/channels — effective per-channel policy decision.
 

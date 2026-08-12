@@ -2437,6 +2437,9 @@ async def start_dashboard(
         "/api/kiro-prerequisite/repair-specs",
         handlers.api_kiro_prerequisite_repair_specs,
     )
+    app.router.add_get("/api/connections", handlers.api_connections)
+    app.router.add_post("/api/connections/enrol", handlers.api_channel_trust_enrol)
+    app.router.add_post("/api/connections/revoke", handlers.api_channel_trust_revoke)
     app.router.add_get("/api/governance/channels", handlers.api_governance_channels)
 
     # Suggestions (pre-computed contextual prompts)

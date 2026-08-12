@@ -4607,6 +4607,18 @@
       "retrying": "Reintentando…",
       "unknown": "desconocido"
     },
+    "channelGovernanceCard": {
+      "action_failed": "No se pudo actualizar la lista de confianza: {{reason}}",
+      "confirm_revoke": "¿Impedir que {{id}} se conecte? Se rechaza desde su próximo mensaje.",
+      "denied_by_policy": "La política de canales deniega esta conexión, así que inscribirla no la dejará conectarse.",
+      "enrol": "Inscribir",
+      "enrolled_ok": "Esta conexión puede conectarse.",
+      "not_enrolled_actionable": "Esta conexión aún no puede conectarse. Inscríbela para permitirlo.",
+      "revoke": "Revocar",
+      "roster_unreadable": "No se pudo leer la lista de confianza de canales en {{path}}, por lo que no se admite ninguna conexión. Repara o elimina el archivo — esta página no lo sobrescribirá.",
+      "senders_pinned": "Los remitentes permitidos están fijados por la política de seguridad, así que el campo de abajo no es editable.",
+      "title": "Regido por"
+    },
     "chatInput": {
       "add_files_options": "Añadir archivos y opciones",
       "agent": "Agente: {{name}}",
@@ -4894,6 +4906,34 @@
       "shrink": "Reducir",
       "shrink_live_desktop_view": "Reducir la vista del escritorio en directo",
       "updated": "actualizado"
+    },
+    "connectionChip": {
+      "aria_detail": "Detalle de gobernanza de la conexión {{id}}",
+      "denied_by_policy": "La política de canales deniega esta conexión.",
+      "not_enrolled": "Esta conexión no está en la lista de confianza, así que no puede conectarse.",
+      "read_only_note": "Solo lectura. La inscripción está en la lista de confianza y el límite en la política de seguridad.",
+      "restricted": "Restringido",
+      "roster_unreadable": "No se pudo leer la lista de confianza de canales, por lo que no se admite ninguna conexión.",
+      "senders_from_config": "Los remitentes permitidos provienen de la configuración de este canal.",
+      "senders_from_policy": "Los remitentes permitidos provienen de la política de seguridad y no se pueden cambiar en Ajustes.",
+      "senders_pinned": "Quién puede enviar a esta conexión está fijado por la política.",
+      "tooltip": "Esta sesión llega a través de {{id}}, cuyo alcance está limitado por la gobernanza"
+    },
+    "connectionGovernanceList": {
+      "allowed": "Permitida",
+      "decided_by": "Decidido por",
+      "denied": "Denegada",
+      "enrolment": "Inscripción",
+      "from_config": "De la configuración del canal",
+      "intro": "Estas conexiones de chat están limitadas. Despliega una para ver qué la limita.",
+      "intro_roster_unreadable": "No se pudo leer la lista de confianza de canales en {{path}}, por lo que no se admite ninguna conexión de chat.",
+      "not_enrolled": "No inscrita",
+      "off_the_roster": "Fuera de la lista de confianza",
+      "on_the_roster": "En la lista de confianza",
+      "pinned_by_policy": "Fijados por la política",
+      "roster_unreadable": "Lista ilegible",
+      "senders": "Remitentes",
+      "unavailable": "No disponible"
     },
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "Los cambios actualizan la vista previa mientras escribes.",
@@ -6006,6 +6046,9 @@
     },
     "sessionColorSwatches": {
       "no_color": "Sin color"
+    },
+    "sessionConnectionLock": {
+      "tooltip": "{{id}} está limitado por la gobernanza — abre la sesión para ver el detalle"
     },
     "sessionGridView": {
       "close_cell": "Cerrar la celda",

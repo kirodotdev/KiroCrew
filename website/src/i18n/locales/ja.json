@@ -4461,6 +4461,18 @@
       "retrying": "リトライ中…",
       "unknown": "不明"
     },
+    "channelGovernanceCard": {
+      "action_failed": "信頼リストを更新できませんでした: {{reason}}",
+      "confirm_revoke": "{{id}} の接続を停止しますか？次のメッセージから拒否されます。",
+      "denied_by_policy": "チャネルポリシーがこの接続を拒否しているため、登録しても接続できません。",
+      "enrol": "登録",
+      "enrolled_ok": "この接続は接続を許可されています。",
+      "not_enrolled_actionable": "この接続はまだ接続を許可されていません。登録すると接続できます。",
+      "revoke": "取り消し",
+      "roster_unreadable": "{{path}} のチャネル信頼リストを読み取れないため、どの接続も許可されません。ファイルを修正または削除してください — このページは上書きしません。",
+      "senders_pinned": "許可された送信者はセキュリティポリシーで固定されているため、下の送信者欄は編集できません。",
+      "title": "ガバナンス"
+    },
     "chatInput": {
       "add_files_options": "ファイルとオプションを追加",
       "agent": "エージェント：{{name}}",
@@ -4744,6 +4756,34 @@
       "shrink": "縮小",
       "shrink_live_desktop_view": "ライブデスクトップビューを縮小",
       "updated": "更新"
+    },
+    "connectionChip": {
+      "aria_detail": "接続 {{id}} のガバナンス詳細",
+      "denied_by_policy": "チャネルポリシーがこの接続を拒否しています。",
+      "not_enrolled": "この接続は信頼リストに登録されていないため、接続できません。",
+      "read_only_note": "読み取り専用です。登録は信頼リスト、上限はセキュリティポリシーにあります。",
+      "restricted": "制限あり",
+      "roster_unreadable": "チャネル信頼リストを読み取れないため、どの接続も許可されません。",
+      "senders_from_config": "許可された送信者はこのチャネルの構成に基づきます。",
+      "senders_from_policy": "許可された送信者はセキュリティポリシーに基づき、設定では変更できません。",
+      "senders_pinned": "この接続に送信できる相手はポリシーで固定されています。",
+      "tooltip": "このセッションは {{id}} を経由しており、ガバナンスによって範囲が制限されています"
+    },
+    "connectionGovernanceList": {
+      "allowed": "許可",
+      "decided_by": "決定した層",
+      "denied": "拒否",
+      "enrolment": "登録状況",
+      "from_config": "チャネル構成から",
+      "intro": "以下のチャット接続は制限されています。展開すると制限内容を確認できます。",
+      "intro_roster_unreadable": "{{path}} のチャネル信頼リストを読み取れないため、チャット接続は許可されません。",
+      "not_enrolled": "未登録",
+      "off_the_roster": "信頼リストに未登録",
+      "on_the_roster": "信頼リストに登録済み",
+      "pinned_by_policy": "ポリシーで固定",
+      "roster_unreadable": "リスト読み取り不可",
+      "senders": "送信者",
+      "unavailable": "利用不可"
     },
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "入力内容に合わせてプレビューが更新されます。",
@@ -5834,6 +5874,9 @@
     },
     "sessionColorSwatches": {
       "no_color": "色なし"
+    },
+    "sessionConnectionLock": {
+      "tooltip": "{{id}} はガバナンスにより制限されています — 詳細はセッションを開いてください"
     },
     "sessionGridView": {
       "close_cell": "セルを閉じる",

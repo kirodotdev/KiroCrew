@@ -1105,6 +1105,18 @@
       "retrying": "Retrying...",
       "unknown": "unknown"
     },
+    "channelGovernanceCard": {
+      "action_failed": "Could not update the trust roster: {{reason}}",
+      "confirm_revoke": "Stop {{id}} from attaching? It is refused from its next message onward.",
+      "denied_by_policy": "The channels policy denies this connection, so enrolling it will not let it attach.",
+      "enrol": "Enrol",
+      "enrolled_ok": "This connection is allowed to attach.",
+      "not_enrolled_actionable": "This connection is not allowed to attach yet. Enrol it to let it connect.",
+      "revoke": "Revoke",
+      "roster_unreadable": "The channel trust roster at {{path}} could not be read, so no connection is admitted. Fix or remove the file — this page will not overwrite it.",
+      "senders_pinned": "Allowed senders are pinned by the security policy, so the sender field below is not editable.",
+      "title": "Governed by"
+    },
     "chatInput": {
       "agent": "Agent: {{name}}",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
@@ -1252,6 +1264,34 @@
       "resize_live_desktop_view_top": "Resize live desktop view (top)",
       "resize_live_desktop_view_top_left": "Resize live desktop view (top left)",
       "resize_live_desktop_view_top_right": "Resize live desktop view (top right)"
+    },
+    "connectionChip": {
+      "aria_detail": "Governance detail for connection {{id}}",
+      "denied_by_policy": "The channels policy denies this connection.",
+      "not_enrolled": "This connection is not on the trust roster, so it is not allowed to attach.",
+      "read_only_note": "Read-only. Enrolment lives in the trust roster and the ceiling in the security policy.",
+      "restricted": "Restricted",
+      "roster_unreadable": "The channel trust roster could not be read, so no connection is admitted.",
+      "senders_from_config": "Allowed senders come from this channel's configuration.",
+      "senders_from_policy": "Allowed senders come from the security policy and cannot be changed in Settings.",
+      "senders_pinned": "Who may send to this connection is pinned by policy.",
+      "tooltip": "This session arrives through {{id}}, whose reach is limited by governance"
+    },
+    "connectionGovernanceList": {
+      "allowed": "Allowed",
+      "decided_by": "Decided by",
+      "denied": "Denied",
+      "enrolment": "Enrolment",
+      "from_config": "From channel config",
+      "intro": "These chat connections are bounded. Expand one to see what limits it.",
+      "intro_roster_unreadable": "The channel trust roster at {{path}} could not be read, so no chat connection is admitted.",
+      "not_enrolled": "Not enrolled",
+      "off_the_roster": "Not on the trust roster",
+      "on_the_roster": "On the trust roster",
+      "pinned_by_policy": "Pinned by policy",
+      "roster_unreadable": "Roster unreadable",
+      "senders": "Senders",
+      "unavailable": "Unavailable"
     },
     "contextBar": {
       "context_pct": "Context: {{pct}}%"
@@ -1757,6 +1797,9 @@
       "switch_to_autopilot": "Switch to Autopilot",
       "switch_to_chat": "Switch to Chat",
       "unpin": "Unpin"
+    },
+    "sessionConnectionLock": {
+      "tooltip": "{{id}} is limited by governance — open the session for detail"
     },
     "sessionGridView": {
       "fork_child_session": "Fork {{name}} (child session)",

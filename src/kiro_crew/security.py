@@ -4212,6 +4212,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     "profiles",
     "admission_policy.json",
     "denied_commands.json",
+    # The channel trust roster — which chat connections may attach to this
+    # instance. Same trust class as the two above: an agent that could WRITE it
+    # would enrol a bot of its own choosing and give that principal a live inbound
+    # path into its own session, and one that could READ it would learn exactly
+    # which connections are trusted and which ids to impersonate. The gateway
+    # process (not the agent sandbox) reads it, so the boot gate and the Settings
+    # surface keep working.
+    "channel_trust.json",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

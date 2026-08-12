@@ -21,6 +21,7 @@ from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
     MODE_ALLOW,
     MODE_DENY,
+    POSTURE_SEP,
     SCOPE_CATALOG,
     SIGNATURE_UNCHECKED,
     SIGNATURE_UNSIGNED,
@@ -574,11 +575,32 @@ class TestConformanceVectors:
         assert resolve(ceiling, profile, "channels", "slack").permitted
         assert not resolve(ceiling, profile, "channels", "discord").permitted
 
+    def test_e6b_channel_member_is_queried_per_connection(self, ceiling, profile):
+        # A ``channels`` member is a CONNECTION. A policy naming the bare
+        # transport keeps covering every connection on it, which is what makes
+        # this vector's own ``allow: ["slack"]`` ceiling still admit the traffic.
+        assert resolve(ceiling, profile, "channels", "slack/default").permitted
+        assert resolve(ceiling, profile, "channels", "slack/second-workspace").permitted
+        assert not resolve(ceiling, profile, "channels", "discord/default").permitted
+
     def test_e7_channel_posture_enterprise_id(self, ceiling, profile):
-        assert resolve(ceiling, profile, "channels", "slack/allowed_enterprise_ids:E0123").permitted
-        assert not resolve(
-            ceiling, profile, "channels", "slack/allowed_enterprise_ids:E9999"
+        # ``#`` separates the posture leaf from the member: a member id may itself
+        # contain ``/`` (``slack/default``), so ``/`` cannot also mean "leaf".
+        assert resolve(
+            ceiling, profile, "channels", f"slack{POSTURE_SEP}allowed_enterprise_ids:E0123"
         ).permitted
+        assert not resolve(
+            ceiling, profile, "channels", f"slack{POSTURE_SEP}allowed_enterprise_ids:E9999"
+        ).permitted
+
+    def test_e7b_transport_posture_reaches_a_qualified_connection(self, ceiling, profile):
+        # The posture in this vector is authored for the whole transport
+        # (``posture: {"slack": …}``) while a live gate queries the qualified
+        # connection — so container resolution has to find it, or the ceiling is
+        # silently skipped.
+        item = f"slack/default{POSTURE_SEP}allowed_enterprise_ids:"
+        assert resolve(ceiling, profile, "channels", item + "E0123").permitted
+        assert not resolve(ceiling, profile, "channels", item + "E9999").permitted
 
     def test_e8_capability_spawn_disabled_by_profile(self, ceiling, profile):
         # policy enables spawn; profile disables it → AND = disabled.

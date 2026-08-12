@@ -103,8 +103,16 @@ def _governance_posture_permits_workspace(enterprise_id: str, team_id: str) -> b
     from kiro_crew.platform.context import PlatformCompositionError
 
     try:
+        from kiro_crew.messaging.connections import make_connection
+        from kiro_crew.platform.governance import POSTURE_SEP
         from kiro_crew.platform.governance_profiles import governance_permits
 
+        # The queried member is the fully-qualified CONNECTION, so a posture
+        # authored per bot is reachable; a posture authored for the whole
+        # transport (``posture: {"slack": …}``, the form every existing policy
+        # uses) still covers it via container resolution in
+        # ``ScopedMap._resolve_posture``.
+        member = make_connection("slack").governance_item()
         # An empty session key resolves policy-only — exactly the ceiling we want:
         # the posture is policy-only (Rule 6 rejects a profile carrying it), so a
         # surface-bound profile must NOT additionally intersect here.  (The degrade
@@ -120,11 +128,13 @@ def _governance_posture_permits_workspace(enterprise_id: str, team_id: str) -> b
                 # is an allow-mode allowlist the sentinel is DENIED (pinned →
                 # close); if the leaf is ungoverned / deny-mode / allow-any the
                 # sentinel PERMITS (not pinned → the empty id is fine, skip).
-                probe = governance_permits("channels", f"slack/{leaf}:\x00__unpinned_probe__")
+                probe = governance_permits(
+                    "channels", f"{member}{POSTURE_SEP}{leaf}:\x00__unpinned_probe__"
+                )
                 if not getattr(probe, "permitted", True):
                     return False
                 continue
-            decision = governance_permits("channels", f"slack/{leaf}:{value}")
+            decision = governance_permits("channels", f"{member}{POSTURE_SEP}{leaf}:{value}")
             if not getattr(decision, "permitted", True):
                 return False
         return True

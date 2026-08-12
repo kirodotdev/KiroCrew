@@ -4461,6 +4461,18 @@
       "retrying": "重试中…",
       "unknown": "未知"
     },
+    "channelGovernanceCard": {
+      "action_failed": "无法更新信任名单：{{reason}}",
+      "confirm_revoke": "禁止 {{id}} 接入？从它的下一条消息起就会被拒绝。",
+      "denied_by_policy": "通道策略拒绝了此连接，登记也无法让它接入。",
+      "enrol": "登记",
+      "enrolled_ok": "此连接允许接入。",
+      "not_enrolled_actionable": "此连接尚不允许接入。登记后它才能连接。",
+      "revoke": "撤销",
+      "roster_unreadable": "无法读取位于 {{path}} 的通道信任名单，因此不接受任何连接。请修复或删除该文件 —— 本页不会覆盖它。",
+      "senders_pinned": "允许的发送方由安全策略固定，因此下方的发送方字段不可编辑。",
+      "title": "受何治理"
+    },
     "chatInput": {
       "add_files_options": "添加文件与选项",
       "agent": "代理：{{name}}",
@@ -4744,6 +4756,34 @@
       "shrink": "缩小",
       "shrink_live_desktop_view": "缩小实时桌面视图",
       "updated": "更新于"
+    },
+    "connectionChip": {
+      "aria_detail": "连接 {{id}} 的治理详情",
+      "denied_by_policy": "通道策略拒绝了此连接。",
+      "not_enrolled": "此连接不在信任名单中，不允许接入。",
+      "read_only_note": "只读。接入登记位于信任名单，权限上限位于安全策略。",
+      "restricted": "受限",
+      "roster_unreadable": "无法读取通道信任名单，因此不接受任何连接。",
+      "senders_from_config": "允许的发送方来自此通道的配置。",
+      "senders_from_policy": "允许的发送方来自安全策略，无法在设置中更改。",
+      "senders_pinned": "允许向此连接发送消息的人由策略固定。",
+      "tooltip": "此会话来自 {{id}}，其权限受治理策略限制"
+    },
+    "connectionGovernanceList": {
+      "allowed": "已允许",
+      "decided_by": "决定层级",
+      "denied": "已拒绝",
+      "enrolment": "登记状态",
+      "from_config": "来自通道配置",
+      "intro": "以下聊天连接受到限制。展开可查看限制内容。",
+      "intro_roster_unreadable": "无法读取位于 {{path}} 的通道信任名单，因此不接受任何聊天连接。",
+      "not_enrolled": "未登记",
+      "off_the_roster": "不在信任名单中",
+      "on_the_roster": "在信任名单中",
+      "pinned_by_policy": "由策略固定",
+      "roster_unreadable": "名单无法读取",
+      "senders": "发送方",
+      "unavailable": "不可用"
     },
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "输入时，预览会实时更新。",
@@ -5834,6 +5874,9 @@
     },
     "sessionColorSwatches": {
       "no_color": "无颜色"
+    },
+    "sessionConnectionLock": {
+      "tooltip": "{{id}} 受治理策略限制 —— 打开会话查看详情"
     },
     "sessionGridView": {
       "close_cell": "关闭单元",

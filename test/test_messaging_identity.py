@@ -154,7 +154,9 @@ def test_inbound_governed_deny_is_sel_audited(monkeypatch, tmp_path) -> None:
         rec = audited[0]
         assert rec["outcome"] == "denied"
         assert rec["scope"] == "channels"
-        assert rec["item"] == "discord"
+        # The audited item is the fully-qualified CONNECTION: a per-bot rule has to
+        # be addressable, so the gate never queries the bare transport.
+        assert rec["item"] == "discord/default"
         assert rec["tool_name"] == "inbound:discord"
     finally:
         gp.reset_store()

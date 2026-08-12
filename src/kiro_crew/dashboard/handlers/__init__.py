@@ -13,8 +13,13 @@ from typing import Any
 
 # Imports accessed by submodules via late-binding (_h.X pattern)
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path  # noqa: F401
+from kiro_crew.dashboard.handlers.channel_trust import (  # noqa: F401
+    api_channel_trust_enrol,
+    api_channel_trust_revoke,
+)
 from kiro_crew.dashboard.handlers_system import (  # noqa: F401
     api_compliance_yolo_status,
+    api_connections,
     api_governance_channels,
     api_sso_ttl,
     api_status,

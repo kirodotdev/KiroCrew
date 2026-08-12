@@ -5,6 +5,7 @@ import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Glo
 import { useAppSelector } from '../../store'
 import { useContainerWidth } from '../../hooks/useContainerWidth'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
+import ConnectionGovernanceList from '../../components/ConnectionGovernanceList'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
@@ -1110,6 +1111,13 @@ function GovernancePolicyViewer() {
             )}
           </>
         )}
+        {/* OUTSIDE the policy branches on purpose. Enrolment is the OPERATOR's
+            control and exists whether or not an enterprise ceiling does, so a
+            host with no policy but an empty trust roster must still be told that
+            no connection can attach — inside the branch above, the page would
+            say "no enterprise policy in effect" and never mention it. Self-hiding
+            when nothing is bounded, so an ordinary install sees no new content. */}
+        <ConnectionGovernanceList />
       </SettingsCard>
     </SettingsSection>
   )
