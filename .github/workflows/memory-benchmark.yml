@@ -1,0 +1,316 @@
+name: Memory Benchmark (nightly)
+
+# Measures the memory layer's retrieval quality against a published corpus
+# (LoCoMo) and reports the drift from the last ACCEPTED baseline.
+#
+# Why nightly and not a PR gate -- four reasons, in descending order of how
+# decisive they are:
+#
+#   1. There is no threshold a PR could sensibly fail. Retrieval recall is a
+#      trend metric; any fixed floor is either loose enough never to fire or
+#      tight enough to block PRs that never touched memory. What is actionable
+#      is a DELTA against a stored baseline, which is a persistence problem.
+#   2. Cost. MEASURED end to end: one FULL 10-instance arm is 60.1 minutes on a
+#      32-core dev desk. The scheduled run therefore measures a fixed
+#      five-instance slice (see env.BENCH_INSTANCES), because a GitHub standard
+#      runner has 4 cores and the slowdown has not been measured.
+#   3. Host-dependent ranking. `search_episodic` picks its backend from which
+#      optional dependencies import (FAISS inner product, stdlib cosine, or an
+#      FTS5 keyword fallback). A number is only comparable to another run on the
+#      same backend, so the runner image has to be pinned for the comparison to
+#      mean anything.
+#   4. Nothing in a normal PR moves the number. Only `vector_memory.py`,
+#      `embeddings.py` and `context.py` do.
+#
+# The arms run as a MATRIX rather than sequentially in one job, and that is a
+# measurement result, not a style choice: two arms in one job overruns any
+# timeout worth setting. One arm per job keeps each job's budget honest and lets
+# the arms run at the same time.
+#
+# What FAILS this job is the instrument breaking, not the score moving. A corpus
+# checksum mismatch, an embedder that will not load, or a crashed run all exit
+# non-zero, because each means the next measurement would be silently
+# meaningless. A recall regression does not fail it -- the run opens a PR
+# carrying the new numbers so a human decides whether to accept the baseline.
+
+on:
+  schedule:
+    - cron: "0 8 * * *" # 08:00 UTC = 01:00 PDT, after the nightly build
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  # MEASURED end to end, not extrapolated: one FULL 10-instance arm took 60.1
+  # minutes (3605 s) on a 32-core dev desk, scoring 1977 queries over 5882
+  # fragments.
+  #
+  # A nightly trend does not need all 1977 queries -- it needs a fixed,
+  # repeatable slice with enough queries to be sensitive to a real change. Five
+  # instances is roughly half the wall clock for ~1000 scorable queries.
+  #
+  # Why not the full corpus, given 60 min fits inside the 90-minute budget: this
+  # host has 32 cores and a GitHub standard runner has 4. Embedding is CPU-bound,
+  # so the runner is expected to be several times slower and that multiple has NOT
+  # been measured. The slice is the conservative default until a real run on the
+  # runner gives a number; if the first nightlies land comfortably under budget,
+  # raising this to 10 is a one-line change (and re-baselines, since the slice
+  # extent is part of the corpus fingerprint).
+  #
+  # This is a workflow constant rather than an input on purpose: every run must
+  # measure the same corpus, or an odd-sized run would be accepted as the
+  # baseline and every later run would report "not comparable". The slice is
+  # deterministic (a head-slice) and its extent is recorded in the corpus
+  # fingerprint, so a sliced report can never be silently diffed against a
+  # full-corpus one.
+  BENCH_INSTANCES: "5"
+
+# Single-flight across the whole workflow: a second run would double the load on
+# the same corpus for no extra signal.
+concurrency:
+  group: memory-benchmark-nightly
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: Measure (${{ matrix.timeline }})
+    # PINNED, not `ubuntu-latest`, and this workflow is the one place in the repo
+    # where that matters. Every other workflow is a pass/fail check where a runner
+    # image bump is invisible; this one produces numbers that get diffed across
+    # days, so a silent image change would be published as a code delta. The report
+    # also records python / platform / sqlite / numpy and `bench compare` refuses
+    # across a change in any of them, so drift this pin cannot cover becomes a
+    # visible refusal rather than a false attribution.
+    runs-on: ubuntu-24.04
+    # A five-instance arm should land near ~40 min based on the measured
+    # per-instance cost; 90 leaves room for a slower runner without letting a
+    # genuine hang burn hours.
+    timeout-minutes: 90
+    strategy:
+      # One arm's failure must not cancel the other: a partial result is still
+      # worth reading, and the accept job below tolerates a missing arm.
+      fail-fast: false
+      matrix:
+        # now      -- every fragment at one instant, so the recency-decay factor
+        #             is constant and this isolates semantic ranking.
+        # anchored -- the corpus's real relative gaps preserved, newest session
+        #             at today, so the decay term acts as it would in production.
+        timeline: [now, anchored]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice]" --group dev
+
+      - name: Read the pinned embedding-model digest
+        id: model
+        # Keyed on the digest rather than a version string so a model swap
+        # invalidates the cache automatically -- and, because the digest is also
+        # recorded in every report, invalidates comparisons against baselines
+        # from the previous vector space. That is the correct outcome: those
+        # numbers are not comparable.
+        run: |
+          DIGEST="$(python3 -c 'from kiro_crew import embeddings; print(embeddings._GGUF_SHA256)')"
+          case "$DIGEST" in
+            [0-9a-f][0-9a-f]*) ;;
+            *) echo "::error::could not read the model digest (got '$DIGEST')"; exit 1 ;;
+          esac
+          # Derived, not hardcoded: the cache path must follow the code's own idea
+          # of where the model lives or the cache silently stops covering it.
+          MODEL_DIR="$(python3 -c 'from kiro_crew import embeddings; print(embeddings.default_model_path().parent)')"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "path=$MODEL_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the embedding model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.0.2
+        with:
+          path: ${{ steps.model.outputs.path }}
+          key: gguf-${{ steps.model.outputs.digest }}
+
+      - name: Ensure the embedding model is resident
+        # REQUIRED, not belt-and-braces. `bench retrieval` only WAITS for
+        # residency (prepare_embedder -> wait_ready) and never downloads; on a
+        # cache miss it refuses to run rather than measure keyword overlap. That
+        # refusal is correct, but without this step the FIRST EVER run -- and
+        # every run after a model swap or a cache eviction -- could never
+        # bootstrap, so the nightly would fail forever instead of trending.
+        env:
+          # The harness's own test suite sets this to keep unit tests from pulling
+          # 639 MB. Here the download is the point, so make its absence explicit.
+          KIROCREW_SKIP_MODEL_DOWNLOAD: ""
+        run: |
+          python3 - <<'PY'
+          import asyncio
+          import sys
+
+          from kiro_crew import embeddings
+
+          mgr = embeddings.ModelDownloadManager()
+          if mgr.model_ready():
+              print(f"model already resident at {mgr.target} (cache hit)")
+              sys.exit(0)
+          print(f"cache miss; downloading the embedding model to {mgr.target}")
+          ok = asyncio.run(mgr.ensure_model(attempts=3))
+          if not ok or not mgr.model_ready():
+              print(f"::error::embedding model download failed: {mgr.status}")
+              sys.exit(1)
+          print("model downloaded and verified")
+          PY
+
+      - name: Fetch the corpus
+        # Checksum-verified against a pinned upstream revision. A mismatch is a
+        # hard failure: a corpus that changed underneath a stored baseline turns
+        # a regression into a mystery.
+        run: kirocrew bench fetch locomo10
+
+      - name: Run the benchmark
+        env:
+          TIMELINE: ${{ matrix.timeline }}
+          INSTANCES: ${{ env.BENCH_INSTANCES }}
+        run: |
+          mkdir -p reports
+          # The slice extent rides in the corpus fingerprint, so a sliced run
+          # cannot be diffed against a full-corpus baseline by accident --
+          # `compare` refuses on the fingerprint mismatch.
+          SLICE=""
+          if [ -n "$INSTANCES" ]; then SLICE="--instances $INSTANCES"; fi
+          # No --toy-embedder: the harness refuses to run when the real model is
+          # not resident, so a failed model download fails here loudly instead of
+          # quietly measuring substring overlap.
+          kirocrew bench retrieval locomo10 \
+            --timeline "$TIMELINE" \
+            $SLICE \
+            --out-dir reports \
+            --stem "locomo10_$TIMELINE"
+
+      - name: Upload this arm's report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: memory-benchmark-${{ matrix.timeline }}
+          path: reports/
+          retention-days: 30
+
+  accept:
+    name: Compare and propose a baseline
+    # Not pinned, unlike the measuring job above, and the difference is the point:
+    # this job produces no numbers. It reads two reports and opens a PR, so a runner
+    # image bump cannot move a result here.
+    needs: measure
+    # `always()` so a single failed arm still yields a comparison for the arm
+    # that succeeded; the steps below tolerate a missing file.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice]" --group dev
+
+      - name: Download the arm reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: memory-benchmark-*
+          merge-multiple: true
+          path: bench_baselines/latest
+
+      - name: Compare against the accepted baseline
+        run: |
+          {
+            echo "## Memory benchmark — drift from accepted baseline"
+            echo
+            FOUND=0
+            for NEW in bench_baselines/latest/*.json; do
+              [ -f "$NEW" ] || continue
+              FOUND=1
+              BASE="$(basename "$NEW")"
+              OLD="bench_baselines/accepted/$BASE"
+              echo "### \`$BASE\`"
+              if [ ! -f "$OLD" ]; then
+                echo "No accepted baseline yet — this run establishes one."
+              else
+                # `compare` refuses when the two runs disagree on corpus
+                # fingerprint, ingest config, retrieval config or embedder, so a
+                # mismatch prints "not comparable" instead of a plausible number.
+                kirocrew bench compare "$OLD" "$NEW" || true
+              fi
+              echo
+            done
+            if [ "$FOUND" = "0" ]; then
+              echo "No reports were produced — every arm failed. Nothing to compare."
+            fi
+          } | tee comparison.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open a PR to accept the new baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! ls bench_baselines/latest/*.json >/dev/null 2>&1; then
+            echo "No reports to accept."
+            exit 0
+          fi
+          mkdir -p bench_baselines/accepted
+          BRANCH=chore/accept-memory-benchmark-baseline
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Build ON TOP of the branch already open, when there is one. Rebuilding it
+          # from main and force-pushing discards whatever a maintainer pushed to that
+          # PR -- a review fix, a hand-corrected threshold -- and the run would look
+          # like it had merely refreshed a number. `--force-with-lease` does not save
+          # this on its own: the lease only proves the tip being overwritten is the one
+          # we fetched, and overwriting it IS the loss.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$BRANCH"
+            git checkout -B "$BRANCH" FETCH_HEAD
+          else
+            git checkout -b "$BRANCH"
+          fi
+          cp bench_baselines/latest/*.json bench_baselines/accepted/
+          # Stage first: on the very first run the accepted/ tree is untracked,
+          # and `git diff` alone ignores untracked files, so the bootstrap
+          # baseline would read as "no changes" and never get committed.
+          git add bench_baselines/accepted
+          # Compared against the BRANCH now, not against main: an unchanged baseline
+          # must not add an empty commit to a PR that is already open.
+          if git diff --cached --quiet -- bench_baselines/accepted; then
+            echo "Baseline unchanged; nothing to accept."
+            exit 0
+          fi
+          git commit -m "chore(bench): accept new memory-benchmark baseline"
+          # A fast-forward in the normal case. The lease stays as the guard against two
+          # overlapping nightlies, which is the only race left once the branch is built
+          # on top of its own tip.
+          git push --force-with-lease origin "$BRANCH"
+          if gh pr view "$BRANCH" --json state --jq .state 2>/dev/null | grep -q OPEN; then
+            echo "PR already open for $BRANCH; updated in place."
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore(bench): accept new memory-benchmark baseline" \
+              --body-file comparison.md
+          fi

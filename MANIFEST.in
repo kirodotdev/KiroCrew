@@ -48,6 +48,7 @@ prune build
 prune dist
 prune .hypothesis
 prune temp-screenshots
+prune bench_baselines
 global-exclude __pycache__
 global-exclude *.py[cod]
 global-exclude *.so

@@ -265,6 +265,25 @@ describe('DisplayPanel – theme install', () => {
   })
 })
 
+describe('DisplayPanel – font family setting', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('tells the user the code font tracks the theme, not this preference', () => {
+    // A theme pack's `mono` face reaches code blocks, inline code and diffs
+    // under EVERY option here, System included (website/docs/theming-contract.md
+    // § Fonts). Without this sentence a user who picks System and still sees the
+    // code font change reads the option as broken.
+    renderWithProviders(<DisplayPanel />)
+
+    expect(screen.getByText('Font Family')).toBeInTheDocument()
+    expect(
+      screen.getByText('UI font family for the dashboard. Code font follows the active theme.'),
+    ).toBeInTheDocument()
+  })
+})
+
 describe('DisplayPanel – zoom setting', () => {
   beforeEach(() => {
     vi.clearAllMocks()

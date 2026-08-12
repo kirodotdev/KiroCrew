@@ -1471,7 +1471,8 @@ class SshTunnelManager:
         Returns ``(ok, payload)``: on success *payload* is the peer's JSON reply
         (carrying the new session key); on failure it carries ``error`` and a
         machine-readable ``code`` so the caller can tell a stale token from an
-        unreachable peer from a bundle the peer refused.
+        unreachable peer from a bundle the peer refused from a peer too old to
+        have an importer at all.
 
         Runs entirely over the already-open forward — **no SSH spawn**, same as
         :meth:`token_validates`.
@@ -1541,6 +1542,24 @@ class SshTunnelManager:
                             return False, {
                                 "error": "peer rejected the credential",
                                 "code": "transfer_unauthorized",
+                            }
+                        if resp.status in (404, 405):
+                            # A peer with no importer route cannot receive a
+                            # session at all, and says so in two different ways
+                            # depending on its routing table: 404 when nothing
+                            # matches, 405 when the path falls through to
+                            # ``/api/chat/slots/{slot}`` (registered GET/DELETE
+                            # only) and aiohttp reports the method instead.
+                            # Neither is a status the importer itself ever
+                            # returns, so both mean the same actionable thing —
+                            # surface that rather than a bare status code the
+                            # user cannot act on.
+                            return False, {
+                                "error": (
+                                    "instance is running an older Kiro Crew that cannot "
+                                    "receive sessions — update it, then reconnect"
+                                ),
+                                "code": "transfer_peer_too_old",
                             }
                         # Forward the peer's own code when it sent one: a version
                         # mismatch or an oversized bundle is actionable, and

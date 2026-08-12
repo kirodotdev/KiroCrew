@@ -26,6 +26,59 @@ const path = require("path");
 const fs = require("fs");
 const { mochiPageUrl } = require("./pageUrl");
 
+// Returns the dashboard main window (a BaseWindow owned by main.js) or null.
+// Wired at init via setMainWindowGetter so the panel-close path can keep the
+// dashboard from being surfaced by macOS window promotion (see mochi-panel:close).
+let getMainWindow = null;
+function setMainWindowGetter(fn) {
+  getMainWindow = typeof fn === "function" ? fn : null;
+}
+
+// macOS only. A mouse click on the panel's own X makes this non-activating
+// panel the app's key window; hiding a key window makes macOS promote the app's
+// next FOCUSABLE regular window (the dashboard) to key and bring the app
+// forward -- resurfacing a dashboard the user had left behind another app. The
+// pet overlay never triggers this because it is setFocusable(false), so it is
+// never a promotion target; the pet-click and hotkey hides likewise don't,
+// because their gesture doesn't land in the panel. Mirror the pet: make the
+// dashboard briefly non-focusable across the hide so macOS finds no window to
+// promote and returns activation to the previously-active app, then restore
+// focusability so the user can click the dashboard again. No-op unless the
+// dashboard exists and is not itself the focused window.
+function hidePanelReleasingFocus() {
+  if (!panelWindow || panelWindow.isDestroyed()) return;
+  let mw = null;
+  try {
+    mw = process.platform === "darwin" && getMainWindow ? getMainWindow() : null;
+  } catch {
+    mw = null;
+  }
+  const shield =
+    mw &&
+    !mw.isDestroyed() &&
+    typeof mw.isFocusable === "function" &&
+    mw.isFocusable() &&
+    !mw.isFocused();
+  if (shield) {
+    try {
+      mw.setFocusable(false);
+    } catch {
+      /* BaseWindow shape changed */
+    }
+  }
+  panelWindow.hide();
+  if (shield) {
+    // Restore after the window-server settles (empirically stable by ~250ms).
+    setTimeout(() => {
+      try {
+        if (!mw.isDestroyed()) mw.setFocusable(true);
+      } catch {
+        /* torn down */
+      }
+    }, 300);
+  }
+}
+
 /** Original defaults (chatWindowManager.ts:16). */
 const PANEL_W = 320;
 const PANEL_H = 470;
@@ -257,7 +310,7 @@ function createPanelWindow(baseUrl, token = "") {
   win.on("close", (e) => {
     if (isQuitting) return;
     e.preventDefault();
-    win.hide();
+    hidePanelReleasingFocus();
     wasVisibleBeforeHide = false;
   });
 
@@ -355,7 +408,7 @@ function openPanelWindow(baseUrl, token = "") {
  */
 function togglePanelWindow(baseUrl, token = "") {
   if (panelWindow && !panelWindow.isDestroyed() && panelWindow.isVisible()) {
-    panelWindow.hide();
+    hidePanelReleasingFocus();
     return null;
   }
   return openPanelWindow(baseUrl, token);
@@ -382,7 +435,7 @@ function hidePanelWindow() {
     !isRendererGone(panelWindow) &&
     panelWindow.isVisible()
   ) {
-    panelWindow.hide();
+    hidePanelReleasingFocus();
     return true;
   }
   return false;
@@ -527,7 +580,7 @@ function bindPanelIpc(baseUrl) {
     if (/^https?:/.test(currentBaseUrl)) shell.openExternal(currentBaseUrl);
   });
   ipcMain.on("mochi-panel:close", () => {
-    if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide();
+    hidePanelReleasingFocus();
   });
 
   /**
@@ -594,6 +647,7 @@ module.exports = {
   clampPanelWidth,
   panelLeftForWidth,
   setPanelLogger,
+  setMainWindowGetter,
   hidePanelWindow,
   PANEL_W,
   PANEL_H,

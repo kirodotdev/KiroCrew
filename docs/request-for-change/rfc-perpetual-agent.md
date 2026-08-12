@@ -1,11 +1,11 @@
 ---
 title: Perpetual agents — self-scheduled, goal-driven, supervised
 status: draft
-revision: 2
+revision: 3
 author: zezhexu
 created: 2026-08-09
-last-audited: 2026-08-10
-audited-at: 30f5d6983
+last-audited: 2026-08-12
+audited-at: a72c985f8
 doc-pr: 2328
 implementation-prs: []
 tracking-issues: []
@@ -15,6 +15,20 @@ superseded-by: []
 # RFC: Perpetual agents — self-scheduled, goal-driven, supervised
 
 - Status: draft — no implementation.
+- **Revision 3 (2026-08-12): Phase 0 ran and concluded.** Two agents
+  (`flake-warden`, 42 cycles; `copywriting-warden`, 21 cycles), 2.5 days, 13
+  merged PRs, 18 issues, zero fabrications detected, zero auto-pauses, two wakes
+  lost to timeout. Full log: the operator's `PHASE0-LOG.md` (16 findings, 2
+  declared interventions, a conclusion with per-need verdicts). Four changes in
+  this revision, each carried by a Phase 0 measurement: the five needs now carry
+  verdicts instead of predictions; `agent_sleep`'s load-bearing direction is
+  inverted from sleep-longer to **wake-sooner** (§3, OQ6 — answered); §4's
+  priority is inverted, per-wake **budget before backoff** (the failure that cost
+  work was budget exhaustion, which occurred, not over-waking, which never did);
+  and Phase 1 is rescoped around the probe's strongest result — a per-wake
+  **standing-state ranking step** owned by the §7 contract preamble, because the
+  probe's single largest defect was an operator-written trigger that pointed an
+  agent at the delta instead of its goal for 8 consecutive cycles.
 - Revision 2 (2026-08-10) after a first-principles re-read of revision 1. Five
   changes, each of which **reverses or narrows something revision 1 asserted**:
   a Phase 0 probe now precedes Phase 1 because four of the five stated needs
@@ -147,26 +161,57 @@ degeneration, which is what Phase 0 is for.
 
 ### What a perpetual agent needs that none of them provide
 
-One of these five is verified against the code. The other four are **predicted**,
-and are flagged as such because this directory's own rule is to verify before
-asserting — and because PR #1023's Phase 0 probe returning a negative verdict
-redirected an entire RFC in this same directory.
+Revision 2 flagged four of these five as **predicted**. Phase 0 ran (two agents,
+63 combined cycles); each need now carries its verdict.
 
-1. **Agent-chosen wake time** (predicted). The agent, not the operator, names
-   the next deadline, and may change it every cycle.
-2. **A goal that is never "done"** (predicted). Cron's prompt is a task; a
-   monitor loop's nudge carries an exit condition. Neither models "keep pursuing
-   this, and invent the next task yourself". Note this is a *prompt* shape, not a
-   scheduler capability — nothing stops it today.
+1. **Agent-chosen wake time** — **reframed by Phase 0, direction inverted.** In
+   63 fixed-hour cycles neither agent ever obviously needed a *later* wake — but
+   the probe must be honest about its own shape: a fixed cron gives the agent no
+   channel to express a wake preference, so "want" was structurally unobservable.
+   What was observed is which direction the need points when it appears: the two
+   genuine cadence failures were both **wake-sooner** cases — two wakes killed by
+   the per-wake timeout with all work lost (a checkpoint-and-resume wake would
+   have saved both), and event-shaped waits ("check the PR when the review lanes
+   post") that a top-of-hour wake serves with up to 59 minutes of dead latency.
+   `agent_sleep` stays, but its load-bearing half is *wake me sooner to continue
+   or on an event*, not *let me sleep longer*. This is OQ6's predicted collapse,
+   confirmed: the mechanism reduces to "a cron job that can request one earlier
+   wake", and that is what Phase 1 builds.
+2. **A goal that is never "done"** — **confirmed, with a sharper mechanism than
+   this document had.** Both agents held never-done goals from hour one, and one
+   still failed to pursue its goal for 8 consecutive cycles, because the
+   operator's standing instruction pointed it at *what landed since your last
+   wake* — exactly the cron task shape this section names as the anti-pattern.
+   The goal statement is necessary and nowhere near sufficient. The operative
+   mechanism is a **per-wake ranking step over the whole surface** (assess the
+   standing state against the goal, name the largest evidenced gap, work that;
+   the delta is one input, never the trigger). A controlled intervention added
+   exactly that step to one agent: the work frozen for 8 cycles moved within 2,
+   and the arm produced 4 merged PRs in its next 8 cycles against 1 in the prior
+   8. Corollary observed twice: an agent that never has to rank never exercises
+   its whole-surface instruments, so a broken ranking tool stayed invisible for
+   6 cycles — anything that reports only *changes* silently hides the largest
+   static item.
 3. **Continuity across wakes** without keeping a process resident
-   (**verified** — `persistent_session` provides exactly this, `cron.py:321`).
-4. **A cadence discipline** (predicted, and **restated in revision 2**).
-   Revision 1 called this a *liveness contract* and demanded that a wake never
-   go straight back to sleep. That was the wrong requirement — see §4. The real
-   requirement is that an agent must not wake more often than it has work for.
-5. **An escalation path that does not block** (predicted). When genuinely stuck
-   it must be able to ask a human and *then go to sleep*, receiving the answer
-   at a later wake.
+   (**verified** — `persistent_session` provides exactly this, `cron.py:321`;
+   Phase 0 confirmed it load-bearing: every cross-cycle chain rode on it).
+4. **A cadence discipline** — **has data, and the priority is inverted.**
+   Revision 2's requirement ("must not wake more often than it has work for")
+   occurred 4 times in 63 cycles, benignly: honest idle, reported without any
+   gate, exactly as §4 hoped. The cadence failure that actually destroyed work
+   was the opposite: **more work than the wake budget allowed** — two wakes
+   killed at the timeout with no journal entry, pushing one agent to 2 of the 5
+   consecutive failures that auto-pause. Worse, the per-job budget
+   (`timeout_secs`) is read, clamped and persisted but absent from every public
+   mutation path — it is write-only at creation. Phase 1 builds the budget knob
+   before the backoff.
+5. **An escalation path that does not block** — **weak support, and the agent
+   routed around it.** Both wall types fired once each; delivery degraded
+   silently (dashboard-only, no receipt) and a well-behaved agent waited
+   politely for 4.5 hours on an answer that had already failed to send. What
+   unblocked it was **filing publicly** and returning to its goal. The minimum
+   primitive is a delivery *receipt*, not a send; the honest fallback is public
+   record, not a louder channel.
 
 ## Goals
 
@@ -512,51 +557,89 @@ distorts an agent nobody is watching.
 
 ## Phases
 
-### Phase 0 — run the cheap version and watch it fail (new in revision 2)
+### Phase 0 — ran and concluded (results in revision 3)
 
-**No code.** Stand up a real perpetual agent today using existing primitives: a
-`cron_add` job on a fixed interval, `persistent_session=True`, a hand-written
-`LIFE.md` in its prompt, and no guards whatsoever. Give it a goal someone
-actually wants met. Run it for one week and record, per cycle: what it did,
-whether the cycle was worth its cost, what it asked for that it could not get,
-and how it degenerated.
+Revision 2 specified this phase ("no code, one week, watch it fail"); it ran
+2026-08-10 → 2026-08-12 and was stopped deliberately after 2.5 days with the
+exit artifacts complete. Two subjects instead of one, chosen for opposite
+substrate arrival rates — `flake-warden` ("keep CI trustworthy", 42 cycles,
+hourly beat matches the substrate) and `copywriting-warden` ("make the product's
+words make sense to someone who has never read the code", 21 cycles, substrate
+deliberately slower than the beat to force idle cycles into observation range.
+This mattered: a defect below is invisible on any subject whose substrate never
+runs dry).
 
-This phase exists because four of the five needs in §Motivation are predicted
-rather than observed, and because every policy default below (backoff
-multiplier, `_NOOP_ESCALATE`, `wake_budget_daily`, whether escalation is mostly
-permission or mostly competence) is currently a guess. One week of a real agent
-replaces all of those guesses with measurements.
+All three exit artifacts exist, in the operator's `PHASE0-LOG.md`: the agent
+specs (two hand-written `LIFE.md` files), the degeneration log (16 findings, 2
+declared mid-run interventions), and per-need verdicts (folded into §Motivation
+above). Verified output: 13 merged PRs, 18 issues, 63 combined cycles, zero
+detected fabrications, zero auto-pauses, two wakes lost to timeout. The
+pre-named degeneration ("cycles that claim progress while the goal does not
+move") never appeared; the operator's instruments produced more false signals
+than the agents did.
 
-Done when three artifacts exist:
+What the probe found that this document did not predict, compressed:
 
-1. **An agent spec** — the goal, what a good day looks like, what it should
-   escalate. This is the use case the document currently lacks.
-2. **A degeneration log** — the observed failure modes, ranked by how much they
-   cost. Phase 1 builds guards for the top of this list and drops the rest. One
-   entry is named in advance because §4 predicts it: cycles that *claim* progress
-   while the goal does not move (overstated `did`).
-3. **A verdict on each predicted need.** Any need the week does not exercise is
-   cut from Phase 1, not carried forward on the strength of this document.
-
-Phase 0 may invalidate Phase 1. That is the point — PR #1023's Phase 0 in this
-same directory returned a negative verdict and redirected its RFC, and that was
-the cheapest outcome available.
+- **The auditor was the weak link, not the agent.** Zero agent fabrications
+  against repeated operator instrument failures, each one step from being
+  recorded as agent misconduct (attempt-unaware CI log fetches; two extraction
+  regexes disagreeing over the same journal file, both outputs looking correct).
+  Phase 1's scarce surface is an **audit view** — the journal rendered against
+  CI ground truth — not the creation form this document guessed.
+- **Blast radius is not bounded by the operator.** A stranger's automation
+  claimed an agent-filed issue as auto-fixable 18 minutes after filing; the
+  agent's own public retraction of that issue's mechanism arrived 1h42m later.
+  Error products propagate faster than self-correction.
+- **Public self-retraction happened four times, unprompted, always at the cost
+  of the agent's own output.** This is what makes an unsupervised agent's record
+  trustworthy, and it is the direct input to Phase 3b's kill metric below.
+- **Boundary rules compose into starvation.** One-open-PR + hourly cheap
+  arrivals + human review latency starved the largest known gap for 8 cycles;
+  every rule was individually correct.
+- Three product defects surfaced simply by running: the cron path treats
+  transient infra errors as terminal job failures with no retry (the subagent
+  path retries 3×; `kind="self"` must take the subagent semantics);
+  `timeout_secs` is read, clamped and persisted but unreachable through every
+  public writer; the journal append can lose its trailing newline and merge two
+  wakes into one line.
 
 ### Phase 1 — a perpetual agent that lives
 
-**Scoped by Phase 0's findings, not by this list.** The floor is: `kind="self"`,
-`agent_sleep`, the §4 backoff, `wake_budget_daily`, the two-file life directory,
-prompt assembly, the §9 inheritance decisions with tests, the governance scope,
-and Schedule-page support for creating and inspecting one. Escalation is out; a
-stuck agent notifies via `send_message` and sleeps.
+**Rescoped by Phase 0's findings, in evidence order.** The floor is now:
 
-Cut from revision 1's Phase 1: the liveness gate and its work-measurement
-counter (§4), and three of the five life-directory files (§6).
+1. **The ranking step in the §7 contract preamble** — code-owned, not `LIFE.md`
+   prose: assess the standing surface against the goal, name the largest
+   evidenced gap, work it; the delta since last wake is one *input*, never the
+   trigger. This is the probe's strongest result — the intervention that added
+   it moved work frozen for 8 cycles within 2 — and it is the half of "what to
+   do next" that currently has no owner in either prompt or code.
+2. **Transient-vs-terminal classification with retry for `kind="self"`** — the
+   subagent path's semantics, not the cron path's.
+3. **Per-wake budget as a first-class, mutable knob** — `timeout_secs` reachable
+   through `update_job` and the tools, plus `agent_sleep`'s checkpoint form so a
+   budget overrun degrades into a continuation instead of a killed wake.
+4. **`agent_sleep`, wake-sooner half** — request-earlier-wake and
+   resume-on-event. The sleep-longer half ships as §4 configuration, not as
+   agent-chosen distant deadlines; OQ6's answer stands until a subject
+   demonstrates otherwise.
+5. The two-file life directory, prompt assembly, the §9 inheritance decisions
+   with tests, the governance scope, and Schedule-page create/inspect —
+   unchanged from revision 2.
+
+Escalation remains out of Phase 1's floor, with one promotion from the probe:
+the stuck-notification must return a **delivery receipt**, and the documented
+fallback for an unanswered escalation is *file the question publicly and return
+to the goal* — the behaviour that actually unblocked a Phase 0 subject after
+4.5 hours of polite waiting on a send that had silently failed.
+
+Cut from revision 1's Phase 1, unchanged: the liveness gate and its
+work-measurement counter (§4), and three of the five life-directory files (§6).
 
 Done when: an agent runs unattended for 72h across at least one deliberate
-gateway restart, every wake is agent-chosen, the restart's missed wake fires on
-recovery rather than a full interval later, a deliberately idle day produces
-widening intervals instead of manufactured work, and each §9 row has a test.
+gateway restart, a budget overrun produces a checkpointed continuation rather
+than a lost wake, the restart's missed wake fires on recovery rather than a full
+interval later, a deliberately idle day produces honest idle entries naming what
+was assessed, and each §9 row has a test.
 
 ### Phase 2 — supervision
 
@@ -607,7 +690,7 @@ leaves the life directory intact**, resumable only by a human. An agent that ran
 for two weeks holds real work; auto-deleting it is data loss dressed up as a game
 mechanic.
 
-#### Phase 3b — the survival frame (an experiment, default off)
+#### Phase 3b — the survival frame (an experiment, default off; kill metric registered in revision 3)
 
 Putting the balance *into the prompt* — "you have 12 wakes left, a
 supervisor-confirmed delivery earns 5" — and observing what the agent does
@@ -627,8 +710,36 @@ than a feature:
   rejection rate** as a first-class metric. A rising rejection rate is the frame
   producing invented deliveries, and it means the experiment failed.
 
-Entry condition: Phase 3b is not entered until 3a has run for a month and OQ3 is
-answered with evidence rather than argument.
+**Revision 3 adds the null hypothesis and the kill metric, both from Phase 0
+data.** The probe's most trust-bearing behaviours were all *expensive*: four
+public self-retractions (each converting a completed deliverable into a
+retraction, once after a third party had already claimed the finding as real),
+deliberate restraint (holding fully-evidenced work unfiled to honour a
+boundary), and honest idle. Every one of these scores negative under any frame
+that prices wakes against confirmed deliveries. Two distinctions this section
+must not blur:
+
+- **Death as governance vs death as motivation.** Termination is already real —
+  the operator paused both Phase 0 subjects — and it does its work (a credible
+  commitment to consumers of the agent's output) without appearing in the
+  prompt. 3b is only about the *motivational* copy, and §7 already records that
+  "you will be refused if you produce nothing" is precisely the instruction
+  that produces invented work.
+- **The human analogy cuts the other way.** Roles that require expensive honesty
+  are deliberately shielded from per-cycle survival pressure (tenure, life
+  appointments, blameless postmortems); where survival is coupled to output
+  metrics, the record is fabricated accounts and unretracted papers.
+
+Therefore, in addition to supervisor rejection rate: the experiment tracks the
+**self-correction rate** (public retractions and disproofs of the agent's own
+prior claims, per 20 cycles) in both arms. Phase 0 baseline: 4 in 63 cycles,
+unprompted. **If the framed arm's self-correction rate drops materially below
+its own no-frame control, the experiment has failed regardless of throughput**,
+because it will have bought output by suppressing the behaviour that makes the
+output auditable.
+
+Entry condition, unchanged: Phase 3b is not entered until 3a has run for a month
+and OQ3 is answered with evidence rather than argument.
 
 ## Alternatives considered
 
@@ -738,11 +849,16 @@ believed everything was stopped.
 - **OQ5 — dormancy visibility.** Should a dormant agent stay listed on the
   Schedule page (a graveyard with a resume action), or move to a separate
   surface?
-- **OQ6 — new in revision 2: is the agent-chosen cadence worth its cost.** If
+- **OQ6 — answered by Phase 0 (revision 3).** Predicted in revision 2: "if
   Phase 0 shows the agent almost always picks the same interval, the whole
-  `kind="self"` mechanism collapses to "a cron job that can request one earlier
-  wake" — a far smaller change. This question is the one that can shrink the RFC
-  the most, and Phase 0 answers it directly.
+  `kind="self"` mechanism collapses to 'a cron job that can request one earlier
+  wake'". That is what happened, with the caveat stated honestly in §Motivation
+  need 1: a fixed cron gave the agents no channel to express a preference, so
+  the collapse is confirmed for *observed need*, not for *want*. Both genuine
+  cadence failures pointed toward earlier wakes (timeout-killed work,
+  event-shaped waits), none toward later ones. Phase 1 builds exactly the
+  collapsed form; the question reopens only if a Phase 1 subject demonstrates a
+  sleep-longer need in practice.
 
 ## Provenance
 
@@ -750,6 +866,18 @@ Revision 1 was written against `main` at `9ac3716a` and merged as `300d244b0`
 (PR #2328). Every line reference was read at that commit. Claims that a behaviour
 is *absent* were checked by grepping for the opposite: no caller rewrites
 `schedule.at_ts` from inside a run, and `binding_key_for` has no `cron:` branch.
+
+Revision 3 (`main` at `a72c985f8`) is written from Phase 0's measurements — two
+live agents, 63 combined cycles, 2026-08-10 → 2026-08-12, log in the operator's
+`PHASE0-LOG.md` (16 findings, 2 declared interventions, per-need verdicts). Every
+output figure was verified against GitHub (PR/issue state by number), not taken
+from the agents' journals. Two of its calls were challenged by the author and
+revised before this document was: the need-1 verdict was weakened from "no
+support" to "reframed, direction inverted" because a fixed cron cannot observe
+wake-time *want*, only need; and Phase 3b was kept as an experiment with a
+registered kill metric rather than dropped, distinguishing death-as-governance
+(real, operator-owned, already exercised) from death-as-motivation (prompt copy,
+the fabrication vector).
 
 Revision 2 (`main` at `30f5d6983`) changed no code references — it is a
 first-principles re-read of revision 1's *reasoning*, and every change it makes is

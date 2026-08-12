@@ -139,6 +139,17 @@ SECURITY.md:.*kiro-crew-security-support@amazon\.com
 # (CodeWhisperer RTS GetUsageLimits) — a functional API identifier, not a leak.
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py:.*codewhisperer
 
+# Aperture feedback-collection API, the backend proxy target for the
+# session-pulse survey. Despite the ``.aws.dev`` suffix (which INTERNAL_PATTERN
+# matches broadly), this is a PUBLIC ingestion endpoint that external,
+# non-Amazon users already submit through — the "public-api" segment in the
+# hostname names that explicitly, and it was curl-verified reachable and
+# functional from outside Amazon's network. Line-anchored to the two literal
+# endpoint constants so a genuinely internal ``*.aws.dev`` host added elsewhere
+# in this file is still caught.
+src/kiro_crew/dashboard/handlers/feedback.py:.*ingestion\.aperture-public-api\.feedback\.console\.aws\.dev
+src/kiro_crew/dashboard/handlers/feedback.py:.*prompt\.aperture-public-api\.feedback\.console\.aws\.dev
+
 # code_review_sage CR-URL parser tests: synthetic CR-12345678 ids and a
 # code.amazon.com sample URL are the parser's asserted test fixtures.
 src/kiro_crew/apps/builtins/code_review_sage/tests/
