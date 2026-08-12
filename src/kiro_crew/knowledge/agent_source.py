@@ -304,8 +304,18 @@ async def _add_agent_document(
     # claim for its previous content, and this document's text has changed.
     store.release_stale_claim(source_id, prev_hash, content_hash, old_item_ids)
 
-    before_ids = {r["id"] for r in store.db.execute(
-        "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()}
+    # Ownership is recorded from inside the ingest's finalize hop rather than
+    # after it returns. The items become durable during the ingest, and every
+    # await between that and a later write here -- the temp-file cleanup, the
+    # job-status read -- is a cancellation point that would leave them owned by
+    # nobody. Nothing then names the group: `get_state` reports no previous
+    # items, so the next add of this document neither replaces them nor is
+    # refused by `find_document_by_hash`, and the content is stored twice.
+    recorded_ids: list[str] = []
+
+    def _record_ownership(new_ids: list[str]) -> None:
+        recorded_ids[:] = new_ids
+        set_state(store, source_id, slug, content_hash, new_ids, title)
 
     tmp_path: str | None = None
     try:
@@ -325,6 +335,7 @@ async def _add_agent_document(
             original_name=f"{title}{_DEFAULT_EXT}",
             source_id=source_id,
             old_item_ids=old_item_ids,
+            on_committed=_record_ownership,
         )
     finally:
         if tmp_path:
@@ -349,10 +360,7 @@ async def _add_agent_document(
         return {"status": "error",
                 "error": f"ingestion did not complete (status={status})"}
 
-    after_ids = {r["id"] for r in store.db.execute(
-        "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()}
-    new_ids = list(after_ids - before_ids)
-    set_state(store, source_id, slug, content_hash, new_ids, title)
+    new_ids = list(recorded_ids)
     sel().log_tool_invocation(
         session_key="gateway", agent="knowledge-agent-source",
         tool_name="knowledge.agent_document.add", outcome="completed",

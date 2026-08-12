@@ -176,6 +176,25 @@ redacted before they cross into the store. Adds are serialised by a module lock,
 new items are attributed to a document by diffing the source's item ids around the
 ingest.
 
+**Ownership is recorded from inside the ingest, not after it returns.** The items become
+durable during `ingest_file`; `ingest_file` therefore takes an `on_committed` callback and
+invokes it in its finalize hop, on the success branch, right after the superseded group is
+deleted. The ids it hands over are **collected at each `add_item`**, not inferred from a
+before/after comparison of the source: `import_bundle` writes into the same aggregate in
+its own transaction and under no shared lock, so a comparison would attribute anything it
+committed meanwhile to whichever document happened to be ingesting — giving that document
+delete authority over knowledge it never created, and destroying it on the next edit. Writing the group
+afterwards instead would leave several awaits — the temp-file cleanup, the job-status read
+— between the items existing and the record that makes them replaceable, and each is a
+cancellation point on the gateway loop. Interrupted there, nothing names the items, and
+**both** of the aggregate's duplicate defences read that same row: `get_state` reports no
+previous group, so the next add replaces nothing and `find_document_by_hash` cannot see
+the content either. The document is then stored twice, and because replacement is what
+carries delete authority, an edited re-add leaves the superseded version searchable
+permanently. Running inside the hop gives the ownership write the same run-to-completion
+guarantee as the delete it belongs with. The `deduped` marker is written by the caller
+instead, because the duplicate gate returns before the hop ever runs.
+
 The tool takes the document TEXT and **never opens a file**. A path opened here on
 behalf of whatever supplied it is exactly the case where a component can be swapped for a
 link to a credential file between the check and the open, and a path pointing at a binary

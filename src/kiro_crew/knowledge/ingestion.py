@@ -372,13 +372,24 @@ class IngestionPipeline:
         except Exception:
             logger.debug("Post-ingest dedup skipped", exc_info=True)
 
-    async def ingest_file(self, path: str, on_progress=None, original_name: str = "", namespace: str = "default", source_id: str = "", old_item_ids: list[str] | None = None) -> str | None:
+    async def ingest_file(self, path: str, on_progress=None, original_name: str = "", namespace: str = "default", source_id: str = "", old_item_ids: list[str] | None = None, on_committed: Callable[[list[str]], None] | None = None) -> str | None:
         """Full pipeline. Returns job_id, or None if content hash unchanged.
 
         If source_id is provided, ingests into that existing source instead of
         creating a new one (used for remote source sync).
         If old_item_ids is provided, only those items are replaced (folder sources).
         Otherwise all items for the source are replaced (single-file sources).
+
+        ``on_committed`` receives the ids this call created -- collected at each
+        write, never inferred from a before/after comparison of the source, which
+        would also sweep up whatever another writer committed meanwhile. It runs
+        INSIDE the finalize hop, on the success branch and only there, right
+        after the old group is deleted. An aggregate source keyed by document has
+        to record which document owns those ids, and doing it after this
+        coroutine returns puts several awaits between the items becoming durable
+        and the record that makes them replaceable -- each one a cancellation
+        point that strands the items unowned. Passing the write in here gives it
+        the same run-to-completion guarantee as the delete it belongs with.
         """
         p = Path(path)
         display_name = original_name or p.name
@@ -515,6 +526,7 @@ class IngestionPipeline:
                 display_name=display_name, namespace=namespace,
                 existing=existing, old_item_ids=old_item_ids,
                 _old_item_ids=_old_item_ids, path=path, on_progress=on_progress,
+                on_committed=on_committed,
             )
         except Exception:
             try:
@@ -531,7 +543,7 @@ class IngestionPipeline:
     async def _ingest_file_body(self, *, job_id, source_id, props, meta, ext, text,
                                 uri, content_hash, display_name, namespace,
                                 existing, old_item_ids, _old_item_ids, path,
-                                on_progress) -> str | None:
+                                on_progress, on_committed=None) -> str | None:
         """Chunk/extract/store/finalize — split out so ingest_file can mark the
         pre-inserted job row 'failed' on ANY exception in one place."""
         # 4. Chunk (use per-source chunk size if configured)
@@ -559,6 +571,13 @@ class IngestionPipeline:
         chunk_contents = [chunk['content'] for chunk in chunks]
         extractions = await self.extractor.extract_batch(chunk_contents)
 
+        # What THIS call wrote, collected at the write itself rather than
+        # inferred from a before/after comparison of the source. `import_bundle`
+        # writes into the same aggregate in its own transaction and under no
+        # shared lock, so anything it commits while this ingest is awaiting would
+        # be attributed here -- handing a document delete authority over
+        # knowledge it never created.
+        created_item_ids: list[str] = []
         processed = 0
         for i, (chunk, extraction) in enumerate(zip(chunks, extractions)):
             try:
@@ -583,6 +602,7 @@ class IngestionPipeline:
                     tags=item_tags,
                     content_hash=content_hash,
                 )
+                created_item_ids.append(item_id)
                 self.store.add_source_location(
                     item_id=item_id, source_id=source_id,
                     chunk_range=f"{chunk.get('line_start', 0)}-{chunk.get('line_end', 0)}",
@@ -621,6 +641,8 @@ class IngestionPipeline:
             # and WAL + busy_timeout=10000 rides out write-lock contention.
             if processed == total:
                 self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
+                if on_committed is not None:
+                    on_committed(list(created_item_ids))
                 if existing:
                     self.store.update_source(source_id, properties=json.dumps({**props, 'content_hash': content_hash, **meta}))
                 self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
