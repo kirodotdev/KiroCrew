@@ -132,6 +132,25 @@ refused at settings time rather than at dispatch time.
 
 ### 3. One worktree per attempt, never the user's main tree
 
+A worktree is not a clone: `git worktree add` needs an existing repository to
+attach to and shares its object store. So the local path from step 2 and the
+per-attempt worktree are a base and a leaf, not alternatives — the path names the
+repository worktrees hang off, and each attempt gets its own worktree branched
+from it. The user's own working tree is never the thing being edited, which is
+worth saying in the UI as well as here: "local checkout" reads like "the directory
+the agent edits" and is the wrong mental model.
+
+This also settles why the base is asked for rather than discovered. `worktree add`
+MUTATES the repository it attaches to — a branch, plus an entry under
+`.git/worktrees` — so choosing one on the user's behalf is not a discovery problem
+but a permission one.
+
+Attempt worktrees live under the app's own data dir, at
+`<app_data>/worktrees/<owner>__<repo>/issue-<n>/`. Two placements are rejected on
+purpose: inside the user's repository, which would drop untracked directories into
+the tree they have open, and `/tmp`, where an attempt would not survive a reboot
+that happens mid-run.
+
 Creation goes through the dashboard's worktree handler
 (`src/kiro_crew/dashboard/handlers/worktree.py`), which already carries the
 hardening this needs, including not letting the repository's own hooks run during
@@ -269,12 +288,20 @@ handler already exists.
 
 ## Open questions
 
-1. What makes an issue eligible for dispatch? A label, a heuristic on the body,
+1. **What if the machine holds no copy of the repository at all?** Phase 0 refuses,
+   which is honest but leaves a connected repo that can never be worked on. The
+   obvious answer is to offer to clone it into the app's data dir, and the reason
+   that is not phase 1 is that it changes the shape of the feature rather than
+   extending it: a clone needs push credentials of its own, costs minutes on first
+   dispatch, and duplicates a repository the user probably already has. Worth
+   deciding once the gate has been used enough to know how often the refusal
+   actually fires.
+2. What makes an issue eligible for dispatch? A label, a heuristic on the body,
    or always-available with a refusal when the agent judges the item unactionable
    in its first turn.
-2. Should the agreed proof set be posted back to the issue as a comment, so the
+3. Should the agreed proof set be posted back to the issue as a comment, so the
    reporter can see what "done" was taken to mean?
-3. In a monorepo with several connected repos pointing at one checkout, is a
+4. In a monorepo with several connected repos pointing at one checkout, is a
    worktree per attempt still the right unit, or per repo per attempt?
-4. When an investigation record already exists, should dispatch consume it as
+5. When an investigation record already exists, should dispatch consume it as
    context automatically, or should the human choose?
