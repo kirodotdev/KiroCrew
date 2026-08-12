@@ -652,6 +652,23 @@ class TestAcpSessionProviderRound4Parity:
         assert provider._channel_id == "chan-7"
         assert runtime._last_activity > 0.0
 
+    def test_rekey_resets_context_state(self):
+        """#2932 -- the handoff must drop the previous session's context state
+        (mirror of AcpClient.rekey): _make_handle seeds pct=42/5000/200000, so
+        a leak here would hand those numbers to the claiming session and let
+        check_context_usage compact its empty conversation."""
+        handle = _make_handle()
+        runtime = _make_runtime()
+        provider = AcpSessionProvider(handle, runtime)
+        assert handle.last_prompt_stats.context_pct == 42.0  # seeded stale state
+        provider.rekey("dashboard:slot9", "chan-7")
+        stats = handle.last_prompt_stats
+        assert stats.context_pct == 0.0
+        assert stats.context_used_tokens == 0
+        assert stats.context_window_tokens == 0
+        assert stats.context_tokens_from_usage is False
+        assert stats.context_pct_unknown is False
+
     def test_agent_reads_from_runtime(self):
         """#5 -- session.py session-info introspection reads
         provider.client._agent; mirror AcpClient._agent via the runtime."""

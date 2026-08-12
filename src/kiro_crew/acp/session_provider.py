@@ -354,6 +354,10 @@ class AcpSessionProvider(LLMProvider):
         self._session_key = session_key
         self._channel_id = channel_id
         self._runtime._last_activity = time.monotonic()
+        # Parity with AcpClient.rekey: the handle's prompt stats describe the
+        # session this runtime served BEFORE the handoff; leaking them lets
+        # check_context_usage() compact the new, empty session (#2932).
+        self._handle.last_prompt_stats.reset_context_state()
         # Claim-push: re-target every MCP stub connection under the shared
         # runtime's PID to the claiming session (see AcpClient.rekey for the
         # rationale). Fire-and-forget; no-ops without a gateway socket.

@@ -3096,7 +3096,25 @@ class SessionManager:
             if pct > 0:
                 logger.info("Session %s context at %.0f%% (CC-managed)", key, pct)
         elif pct >= self._cfg.session.autocompact_pct:
-            self._trigger_compaction(key, f"context at {pct:.0f}%", pct)
+            # Defensive twin of the rekey-time reset (#2932): compaction is
+            # destructive-ish (it rewrites the conversation), so it must never
+            # fire on a percentage that no telemetry has confirmed for the
+            # CURRENT session binding. Today every path that raises context_pct
+            # also calls note_pct_reported(), so this gate is unreachable in
+            # production — it exists so a future handoff/reset path that
+            # preserves a stale pct while leaving it flagged unknown degrades
+            # to a skipped compaction instead of compacting an empty session.
+            # Fail-quiet on doubles: providers without the probe read as
+            # "confirmed" (unchanged behavior).
+            if _context_pct_is_unknown(provider):
+                logger.info(
+                    "Session %s context %.0f%% is unconfirmed for this session — "
+                    "skipping compaction until telemetry reports",
+                    key,
+                    pct,
+                )
+            else:
+                self._trigger_compaction(key, f"context at {pct:.0f}%", pct)
         elif pct >= _CONTEXT_WARN_PCT:
             logger.warning("Session %s context at %.0f%%", key, pct)
         elif pct > 0:

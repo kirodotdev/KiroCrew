@@ -1912,6 +1912,39 @@ class TestCheckContextUsage:
             mock_trigger.assert_not_called()
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_no_compaction_when_pct_unconfirmed(self, cfg):
+        """#2932 defensive gate: a pct above threshold that no telemetry has
+        confirmed for the CURRENT session binding must NOT trigger compaction
+        (compacting an empty just-claimed session, then overflowing)."""
+        cfg.session.autocompact_pct = 90.0
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.context_usage_pct = lambda: 95.0
+        provider.context_usage_unknown = lambda: True
+        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+            pct = mgr.check_context_usage("k1", provider)
+            mock_trigger.assert_not_called()
+        assert pct == 95.0  # reading is still returned, only the trigger is gated
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_compaction_fires_when_pct_confirmed(self, cfg):
+        """Twin of the gate test: the same pct WITH confirmed telemetry
+        (context_usage_unknown False) still compacts — the gate must not
+        suppress legitimate triggers."""
+        cfg.session.autocompact_pct = 90.0
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.context_usage_pct = lambda: 95.0
+        provider.context_usage_unknown = lambda: False
+        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+            mgr.check_context_usage("k1", provider)
+            mock_trigger.assert_called_once_with("k1", "context at 95%", 95.0)
+        await mgr.close_all()
+
     def test_missing_session_still_returns_pct(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mock_p = AsyncMock()
@@ -3576,6 +3609,66 @@ class TestGetOrCreatePoolClaim:
         mgr.release("dashboard:slot1")
         assert provider is mock_pooled
         assert is_new is True
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_pool_claim_resets_stale_context_and_skips_compaction(self, cfg):
+        """#2932 end-to-end: a pooled provider carrying a previous session's
+        context stats must not hand them to the claiming session. The claim
+        path calls client.rekey(), whose reset makes the first turn-end
+        check_context_usage read 0%/unknown instead of firing compaction on
+        an empty conversation."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.providers.acp import AcpProvider
+
+        cfg.session.pool_size = 1
+        cfg.session.autocompact_pct = 90.0
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        mgr._pool_size = 1
+        mgr._pool_agent = "kirocrew"
+
+        # Real (unstarted) AcpClient seeded with the PREVIOUS session's stats —
+        # the exact leak shape from the issue: high confirmed pct, real counts.
+        real_client = AcpClient()
+        real_client.last_prompt_stats = AcpPromptStats(
+            context_pct=95.0,
+            context_used_tokens=190_000,
+            context_window_tokens=200_000,
+            context_tokens_from_usage=True,
+        )
+
+        mock_pooled = AsyncMock(spec=AcpProvider)
+        mock_pooled.start = AsyncMock()
+        mock_pooled.shutdown = AsyncMock()
+        mock_pooled.is_process_alive = lambda: True
+        mock_pooled.client = real_client
+        # Route the provider probes through the real client stats (mirrors
+        # AcpProvider.context_usage_pct / context_usage_unknown).
+        mock_pooled.context_usage_pct = lambda: real_client.last_prompt_stats.context_pct
+        mock_pooled.context_usage_unknown = (
+            lambda: real_client.last_prompt_stats.context_pct_unknown
+        )
+
+        mgr._warm_pool.put_nowait((mock_pooled, time.monotonic()))
+
+        provider, is_new, _ = await mgr.get_or_create("dashboard:slot1", agent="kirocrew")
+        mgr.release("dashboard:slot1")
+        assert provider is mock_pooled
+
+        # The handoff dropped the stale session-scoped state (back to plain
+        # defaults — NOT flagged unknown, which would collide with the
+        # compacted-in-place recycle predicate)...
+        stats = real_client.last_prompt_stats
+        assert stats.context_pct == 0.0
+        assert stats.context_used_tokens == 0
+        assert stats.context_window_tokens == 0
+        assert stats.context_pct_unknown is False
+
+        # ...so the first turn-end check does not compact the empty session.
+        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+            pct = mgr.check_context_usage("dashboard:slot1", provider)
+            mock_trigger.assert_not_called()
+        assert pct == 0.0
         await mgr.close_all()
 
     @pytest.mark.asyncio

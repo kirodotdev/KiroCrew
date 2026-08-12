@@ -505,6 +505,34 @@ class AcpPromptStats:
             context_pct_unknown=self.context_pct_unknown,
         )
 
+    def reset_context_state(self) -> None:
+        """Drop ALL context state when the runtime is re-bound to a new session.
+
+        The inverse commitment of :meth:`carry_over`: that method preserves the
+        context fields because they describe the SESSION — which is exactly why
+        they must NOT survive a warm-pool handoff, where the runtime outlives
+        whatever it did before the re-bind. Stale stats handed to a new chat
+        make ``check_context_usage`` fire compaction on an empty conversation
+        (issue #2932).
+
+        Everything returns to dataclass defaults, window included: a handoff
+        may re-apply a different model post-claim, and a window measured before
+        the re-bind has no claim to describe the next session.
+
+        ``context_pct_unknown`` deliberately resets to ``False``, NOT ``True``:
+        the claimed runtime serves a fresh, never-prompted ``session/new``, so
+        "confirmed empty" is the accurate reading. Flagging it unknown would
+        collide with the flag's existing meaning — "the backend compacted this
+        session in place" — which the background-session recycle decision reads
+        as a recycle-now signal (``pct == 0.0 and unknown``); a just-claimed
+        provider must not match that predicate.
+        """
+        self.context_pct = 0.0
+        self.context_used_tokens = 0
+        self.context_window_tokens = 0
+        self.context_tokens_from_usage = False
+        self.context_pct_unknown = False
+
     def note_pct_reported(self) -> None:
         """Mark ``context_pct`` as backed by real telemetry.
 

@@ -2003,6 +2003,12 @@ class AcpClient:
         self._session_key = session_key
         self._channel_id = channel_id
         self._last_activity = time.monotonic()
+        # The prompt stats' context fields describe whatever this runtime did
+        # BEFORE the handoff — carry_over() deliberately preserves them across
+        # turn boundaries, so without this reset a recycled runtime hands its
+        # previous session's context_pct to the new chat and the first
+        # check_context_usage() compacts an empty conversation (#2932).
+        self.last_prompt_stats.reset_context_state()
         # Claim-push: tell gatewayd this runtime PID now belongs to
         # ``session_key`` so every MCP stub connection under it carries the
         # right ``_meta.caller`` immediately — event-driven replacement for
