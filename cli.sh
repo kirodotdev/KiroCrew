@@ -143,9 +143,41 @@ fi
 
 _py_usable() {
   command -v "$1" >/dev/null 2>&1 || return 1
-  # Unquoted on purpose: expands to two words, or to nothing when unavailable.
-  # shellcheck disable=SC2086
-  $_PY_PROBE_TIMEOUT "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null
+  if [ -n "$_PY_PROBE_TIMEOUT" ]; then
+    # Unquoted on purpose: expands to two words, or to nothing when unavailable.
+    # shellcheck disable=SC2086
+    $_PY_PROBE_TIMEOUT "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null
+    return $?
+  fi
+  # No `timeout` binary (stock macOS): emulate the same 5s bound with a POSIX
+  # watchdog, so a wedged version-manager shim still fails over to the next
+  # candidate instead of hanging the install on its first probe.
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' >/dev/null 2>&1 &
+  _py_pid=$!
+  (
+    # On TERM from the fast-exit path below, kill our own in-flight `sleep`
+    # before exiting: a plain kill on this subshell cannot reach its child,
+    # which would otherwise linger for up to a second. kill -9 is untrappable,
+    # so the parent must TERM us for this cleanup to run.
+    trap 'kill "${_wd_sleep:-}" 2>/dev/null || true; exit 0' TERM
+    _i=0
+    while [ "$_i" -lt 5 ]; do
+      sleep 1 & _wd_sleep=$!
+      wait "$_wd_sleep" 2>/dev/null || true
+      kill -0 "$_py_pid" 2>/dev/null || exit 0
+      _i=$((_i + 1))
+    done
+    kill -9 "$_py_pid" 2>/dev/null || true
+  ) &
+  _watchdog_pid=$!
+  # Capture the probe's real exit status: a plain `wait ... || true` would
+  # overwrite $? and report every candidate as usable. 137 (killed by the
+  # watchdog) and 1 (version too old) must both read as "not usable".
+  _py_status=0
+  wait "$_py_pid" 2>/dev/null || _py_status=$?
+  kill "$_watchdog_pid" 2>/dev/null || true
+  wait "$_watchdog_pid" 2>/dev/null || true
+  return "$_py_status"
 }
 
 # Resolve the newest supported interpreter into PY (left empty if none found).

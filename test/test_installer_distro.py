@@ -48,6 +48,7 @@ def _run_cli_with_fake_env(
     *,
     managers: list[str],
     interpreters: dict[str, str] | None = None,
+    with_timeout: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run cli.sh with a PATH that has NO python3 and only the named package
     managers (each a stub that records its name and args). Returns the process
@@ -82,8 +83,10 @@ def _run_cli_with_fake_env(
                   "tr", "head", "cut", "dirname", "basename", "uname", "sleep",
                   # cli.sh bounds its interpreter probe with `timeout` when one
                   # exists, so the isolated PATH must expose it for that guard
-                  # to be exercised here at all.
-                  "timeout"):
+                  # to be exercised here at all. ``with_timeout=False`` models a
+                  # stock macOS (no coreutils `timeout`), forcing the POSIX
+                  # watchdog fallback instead.
+                  *(("timeout",) if with_timeout else ())):
         _link_real(_util)
 
     # A manager "under test" is an EXECUTABLE stub that records its args. The
@@ -185,6 +188,50 @@ def test_cli_fails_over_from_a_wedged_interpreter_candidate(tmp_path: Path) -> N
 
     combined = result.stdout + result.stderr
     assert "Python >=3.10 is required" not in combined, combined
+
+
+def test_cli_bounds_wedged_interpreter_without_timeout_binary(tmp_path: Path) -> None:
+    """Stock macOS ships no coreutils `timeout`; the POSIX watchdog must bound
+    the probe there too.
+
+    Same wedged-shim scenario as above, but with `timeout` absent from PATH.
+    Before the watchdog existed, cli.sh simply ran the probe unbounded in this
+    configuration, so the hanging python3.12 shim wedged the install forever.
+    """
+    result, _markers = _run_cli_with_fake_env(
+        tmp_path,
+        managers=["apt-get"],
+        with_timeout=False,
+        interpreters={
+            "python3.12": "#!/bin/sh\nexec sleep 300\n",
+            "python3": (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 0 ;;\n"  # a supported interpreter
+                "  *--version*) echo 'Python 3.12.0' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            ),
+        },
+    )
+
+    combined = result.stdout + result.stderr
+    assert "Python >=3.10 is required" not in combined, combined
+
+
+def test_cli_watchdog_path_still_rejects_too_old_interpreters(tmp_path: Path) -> None:
+    """The watchdog fallback must propagate the probe's REAL exit status.
+
+    With `timeout` absent, every candidate is the default too-old stub (exits 1
+    at the version gate). If the watchdog path swallowed that status, cli.sh
+    would accept Python 3.6 as usable and skip the distro-install branch; the
+    apt-get marker proves the "no usable python" path was taken instead.
+    """
+    result, markers = _run_cli_with_fake_env(
+        tmp_path, managers=["apt-get"], with_timeout=False
+    )
+
+    assert (markers / "apt-get").exists(), result.stderr
 
 
 def test_cli_uses_apt_on_debian_ubuntu(tmp_path: Path) -> None:
