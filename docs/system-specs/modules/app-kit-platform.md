@@ -67,7 +67,26 @@ before the app.json merge — never from the repo-fetched manifest — because
 content for a not-yet-installed app: deriving trust from either let an added
 registry publish `origin: "builtin"`, or a third-party core repo publish
 `author: "KiroCrew"`, and self-award the first-party mark next to a button
-that runs its setup code with gateway privileges. The client
+that runs its setup code with gateway privileges. The author comparison runs
+through `_fold_author` (NFKC, drop category-`Cf`, collapse whitespace, lower)
+against `FIRST_PARTY_AUTHORS`, so both the joined historical spelling and the
+two-word org name we actually publish mint the mark, and a fullwidth or
+zero-width rendering of our name does not silently lose it. Folding WIDENS the
+match, which is safe only because the `_registry` short-circuit runs first:
+the author is consulted exclusively for rows whose index we ship or sign.
+
+The merge that builds those rows projects the index row explicitly rather than
+copying it: `_merge_manifest` starts from `_REGISTRY_ROW_KEYS` — identity, the
+clone coordinates, the install-path flags, the spotlight flag, and the two
+server-attached tags — and takes every display field from the fetched
+`app.json`. An index is untrusted content, so a key it invents reaches no
+client, and it cannot publish display copy for an app whose manifest says
+otherwise. Install-status and trust fields are absent from that projection by
+design: `_enrich_with_install_status` and `_apply_trust_fields` run afterwards
+and stamp them server-side, so an index-supplied value for one of them can
+never be read before it is replaced.
+
+The client
 (`isVerified`/`sourceLabel` in `website/src/components/appstore/types.ts`)
 reads the server fields, still rejects a `_registry`-tagged row first (so
 nothing smuggled through an older gateway can relabel an external row), and

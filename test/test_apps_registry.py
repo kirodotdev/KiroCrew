@@ -1281,6 +1281,48 @@ class TestApplyTrustFields:
         (out,) = registry._apply_trust_fields([entry])
         assert "_index_author" not in out
 
+    def test_two_word_org_spelling_is_verified(self):
+        """The product name is two words, and both the bundled catalog and the
+        official published catalog state the org that way. A single-token-only
+        comparison silently un-verified every first-party app whose index row
+        spelled the org correctly."""
+        entry = {"name": "spec-builder", "_index_author": "Kiro Crew"}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["verified"] is True
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "Ｋｉｒｏ　Ｃｒｅｗ",  # fullwidth, ideographic space
+            "kiro\u200bcrew",  # zero-width space
+            "Kiro\u00adCrew",  # soft hyphen
+            "  kiro   crew  ",  # padded, doubled inner space
+            "KIROCREW",
+        ],
+    )
+    def test_first_party_spelling_variants_still_verify(self, spelling):
+        """A row we ship or sign may legitimately name us in a non-ASCII form.
+        Folding (NFKC + drop category-Cf + collapse whitespace) keeps the mark
+        instead of dropping it on a spelling difference a human cannot see."""
+        entry = {"name": "app", "_index_author": spelling}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["verified"] is True
+
+    def test_folding_does_not_grant_the_mark_to_an_external_row(self):
+        """The fold widens the match, so pin the short-circuit that keeps it
+        harmless: a tagged row is unverified BEFORE the author is consulted."""
+        entry = {"name": "app", "_registry": "labs", "_index_author": "Kiro Crew"}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "external"
+        assert out["verified"] is False
+
+    def test_near_miss_author_is_not_verified(self):
+        """Folding must not blur a DIFFERENT name into ours."""
+        for name in ("kiro crews", "kiro-crew", "kirocrew labs", "crew kiro"):
+            entry = {"name": "app", "_index_author": name}
+            (out,) = registry._apply_trust_fields([entry])
+            assert out["verified"] is False, name
+
     def test_registry_tag_is_kept_in_payload(self):
         """``_registry`` stays in the row — the external-source label text and
         older clients still need it. The change ADDS fields only."""
@@ -1337,3 +1379,82 @@ class TestApplyTrustFields:
         assert "featured" not in rows["ext-app"]
         # The internal snapshot key never leaks into the API payload.
         assert all("_index_author" not in r for r in rows.values())
+
+
+class TestMergeManifestProjectsRegistryKeys:
+    """``_merge_manifest`` starts from an explicit projection of the index row.
+
+    An index row is untrusted content, so a key an index invents must not ride
+    into the API payload just because the merge started from a copy of the row.
+    """
+
+    MANIFEST = {"name": "demo-app", "displayName": "Demo App", "version": "1.2.3"}
+
+    def test_unknown_index_key_does_not_reach_the_row(self):
+        entry = {
+            "name": "demo-app",
+            "repo": "DemoRepo",
+            "surpriseKey": "whatever an index felt like publishing",
+            "__proto__": {"polluted": True},
+        }
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        assert "surpriseKey" not in out
+        assert "__proto__" not in out
+
+    def test_index_cannot_publish_trust_or_install_state(self):
+        """These are stamped server-side after the merge; an index value for
+        them must not survive to be read before that happens."""
+        entry = {
+            "name": "demo-app",
+            "repo": "DemoRepo",
+            "provenance": "builtin",
+            "verified": True,
+            "installed": True,
+            "enabled": True,
+            "origin": "builtin",
+            "lifecycle": "locked",
+        }
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        for key in ("provenance", "verified", "installed", "enabled", "origin", "lifecycle"):
+            assert key not in out, key
+
+    def test_index_cannot_override_manifest_display_copy(self):
+        """Display fields come from the fetched app.json, so an index row that
+        publishes its own must not win — nor survive alongside."""
+        entry = {
+            "name": "demo-app",
+            "repo": "DemoRepo",
+            "displayName": "Index Said This",
+            "description": "index copy",
+        }
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        assert out["displayName"] == "Demo App"
+        assert "description" not in out  # manifest carried none, so neither does the row
+
+    @pytest.mark.parametrize(
+        "key,value",
+        [
+            ("gitUrl", "https://example.com/org/app.git"),
+            ("repo", "DemoRepo"),
+            ("branch", "release"),
+            ("subdirectory", "apps/demo"),
+            ("resources", "app"),
+            ("detectInstalled", "which demo"),
+            ("managed", True),
+            ("featured", 2),
+            ("_registry", "labs"),
+        ],
+    )
+    def test_registry_owned_keys_survive(self, key, value):
+        """Each of these has a reader — the clone path, the install path, the
+        spotlight, or the trust stamp. Dropping one breaks that reader."""
+        entry = {"name": "demo-app", key: value}
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        assert out[key] == value
+
+    def test_index_author_snapshot_survives_the_merge(self):
+        """``_apply_trust_fields`` runs AFTER the merge and consumes this key to
+        decide the verified mark, so the projection has to carry it through."""
+        entry = {"name": "demo-app", "_index_author": "Kiro Crew"}
+        out = registry._merge_manifest(entry, self.MANIFEST)
+        assert out["_index_author"] == "Kiro Crew"
