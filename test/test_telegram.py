@@ -52,9 +52,11 @@ from kiro_crew.telegram.renderer import (
     TelegramApprovalDecider,
     TelegramRenderer,
     _extract_options,
+    _has_table,
     _may_exceed_rendered,
     _md_to_telegram_html,
     _rendered_len,
+    _seal_table_fallback,
     _split_markdown,
     _split_markdown_bounded,
     _split_text,
@@ -92,6 +94,13 @@ class FakeClient:
         self.send_threads: list[Any] = []
         self.typing_threads: list[Any] = []
         self._mid = 100
+        #: (markdown, reply_markup, thread) per sendRichMessage call.
+        self.rich_sent: list[tuple[str, Any, Any]] = []
+        self.rich_silent: list[bool] = []
+        #: message_ids passed to deleteMessage.
+        self.deleted: list[int] = []
+        #: When True, send_rich_message reports failure (server lacks the API).
+        self.rich_fails = False
 
     async def send_typing(self, chat_id: int, *, message_thread_id: Any = None) -> None:
         self.typing_threads.append(message_thread_id)
@@ -148,6 +157,26 @@ class FakeClient:
 
     async def answer_callback(self, callback_query_id: str, text: str = "") -> None:
         self.answered.append(callback_query_id)
+
+    async def send_rich_message(
+        self,
+        chat_id: int,
+        markdown: str,
+        *,
+        reply_markup: Any = None,
+        message_thread_id: Any = None,
+        disable_notification: bool = False,
+    ) -> Any:
+        await asyncio.sleep(0)  # yield like a real network await
+        if self.rich_fails:
+            return None
+        self._mid += 1
+        self.rich_silent.append(disable_notification)
+        self.rich_sent.append((markdown, reply_markup, message_thread_id))
+        return self._mid
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        self.deleted.append(message_id)
 
     async def set_message_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
         self.reactions.append((message_id, emoji))
@@ -1051,6 +1080,278 @@ class TestTransportReceive:
 
 
 class TestRenderer:
+    def test_a_streamed_table_reply_still_goes_out_as_a_rich_message(self) -> None:
+        # THE regression this feature exists to prevent. A normal agent reply
+        # streams, so _stream_live has already sent a plaintext bubble and set
+        # _stream_mid by the time the segment is sealed. Gating the rich path on
+        # "_stream_mid is None" therefore skipped every real reply and the table
+        # reached the user as literal pipes -- the feature was dead in the only
+        # case that matters. Assert the rich send happens even though a bubble
+        # was streamed, and that the superseded bubble is deleted so the user is
+        # left with exactly one message.
+        table = "Here you go:\n\n| a | b |\n| --- | --- |\n| 1 | 2 |"
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(table)
+            await r._stream_live(force=True)  # force the live bubble to exist
+            assert r._stream_mid is not None, "precondition: a bubble streamed"
+            await r._seal_current()
+
+        asyncio.run(_go())
+
+        assert len(cli.rich_sent) == 1, "table must be sealed via sendRichMessage"
+        assert "| a | b |" in cli.rich_sent[0][0], "raw markdown table is passed through"
+        assert cli.deleted, "the superseded plaintext bubble must be deleted"
+        assert r._stream_mid is None, "stream id cleared after the bubble is dropped"
+
+    def test_a_table_reply_falls_back_to_html_when_rich_is_unavailable(self) -> None:
+        # If sendRichMessage fails, the streamed bubble must survive and be
+        # sealed the legacy way. Losing the answer is far worse than a table
+        # that degrades to literal pipes, so the delete must NOT have happened.
+        table = "| a | b |\n| --- | --- |\n| 1 | 2 |"
+        cli = FakeClient()
+        cli.rich_fails = True
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(table)
+            await r._stream_live(force=True)
+            await r._seal_current()
+
+        asyncio.run(_go())
+
+        assert cli.rich_sent == [], "rich send reported failure"
+        assert not cli.deleted, "a failed rich send must never delete the answer"
+        assert cli.edits, "the streamed bubble is still sealed via the HTML path"
+
+    def test_a_reply_without_a_table_never_touches_the_rich_api(self) -> None:
+        # Rich Messages are reserved for content the HTML subset cannot express.
+        # An ordinary reply must take the unchanged HTML path, so the new code
+        # adds zero API calls to the common case.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk("just a plain **bold** answer, no table here")
+            await r._stream_live(force=True)
+            await r._seal_current()
+
+        asyncio.run(_go())
+
+        assert cli.rich_sent == [], "no table -> no rich send"
+        assert not cli.deleted, "no table -> the streamed bubble is edited, not replaced"
+
+    def test_table_detection_needs_a_separator_row(self) -> None:
+        # A line of pipes alone is not a table (prose, or a code sample), and
+        # sending it as rich would reflow it. Only a header + separator pair is.
+        assert _has_table("| a | b |\n| --- | --- |\n| 1 | 2 |")
+        assert _has_table("| a | b |\n|:---|---:|\n| 1 | 2 |")  # alignment colons
+        assert not _has_table("pipes | in | prose are not a table")
+        assert not _has_table("| a | b |\nno separator row follows")
+
+    def test_table_detection_accepts_gfm_tables_without_outer_pipes(self) -> None:
+        # GFM does not require leading/trailing pipes. Anchoring detection on a
+        # leading `|` silently missed these and shipped them as literal pipes.
+        assert _has_table("a | b\n--- | ---\n1 | 2")
+        assert _has_table("a | b\n---|---\n1 | 2")
+        assert _has_table("  a | b\n  --- | ---\n  1 | 2")  # indented
+        # A pipe-bearing sentence above a horizontal rule is NOT a table: the
+        # separator row has no pipe, so it stays on the ordinary HTML path.
+        assert not _has_table("cost | benefit analysis\n---------------------")
+
+    def test_a_degraded_table_is_sealed_monospace_not_as_ragged_pipes(self) -> None:
+        # When rich is unavailable the table still has to go out, but sealing it
+        # through the normal HTML path reflows it into ragged escaped pipes.
+        # <pre> keeps the columns aligned, so the degraded case stays readable.
+        cli = FakeClient()
+        cli.rich_fails = True
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk("| a | b |\n| --- | --- |\n| 1 | 2 |")
+            await r._stream_live(force=True)
+            await r._seal_current()
+
+        asyncio.run(_go())
+
+        sealed = cli.edits[-1][1]
+        assert "<pre>" in sealed and "</pre>" in sealed
+        assert "| a | b |" in sealed, "the table text survives inside the pre block"
+
+    def test_the_degraded_path_keeps_prose_formatting_around_the_table(self) -> None:
+        # Regression: wrapping the WHOLE segment in <pre> made a prose+table
+        # reply render worse than before the feature existed -- every bold, link
+        # and inline-code span was lost and `**` markers showed up literally.
+        # On a server without Rich Messages this is the permanent path, so it
+        # must never be a downgrade. Only the table run may be monospace.
+        text = "Here is the **summary**:\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nSee `docs` too."
+        out = _seal_table_fallback(text)
+
+        assert "<b>summary</b>" in out, "prose keeps its bold"
+        assert "<code>docs</code>" in out, "prose keeps its inline code"
+        assert "**" not in out, "no literal markdown markers leak to the user"
+        # The table is the only monospace run, and it is intact.
+        assert out.count("<pre>") == 1
+        table_block = out.split("<pre>")[1].split("</pre>")[0]
+        assert "| a | b |" in table_block and "| 1 | 2 |" in table_block
+        assert "summary" not in table_block, "prose must not be swallowed into the pre"
+
+    def test_the_degraded_path_handles_a_table_with_no_surrounding_prose(self) -> None:
+        # The bare-table case must not emit stray empty prose fragments.
+        out = _seal_table_fallback("| a | b |\n| --- | --- |\n| 1 | 2 |")
+        assert out.startswith("<pre>") and out.endswith("</pre>")
+        assert out.count("<pre>") == 1
+
+    def test_a_degraded_mixed_reply_keeps_its_prose_formatting_end_to_end(self) -> None:
+        # Pins the SEAL PATH, not just the helper: _seal_current must route the
+        # failed-rich case through the mixed-segment renderer. Asserting only on
+        # _seal_table_fallback() left the call site free to wrap the whole
+        # segment in <pre> again, which is exactly the regression to prevent.
+        cli = FakeClient()
+        cli.rich_fails = True
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk("The **key** result:\n\n| a | b |\n| --- | --- |\n| 1 | 2 |")
+            await r._stream_live(force=True)
+            await r._seal_current()
+
+        asyncio.run(_go())
+
+        sealed = cli.edits[-1][1]
+        assert "<b>key</b>" in sealed, "prose bold survives the degraded seal"
+        assert "**" not in sealed, "no literal markdown markers reach the user"
+        assert "<pre>" in sealed, "the table run is still monospace"
+        assert "key" not in sealed.split("<pre>")[1], "prose not swallowed into the pre"
+
+    def test_a_near_limit_degraded_reply_is_not_truncated_by_pre_overhead(self) -> None:
+        # The segment was sized against the PLAIN html render, and <pre> wrapping
+        # only adds characters, so on a near-limit reply the wrapped form can
+        # spill past the rendered ceiling and have its tail cut by _cap_text().
+        # Losing the end of the answer is worse than losing column alignment, so
+        # the plain render must win once the wrapped form would overflow.
+        cli = FakeClient()
+        cli.rich_fails = True
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        # Many small tables: source stays under the plaintext rotate threshold
+        # while each table adds <pre></pre> overhead to the wrapped form.
+        one = "| a | b |\n| - | - |\n| 1 | 2 |\n\n"
+        text = one * (r._limit() // len(one) - 1)
+        assert len(_seal_table_fallback(text)) > r._rendered_limit(), (
+            "precondition: the wrapped form must overflow for this to test anything"
+        )
+        assert len(_md_to_telegram_html(text)) <= r._rendered_limit(), (
+            "precondition: the plain render must fit"
+        )
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(text)
+            await r._seal_current()
+
+        asyncio.run(_go())
+
+        sealed = cli.final_text()
+        assert len(sealed) <= r._rendered_limit(), "degraded seal respects the rendered cap"
+        assert "<pre>" not in sealed, "overflowing wrap is dropped for the plain render"
+
+    def test_fenced_table_markup_costs_a_rich_send_but_never_wrong_output(self) -> None:
+        # Detection is deliberately fence-agnostic: a fenced sample of table
+        # markup does take the rich path, but Rich Markdown parses the fence
+        # itself and renders it as the code block it is. The cost is one extra
+        # send, not wrong output -- and it buys not maintaining a second
+        # CommonMark fence parser beside the HTML renderer's own.
+        fenced = "Example:\n\n```\n| a | b |\n| --- | --- |\n| 1 | 2 |\n```\n\ndone"
+        assert _has_table(fenced), "detection does not screen fences"
+        # A real table after a closed fence is of course still found.
+        assert _has_table(fenced + "\n\n| x | y |\n| --- | --- |\n| 1 | 2 |")
+
+    def test_the_degraded_path_never_splits_a_code_fence(self) -> None:
+        # The safety net lives on the FALLBACK side: a fenced segment renders
+        # whole via the normal path, so no fence can be torn in half.
+        fenced = "Example:\n\n```\n| a | b |\n| --- | --- |\n| 1 | 2 |\n```\n\ndone"
+        out = _seal_table_fallback(fenced)
+        assert out == _md_to_telegram_html(fenced), "rendered whole, unsplit"
+        assert "&#x60;" not in out and "```" not in out, "no literal fence markers leak"
+
+    def test_replacing_a_streamed_bubble_does_not_ping_the_user_twice(self) -> None:
+        # send-rich-then-delete means two messages exist briefly and Telegram
+        # notifies for each. The bubble already pinged, so the replacement must
+        # be silent -- otherwise every table reply buzzes twice where main
+        # buzzed once, a regression introduced by replacing instead of editing.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 71, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk("| a | b |\n| --- | --- |\n| 1 | 2 |")
+            await r._stream_live()  # streams the bubble -> user is pinged
+            await r._seal_current()
+
+        asyncio.run(_go())
+        assert cli.rich_sent, "rich send happened"
+        assert cli.rich_silent == [True], "the replacement is silent"
+
+    def test_a_table_that_never_streamed_still_notifies(self) -> None:
+        # No bubble streamed -> no earlier ping, so the rich send is the user's
+        # ONLY notification. Suppressing it here would deliver the answer
+        # silently and the reply would go unnoticed.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 72, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            # Throttle out the live frame -- the "segment never streamed"
+            # case named in _seal_current's docstring.
+            r._last_edit = time.monotonic()
+            await r.on_text_chunk("| a | b |\n| --- | --- |\n| 1 | 2 |")
+            assert r._stream_mid is None, "precondition: nothing streamed"
+            await r._seal_current()
+
+        asyncio.run(_go())
+        assert cli.rich_sent, "rich send happened"
+        assert cli.rich_silent == [False], "the only message must notify"
+
+    def test_a_fenced_reply_is_never_split_by_the_degraded_path(self) -> None:
+        # Splitting renders the pieces with separate _md_to_telegram_html calls,
+        # so a cut inside a fence tears the block and leaks its delimiters.
+        # Deciding where a fence starts/ends reliably means reimplementing
+        # CommonMark as a second parser; declining to split removes the class.
+        # These are the exact shapes that each defeated a hand-rolled parser:
+        cases = [
+            # plain fenced table markup
+            "Example:\n\n```\n| a | b |\n| --- | --- |\n| 1 | 2 |\n```\n\ndone",
+            # a ~~~ line inside a ``` block (mismatched delimiter)
+            "How:\n\n```\n~~~\n| a | b |\n| --- | --- |\n```\n\ndone",
+            # an info string on an inner delimiter
+            "How:\n\n```\n```python\n| a | b |\n| --- | --- |\n```\n\ndone",
+            # a longer opener closed only by a shorter run
+            "````\n```\n| a | b |\n| --- | --- |\n",
+            # a block fenced with tildes only -- the guard must cover both
+            # delimiter characters, not just backticks
+            "Example:\n\n~~~\n| a | b |\n| --- | --- |\n| 1 | 2 |\n~~~\n\ndone",
+        ]
+        for text in cases:
+            out = _seal_table_fallback(text)
+            assert out == _md_to_telegram_html(text), (
+                f"a fenced segment must render whole, unsplit: {text!r}"
+            )
+
+    def test_the_degraded_path_still_aligns_tables_with_no_fence_present(self) -> None:
+        # The no-split rule must not disable the feature for ordinary replies.
+        text = "Here:\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n**after**"
+        out = _seal_table_fallback(text)
+        assert "<pre>" in out, "a fence-free table still gets monospace alignment"
+        assert "<b>after</b>" in out, "prose around it keeps its formatting"
+
     def test_strip_steering_complete_and_unclosed(self) -> None:
         # Complete marker is removed anywhere in the text.
         out = _strip_steering("BANANA [STEERING steer-x: rephrase] tail")
@@ -3400,6 +3701,80 @@ class TestForumCallbackGate:
 
         assert asyncio.run(_go()) is False
         assert cli.answered == []
+
+
+class TestRichMessageAvailabilityLatch:
+    """sendRichMessage learns whether the server implements the method."""
+
+    def _client(self):
+        from kiro_crew.telegram.client import TelegramClient
+
+        return TelegramClient(token="12345:testtoken")
+
+    def _stub(self, client, monkeypatch, codes: list[int | None]) -> list[str]:
+        """Make _api fail with each code in turn; record the methods called."""
+        calls: list[str] = []
+        seq = list(codes)
+
+        async def _api(method, params, timeout=30, *, record=True, err_out=None):
+            calls.append(method)
+            code = seq.pop(0) if seq else None
+            if code is None:
+                return {"message_id": 7}
+            if err_out is not None:
+                err_out["error_code"] = code
+                err_out["description"] = "stub failure"
+            return None
+
+        monkeypatch.setattr(client, "_api", _api)
+        return calls
+
+    def test_a_404_latches_immediately_and_stops_re_probing(self, monkeypatch) -> None:
+        # A server without the method rejects every call the same way, so
+        # re-probing per table would waste a round-trip forever.
+        c = self._client()
+        calls = self._stub(c, monkeypatch, [404])
+        assert asyncio.run(c.send_rich_message(1, "| a |\n| - |")) is None
+        assert c._rich_unsupported is True
+        # Second call must short-circuit without touching the API at all.
+        assert asyncio.run(c.send_rich_message(1, "| a |\n| - |")) is None
+        assert calls == ["sendRichMessage"], "latched: no second request"
+
+    def test_a_429_never_latches(self, monkeypatch) -> None:
+        # Rate limiting is transient. Disabling rich rendering for the process
+        # because of one 429 would be a permanent penalty for a momentary limit.
+        c = self._client()
+        calls = self._stub(c, monkeypatch, [429, None])
+        assert asyncio.run(c.send_rich_message(1, "| a |\n| - |")) is None
+        assert c._rich_unsupported is False
+        assert asyncio.run(c.send_rich_message(1, "| a |\n| - |")) == 7
+        assert len(calls) == 2, "still probing after a transient failure"
+
+    def test_one_400_does_not_latch_but_a_streak_does(self, monkeypatch) -> None:
+        # 400 is ambiguous: a wrong payload shape fails EVERY call, while one
+        # oversized table fails only itself. Latch on the streak so a single bad
+        # message cannot disable rich rendering for the whole process.
+        from kiro_crew.telegram.client import _RICH_400_LATCH
+
+        c = self._client()
+        self._stub(c, monkeypatch, [400] * _RICH_400_LATCH)
+        for _ in range(_RICH_400_LATCH - 1):
+            assert asyncio.run(c.send_rich_message(1, "| a |\n| - |")) is None
+            assert c._rich_unsupported is False, "one bad table must not latch"
+        assert asyncio.run(c.send_rich_message(1, "| a |\n| - |")) is None
+        assert c._rich_unsupported is True, "a persistent 400 latches"
+
+    def test_a_successful_send_clears_the_400_streak(self, monkeypatch) -> None:
+        # Two unrelated bad tables spread over a session must not accumulate
+        # into a latch when good tables send in between.
+        from kiro_crew.telegram.client import _RICH_400_LATCH
+
+        c = self._client()
+        self._stub(c, monkeypatch, [400, None] * _RICH_400_LATCH)
+        for _ in range(_RICH_400_LATCH):
+            asyncio.run(c.send_rich_message(1, "| a |\n| - |"))  # 400
+            asyncio.run(c.send_rich_message(1, "| a |\n| - |"))  # success
+        assert c._rich_unsupported is False, "streak reset by each success"
 
 
 class TestClientHealth:

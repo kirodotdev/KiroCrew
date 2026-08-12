@@ -58,6 +58,11 @@ _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 #: Consecutive polling failures before the status callback reports unhealthy.
 _STATUS_FAILURE_THRESHOLD = 3
 
+#: Consecutive sendRichMessage 400s before we treat the method as unavailable.
+#: 400 is ambiguous -- a wrong payload shape fails every call, one oversized or
+#: 20+-column table fails only itself -- so latch on a streak, not one answer.
+_RICH_400_LATCH = 3
+
 #: Telegram's supported HTML tag set. Anything we may have to re-close when a
 #: rendered message has to be truncated mid-document.
 _TG_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^>]*>")
@@ -297,6 +302,12 @@ class TelegramClient:
         self._task: asyncio.Task[None] | None = None
         self._closed = False
         self._offset: int = 0
+        #: Latched True once sendRichMessage is known unavailable on this
+        #: server -- see send_rich_message for the error taxonomy.
+        self._rich_unsupported = False
+        #: Consecutive sendRichMessage 400s. A wrong payload shape fails every
+        #: call and latches; one bad table is cleared by the next good send.
+        self._rich_400_streak = 0
         # Optional health callback: called with (healthy, reason) when polling
         # transitions to persistently-failing or recovers. Set by the gateway
         # to keep the settings status badge truthful after startup.
@@ -397,6 +408,77 @@ class TelegramClient:
             params.pop("parse_mode", None)
             result = await self._api("sendMessage", params)
         return result.get("message_id") if result else None
+
+    async def send_rich_message(
+        self,
+        chat_id: int,
+        markdown: str,
+        *,
+        reply_markup: dict | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool = False,
+    ) -> int | None:
+        """Send a Rich Message (Bot API 10.1+). Returns message_id on success.
+
+        Rich Messages natively render tables, headings, code blocks, lists, and
+        other structured markdown that the legacy sendMessage + parse_mode=HTML
+        cannot represent. The *markdown* field accepts standard GitHub-Flavored
+        Markdown including pipe-table syntax.
+
+        Pass ``disable_notification`` when this send REPLACES a message the user
+        was already notified about, so replacing a bubble does not ping twice.
+
+        Returns None on failure so the caller can fall back to sendMessage.
+
+        Availability is *learned*. A server that does not implement the method
+        rejects every call identically, so re-probing it per table would burn a
+        wasted round-trip forever; ``_rich_unsupported`` latches instead:
+
+        * **401/403/404 and any other 4xx except 400/429** -- server- or
+          auth-level, identical for every message: latch immediately.
+        * **400** -- ambiguous. It is what a wrong payload shape returns (every
+          call fails, so it must latch) but ALSO what one oversized or
+          20+-column table returns (content-specific, so it must NOT latch or a
+          single bad message disables rich rendering for the whole process).
+          Resolved by counting CONSECUTIVE 400s and latching at
+          ``_RICH_400_LATCH``: a wrong payload shape reaches that immediately,
+          while one bad table is cleared by the next table that sends.
+        * **429, 5xx, transport errors** -- transient: never latch, and clear
+          the 400 streak so unrelated failures cannot accumulate into a latch.
+        """
+        if self._rich_unsupported:
+            return None
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "rich_message": {"markdown": markdown},
+        }
+        if message_thread_id is not None:
+            params["message_thread_id"] = message_thread_id
+        if reply_markup:
+            params["reply_markup"] = reply_markup
+        if disable_notification:
+            params["disable_notification"] = True
+        err: dict[str, Any] = {}
+        result = await self._api("sendRichMessage", params, err_out=err)
+        if result:
+            self._rich_400_streak = 0
+            return result.get("message_id")
+        code = err.get("error_code")
+        if isinstance(code, int) and 400 <= code < 500 and code != 429:
+            if code == 400:
+                self._rich_400_streak += 1
+                if self._rich_400_streak < _RICH_400_LATCH:
+                    return None
+            logger.info(
+                "sendRichMessage unavailable on this Bot API server (code=%s); "
+                "falling back to HTML for the rest of the process.",
+                code,
+            )
+            self._rich_unsupported = True
+        else:
+            # Transient (429 / 5xx / transport): keep rich enabled.
+            self._rich_400_streak = 0
+        return None
 
     async def send_message_draft(
         self,
@@ -962,7 +1044,13 @@ class TelegramClient:
         return self._session
 
     async def _api(
-        self, method: str, params: dict, timeout: int = 30, *, record: bool = True
+        self,
+        method: str,
+        params: dict,
+        timeout: int = 30,
+        *,
+        record: bool = True,
+        err_out: dict | None = None,
     ) -> Any:
         """Call a Bot API method. Returns the 'result' field or None on error.
 
@@ -970,6 +1058,12 @@ class TelegramClient:
         we simply dropped would freeze the streaming bubble until the next
         chunk, which reads as a stutter -- so we wait out the (usually short)
         cool-down once and retry instead.
+
+        ``err_out``, when supplied, is populated with ``error_code`` and
+        ``description`` on a Telegram-level failure. Callers use it to tell a
+        PERMANENT failure (the method does not exist on this server) apart from
+        a transient one (rate limit, network), so they can stop re-probing an
+        unsupported method without disabling it on a blip.
         """
         session = await self._ensure_session()
 
@@ -1021,6 +1115,9 @@ class TelegramClient:
                         continue
                     if record:
                         _record_api_duration(method, _elapsed_ms(), ok=False, err_code=err_code)
+                    if err_out is not None:
+                        err_out["error_code"] = err_code
+                        err_out["description"] = err_desc
                     logger.warning(
                         "Telegram API %s failed: code=%s desc=%s",
                         method,

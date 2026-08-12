@@ -238,6 +238,109 @@ _ITALIC_USCORE_RE = re.compile(r"(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+", re.MULTILINE)
 
+# Characters a GFM separator row may contain (`| --- |`, `|:---|---:|`, `- | -`).
+_TABLE_SEP_CHARS = set("-:| \t")
+
+
+#: A line that opens or closes a fenced code block.
+_FENCE_LINE_RE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})", re.MULTILINE)
+
+
+def _is_table_separator(line: str) -> bool:
+    """True if *line* is a GFM separator row (``| --- |``, ``---|---``)."""
+    stripped = line.strip()
+    if not stripped or not set(stripped) <= _TABLE_SEP_CHARS:
+        return False
+    return "-" in stripped and "|" in stripped
+
+
+def _has_table(text: str) -> bool:
+    """True if *text* contains a GFM pipe table.
+
+    A table is a line holding at least one ``|`` immediately followed by a
+    separator row. Outer pipes are optional on BOTH rows, because GFM accepts
+    ``a | b`` / ``--- | ---`` with no leading or trailing pipe -- anchoring on a
+    leading ``|`` silently missed those and rendered them as literal pipes.
+
+    The separator row must contain a dash (so it is a separator, not more data)
+    and a pipe (so a bare ``-----`` horizontal rule under a pipe-bearing
+    sentence is not mistaken for a table).
+
+    Deliberately does NOT exclude fenced code blocks. Table markup inside a
+    fence only means one extra rich send, not wrong output: Rich Markdown parses
+    fences itself and renders the sample as the code block it is. Screening for
+    fences here would mean maintaining CommonMark's fence rules (delimiter
+    character, run length, indentation, info strings) as a second parser beside
+    the one the HTML renderer already owns, and every gap between the two is a
+    bug -- for a check whose only job is deciding which transport to use.
+    """
+    lines = text.split("\n")
+    return any(
+        "|" in header and _is_table_separator(sep) for header, sep in zip(lines, lines[1:])
+    )
+
+
+def _seal_table_fallback(text: str) -> str:
+    """Render *text* for the no-Rich-Messages path: tables monospace, prose rich.
+
+    Reached only when ``sendRichMessage`` failed, which -- if this server never
+    supports it -- is the PERMANENT path for every table-bearing reply, so it
+    has to render at least as well as the plain HTML seal it replaces.
+
+    Wrapping the whole segment in one ``<pre>`` does not: a reply of three
+    paragraphs plus one small table would lose every bold, link and inline code
+    span and arrive as a monospace block showing literal ``**`` markers -- worse
+    than the ragged-pipes-but-formatted output it was meant to improve on. So
+    only the table runs are wrapped; surrounding prose keeps the normal HTML
+    rendering, and the table at least keeps its columns aligned.
+
+    A segment containing ANY code fence is handed to ``_md_to_telegram_html``
+    whole and never split. Splitting means rendering the pieces with separate
+    calls, so a cut that lands inside a fence tears the block in half and leaks
+    its delimiters -- and deciding reliably where a fence begins and ends means
+    reimplementing CommonMark's fence rules (delimiter character, run length,
+    indentation, info strings) as a SECOND parser that must agree with the one
+    the HTML renderer already uses. Declining to split is the cheap invariant
+    that removes the whole failure class: a fenced reply then renders exactly as
+    it does on the unmodified path, only without table alignment.
+    """
+    if _FENCE_LINE_RE.search(text):
+        return _md_to_telegram_html(text)
+    lines = text.split("\n")
+    parts: list[str] = []
+    prose: list[str] = []
+    i = 0
+
+    def _flush_prose() -> None:
+        if prose:
+            rendered = _md_to_telegram_html("\n".join(prose))
+            if rendered:
+                parts.append(rendered)
+            prose.clear()
+
+    while i < len(lines):
+        # A table starts on a pipe-bearing line whose successor is a separator.
+        # No fence can appear here -- a fenced segment returned above.
+        if (
+            "|" in lines[i]
+            and i + 1 < len(lines)
+            and _is_table_separator(lines[i + 1])
+        ):
+            _flush_prose()
+            block = [lines[i], lines[i + 1]]
+            i += 2
+            # Body rows run until the first line that is not part of the table.
+            while i < len(lines) and "|" in lines[i]:
+                block.append(lines[i])
+                i += 1
+            parts.append(f"<pre>{html.escape(chr(10).join(block))}</pre>")
+            continue
+        prose.append(lines[i])
+        i += 1
+
+    _flush_prose()
+    return "\n".join(p for p in parts if p)
+
 
 def _md_to_telegram_html(text: str) -> str:
     """Translate the agent's Markdown into Telegram's supported HTML subset."""
@@ -650,7 +753,54 @@ class TelegramRenderer(Renderer):
             if keyboard is None:
                 return
             text = "…"
-        html_text = _md_to_telegram_html(text)
+
+        # --- Rich Message path: tables detected → sendRichMessage (Bot API 10.1+) ---
+        # Rich Markdown renders pipe tables natively; the legacy HTML subset
+        # cannot express a table at all, so a table sealed through HTML always
+        # reaches the user as literal `|` characters.
+        #
+        # There is no editRichMessage, so a segment that already streamed a
+        # plaintext bubble cannot be *edited* into a rich one -- it has to be
+        # replaced. Order matters: SEND the rich message first and only delete
+        # the streamed bubble once it succeeded. Deleting first would lose the
+        # answer outright if the rich send then failed.
+        #
+        # Replacing means Telegram notifies twice: once for the streamed bubble,
+        # once for its replacement. The bubble already pinged the user, so the
+        # replacement is sent silently -- otherwise every table reply buzzes
+        # twice where main buzzed once. When nothing streamed there was no
+        # earlier ping, so the rich send is the only notification and must fire.
+        if _has_table(text):
+            mid = await self._client.send_rich_message(
+                self._chat_id,
+                text,
+                reply_markup=keyboard,
+                message_thread_id=self._thread_id,
+                disable_notification=self._stream_mid is not None,
+            )
+            if mid is not None:
+                if self._stream_mid is not None:
+                    # The rich message now carries this segment; drop the
+                    # superseded plaintext bubble so the user sees one message.
+                    await self._client.delete_message(self._chat_id, self._stream_mid)
+                    self._stream_mid = None
+                return
+            # Rich send failed -- the streamed bubble (if any) is untouched, so
+            # fall through and seal it the legacy way. Only the table runs are
+            # wrapped in <pre>; prose around them keeps its normal formatting,
+            # so this path never renders worse than the plain HTML seal.
+            #
+            # The segment was already sized against the plain HTML render, and
+            # <pre> wrapping only ADDS characters, so on a near-limit reply the
+            # wrapped form can overflow _rendered_limit() and have its tail cut
+            # by _cap_text(). Losing the end of the answer is worse than losing
+            # column alignment, so fall back to the plain render when it spills.
+            logger.debug("sendRichMessage failed for chat %s, falling back to HTML", self._chat_id)
+            html_text = _seal_table_fallback(text)
+            if len(html_text) > self._rendered_limit():
+                html_text = _md_to_telegram_html(text)
+        else:
+            html_text = _md_to_telegram_html(text)
         if self._stream_mid is not None:
             ok = await self._client.edit_message(
                 self._chat_id,
