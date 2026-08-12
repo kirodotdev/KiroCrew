@@ -12,11 +12,13 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 import yaml
+from installer_test_helpers import run_bounded
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "packaging" / "signing" / "cli-manifest.py"
@@ -322,6 +324,21 @@ esac
     )
     curl.chmod(0o755)
     pipx.chmod(0o755)
+
+    # cli.sh resolves an interpreter off PATH, and a bare host PATH hands it
+    # whatever version-manager shim is installed. Those shims resolve their tool
+    # installs under HOME, which this harness repoints at an empty temp dir, so
+    # a shim wedges instead of answering and the probe ladder stalls. Shadow
+    # EVERY candidate in cli.sh's ladder, not just the running version: the
+    # ladder tries python3.12 first, so on a 3.10 or 3.11 host that entry still
+    # reaches a host shim -- and a stock macOS has no `timeout` to bound it. The
+    # names are aliases rather than version claims; the probe only asserts
+    # >=3.10, which the interpreter running these tests satisfies. It must stay
+    # a REAL interpreter: cli.sh uses $PY for the signature and digest
+    # verification under test, so a stub would make those assertions vacuous.
+    for _name in ("python3.13", "python3.12", "python3.11", "python3.10", "python3"):
+        (tools / _name).symlink_to(sys.executable)
+
     return tools, curl_marker, install_marker
 
 
@@ -358,15 +375,68 @@ def _run_installer(
             "FAKE_INSTALL_MARKER": str(install_marker),
         }
     )
-    result = subprocess.run(
-        ["sh", str(script), "--cdn", CDN_BASE, *args],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+    result = run_bounded(["sh", str(script), "--cdn", CDN_BASE, *args], env)
     return result, curl_marker, install_marker
+
+
+def test_the_harness_shadows_every_interpreter_the_installer_probes(
+    tmp_path: Path,
+) -> None:
+    """No ladder entry may fall through to a host interpreter.
+
+    Shadowing only the running python3.X leaves cli.sh's first candidate
+    (python3.12) resolving to whatever the host has, which on a version-manager
+    host is a shim that wedges -- and a stock macOS has no ``timeout`` to bound
+    the probe. Read the ladder out of cli.sh so it cannot drift from this.
+    """
+    if os.name == "nt":
+        # The shadowing is symlink-based and Windows gates symlink creation on
+        # privilege, so this asserts a POSIX-only property. Every other caller
+        # of _write_fake_tools already skips Windows before reaching it.
+        pytest.skip("cli.sh and its PATH shadowing are POSIX-only")
+    tools, _curl_marker, _install_marker = _write_fake_tools(tmp_path / "run")
+
+    ladder = re.search(r"for _c in ([^;]+); do", INSTALLER.read_text())
+    assert ladder, "cli.sh no longer has a recognizable interpreter ladder"
+
+    candidates = [c for c in ladder.group(1).split() if c.startswith("python")]
+    assert candidates, "no interpreter candidates parsed out of cli.sh's ladder"
+
+    unshadowed = [c for c in candidates if not (tools / c).exists()]
+    assert not unshadowed, f"host interpreters reachable from the harness: {unshadowed}"
+
+
+def test_a_wedged_grandchild_does_not_outlive_the_bounded_run(tmp_path: Path) -> None:
+    """The timeout path must reap the whole tree, not just the shell it spawned.
+
+    Without the process-group kill a wedged grandchild is reparented to init and
+    keeps burning a core until someone notices by hand.
+    """
+    if os.name == "nt":
+        pytest.skip("process groups are POSIX-only")
+    pidfile = tmp_path / "grandchild.pid"
+    script = tmp_path / "spawn.sh"
+    script.write_text(
+        """#!/bin/sh
+# Detach a grandchild that outlives its parent shell, which is how a wedged
+# interpreter shim under `sh` behaves.
+sh -c 'echo $$ > "$1"; exec sleep 300' _ "$1" &
+wait
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_bounded(["sh", str(script), str(pidfile)], os.environ.copy(), 5.0)
+    pid = int(pidfile.read_text(encoding="utf-8").strip())
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    pytest.fail(f"grandchild {pid} survived the bounded run")
 
 
 @pytest.mark.parametrize("pinned", [False, True])

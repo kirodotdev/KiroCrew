@@ -22,6 +22,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from installer_test_helpers import run_bounded
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_SH = REPO_ROOT / "cli.sh"
@@ -46,6 +47,7 @@ def _run_cli_with_fake_env(
     tmp_path: Path,
     *,
     managers: list[str],
+    interpreters: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run cli.sh with a PATH that has NO python3 and only the named package
     managers (each a stub that records its name and args). Returns the process
@@ -54,6 +56,10 @@ def _run_cli_with_fake_env(
     The stubs deliberately do NOT install a working python, so cli.sh proceeds
     through every branch and then errs at the final "Python >=3.10 is required"
     guard — by which point the marker proves which manager it tried.
+
+    ``interpreters`` replaces the default too-old stub for the named
+    interpreters, which is how a scenario expresses a usable or a wedged
+    candidate.
     """
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -73,7 +79,11 @@ def _run_cli_with_fake_env(
 
     for _util in ("sh", "env", "id", "awk", "sed", "mktemp", "rm", "rmdir",
                   "mkdir", "cat", "printf", "chmod", "ln", "date", "grep",
-                  "tr", "head", "cut", "dirname", "basename", "uname", "sleep"):
+                  "tr", "head", "cut", "dirname", "basename", "uname", "sleep",
+                  # cli.sh bounds its interpreter probe with `timeout` when one
+                  # exists, so the isolated PATH must expose it for that guard
+                  # to be exercised here at all.
+                  "timeout"):
         _link_real(_util)
 
     # A manager "under test" is an EXECUTABLE stub that records its args. The
@@ -118,12 +128,16 @@ def _run_cli_with_fake_env(
     for name in ("python3.13", "python3.12", "python3.11", "python3.10", "python3", "python"):
         stub = tools / name
         stub.write_text(
-            "#!/bin/sh\n"
-            'case "$*" in\n'
-            "  *version_info*) exit 1 ;;\n"  # cli.sh's >=3.10 gate -> too old
-            "  *--version*) echo 'Python 3.6.8' ;;\n"
-            "  *) exit 1 ;;\n"
-            "esac\n"
+            interpreters.get(name)
+            if interpreters and name in interpreters
+            else (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 1 ;;\n"  # cli.sh's >=3.10 gate -> too old
+                "  *--version*) echo 'Python 3.6.8' ;;\n"
+                "  *) exit 1 ;;\n"
+                "esac\n"
+            )
         )
         stub.chmod(0o755)
 
@@ -142,15 +156,35 @@ def _run_cli_with_fake_env(
         "HOME": str(tmp_path / "home"),
         "KIROCREW_HOME": str(tmp_path / "data-home"),
     }
-    result = subprocess.run(
-        [str(tools / "sh"), str(CLI_SH)],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+    result = run_bounded([str(tools / "sh"), str(CLI_SH)], env)
     return result, markers
+
+
+def test_cli_fails_over_from_a_wedged_interpreter_candidate(tmp_path: Path) -> None:
+    """A version-manager shim that never answers must not wedge the install.
+
+    python3.12 is probed FIRST, so a shim that hangs there used to hold
+    _resolve_python forever and leak a spinning orphan per invocation. The probe
+    is bounded, so resolution has to reach the usable python3 below it.
+    """
+    result, _markers = _run_cli_with_fake_env(
+        tmp_path,
+        managers=["apt-get"],
+        interpreters={
+            "python3.12": "#!/bin/sh\nexec sleep 300\n",
+            "python3": (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 0 ;;\n"  # a supported interpreter
+                "  *--version*) echo 'Python 3.12.0' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            ),
+        },
+    )
+
+    combined = result.stdout + result.stderr
+    assert "Python >=3.10 is required" not in combined, combined
 
 
 def test_cli_uses_apt_on_debian_ubuntu(tmp_path: Path) -> None:

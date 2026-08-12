@@ -128,9 +128,24 @@ command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the sig
 # fine on 3.9 and then crash on first run. Prefer the newest interpreter the
 # project builds and tests on (3.12 is the CI target); 3.13 is untested and
 # only a last resort before bare python3, which itself only counts if >=3.10.
+# A version-manager shim (mise, pyenv, asdf) can wedge instead of answering --
+# notably when HOME does not hold the config the shim expects -- and an
+# unbounded probe then hangs the whole install on its FIRST candidate,
+# python3.12, leaving a spinning orphan behind. Bound it so a wedged candidate
+# fails over to the next one. A healthy interpreter answers in well under a
+# tenth of a second, so 5s is generous and caps the whole ladder at ~25s.
+# `timeout` is absent from a stock macOS, so its absence must leave the probe
+# working rather than fail every candidate.
+_PY_PROBE_TIMEOUT=""
+if command -v timeout >/dev/null 2>&1; then
+  _PY_PROBE_TIMEOUT="timeout 5"
+fi
+
 _py_usable() {
   command -v "$1" >/dev/null 2>&1 || return 1
-  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null
+  # Unquoted on purpose: expands to two words, or to nothing when unavailable.
+  # shellcheck disable=SC2086
+  $_PY_PROBE_TIMEOUT "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null
 }
 
 # Resolve the newest supported interpreter into PY (left empty if none found).
