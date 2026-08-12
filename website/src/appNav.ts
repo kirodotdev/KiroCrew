@@ -26,6 +26,7 @@ export interface AppNavRecord {
   orphaned?: boolean
   manifest?: {
     iconUrl?: string
+    iconUrlDark?: string
     ui?: {
       entry?: string
       pages?: Array<{ route: string; icon?: string; iconUrl?: string; label?: string }>
@@ -55,6 +56,8 @@ export interface AppNavTarget {
   builtin: boolean
   /** Custom top-level icon (an absolute `/app-assets/...` path), when the manifest has one. */
   iconUrl: string
+  /** Dark-appearance variant of `iconUrl`, when the manifest ships one. */
+  iconUrlDark: string
   /** Lucide glyph name from the app's first UI page, for the builtin icon lookup. */
   iconName: string
   /** Page-relative icon file (installed apps), resolved against `/apps/<name>/ui/`. */
@@ -102,6 +105,7 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
     orphaned,
     builtin: isBuiltin,
     iconUrl: app.manifest?.iconUrl || '',
+    iconUrlDark: app.manifest?.iconUrlDark || '',
     iconName: page.icon || '',
     pageIconUrl: page.iconUrl || '',
   }

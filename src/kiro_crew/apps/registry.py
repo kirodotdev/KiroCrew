@@ -934,10 +934,23 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     if "platform" in manifest:
         result["platform"] = manifest["platform"]
 
-    # Icon — convert repo-relative path to blob proxy URL
+    # Icon — convert repo-relative path to blob proxy URL.
+    #
+    # Only ``iconPath`` (repo-relative) is honoured, never a manifest-declared
+    # ``iconUrl``: an index-fetched manifest is untrusted content, and copying an
+    # absolute URL out of it would let a third party point the store's <img> at
+    # any host it likes. Rewriting a repo-relative path keeps every icon fetch
+    # on our own proxy, which enforces the extension allowlist and the
+    # trusted-host gate.
     icon_path = manifest.get("iconPath", "")
     if icon_path and repo:
         result["iconUrl"] = f"/api/apps/blob?repo={repo}&path={icon_path}"
+    # Dark-appearance variant. Raster icons have fixed bytes, so an app that
+    # must read well on both backgrounds ships two files; first-party
+    # ``/app-assets/`` SVGs are inlined and repaint from theme tokens instead.
+    icon_path_dark = manifest.get("iconPathDark", "")
+    if icon_path_dark and repo:
+        result["iconUrlDark"] = f"/api/apps/blob?repo={repo}&path={icon_path_dark}"
     # Lucide fallback icon from manifest extra fields
     if manifest.get("icon"):
         result["icon"] = manifest["icon"]

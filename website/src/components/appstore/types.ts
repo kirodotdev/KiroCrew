@@ -18,6 +18,10 @@ export type RegistryApp = {
   author: string
   icon?: string
   iconUrl?: string
+  // Dark-appearance variant of iconUrl. Raster icons have fixed bytes, so an
+  // app that must read well on both backgrounds ships two files; first-party
+  // /app-assets/ SVGs are inlined and repaint from theme tokens instead.
+  iconUrlDark?: string
   tags?: string[]
   highlights?: string[]
   screenshots?: string[]
@@ -97,6 +101,8 @@ export type InstalledApp = {
     highlights?: string[]
     license?: string
     iconUrl?: string
+    iconUrlDark?: string
+    iconPathDark?: string
     openCommand?: string
     hidden?: boolean
   }

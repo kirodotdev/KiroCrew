@@ -1470,3 +1470,34 @@ class TestMergeManifestProjectsRegistryKeys:
         entry = {"name": "demo-app", "_index_author": "Kiro Crew"}
         out = registry._merge_manifest(entry, self.MANIFEST)
         assert out["_index_author"] == "Kiro Crew"
+
+    def test_dark_icon_path_becomes_a_blob_url(self):
+        """A raster icon cannot repaint from theme tokens, so an app may ship a
+        dark variant; it routes through the same proxy as the light one."""
+        entry = {"name": "demo-app", "repo": "DemoRepo"}
+        manifest = {**self.MANIFEST, "iconPath": "a/i.png", "iconPathDark": "a/i-dark.png"}
+        out = registry._merge_manifest(entry, manifest)
+        assert out["iconUrl"] == "/api/apps/blob?repo=DemoRepo&path=a/i.png"
+        assert out["iconUrlDark"] == "/api/apps/blob?repo=DemoRepo&path=a/i-dark.png"
+
+    def test_dark_icon_is_omitted_when_absent(self):
+        """Absence must not publish an empty string: the client treats a falsy
+        dark variant as "fall back to the light one", and an empty key would
+        also widen the payload for every app that ships one icon."""
+        entry = {"name": "demo-app", "repo": "DemoRepo"}
+        out = registry._merge_manifest(entry, {**self.MANIFEST, "iconPath": "a/i.png"})
+        assert "iconUrlDark" not in out
+
+    def test_manifest_declared_icon_url_is_never_copied(self):
+        """An index-fetched manifest is untrusted content. Honouring an absolute
+        ``iconUrl`` from it would let a third party point the store's <img> at
+        any host; only repo-relative paths rewritten through our proxy are used."""
+        entry = {"name": "demo-app", "repo": "DemoRepo"}
+        manifest = {
+            **self.MANIFEST,
+            "iconUrl": "https://evil.example/track.png",
+            "iconUrlDark": "https://evil.example/track-dark.png",
+        }
+        out = registry._merge_manifest(entry, manifest)
+        assert "iconUrl" not in out
+        assert "iconUrlDark" not in out
