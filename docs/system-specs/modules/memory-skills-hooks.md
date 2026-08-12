@@ -496,6 +496,8 @@ User-taught corrections ("always do X", "never do Y"). Single write path through
 
 Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block. The vector path ranks lessons by hybrid relevance to the incoming request and fills the caller's character budget, stating in the block how many of the stored lessons are shown and how many are omitted; the JSONL path caps at `_MAX_LESSONS_IN_CONTEXT = 50`. The JSONL store itself retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that, so what reaches the context and what sits on disk are different numbers.
 
+Vector scoring builds one scorer per query (`_stored_similarity_scorer`) so the query vector and its norm are derived once instead of once per lesson — the same hoisting `_sqlite_vector_search` does for episodic rows. There is a numpy path and a stdlib fallback, because numpy is guarded by `_HAS_NUMPY`; both produce the same ranking. Stored lesson vectors are un-normalized (unlike episodic vectors, which are L2-normalized for FAISS inner-product scoring), so both norms are divided out per row rather than assuming unit length. A row whose vector has a different dimensionality than the query — a row written under a previous embedding model — is incomparable and scores 0.0, matching `_sqlite_vector_search` and `HybridRetriever._cosine_similarity`, rather than being truncated against the query's leading elements.
+
 ### Conflict resolution: which layer wins
 
 Priority, highest first. A lower layer never overrides a higher one:

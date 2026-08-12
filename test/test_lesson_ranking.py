@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import struct
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from kiro_crew import vector_memory
 from kiro_crew.vector_memory import VectorMemoryStore
 
 # Deliberately share no significant words, so write_lesson's topic-overlap
@@ -156,6 +158,96 @@ class TestVectorScoring:
         block = store.get_lessons_context(query_text="database migration deploying")
 
         assert shown(block)[0] == MIGRATION
+
+
+class TestStoredVectorComparability:
+    """The per-query scorer must not let a row win on shape or magnitude."""
+
+    def test_mismatched_dimension_vector_cannot_win_by_truncation(
+        self, store: VectorMemoryStore
+    ) -> None:
+        """A vector of another dimensionality is incomparable, not a match.
+
+        Rows written under a previous embedding model keep that model's
+        dimensionality. Comparing one against a query from the current model used
+        to score only the leading elements while each norm still used its own
+        full vector, so the shorter row could reach a perfect 1.0 and outrank the
+        row that genuinely matches.
+
+        The blob is rewritten directly because that is the only way the mismatch
+        arises: ``write_lesson`` embeds every row with whatever ``embed_fn`` is
+        bound at the time, and handing it a short vector up front instead trips
+        the dedup comparison — which truncates the same way — so the row is
+        treated as a duplicate and never stored at all.
+        """
+        probe = "unrelated probe phrasing"
+        vectors = {
+            TABS: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            MIGRATION: [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            probe: [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        }
+        store.embed_fn = lambda text: vectors.get(text, [0.0] * 8)
+        store.write_lesson(TABS)
+        store.write_lesson(MIGRATION)
+        # Leave TABS in a 4-dimensional space. Truncated against the query's
+        # first four elements it scores 1.0; compared honestly it is unrelated.
+        stale = struct.pack("4f", 1.0, 1.0, 1.0, 1.0)
+        key = next(row["key"] for row in store.get_lessons() if TABS in row["value_json"])
+        store.db.execute(
+            "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (stale, key)
+        )
+        store.db.commit()
+
+        block = store.get_lessons_context(query_text=probe)
+
+        assert shown(block) == [MIGRATION, TABS], (
+            "a row embedded in another dimensionality was scored as a match"
+        )
+
+    def test_row_vector_magnitude_does_not_decide_ranking(
+        self, store: VectorMemoryStore
+    ) -> None:
+        """Stored vectors are un-normalized, so both norms must be divided out.
+
+        A plain inner product would rank the long, badly-aligned vector above the
+        short, perfectly-aligned one.
+        """
+        probe = "unrelated probe phrasing"
+        vectors = {
+            MIGRATION: [1.0, 0.0, 0.0],  # unit length, points at the query
+            TABS: [3.0, 4.0, 0.0],  # length 5, only 0.6 cosine
+            probe: [1.0, 0.0, 0.0],
+        }
+        store.embed_fn = lambda text: vectors.get(text, [0.0, 0.0, 1.0])
+        store.write_lesson(MIGRATION)
+        store.write_lesson(TABS)
+
+        block = store.get_lessons_context(query_text=probe)
+
+        assert shown(block)[0] == MIGRATION, "a longer vector outranked a better-aligned one"
+
+    def test_ranking_is_identical_without_numpy(
+        self, store: VectorMemoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """numpy is an optional dependency, so the stdlib path must agree with it."""
+        probe = "unrelated probe phrasing"
+        vectors = {
+            TABS: [0.9, 0.1, 0.2],
+            MIGRATION: [0.2, 0.9, 0.1],
+            FORCE_PUSH: [0.4, 0.4, 0.5],
+            DIGEST: [0.1, 0.2, 0.9],
+            probe: [0.7, 0.5, 0.3],
+        }
+        store.embed_fn = lambda text: vectors.get(text, [0.0, 0.0, 0.0])
+        for rule in (TABS, MIGRATION, FORCE_PUSH, DIGEST):
+            store.write_lesson(rule)
+
+        with_numpy = shown(store.get_lessons_context(query_text=probe))
+        monkeypatch.setattr(vector_memory, "_HAS_NUMPY", False)
+        without_numpy = shown(store.get_lessons_context(query_text=probe))
+
+        assert without_numpy == with_numpy
+        assert len(with_numpy) == 4
 
 
 class TestImportedLessonShapes:

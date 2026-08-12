@@ -2370,6 +2370,7 @@ class VectorMemoryStore:
         """
         query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
         query_emb = self._try_embed(query_text) if self.embed_fn else None
+        similarity = self._stored_similarity_scorer(query_emb)
         scored: list[tuple[float, tuple[dict, str]]] = []
         for entry in entries:
             row, text = entry
@@ -2377,23 +2378,70 @@ class VectorMemoryStore:
             # ``lesson.<md5hash>``, which carries no words, so there is no key
             # term to weight here the way get_semantic_context() weights its own.
             overlap = len(query_words & _stem_words(set(re.findall(r"\w+", text.lower()))))
-            score = _hybrid_score(
-                _keyword_score(overlap), self._stored_similarity(row, query_emb)
-            )
+            score = _hybrid_score(_keyword_score(overlap), similarity(row))
             scored.append((score, entry))
         scored.sort(key=lambda pair: -pair[0])
         return [entry for _, entry in scored]
 
-    def _stored_similarity(self, entry: dict, query_emb: list[float] | None) -> float:
-        """Cosine similarity between *query_emb* and a row's stored embedding."""
-        blob = entry.get("embedding")
-        if query_emb is None or not isinstance(blob, bytes) or len(blob) < 4:
-            return 0.0
-        try:
-            stored = struct.unpack(f"{len(blob) // 4}f", blob)
-        except struct.error:
-            return 0.0
-        return max(0.0, self._cosine_sim(query_emb, list(stored)))
+    @staticmethod
+    def _stored_similarity_scorer(
+        query_emb: list[float] | None,
+    ) -> Callable[[dict], float]:
+        """Build a cosine scorer for one query, with query-side work done once.
+
+        The query vector and its norm are the same for every row, so deriving
+        them per row repeats a full pass over the query once per lesson. Hoisting
+        them out of the loop is where nearly all of the saving is — vectorizing
+        the dot product while still converting the query inside the loop keeps
+        most of the original cost. ``_sqlite_vector_search`` already normalizes
+        its query once for the same reason; this is the lesson-path equivalent.
+
+        Stored lesson vectors are un-normalized by contract (see
+        ``backfill_lesson_embeddings``), so the row norm stays inside the loop
+        and both norms are divided out. A bare inner product would be correct
+        only while the embedding model happens to emit unit vectors, which
+        nothing enforces.
+
+        A row whose vector has a different dimensionality is incomparable and
+        scores 0.0 rather than being truncated against the query, matching
+        ``_sqlite_vector_search`` and ``HybridRetriever._cosine_similarity``.
+        """
+        if not query_emb:
+            return lambda row: 0.0
+        q_len = len(query_emb)
+        q_bytes = q_len * 4
+
+        if _HAS_NUMPY:
+            q_vec = np.asarray(query_emb, dtype=np.float32)
+            q_norm = float(np.linalg.norm(q_vec))
+            if not q_norm:
+                return lambda row: 0.0
+
+            def numpy_scorer(row: dict) -> float:
+                blob = row.get("embedding")
+                if not isinstance(blob, bytes) or len(blob) != q_bytes:
+                    return 0.0
+                vec = np.frombuffer(blob, dtype=np.float32)
+                denom = float(np.linalg.norm(vec)) * q_norm
+                return max(0.0, float(vec @ q_vec) / denom) if denom else 0.0
+
+            return numpy_scorer
+
+        q_norm_py = math.sqrt(sum(x * x for x in query_emb))
+        if not q_norm_py:
+            return lambda row: 0.0
+
+        def stdlib_scorer(row: dict) -> float:
+            blob = row.get("embedding")
+            if not isinstance(blob, bytes) or len(blob) != q_bytes:
+                return 0.0
+            vec = struct.unpack(f"{q_len}f", blob)
+            denom = math.sqrt(sum(y * y for y in vec)) * q_norm_py
+            if not denom:
+                return 0.0
+            return max(0.0, sum(x * y for x, y in zip(query_emb, vec)) / denom)
+
+        return stdlib_scorer
 
     # ── Migration & Import ──
 
