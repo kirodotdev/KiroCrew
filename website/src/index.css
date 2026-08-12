@@ -1608,6 +1608,14 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* ── Table row striping ── */
 .table-striped tbody tr:nth-child(even){background:var(--card-hl)}
 
+/* ── Follow-up option chip width cap ──
+   An option label is a full user-voice instruction and can run to hundreds of
+   characters. Capped at roughly half the default composer width so at least
+   two options stay side by side and no single chip owns the whole strip; the
+   label itself clamps to two lines. Lives here because the same value is
+   applied to both the chip button and its split-button wrapper. */
+.followup-chip{max-width:min(100%,26rem)}
+
 /* ── Skeleton shimmer placeholder ── */
 .skeleton{
   background:linear-gradient(90deg,var(--bg-elevated) 25%,var(--bg-hover) 50%,var(--bg-elevated) 75%);

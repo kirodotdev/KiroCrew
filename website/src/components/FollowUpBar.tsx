@@ -15,16 +15,53 @@ interface FollowUpBarProps {
   layout?: FollowUpLayout
 }
 
+/**
+ * Option labels are full user-voice instructions and can run to several
+ * hundred characters. Left unbounded they size to max-content: in the scroll
+ * layout (chips are `shrink-0`) one long option consumed the whole strip and
+ * the tail of its text sat outside the visible box, so it read as a single
+ * clipped pill with no other option in view. `followup-chip` (index.css) caps
+ * the width at roughly half the default composer, and the label wraps onto two
+ * clamped lines — the truncation is then explicit (ellipsis) instead of an
+ * invisible overflow.
+ */
+const CHIP_MAX_WIDTH = 'followup-chip'
+
 function chipClassName(isPicked: boolean, extra: string = '') {
-  return `${extra} px-3 py-1.5 rounded-lg text-[13px] cursor-pointer transition-all border ${
+  return `${extra} ${CHIP_MAX_WIDTH} px-3 py-1.5 rounded-lg text-[13px] text-left leading-snug cursor-pointer transition-all border ${
     isPicked
       ? 'border-solid border-accent/50 text-accent bg-accent-subtle'
       : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg-elevated'
   }`
 }
+
+/**
+ * The two-line clamp lives on an unpadded inner element on purpose:
+ * `-webkit-line-clamp` clips at the padding edge, so clamping the padded
+ * button itself leaves a sliver of the third line visible inside its bottom
+ * padding.
+ */
+function ChipLabel({ option }: { option: string }) {
+  return <span className="line-clamp-2 break-words">{option}</span>
+}
+
+/**
+ * Length above which a label is likely clamped. Past it the hover tooltip
+ * carries the full option text instead of the click hint — an unreadable label
+ * is the more pressing gap, and the gesture hint is still shown on every short
+ * chip and on the send segment. The DOM keeps the whole string either way, so
+ * the accessible name is never truncated.
+ */
+const LONG_LABEL_CHARS = 60
+
+function chipTooltip(option: string, hint: string) {
+  return option.length > LONG_LABEL_CHARS ? option : hint
+}
 /** Right-hand "send now" segment class — same palette as the chip body, divided by a border. */
 function sendSegmentClassName(isPicked: boolean) {
-  return `px-1.5 py-1.5 rounded-r-lg cursor-pointer transition-all border border-l-0 ${
+  // inline-flex + items-center keeps the arrow vertically centred when the
+  // chip body wraps onto a second line.
+  return `inline-flex items-center px-1.5 py-1.5 rounded-r-lg cursor-pointer transition-all border border-l-0 ${
     isPicked
       ? 'border-solid border-accent/50 text-accent bg-accent-subtle hover:bg-accent/20'
       : 'border-border text-muted hover:text-accent hover:border-accent/40 bg-bg-elevated'
@@ -68,7 +105,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
   const useDebouncedClick = !!onSend && !(quickSend && !isPicked && picked.size === 0)
-  const title = chipTitle(isPicked, quickSend, picked, !!onSend)
+  const title = chipTooltip(option, chipTitle(isPicked, quickSend, picked, !!onSend))
   // The visible "send now" segment is the discoverable form of the existing
   // double-click-to-send gesture. Redundant (and hidden) in the quickSend
   // instant-send state, where a single click on an unpicked chip already
@@ -85,7 +122,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
         className={className}
         title={title}
       >
-        {option}
+        <ChipLabel option={option} />
       </button>
     )
   }
@@ -124,14 +161,20 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       className={showSendSegment ? className.replace('rounded-lg', 'rounded-l-lg') : className}
       title={title}
     >
-      {option}
+      <ChipLabel option={option} />
     </button>
   )
 
   if (!showSendSegment) return mainChip
 
   return (
-    <span className="inline-flex items-stretch shrink-0">
+    // The cap is repeated on the wrapper because the wrapper — not the button —
+    // is the flex item here. Without it the wrapper's flex base size is the
+    // label's untruncated max-content width (the button's percentage max-width
+    // cannot resolve against an indefinite wrapper), leaving a wide empty gap
+    // before the next chip. On the flex item the percentage resolves against
+    // the strip's definite width.
+    <span className={`inline-flex items-stretch shrink-0 ${CHIP_MAX_WIDTH}`}>
       {mainChip}
       <button
         type="button"
