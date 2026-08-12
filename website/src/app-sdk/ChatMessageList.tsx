@@ -14,6 +14,7 @@ import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import {
   type MessageRenderer,
   type MessageRenderContext,
+  GROUPED_ROLES,
   mergeRenderers,
   resolveRenderer,
 } from './messageRenderers'
@@ -45,8 +46,6 @@ export interface ChatMessageListProps {
 
 // ── Stable helpers (outside component) ──
 
-const GROUPABLE = new Set(['thinking', 'permission'])
-
 function msgKey(m: ChatMessage, i: number): string {
   return (m.ts || '') + '-' + i + '-' + m.role
 }
@@ -74,7 +73,7 @@ const ChatMessageList = memo(function ChatMessageList({
       // A sub-agent completion the card cannot parse stays internal — the model
       // sees it, the reader does not.
       if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
-      if (GROUPABLE.has(messages[i].role)) {
+      if (GROUPED_ROLES.includes(messages[i].role)) {
         if (!group.length) groupStart = i
         group.push(messages[i])
       } else {

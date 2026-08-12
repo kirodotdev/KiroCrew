@@ -9,5 +9,5 @@ export const {
   parseOptions, deriveFollowUpOptions, extractSteeringAcks, stripPartialOptionMarker,
   // Chat surfaces and the transcript row registry.
   useChatSession, ChatPanel, ChatEmbed, ChatMessageList,
-  defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill,
+  defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
 } = m

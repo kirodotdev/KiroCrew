@@ -312,6 +312,7 @@ export { default as ChatMessageList } from './ChatMessageList'
 // instead of forking the message list.
 export {
   defaultMessageRenderers,
+  GROUPED_ROLES,
   mergeRenderers,
   resolveRenderer,
   ToolCallPill,

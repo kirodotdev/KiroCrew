@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import type { ChatMessage } from '../types'
 import {
   defaultMessageRenderers,
+  GROUPED_ROLES,
   mergeRenderers,
   resolveRenderer,
   type MessageRenderer,
@@ -126,6 +127,40 @@ describe('host entries', () => {
     const ownStop: MessageRenderer = { id: 'stop_event', roles: ['*'], match: () => true, render: () => 'mine' }
     const merged = mergeRenderers([ownStop])
     expect(resolveRenderer(msg('system', { kind: 'stop_event' }), merged)).toBe(ownStop)
+  })
+})
+
+describe('grouped roles are a documented exception, not an accident', () => {
+  // `thinking` and `permission` are assembled into a collapsible group BEFORE
+  // per-row resolution, so an entry claiming one is consulted but renders INSIDE
+  // the group rather than replacing it. Pinning the set here keeps the docs and
+  // the transcript honest about which roles behave that way — silently adding a
+  // third would make the api-reference wrong without anything noticing.
+  it('names exactly the roles the transcript groups', () => {
+    expect([...GROUPED_ROLES].sort()).toEqual(['permission', 'thinking'])
+  })
+
+  it('cannot be mutated by a consumer at RUNTIME, not merely by type', () => {
+    // This value crosses into apps through the vendored SDK surface, and an app is
+    // plain JavaScript that never sees our types. A merely type-readonly export
+    // would let one `delete`/`push` stop the host grouping permissions and take the
+    // pending approval UI with it, so the guarantee has to survive type erasure.
+    expect(Object.isFrozen(GROUPED_ROLES)).toBe(true)
+    expect(() => {
+      (GROUPED_ROLES as string[]).push('notice')
+    }).toThrow()
+    // Whatever a caller tried, the set of grouped roles is unchanged.
+    expect([...GROUPED_ROLES].sort()).toEqual(['permission', 'thinking'])
+  })
+
+  it('leaves permission unclaimed by default, so nothing draws it per-row', () => {
+    // The group's own summary and approval affordance handle it.
+    expect(resolveRenderer(msg('permission'), defaultMessageRenderers)).toBeUndefined()
+  })
+
+  it('does resolve a host entry for a grouped role — it just renders in the group', () => {
+    const card: MessageRenderer = { id: 'approval', roles: ['permission'], render: () => 'card' }
+    expect(resolveRenderer(msg('permission'), mergeRenderers([card]))).toBe(card)
   })
 })
 
