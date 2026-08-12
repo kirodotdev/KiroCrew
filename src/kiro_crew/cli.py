@@ -1369,6 +1369,29 @@ Examples:
             "MANIFEST.json records that it was staged unpinned."
         ),
     )
+    snap_parser.add_argument(
+        "--components",
+        default=None,
+        help="Comma-separated components to include (default: all); see restore --list-components",
+    )
+    snap_parser.add_argument(
+        "--purpose",
+        default="backup",
+        choices=("backup", "share"),
+        help=(
+            "backup = restoring onto a host you control, keeps credential-bearing "
+            "components (the default, and the only one that produces a bundle today); "
+            "share = leaves your control, so it carries only components certified free "
+            "of credential material — no component is certified yet, so this currently "
+            "refuses rather than emitting a bundle that has not been checked"
+        ),
+    )
+
+    # Retired, and defined only so it fails with a pointer instead of a bare argparse
+    # error. Dropping it entirely would still fail loudly ("unrecognized arguments"), but
+    # an operator whose muscle memory or old cron line still says `--to s3://bucket/prefix`
+    # is better served by being told where that capability went than by exit 2.
+    snap_parser.add_argument("--to", default=None, help=argparse.SUPPRESS)
 
     rest_parser = cli_help.add_command(sub, "restore")
     rest_parser.add_argument("snapshot", nargs="?", help="Path to snapshot .tar.gz")

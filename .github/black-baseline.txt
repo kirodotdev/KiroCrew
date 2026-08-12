@@ -238,7 +238,6 @@ src/kiro_crew/dashboard/handlers/side.py
 src/kiro_crew/dashboard/handlers/source_providers.py
 src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
-src/kiro_crew/dashboard/handlers/taskrunner.py
 src/kiro_crew/dashboard/handlers/terminal.py
 src/kiro_crew/dashboard/handlers/themes.py
 src/kiro_crew/dashboard/handlers/tunnel.py
@@ -246,7 +245,6 @@ src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/handlers/weixin_qr.py
 src/kiro_crew/dashboard/handlers_channel.py
 src/kiro_crew/dashboard/handlers_cloud.py
-src/kiro_crew/dashboard/handlers_instances.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
 src/kiro_crew/dashboard/routes/skills.py
@@ -298,7 +296,6 @@ src/kiro_crew/history.py
 src/kiro_crew/hooks.py
 src/kiro_crew/image_artifacts.py
 src/kiro_crew/imaging.py
-src/kiro_crew/instances/ssh_tunnel_manager.py
 src/kiro_crew/kiro_prerequisite.py
 src/kiro_crew/knowledge/agent_fetch.py
 src/kiro_crew/knowledge/agent_source.py
@@ -354,7 +351,6 @@ src/kiro_crew/mcp_tools/control.py
 src/kiro_crew/mcp_tools/knowledge.py
 src/kiro_crew/mcp_tools/skills.py
 src/kiro_crew/mcp_tools/spawn.py
-src/kiro_crew/mcp_tools/workflows.py
 src/kiro_crew/mcp_utils.py
 src/kiro_crew/messaging/link.py
 src/kiro_crew/metrics/http_metrics.py
@@ -401,9 +397,6 @@ src/kiro_crew/slack/sessions_view.py
 src/kiro_crew/subagent_persistence.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py
-src/kiro_crew/task_models.py
-src/kiro_crew/task_planner.py
-src/kiro_crew/taskrunner.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
 src/kiro_crew/tips.py
@@ -414,8 +407,6 @@ src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
 src/kiro_crew/workflows/agent_exec.py
 src/kiro_crew/workflows/context.py
-src/kiro_crew/workflows/runner.py
-src/kiro_crew/workflows/service.py
 test/conftest.py
 test/fake_mcp_app_server.py
 test/metrics/test_context_occupancy.py
@@ -672,7 +663,6 @@ test/test_dashboard_worktree_coverage.py
 test/test_dashboard_ws_offloop_fanout.py
 test/test_dashboard_ws_task_tracking.py
 test/test_dashboard_yolo_startup.py
-test/test_decompose_yaml.py
 test/test_deferred_disposition_ratchet.py
 test/test_delete_message.py
 test/test_denied_commands_api.py
@@ -790,7 +780,6 @@ test/test_handlers_channel_presets.py
 test/test_handlers_files_upload.py
 test/test_handlers_mcp_coverage.py
 test/test_handlers_memory_coverage.py
-test/test_handlers_taskrunner_coverage.py
 test/test_heartbeat_atomic_merge.py
 test/test_heartbeat_cycle_recycle.py
 test/test_heartbeat_prompt_deliver.py
@@ -816,7 +805,6 @@ test/test_installer_distro.py
 test/test_installer_node_floor.py
 test/test_installer_shim_and_cleanup.py
 test/test_instance_credential_pairing.py
-test/test_instances.py
 test/test_instances_search_federation.py
 test/test_interactions_shortcut.py
 test/test_ios_simulator_preview_skill.py
@@ -891,7 +879,6 @@ test/test_mcp_caller.py
 test/test_mcp_core.py
 test/test_mcp_core_arg_crash.py
 test/test_mcp_core_audit_e.py
-test/test_mcp_core_coverage.py
 test/test_mcp_core_more_coverage.py
 test/test_mcp_core_set_project.py
 test/test_mcp_core_spawn_sub_agents.py
@@ -950,7 +937,6 @@ test/test_meetings_dictionary.py
 test/test_meetings_providers.py
 test/test_meetings_routes.py
 test/test_meetings_session.py
-test/test_members.py
 test/test_memory_benchmark_workflow.py
 test/test_memory_selfheal.py
 test/test_merge_queued_messages.py
@@ -1198,7 +1184,6 @@ test/test_tailnet_e2e.py
 test/test_tailnet_origin.py
 test/test_tailnet_serve.py
 test/test_tailnet_session_url.py
-test/test_taskrunner.py
 test/test_taskrunner_atomic_persistence.py
 test/test_taskrunner_autoapprove.py
 test/test_taskrunner_coverage.py

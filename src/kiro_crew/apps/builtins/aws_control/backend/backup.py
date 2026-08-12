@@ -43,6 +43,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
+from kiro_crew import snapshot
 from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
@@ -244,13 +245,27 @@ def run_snapshot_backup(account: str, profile: str, region: str, bucket: str) ->
         if not archives:
             raise RuntimeError("snapshot build produced no archive")
         archive = archives[-1]
+        # The bytes that LEAVE are redacted when the operator has opted in; the local
+        # bundle is never touched. This is the one part of an off-host backup the app does
+        # not own: the bucket, its hardening, the consent grant and the transport are all
+        # here, but rewriting the payload is the snapshot format's own business, so the
+        # snapshot module owns it and this is where it attaches.
+        #
+        # Deliberately BEFORE `_authorize_upload` and the push: a redaction that cannot be
+        # completed must stop the upload rather than fall through to sending the bundle
+        # unredacted, and `RedactionFailed` carries the reason (an unprovable payload
+        # database, a file that is not text, an unreadable switch) for the caller to
+        # surface. `tmp` is this function's own directory and is removed with it, so the
+        # redacted copy never outlives the push.
+        redacted = snapshot.prepare_redacted_copy(archive, Path(tmp), list(snapshot.COMPONENTS))
+        payload = redacted or archive
         # snapshot_main names by second-resolution timestamp; a racing pair
         # would collide on the key, so the pushed key carries its own
         # entropy (the _stamp shape) rather than trusting the file name.
         key = f"snapshots/kirocrew-snapshot-{_stamp()}.tar.gz"
         _authorize_upload(account, profile, region)
-        storage.put_file(profile, region, bucket, "backup", key, str(archive), account=account)
-        return _record_run(account, KIND_SNAPSHOT, key, archive.stat().st_size)
+        storage.put_file(profile, region, bucket, "backup", key, str(payload), account=account)
+        return _record_run(account, KIND_SNAPSHOT, key, payload.stat().st_size)
 
 
 #: ``O_NOFOLLOW`` refuses to open a symlink at all, which is what makes the
