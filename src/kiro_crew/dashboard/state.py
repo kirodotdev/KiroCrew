@@ -885,6 +885,7 @@ class _ChatSlot:
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
+        "channel_name",
         "channel_origin",
         "folder_id",
         "_folder_changed",
@@ -1099,6 +1100,7 @@ class _ChatSlot:
         self._slack_linked: bool = False  # True when linked to a Slack thread
         self._slack_channel: str = ""
         self._slack_thread_ts: str = ""
+        self.channel_name: str = ""  # human-readable channel name (e.g. "#dev-ops")
         self.folder_id: str = ""  # project folder assignment
         self._folder_changed: bool = False  # re-inject [FOLDER] breadcrumb next turn after move
         # One-shot claim for the post-titling folder suggestion (see
@@ -2061,6 +2063,7 @@ class _ChatSlot:
             "slack_linked": self._slack_linked,
             "slack_channel": self._slack_channel,
             "slack_thread_ts": self._slack_thread_ts,
+            "channel_name": self.channel_name or "",
             "folder_id": self.folder_id,
             "pinned": self.pinned,
             "tags": list(self.tags),

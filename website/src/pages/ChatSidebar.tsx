@@ -2325,8 +2325,9 @@ function ChatSidebar({
                 // to its `Link2` default, which reads as live mirroring and would
                 // collide with the link glyphs rendered just below.
                 return (
-                  <span className="text-muted shrink-0 inline-flex items-center" title={label} aria-label={label}>
+                  <span className="text-muted shrink-0 inline-flex items-center gap-0.5" title={label} aria-label={label}>
                     {hasChannelBrandIcon(ns) ? <ChannelBrandIcon channel={ns} size={10} /> : <MessageSquare size={10} />}
+                    {s.channel_name && <span className="text-[10px] text-muted truncate max-w-[80px]">#{s.channel_name}</span>}
                   </span>
                 )
               })()}

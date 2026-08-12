@@ -3039,8 +3039,8 @@ async def handle_message(
 
         # ── Auto-project CWD resolution (channel name → project folder) ──
         _auto_cwd: str | None = None
-        if _orch_cfg and _orch_cfg.slack.auto_project_dir and not channel.startswith("D"):
-            _ch_name: str | None = None
+        _ch_name: str | None = None
+        if not channel.startswith("D"):
             # Try the dashboard channel-name cache first (zero-cost sync lookup)
             if _dashboard_state and hasattr(_dashboard_state, "_channel_resolver"):
                 _resolver = getattr(_dashboard_state, "_channel_resolver", None)
@@ -3066,7 +3066,7 @@ async def handle_message(
                             _auto_project_channel_names[channel] = _ch_name
                     except Exception:
                         pass
-            if _ch_name:
+            if _ch_name and _orch_cfg and _orch_cfg.slack.auto_project_dir:
                 _auto_cwd = resolve_channel_project(_ch_name, _orch_cfg.slack.auto_project_dir)
 
         client, is_new, resumed = await sessions.get_or_create(
@@ -3084,6 +3084,14 @@ async def handle_message(
         )
         if is_new:
             await sessions.set_channel(session_key, channel)
+            # Persist channel name so the dashboard sidebar can display it.
+            if _ch_name and conversation_log and not _is_slack_restricted(session_key):
+                try:
+                    await asyncio.to_thread(
+                        conversation_log.update_metadata, session_key, {"channel_name": _ch_name}
+                    )
+                except Exception:
+                    logger.debug("Failed to persist channel_name for %s", session_key)
         if not linked_session_key:
             # Self-link: thread index maps the bare Slack thread_ts to this
             # session's canonical key. reply_ts (not session_key) is the true

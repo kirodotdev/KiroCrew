@@ -344,6 +344,8 @@ def surface_channel_session(
         slot._channel_folder_filed = True
     if meta.get("pinned"):
         slot.pinned = True
+    if meta.get("channel_name"):
+        slot.channel_name = meta["channel_name"]
 
     # Same shape as restore_recent_sessions: window the tail, count the rest as
     # the frozen prefix a save never rewrites, and redact assistant content at
