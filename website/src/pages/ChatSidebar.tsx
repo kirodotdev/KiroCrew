@@ -300,6 +300,18 @@ function RootDropHint() {
   )
 }
 
+/** The sidebar's ONE disclosure-chevron grammar (#2887): a ChevronRight that
+ * rotates 90° when its section is open — animated at one shared duration —
+ * and sits unrotated when closed. Every stateful disclosure in this pane
+ * renders through here, which rules out the drift modes by construction:
+ * Right/Down glyph swaps, counter-rotation when closed (the pre-#2884
+ * defect), inline-style rotation, and divergent durations. Position is the
+ * one deliberate asymmetry (the Older Sessions section header trails; row
+ * disclosures lead) — see the comment at the header call site. */
+function DisclosureChevron({ open, size, className = '' }: { open: boolean; size: number; className?: string }) {
+  return <ChevronRight size={size} className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''} ${className}`.trimEnd()} />
+}
+
 function SortableFolderBlock({ folder, subtree, renderFolderBlock }: { folder: ChatFolder; subtree?: readonly string[]; renderFolderBlock: (f: ChatFolder, depth: number, visited?: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode[] }) {
   const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder', subtree } })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1, position: 'relative' as const }
@@ -2746,7 +2758,7 @@ function ChatSidebar({
           className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-muted hover:text-fg hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
           style={{ paddingLeft: `${8 + depth * 12}px` }}
         >
-          <ChevronRight size={11} className="shrink-0 transition-transform" style={{ transform: open ? 'rotate(90deg)' : 'none' }} />
+          <DisclosureChevron open={open} size={11} />
           <span>{n} {n === 1 ? i18nT('pages.chatSidebar.hidden_folder') : i18nT('pages.chatSidebar.hidden_folders')}</span>
         </button>
         {open && (
@@ -3274,9 +3286,7 @@ function ChatSidebar({
                       title={foldersShelved ? i18nT('pages.chatSidebar.show_the_folder_list') : i18nT('pages.chatSidebar.roll_the_folder_list_up')}
                       className="text-[11px] uppercase tracking-[.04em] text-muted"
                     >
-                      {foldersShelved
-                        ? <ChevronRight size={12} className="shrink-0" />
-                        : <ChevronDown size={12} className="shrink-0" />}
+                      <DisclosureChevron open={!foldersShelved} size={12} />
                       <span className="flex-1">
                         {i18nT('pages.chatSidebar.folders')}
                         {filterHiddenFolders.size > 0 && (
@@ -3734,7 +3744,14 @@ function ChatSidebar({
             being pushed off the row's 12px right inset. The gap is 12px, wider
             than the row's other spacing: Clear is destructive (it wipes closed
             sessions behind a single confirm), so a pointer aimed at the collapse
-            glyph must not land on it. */}
+            glyph must not land on it. This trailing position is the pane's ONE
+            deliberate exception to the sidebar's leading-chevron grammar
+            (#2887): a section header ends with its own disclosure glyph, while
+            row-level disclosures (group headers, hidden-folders reveal, the
+            folders filter row) lead with theirs like tree rows everywhere else.
+            All four share the same mechanic: a ChevronRight that rotates 90°
+            when open — never a Right/Down glyph swap, never a counter-rotation
+            when closed. */}
         <span className="flex items-center gap-3 shrink-0">
           {historyOpen && history.length > 0 && (
             <button
@@ -3742,7 +3759,7 @@ function ChatSidebar({
               onClick={async e => { e.stopPropagation(); if (confirm(i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses'))) { await api.clearSessions(); dispatch(fetchHistory(false)) } }}
             >{i18nT('pages.chatSidebar.clear')}</button>
           )}
-          <ChevronRight size={16} className={`shrink-0 text-text-strong transition-transform duration-200 ${historyOpen ? 'rotate-90' : ''}`} />
+          <DisclosureChevron open={historyOpen} size={16} className="text-text-strong" />
         </span>
       </div>
       <AnimatePresence initial={false}>
@@ -3878,7 +3895,7 @@ function ChatSidebar({
                     return (
                       <Fragment key={gid}>
                         <button type="button" aria-expanded={!collapsed} aria-label={collapsed ? i18nT('pages.chatSidebar.expand_group_results', { group: groupName }) : i18nT('pages.chatSidebar.collapse_group_results', { group: groupName })} className="w-full flex items-center gap-1.5 px-2 pt-3 pb-1 text-[11px] font-semibold text-muted select-none bg-transparent border-none cursor-pointer hover:text-text first:pt-1" onClick={() => setCollapsedHistoryGroups(prev => { const next = new Set(prev); if (next.has(gid)) next.delete(gid); else next.add(gid); return next })}>
-                          {collapsed ? <ChevronRight size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
+                          <DisclosureChevron open={!collapsed} size={12} />
                           {folder ? <FolderGlyph color={folder.color} size={12} open={!collapsed} /> : <Folder size={12} className="text-muted shrink-0" />}
                           <span className="truncate">{folder ? folder.name : i18nT('pages.chatSidebar.unfiled')}</span>
                           <span className="ml-0.5 text-muted font-normal tabular-nums">· {rows.length}</span>
