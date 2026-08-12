@@ -229,9 +229,22 @@ export function loadRailCollapsed(): boolean {
   }
 }
 
-/** Slugify a free-text description into a stable spec name. */
+/** Slugify a free-text description into a stable spec name.
+ *
+ *  The ASCII filter below means a description written entirely in a non-Latin
+ *  script (Korean, Japanese, Cyrillic, emoji, …) filters down to the empty
+ *  string. The name becomes the spec's on-disk directory and its
+ *  ``spec/<name>`` worktree branch, so rather than emitting raw Unicode into a
+ *  filesystem path and a git ref, such input falls back to a generic ASCII
+ *  stem plus a short hash of the original text. The hash is a pure function of
+ *  the input: the branch-name preview and the created spec agree across
+ *  re-renders, and the same description always derives the same name (a rare
+ *  collision is absorbed by the caller's numeric-suffix retry). Latin input is
+ *  unchanged byte-for-byte.
+ */
 export function slugify(text: string): string {
-  return (text || '')
+  const raw = text || ''
+  const ascii = raw
     .toLowerCase()
     .replace(/[^a-z0-9\s_-]/g, '')
     .trim()
@@ -239,7 +252,22 @@ export function slugify(text: string): string {
     .slice(0, 5)
     .join('-')
     .replace(/-+/g, '-')
+    // The backend name rule requires a leading alphanumeric; a description
+    // opening with a bullet or underscore ('- add login') would otherwise
+    // derive a name the create call rejects. All-punctuation input falls
+    // through to the hash fallback below.
+    .replace(/^[-_]+/, '')
     .slice(0, 48)
+  if (ascii) return ascii
+  // FNV-1a (32-bit) over the code units — deterministic, dependency-free, and
+  // the ``spec-xxxxxxxx`` shape satisfies the backend's name rule
+  // (``^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$``) as well as git ref syntax.
+  let h = 0x811c9dc5
+  for (let i = 0; i < raw.length; i++) {
+    h ^= raw.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return 'spec-' + h.toString(16).padStart(8, '0')
 }
 
 /**
