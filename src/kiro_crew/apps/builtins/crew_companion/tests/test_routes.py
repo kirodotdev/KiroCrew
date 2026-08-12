@@ -8,7 +8,7 @@ that true.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -370,7 +370,13 @@ class TestHooks:
         await hooks.on_startup(ctx)
         store = hooks.get_store()
         assert store is not None
-        store.add("persisted", to_iso(NOW + timedelta(hours=3)))
+        # Anchored to the REAL clock, not the frozen NOW literal: unlike the
+        # `store` fixture, the store `on_startup` builds gets the default
+        # real-time clock, and its 1s tick fires anything already due. An
+        # instant relative to NOW is in the past, so the reminder would be
+        # fired and dropped whenever the tick beat the snapshot below.
+        future = datetime.now().astimezone() + timedelta(hours=3)
+        store.add("persisted", to_iso(future))
 
         await hooks.on_shutdown(ctx)
         await hooks.on_startup(ctx)
