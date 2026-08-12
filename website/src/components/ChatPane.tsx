@@ -26,6 +26,8 @@ import { retireStatelessQuestion, captureStatelessCard, capturePendingAskId, sel
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
+import { classifyDrop } from '../utils/dropClassify'
+import { serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
 import { displayModel } from '../lib/model'
 
 
@@ -210,6 +212,21 @@ export default function ChatPane({
     uploadMutation.mutate(files)
   }, [uploadMutation])
 
+  // Classify BEFORE acting (issue #743): a dropped folder inserts its path
+  // into the composer as an `@path/` token instead of taking the upload
+  // route, which cannot ingest a directory. Files keep uploading; a mixed
+  // drop takes both routes. The pane has no project context, so the token
+  // keeps the absolute path (the picker's own out-of-root fallback form),
+  // appended — the pane does not track a live composer caret. In a plain
+  // browser no real path is visible, so classifyDrop leaves folders on the
+  // upload route there (today's behaviour).
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setDragOver(false)
+    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+    if (dirPaths.length) setInput((prev) => spliceDirTokens(prev, null, dirPaths).value)
+    if (files.length) uploadFiles(files)
+  }, [uploadFiles])
+
   const doSend = useCallback(() => {
     const text = input.trim()
     if (!text && !pendingFiles.length) return
@@ -226,17 +243,33 @@ export default function ChatPane({
     setInput('')
     const files = pendingFiles
     setPendingFiles([])
+    // Folder tokens take the same wire/bubble split ChatPage uses: the wire
+    // text carries `[attached_dir N] path` markers the agent can resolve, the
+    // bubble keeps the `@path/` token for the chip, and `meta.dirs` indexes
+    // marker N to dirPaths[N-1] for lossless history replay. The pane has no
+    // project context, so tokens are absolute and serialize as-is.
+    const { llm, dirPaths } = serializeDirTokens(text, '')
+    // sendId correlation (same contract as ChatPage): the wire text differs
+    // from the bubble text whenever a folder token serialized, so the store's
+    // content-equality fallback can never reconcile the server echo against
+    // the optimistic bubble — without this id the echo appends a SECOND user
+    // bubble carrying the raw marker.
+    const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     // Optimistic user bubble: show immediately in the right position (mirrors the
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running) — the backend returns a "queued" message instead, avoiding a duplicate.
+    const meta = {
+      ...(files.length ? { files } : {}),
+      ...(dirPaths.length ? { dirs: dirPaths } : {}),
+      sendId,
+    }
     if (!busy && (text || files.length)) {
       dispatch(appendSlotMessage({
         slot: slotKey,
-        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), ...(files.length ? { meta: { files } } : {}) },
+        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
       }))
     }
-    const meta = files.length ? { files } : undefined
-    api.sendChat(text, slotKey, undefined, undefined, meta)
+    api.sendChat(llm, slotKey, undefined, undefined, meta)
       .then(async (r) => {
         if (!cardAtSend && !askAtSend) return
         const body = await r.json().catch(() => ({}))
@@ -393,7 +426,7 @@ export default function ChatPane({
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
           uploading={uploadMutation.isPending}
-          onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = Array.from(e.dataTransfer.files); if (f.length) uploadFiles(f) }}
+          onDrop={handleDrop}
           dragOver={dragOver}
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
           onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false) }}

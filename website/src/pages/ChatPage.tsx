@@ -55,7 +55,9 @@ import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment } from '../utils/fileTokens'
+import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens } from '../utils/fileTokens'
+import { classifyDrop } from '../utils/dropClassify'
+import { makeRelative } from '../components/FilePickerMenu'
 import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 /** Delay (ms) before scrolling to bottom after a state update, giving React time to commit. */
@@ -2908,7 +2910,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(false)
-    const files = Array.from(e.dataTransfer.files)
+    // Classify BEFORE acting (issue #743): a dropped folder inserts its path
+    // into the composer as an `@rel/` token — the same reference the @-picker
+    // stages — instead of taking the upload route, which cannot ingest a
+    // directory. Files keep uploading; a mixed drop takes both routes. In a
+    // plain browser no real path is visible, so classifyDrop leaves folders
+    // on the upload route there (today's behaviour) rather than inserting a
+    // misleading bare name.
+    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+    if (dirPaths.length) {
+      // Short relative form when the folder lies inside the project root,
+      // absolute otherwise — exactly the picker's own fallback convention.
+      const rels = dirPaths.map(p => makeRelative(p, currentProjectRef.current || ''))
+      const spliced = spliceDirTokens(inputRef.current, voiceCaretRef.current?.start ?? null, rels)
+      if (spliced.changed) {
+        // Arm the caret restore the same way the dictation splice does, so the
+        // cursor lands just past the inserted tokens once the value commits.
+        // Only on a real change: an all-duplicates drop leaves the value
+        // identical, React bails out of the no-op setInput, the restore effect
+        // never fires, and the armed offset would fire stale on the next
+        // unrelated edit, yanking the user's cursor.
+        voicePendingCaretRef.current = spliced.caret
+        setInput(spliced.value)
+      }
+    }
     if (files.length) {
       uploadFiles(files)
     }

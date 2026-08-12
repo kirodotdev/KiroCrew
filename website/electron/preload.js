@@ -1,8 +1,20 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
   isElectron: true,
+  // Absolute filesystem path for a File the OS handed the renderer (drag-drop,
+  // file input). Browsers deliberately hide real paths, and Electron removed
+  // File.path, so webUtils in the preload is the only remaining bridge. Returns
+  // "" when no path can be resolved (synthetic File) so callers can treat any
+  // falsy result as "no path available" and keep their browser fallback.
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || "";
+    } catch {
+      return "";
+    }
+  },
 });
 
 contextBridge.exposeInMainWorld("electronAPI", {
