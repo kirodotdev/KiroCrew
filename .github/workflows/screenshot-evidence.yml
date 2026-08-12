@@ -13,6 +13,12 @@ name: Screenshot Evidence
 # locale catalogues, and type-only declarations change constantly without any
 # visual delta; gating on those would train contributors to paste a meaningless
 # screenshot to get green, which is worse than no gate.
+#
+# Two waiver paths exist for a genuinely non-visual change to a watched file:
+# the `no-screenshots` label (maintainers), and the `<!-- no-visual-delta -->`
+# PR-body marker plus a `**Why no screenshot:** <reason>` justification line
+# (self-service for fork contributors, who cannot add labels). Both warn
+# instead of passing silently.
 
 on:
   pull_request:
@@ -91,10 +97,44 @@ jobs:
 
           # Accept any form that actually renders as an image/video for a
           # reviewer: markdown image, HTML img/video, a committed
-          # temp-screenshots path, or a GitHub user-attachment URL.
+          # temp-screenshots path, or a GitHub user-attachment URL. Real
+          # evidence satisfies the gate outright, so it is checked before any
+          # waiver: a body carrying both a screenshot and the marker passes on
+          # the screenshot.
           if printf '%s' "$body" | grep -qiE '!\[[^]]*\]\([^)]+\)|<img[[:space:]]|<video[[:space:]]|temp-screenshots/|user-attachments/'; then
             echo "Visual evidence found in the PR description."
             exit 0
+          fi
+
+          # Fork-friendly escape hatch: fork contributors cannot add labels, so
+          # the PR body itself may declare a non-visual change with a marker
+          # comment. The marker is honored only together with a justification
+          # line, so the waiver is a reviewable claim rather than a silent
+          # bypass, and it fires a warning annotation so the run log shows that
+          # evidence was waived. The marker itself is matched with grep -F so
+          # body text is never read as a pattern; in both matches below the
+          # untrusted body only ever reaches grep as stdin data, never as a
+          # pattern or part of a command.
+          if printf '%s' "$body" | grep -qF -- '<!-- no-visual-delta -->'; then
+            # The justification needs visible content after the colon: literal
+            # asterisks are skipped so a bare bold "**Why no screenshot:**"
+            # does not count, while a reason opening with emphasis does.
+            if printf '%s' "$body" | grep -qiE 'why no screenshots?:(\*\*)?[[:space:]]*\**[^*[:space:]]'; then
+              echo "::warning::'<!-- no-visual-delta -->' marker present in the PR body -- visual-evidence requirement waived. The author's justification is in the PR description."
+              exit 0
+            fi
+            echo "::error::The PR body carries the '<!-- no-visual-delta -->' marker without a justification line."
+            {
+              echo "### Marker present, justification missing"
+              echo
+              echo "The \`<!-- no-visual-delta -->\` marker waives the screenshot requirement"
+              echo "only when the description also explains **why** nothing rendered changes."
+              echo "Add a line in this exact shape to the PR description (the \`edited\`"
+              echo "trigger re-runs this check on save, no push needed):"
+              echo
+              echo '    **Why no screenshot:** <one sentence naming why there is no visual delta>'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
           echo "::error::This PR changes a user-visible frontend surface but its description carries no screenshot or recording."
@@ -119,5 +159,8 @@ jobs:
             echo
             echo "**If the change genuinely has no visual delta** (pure rename, comment-only,"
             echo "or a non-rendering attribute), add the \`no-screenshots\` label and re-run."
+            echo "Fork contributors cannot add labels: instead edit the PR description to add"
+            echo "the \`<!-- no-visual-delta -->\` marker together with a justification line"
+            echo "\`**Why no screenshot:** <reason>\` -- the check re-runs on the edit."
           } >> "$GITHUB_STEP_SUMMARY"
           exit 1

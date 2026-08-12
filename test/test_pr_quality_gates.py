@@ -8,9 +8,13 @@ most importantly -- that `pr-readiness.yml` no longer force-passes a failing
 Design Review.
 """
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
@@ -53,6 +57,141 @@ class TestScreenshotEvidence:
         wf = _read("screenshot-evidence.yml")
         assert 'body="$(gh api' in wf
         assert "eval" not in wf
+
+    def test_has_fork_friendly_body_marker(self):
+        # Fork contributors cannot add labels, so the body marker must exist
+        # as a self-service waiver alongside the label.
+        wf = _read("screenshot-evidence.yml")
+        assert "<!-- no-visual-delta -->" in wf
+        # The marker is attacker-controlled text: fixed-string match only.
+        assert "grep -qF -- '<!-- no-visual-delta -->'" in wf
+
+    def test_marker_requires_justification(self):
+        # A bare marker is a silent bypass; the waiver must carry a reviewable
+        # claim and fail loudly without one.
+        wf = _read("screenshot-evidence.yml")
+        assert "why no screenshots?" in wf.lower()
+        assert "marker without a justification" in wf
+
+    def test_marker_waiver_warns_instead_of_passing_silently(self):
+        # A reviewer scanning the run log must see that evidence was waived.
+        wf = _read("screenshot-evidence.yml")
+        assert (
+            "::warning::'<!-- no-visual-delta -->' marker present" in wf
+        ), "waiver must emit a warning annotation naming the marker"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the evidence step runs under bash on ubuntu-latest",
+)
+class TestScreenshotEvidenceBodyLogic:
+    """Execute the real evidence step against fixture PR bodies.
+
+    Textual pins cannot prove the branch logic; this extracts the actual
+    ``run:`` script from the YAML and runs it with ``gh`` stubbed to return a
+    fixture body, so the waiver semantics are locked by behavior.
+    """
+
+    def _run_step(self, tmp_path: Path, body: str, exempt: str = "false"):
+        wf = yaml.safe_load(_read("screenshot-evidence.yml"))
+        steps = wf["jobs"]["screenshot-evidence"]["steps"]
+        step = next(
+            (s for s in steps if s.get("name") == "Require visual evidence in the PR body"),
+            None,
+        )
+        assert step is not None, "step 'Require visual evidence in the PR body' not found"
+        body_file = tmp_path / "body.txt"
+        body_file.write_text(body, encoding="utf-8")
+        # `gh api ... --jq '.body // ""'` prints the raw body: stub it with cat.
+        # The sentinel proves the stub (not a real gh on PATH) served the call.
+        sentinel = tmp_path / "gh-stub-invoked"
+        gh = tmp_path / "gh"
+        gh.write_text(
+            f'#!/bin/sh\ntouch "{sentinel}"\ncat "{body_file}"\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        gh.chmod(0o755)
+        summary = tmp_path / "summary.md"
+        summary.touch()
+        env = {
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+            # Starve any real gh of credentials so a stub-resolution failure
+            # can never turn into a live API call.
+            "GH_TOKEN": "",
+            "GITHUB_TOKEN": "",
+            "EXEMPT": exempt,
+            "REPO": "example/repo",
+            "PR": "1",
+            "GITHUB_STEP_SUMMARY": str(summary),
+        }
+        result = subprocess.run(
+            ["bash", "-c", step["run"]],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if exempt != "true":
+            # The label path exits before reading the body; every other path
+            # must have gone through the stub.
+            assert sentinel.exists(), "gh stub was never invoked"
+        return result
+
+    def test_marker_with_justification_passes_with_warning(self, tmp_path):
+        body = (
+            "<!-- no-visual-delta -->\n"
+            "**Why no screenshot:** internal string builder change, rendered\n"
+            "output is byte-identical.\n"
+        )
+        result = self._run_step(tmp_path, body)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "::warning::" in result.stdout
+        assert "<!-- no-visual-delta -->" in result.stdout
+
+    def test_marker_alone_fails_with_explanation(self, tmp_path):
+        result = self._run_step(tmp_path, "<!-- no-visual-delta -->\njust trust me\n")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "marker without a justification" in result.stdout
+
+    def test_empty_justification_does_not_waive(self, tmp_path):
+        # A justification label with nothing after the colon is still a bare
+        # marker: the claim must carry content.
+        body = "<!-- no-visual-delta -->\n**Why no screenshot:**\n"
+        result = self._run_step(tmp_path, body)
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_emphasis_opening_justification_waives(self, tmp_path):
+        # A reason that opens with markdown emphasis is still a reason.
+        body = "<!-- no-visual-delta -->\n**Why no screenshot:** *pure rename*, no delta.\n"
+        result = self._run_step(tmp_path, body)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "::warning::" in result.stdout
+
+    def test_image_beats_marker(self, tmp_path):
+        # Real evidence satisfies the gate outright: a body carrying both a
+        # screenshot and an unjustified marker passes on the screenshot.
+        body = "<!-- no-visual-delta -->\n![shot](https://example.test/x.png)\n"
+        result = self._run_step(tmp_path, body)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Visual evidence found" in result.stdout
+
+    def test_no_marker_no_image_still_fails(self, tmp_path):
+        result = self._run_step(tmp_path, "A visual change with no evidence.\n")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "::error::" in result.stdout
+
+    def test_image_in_body_still_passes(self, tmp_path):
+        result = self._run_step(tmp_path, "![shot](https://example.test/x.png)\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_label_waiver_unchanged(self, tmp_path):
+        # The marker is an additional path; the label path must keep working.
+        result = self._run_step(tmp_path, "no evidence at all", exempt="true")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "'no-screenshots' label present" in result.stdout
 
 
 class TestCrossPlatform:
