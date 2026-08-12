@@ -85,9 +85,22 @@ if [ "$1" = "api" ]; then
     exit 0
   fi
   if [ "${2:-}" = "--method" ] && [ "${3:-}" = "POST" ]; then
-    body="$(cat)"
+    # The status POST passes --input <file>; the label POST still
+    # pipes --input - via stdin.
+    body=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--input" ] && [ "$arg" != "-" ]; then
+        body="$(cat "$arg")"
+      fi
+      prev="$arg"
+    done
+    if [ -z "$body" ]; then
+      body="$(cat)"
+    fi
     case "${4:-}" in
       *"/statuses/"*)
+        echo x >> "$FIXTURES/status_post_attempts.txt"
         if [ -f "$FIXTURES/fail_status" ]; then
           echo 'gh: Server Error (HTTP 500)' >&2
           exit 1
@@ -115,6 +128,15 @@ def _step(name: str) -> str:
     steps = spec["jobs"]["readiness"]["steps"]
     matches = [s["run"] for s in steps if s.get("name") == name and "run" in s]
     assert len(matches) == 1, f"expected exactly one {name!r} step, got {len(matches)}"
+    return matches[0]
+
+
+def _helper_script() -> str:
+    """The retry-helper install step every other step sources at runtime."""
+    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = spec["jobs"]["readiness"]["steps"]
+    matches = [s["run"] for s in steps if "run" in s and "cat > \"$RUNNER_TEMP/gh-retry.sh\"" in s["run"]]
+    assert len(matches) == 1, "expected exactly one retry-helper install step"
     return matches[0]
 
 
@@ -178,6 +200,14 @@ class Runner:
         (self.tmp / "pr-readiness-summary.md").write_text("## summary\n")
         self.summary = root / "step-summary.md"
         self.summary.write_text("")
+        # The steps under test `source "$RUNNER_TEMP/gh-retry.sh"`; in CI the
+        # first job step writes it there. Reproduce that provisioning here.
+        subprocess.run(  # noqa: S603 - fixed argv, workflow-authored script
+            ["bash", "-c", _helper_script()],
+            env={**os.environ, "RUNNER_TEMP": str(self.tmp)},
+            check=True,
+            capture_output=True,
+        )
         self.env = {
             **os.environ,
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
@@ -220,6 +250,7 @@ class Runner:
             flag.unlink(missing_ok=True)
             if on:
                 flag.write_text("1")
+        (self.fixtures / "status_post_attempts.txt").unlink(missing_ok=True)
         for stale in ("calls.txt", "deleted.txt", "added.txt", "published_status.json"):
             (self.fixtures / stale).unlink(missing_ok=True)
 
@@ -311,6 +342,17 @@ def test_the_verdict_is_published_before_any_label_call(runner: Runner) -> None:
 # ── But a real failure must still be a failure ───────────────────────────────
 
 
+def test_a_deferred_evaluation_publishes_nothing(runner: Runner) -> None:
+    """A truncated evaluation that deferred to an existing terminal verdict
+    emits an empty status_state; the publish step must no-op green -- no
+    status POST, no label churn."""
+    result = runner.run(status_state="")
+    assert result.ok, result.proc.stderr
+    assert result.published is None
+    attempts_file = runner.fixtures / "status_post_attempts.txt"
+    assert not attempts_file.exists()
+
+
 def test_a_failure_to_publish_the_verdict_fails_the_step(runner: Runner) -> None:
     """The tolerance is scoped to the advisory labels, not to the verdict.
 
@@ -320,6 +362,19 @@ def test_a_failure_to_publish_the_verdict_fails_the_step(runner: Runner) -> None
     result = runner.run(fail_status=True)
     assert not result.ok
     assert result.published is None
+
+
+def test_a_failed_post_is_never_retried(runner: Runner) -> None:
+    """Commit statuses are last-write-wins with no conditional write, so a
+    retry after a failed POST races a concurrent run's newer verdict for the
+    same revision -- between any guard read and the re-POST another run can
+    publish, and the re-POST would overwrite it (a stale green over a fresh
+    red, or a pending over a terminal). The step makes exactly ONE attempt
+    and fails loud; a re-run republishes."""
+    result = runner.run(fail_status=True)
+    assert not result.ok
+    attempts = (runner.fixtures / "status_post_attempts.txt").read_text()
+    assert len(attempts.splitlines()) == 1
 
 
 def test_an_unexpected_label_error_still_fails_the_step(

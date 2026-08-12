@@ -401,6 +401,34 @@ Two subtleties:
   recompute it on an unchanged commit, freezing the status at pending indefinitely.
   So it is added only when the live evaluation still found something genuinely
   incomplete.
+- **A transport error during evaluation is non-terminal.** Every read-only `gh`
+  call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
+  attempt); a non-429 HTTP 4xx is treated as permanent misconfiguration and fails
+  the job loudly instead of retrying. If an **evaluation** read still fails after
+  the retries, the evaluate step publishes an explicit non-terminal "could not be
+  evaluated" verdict (`pending` under `readiness: checking`) instead of exiting
+  non-zero — so a transient network/TLS blip during evaluation never leaves a red
+  check-run or skips the publish step (issue #2753: the same commit evaluated
+  green then red 39 seconds apart). Exhausted retries in the other steps (context
+  resolution, closed-PR label cleanup, the publish step's own reads) still fail
+  the job — only the evaluation loop has the non-terminal branch. This does not
+  weaken the gate: `pending` blocks merge exactly like `failure`, and only a
+  transport error with no already-observed blocker takes that branch (a genuine
+  failure recorded by an earlier lane dominates and the verdict stays the
+  terminal red `action required`, with a summary note that the evaluation was
+  truncated). Recovery is automatic — the self-heal sweep re-fires stale pending
+  statuses, and any later monitored-workflow event recomputes sooner. A truncated
+  run defers (publishes nothing) only when the revision already carries a
+  **blocking** verdict — the merge is already held and pending would only discard
+  the red's diagnostics. Every other prior state publishes pending: an existing
+  *success* is re-pended (a rerun means validation state is unknown again, and a
+  stale green left mergeable is the unsafe direction — pending can only ever
+  block, never allow), and an unreadable verdict state gets the same fail-safe
+  treatment. The status
+  POST itself is never retried: commit statuses are last-write-wins with no
+  conditional write, so any retry races a concurrent run's newer verdict — a
+  failed POST fails the step loud and a re-run republishes. The label writes
+  keep only the narrow 404/already-exists race tolerance they already have.
 - **Nothing keys off `workflow_run.pull_requests`.** That array is empty whenever the
   head repository is a fork, the same GitHub behaviour the `fork-*` workflows already
   work around. The job gate admits every `pull_request` and `dynamic` run and lets the

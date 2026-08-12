@@ -127,6 +127,60 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Transient network/TLS errors between the runner and api.github.com can
+      # abort a single-shot `gh` call, and under `set -e` that ended the whole
+      # evaluation before the publish step could run -- leaving a permanently
+      # red check unrelated to actual readiness (issue #2753: the same commit
+      # evaluated green then red 39 seconds apart with nothing pushed). Every
+      # READ-ONLY gh call below now goes through this bounded helper: 3
+      # attempts with short backoff, mirroring the bounded-attempts convention
+      # in publish-installer.yml. Stdout is buffered per attempt so a failed
+      # attempt's partial output (e.g. an aborted --paginate stream) never
+      # leaks into a pipe. WRITE calls are deliberately NOT retried here; the
+      # label writes have their own narrow race tolerance (see drop_label /
+      # ensure_label), and a lost-response retry of a DELETE outside that
+      # tolerance would turn an applied change into a new failure.
+      - name: Install bounded retry helper for read-only gh calls
+        run: |
+          cat > "$RUNNER_TEMP/gh-retry.sh" <<'HELPER'
+          gh_retry() {
+            local attempt out err rc=1
+            for attempt in 1 2 3; do
+              # timeout bounds a HANGING attempt (gh applies no HTTP request
+              # timeout of its own); rc 124 is just another retryable failure.
+              if out="$(timeout 120 "$@" 2>"$RUNNER_TEMP/gh-retry-err")"; then
+                cat "$RUNNER_TEMP/gh-retry-err" >&2
+                printf '%s\n' "$out"
+                return 0
+              else
+                rc=$?
+              fi
+              err="$(cat "$RUNNER_TEMP/gh-retry-err" 2>/dev/null || true)"
+              printf '%s\n' "$err" >&2
+              # A non-429 HTTP 4xx is a PERMANENT request error (renamed
+              # workflow file, missing scope, bad endpoint): retrying cannot
+              # fix it, and calling it "transient" would misdiagnose a
+              # misconfiguration as network trouble. Return a distinct code
+              # immediately so callers can fail loud instead of publishing a
+              # pending "could not be evaluated" verdict forever.
+              # EXCEPTION: GitHub's primary/secondary rate limits surface as
+              # HTTP 403 with rate-limit text in the body -- those are
+              # transient exactly like a 429 and must be retried, not failed.
+              if grep -Eq 'HTTP 4[0-9][0-9]' <<<"$err" \
+                && ! grep -q 'HTTP 429' <<<"$err" \
+                && ! grep -Eiq 'rate limit|abuse detection' <<<"$err"; then
+                echo "gh_retry: permanent HTTP error (no retry): $*" >&2
+                return 22
+              fi
+              echo "gh_retry: attempt $attempt/3 failed (rc=$rc): $*" >&2
+              if [ "$attempt" -lt 3 ]; then
+                sleep $(( attempt * 2 ))
+              fi
+            done
+            return "$rc"
+          }
+          HELPER
+
       - name: Resolve current pull request revision
         id: context
         env:
@@ -143,6 +197,7 @@ jobs:
           RUN_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
+          source "$RUNNER_TEMP/gh-retry.sh"
           case "$EVENT" in
             workflow_dispatch) PR="$INPUT_PR"; EXPECTED_SHA="$INPUT_SHA" ;;
             workflow_run)
@@ -169,7 +224,7 @@ jobs:
               # exactly as the verdict step binds monitored runs below; fall
               # back to SHA-only when either is absent.
               if [ -z "$PR" ]; then
-                PR="$(gh api --paginate \
+                PR="$(gh_retry gh api --paginate \
                   "repos/$REPO/pulls?state=open&per_page=100" \
                   | jq -rs \
                       --arg sha "$RUN_SHA" \
@@ -195,7 +250,7 @@ jobs:
             *) echo "::error::unsupported event: $EVENT"; exit 1 ;;
           esac
 
-          pr_json="$(gh pr view "$PR" --repo "$REPO" \
+          pr_json="$(gh_retry gh pr view "$PR" --repo "$REPO" \
             --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,url)"
           SHA="$(jq -r '.headRefOid' <<<"$pr_json")"
           STATE="$(jq -r '.state' <<<"$pr_json")"
@@ -204,7 +259,7 @@ jobs:
           # A PR whose base is any other branch -- a stacked PR sitting on
           # another feature branch -- can never start those lanes, so the
           # verdict step marks them ineligible instead of pending-forever.
-          DEFAULT_BRANCH="$(gh api "repos/$REPO" --jq '.default_branch')"
+          DEFAULT_BRANCH="$(gh_retry gh api "repos/$REPO" --jq '.default_branch')"
 
           {
             echo "pr=$PR"
@@ -239,6 +294,7 @@ jobs:
           PR: ${{ steps.context.outputs.pr }}
         run: |
           set -euo pipefail
+          source "$RUNNER_TEMP/gh-retry.sh"
 
           # A peer run of this workflow can remove the same label between our
           # snapshot and our DELETE, and a label that is already gone has
@@ -259,7 +315,7 @@ jobs:
             return 1
           }
 
-          current="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
+          current="$(gh_retry gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
           for label in \
             "readiness: checking" \
             "readiness: action required" \
@@ -288,6 +344,12 @@ jobs:
           TRIGGER_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
+          source "$RUNNER_TEMP/gh-retry.sh"
+
+          # Set when a read-only API call keeps failing after the bounded
+          # retries: the verdict is then UNKNOWN, not red -- see the explicit
+          # non-terminal branch after the evaluation loop.
+          transport_failed=false
 
           # CI, Build and CodeQL only ever run for a PR whose base is the
           # default branch: ci.yml / build.yml declare `pull_request:
@@ -372,8 +434,15 @@ jobs:
               # real review has not posted yet) -> pending.
               cname="${file#checkrun:}"
               enc="$(jq -rn --arg v "$cname" '$v | @uri')"
-              cruns="$(gh api --method GET \
-                "repos/$REPO/commits/$SHA/check-runs?check_name=$enc&per_page=100")"
+              cruns="$(gh_retry gh api --method GET \
+                "repos/$REPO/commits/$SHA/check-runs?check_name=$enc&per_page=100")" || {
+                rc=$?
+                # 22 = permanent HTTP error (misconfiguration): fail loud so it
+                # is diagnosed, never diluted into "transient network trouble".
+                if [ "$rc" -eq 22 ]; then exit 1; fi
+                transport_failed=true
+                break
+              }
               total="$(jq '.check_runs | length' <<<"$cruns")"
               incomplete="$(jq '[.check_runs[]
                 | select(.status != "completed")] | length' <<<"$cruns")"
@@ -419,16 +488,26 @@ jobs:
               continue
             fi
             if [ "$file" = "dynamic/github-code-scanning/codeql" ]; then
-              runs="$(gh api --method GET \
-                "repos/$REPO/actions/runs?event=dynamic&head_sha=$SHA&per_page=100")"
+              runs="$(gh_retry gh api --method GET \
+                "repos/$REPO/actions/runs?event=dynamic&head_sha=$SHA&per_page=100")" || {
+                rc=$?
+                if [ "$rc" -eq 22 ]; then exit 1; fi
+                transport_failed=true
+                break
+              }
               run="$(jq -c --arg path "$file" '
                 [.workflow_runs[] | select(.path == $path)]
                 | sort_by(.created_at)
                 | last // empty
               ' <<<"$runs")"
             else
-              runs="$(gh api --method GET \
-                "repos/$REPO/actions/workflows/$file/runs?event=pull_request&head_sha=$SHA&per_page=20")"
+              runs="$(gh_retry gh api --method GET \
+                "repos/$REPO/actions/workflows/$file/runs?event=pull_request&head_sha=$SHA&per_page=20")" || {
+                rc=$?
+                if [ "$rc" -eq 22 ]; then exit 1; fi
+                transport_failed=true
+                break
+              }
               # Bind the run to this PR by (head repository, head branch), NOT
               # by `.pull_requests`: that array is empty on every fork run, so
               # filtering on it matched nothing and reported each already-green
@@ -481,6 +560,81 @@ jobs:
               fi
             fi
           done
+
+          # A read that still fails after the bounded retries is a TRANSPORT
+          # failure: this revision's verdict is UNKNOWN, not red. Publish an
+          # explicit non-terminal "could not be evaluated" verdict (a pending
+          # status under the existing "readiness: checking" label) instead of
+          # exiting non-zero, so the publish step still runs and the job never
+          # leaves a red check for a network blip. This deliberately does NOT
+          # weaken the gate: pending blocks merge exactly like failure does,
+          # and only a transport error with NO already-observed blocker takes
+          # this branch -- a genuine failure recorded by an earlier lane
+          # dominates (the `failed` guard below), falling through to the normal
+          # action-required verdict, so a known red is never masked by a later
+          # lane's network trouble. Recovery is automatic -- the self-heal
+          # sweep re-fires any pending readiness status older than its
+          # staleness window, and any later monitored-workflow event recomputes
+          # sooner.
+          if [ "$transport_failed" = "true" ] && [ "${#failed[@]}" -eq 0 ]; then
+            # The tiebreaker for every ambiguous case is an asymmetry:
+            # publishing "pending" can only ever BLOCK a merge, never allow
+            # one, so pending is the fail-safe write whenever validation
+            # state is unknown. Concretely: if the SHA already carries a
+            # BLOCKING verdict (failure/error), this truncated run defers --
+            # the merge is already held, and overwriting the red with
+            # pending would only discard its diagnostics and set the sweep
+            # re-firing. Every other case publishes pending: an existing
+            # SUCCESS must not be left mergeable when a rerun's validation
+            # state is unknown (the green may be stale -- that is the unsafe
+            # direction); an UNREADABLE verdict state gets the same
+            # treatment, because the worst a pending can do to an unseen
+            # verdict is block a merge that a re-evaluation will unblock;
+            # and pending-over-pending / no-status just refresh the
+            # self-heal sweep's staleness clock.
+            existing_state="$(timeout 120 gh api "repos/$REPO/commits/$SHA/status" \
+              --jq '[.statuses[] | select(.context == "PR Readiness")][0].state // empty' \
+              2>/dev/null)" || existing_state="__unreadable__"
+            if [ "$existing_state" = "failure" ] || [ "$existing_state" = "error" ]; then
+              {
+                echo "state=deferred"
+                echo "status_state="
+              } >> "$GITHUB_OUTPUT"
+              {
+                echo "### PR Readiness: deferred to an existing blocking verdict"
+                echo
+                echo "- PR: #$PR"
+                echo "- Revision: \`$SHA\`"
+                echo
+                echo "This run's evaluation was truncated by a GitHub API"
+                echo "failure, but the revision already carries a blocking"
+                echo "readiness verdict (\`$existing_state\`) from another run."
+                echo "The merge is already held; overwriting that verdict with"
+                echo "pending would only discard its diagnostics, so nothing"
+                echo "was published."
+              } > "$RUNNER_TEMP/pr-readiness-summary.md"
+              exit 0
+            fi
+            {
+              echo "state=could_not_evaluate"
+              echo "label=readiness: checking"
+              echo "status_state=pending"
+              echo "description=Readiness could not be evaluated (transient GitHub API failure); it will be re-evaluated"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### PR Readiness: could not be evaluated"
+              echo
+              echo "- PR: #$PR"
+              echo "- Revision: \`$SHA\`"
+              echo
+              echo "A read-only GitHub API call kept failing after bounded"
+              echo "retries, so this revision's verdict is unknown -- not red."
+              echo "A non-terminal \`pending\` status was published; the"
+              echo "self-heal sweep or the next monitored-workflow event will"
+              echo "re-evaluate it."
+            } > "$RUNNER_TEMP/pr-readiness-summary.md"
+            exit 0
+          fi
 
           # A pull_request_target open/synchronize/reopen/edit run is meant to
           # surface a transient "checking" signal while validation spins up.
@@ -571,6 +725,17 @@ jobs:
               echo "**Waiting**"
               printf -- "- %s\n" "${waiting[@]}"
             fi
+            # Reached with transport_failed=true only via the fall-through
+            # above (an already-observed blocker dominates the pending
+            # fallback): the arrays stopped filling at the break, so say so --
+            # otherwise the summary silently reads as a complete evaluation.
+            if [ "$transport_failed" = "true" ]; then
+              echo
+              echo "> Evaluation was truncated by a GitHub API failure before"
+              echo "> every lane could be read; the verdict above is computed"
+              echo "> from the lanes read so far and will be recomputed"
+              echo "> automatically."
+            fi
           } > "$RUNNER_TEMP/pr-readiness-summary.md"
 
       - name: Publish status and label
@@ -586,7 +751,14 @@ jobs:
           DESCRIPTION: ${{ steps.verdict.outputs.description }}
         run: |
           set -euo pipefail
-          current_sha="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq '.headRefOid')"
+          source "$RUNNER_TEMP/gh-retry.sh"
+          # A truncated evaluation that deferred to an existing terminal
+          # verdict emits no status_state: there is nothing safe to publish.
+          if [ -z "$STATUS_STATE" ]; then
+            echo "Evaluation deferred to an existing verdict on $SHA; publishing nothing."
+            exit 0
+          fi
+          current_sha="$(gh_retry gh pr view "$PR" --repo "$REPO" --json headRefOid --jq '.headRefOid')"
           if [ "$current_sha" != "$SHA" ]; then
             echo "Ignoring publish for stale revision $SHA; PR #$PR is now at $current_sha."
             exit 0
@@ -597,6 +769,23 @@ jobs:
           # FIRST and on its own. The labels below are advisory decoration; a
           # cosmetic label call must never be in a position to decide whether
           # the required check reports anything at all.
+          #
+          # This POST is deliberately NOT retried. A commit status is
+          # last-write-wins per SHA+context, GitHub offers no conditional
+          # write, and two runs can evaluate the SAME revision concurrently
+          # (see the concurrency comment above) -- so ANY retry races a
+          # concurrent run's newer verdict: between whatever guard read a
+          # retry could take and its re-POST, another run can publish, and
+          # the re-POST would republish this run's verdict over it (a stale
+          # green over a fresh red, or a pending over a terminal). Three
+          # successive guard designs ("any status exists", compare-and-swap
+          # on the status id, fail-safe reads) each narrowed but could not
+          # close that window -- the API gives no atomic primitive to close
+          # it with. A failed POST therefore fails the step loud instead:
+          # the run shows red with an actionable error, a re-run (or the
+          # next monitored-workflow event) re-evaluates and republishes,
+          # and no verdict is ever silently overwritten. The POST is
+          # bounded (gh applies no HTTP timeout of its own).
           jq -n \
             --arg state "$STATUS_STATE" \
             --arg target_url "$URL" \
@@ -606,8 +795,15 @@ jobs:
               target_url: $target_url,
               description: $description,
               context: "PR Readiness"
-            }' \
-            | gh api --method POST "repos/$REPO/statuses/$SHA" --input - >/dev/null
+            }' > "$RUNNER_TEMP/readiness-status.json"
+          if ! timeout 120 gh api --method POST "repos/$REPO/statuses/$SHA" \
+            --input "$RUNNER_TEMP/readiness-status.json" >/dev/null; then
+            echo "::error::Failed to publish the readiness status for $SHA." \
+              "The POST is not retried (a retry can overwrite a concurrent" \
+              "run's newer verdict); re-run this workflow to re-evaluate" \
+              "and republish."
+            exit 1
+          fi
 
           # Two runs can evaluate the SAME revision concurrently: each
           # pull_request_target run gets its own concurrency group keyed on
@@ -649,7 +845,7 @@ jobs:
             "readiness: action required|D73A4A|A blocking check or review needs attention"
             "readiness: passed|0E8A16|Eligible automated validation passed for the current revision"
           )
-          existing_labels="$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name')"
+          existing_labels="$(gh_retry gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name')"
           for spec in "${label_specs[@]}"; do
             name="${spec%%|*}"
             rest="${spec#*|}"
@@ -660,7 +856,7 @@ jobs:
             fi
           done
 
-          current="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
+          current="$(gh_retry gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
           for label in \
             "readiness: checking" \
             "readiness: action required" \
