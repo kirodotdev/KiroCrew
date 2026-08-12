@@ -577,6 +577,13 @@ function createOverlayForDisplay(display) {
   win.setAcceptFirstMouse?.(true);
   win.setIgnoreMouseEvents(true, { forward: true });
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // INVISIBLE TO SCREEN CAPTURE (macOS NSWindowSharingNone, Windows
+  // WDA_EXCLUDEFROMCAPTURE; no-op elsewhere). This window covers a whole display,
+  // so without this it is the topmost window at EVERY point: the macOS screenshot
+  // picker (Cmd+Shift+4 space / Cmd+Shift+5 window mode) offers the overlay
+  // instead of the app the user is pointing at, and a region capture bakes the pet
+  // into the image. Doubly necessary here because of the screen-saver level below.
+  win.setContentProtection(true);
   // "screen-saver" — above ordinary always-on-top windows, so the pet is not
   // buried by other floating panels.
   win.setAlwaysOnTop(true, "screen-saver");
