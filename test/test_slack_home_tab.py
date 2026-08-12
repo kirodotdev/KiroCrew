@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.slack import events as events_mod
 from kiro_crew.slack.events import _publish_home_tab
 
 # ---------------------------------------------------------------------------
@@ -692,3 +694,122 @@ class TestPublishHomeTabSessions:
         # rather than no section at all — visible signal that a section exists)
         assert "🧵 Sessions" in rendered
         assert "Sessions unavailable" in rendered
+
+
+class TestHomeTabCollectorConcurrency:
+    """The sessions collector runs on the process-wide default executor, shared
+    with history appends, cron store writes and session storage. A burst of tab
+    opens must not put N multi-MB scans in it at once."""
+
+    @staticmethod
+    def _tracking_collector(observed: list[int]):
+        """Stand in for the collector, recording how many run at once."""
+        live = 0
+
+        async def collect(*_a, **_kw):
+            nonlocal live
+            live += 1
+            observed.append(live)
+            # Yield so a second caller would interleave here if nothing gated it.
+            await asyncio.sleep(0)
+            live -= 1
+            return []
+
+        return collect
+
+    @pytest.mark.asyncio
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
+    @patch(
+        "kiro_crew.sso_status.get_sso_status_line",
+        new_callable=AsyncMock,
+        return_value="*SSO:* ok",
+    )
+    async def test_a_burst_of_publishes_runs_one_collector_at_a_time(
+        self, _mw, _fmt, _yolo, monkeypatch
+    ):
+        monkeypatch.setattr(events_mod, "is_owner", lambda _: True)
+        monkeypatch.setattr(events_mod, "is_allowed_user", lambda _: True)
+        monkeypatch.setattr(events_mod, "_home_tab_collect_sem", None, raising=False)
+        observed: list[int] = []
+        monkeypatch.setattr(
+            events_mod,
+            "_collect_recent_sessions_off_loop",
+            self._tracking_collector(observed),
+        )
+
+        await asyncio.gather(*(
+            _publish_home_tab(_make_orch(), f"U{i}") for i in range(6)
+        ))
+
+        assert observed, "the collector never ran"
+        assert max(observed) == 1, f"collectors overlapped: {observed}"
+
+    @pytest.mark.asyncio
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
+    @patch(
+        "kiro_crew.sso_status.get_sso_status_line",
+        new_callable=AsyncMock,
+        return_value="*SSO:* ok",
+    )
+    async def test_every_publish_still_completes(self, _mw, _fmt, _yolo, monkeypatch):
+        """Preservation: the gate serializes the scan, it does not drop a tab."""
+        monkeypatch.setattr(events_mod, "is_owner", lambda _: True)
+        monkeypatch.setattr(events_mod, "is_allowed_user", lambda _: True)
+        monkeypatch.setattr(events_mod, "_home_tab_collect_sem", None, raising=False)
+        observed: list[int] = []
+        monkeypatch.setattr(
+            events_mod,
+            "_collect_recent_sessions_off_loop",
+            self._tracking_collector(observed),
+        )
+        orchs = [_make_orch() for _ in range(4)]
+
+        await asyncio.gather(*(
+            _publish_home_tab(o, f"U{i}") for i, o in enumerate(orchs)
+        ))
+
+        assert len(observed) == 4
+        for o in orchs:
+            o.slack.views_publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
+    @patch(
+        "kiro_crew.sso_status.get_sso_status_line",
+        new_callable=AsyncMock,
+        return_value="*SSO:* ok",
+    )
+    async def test_a_failing_collector_does_not_strand_the_gate(
+        self, _mw, _fmt, _yolo, monkeypatch
+    ):
+        """A raising scan must release the gate, or the first failure wedges
+        every later Home Tab open."""
+        monkeypatch.setattr(events_mod, "is_owner", lambda _: True)
+        monkeypatch.setattr(events_mod, "is_allowed_user", lambda _: True)
+        monkeypatch.setattr(events_mod, "_home_tab_collect_sem", None, raising=False)
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("scan failed")
+
+        monkeypatch.setattr(events_mod, "_collect_recent_sessions_off_loop", boom)
+        orch = _make_orch()
+        await _publish_home_tab(orch, "U1")
+
+        observed: list[int] = []
+        monkeypatch.setattr(
+            events_mod,
+            "_collect_recent_sessions_off_loop",
+            self._tracking_collector(observed),
+        )
+        await asyncio.wait_for(_publish_home_tab(_make_orch(), "U2"), timeout=5)
+
+        assert observed == [1]
+
+    def test_the_gate_is_not_bound_at_import(self):
+        """Created lazily: a module-level Semaphore would bind to whichever loop
+        was current at import, not the gateway's."""
+        gate = getattr(events_mod, "_home_tab_collect_sem", None)
+        assert gate is None or isinstance(gate, asyncio.Semaphore)

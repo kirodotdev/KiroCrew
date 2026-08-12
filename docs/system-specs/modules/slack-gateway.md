@@ -300,6 +300,8 @@ The slash command and keyword (which post via `chat.postMessage`) use the shared
 
 The Home Tab requests up to `_HOME_TAB_SESSIONS_PER_KIND = 5` rows per kind so both surfaces stay well under Slack's 100-block view limit. The slash command and keyword each request `_SESSIONS_DEFAULT_LIMIT = 10` rows.
 
+**At most `_HOME_TAB_COLLECT_CONCURRENCY` Home Tab collections run at once.** Every `app_home_opened` from an allowed user schedules its own publish with no dedupe, and each collection reads up to `limit` transcripts on the process-wide default executor — shared with history appends, cron store writes and session storage. Ungated, a burst of tab opens fills that executor with multi-MB reads and unrelated `asyncio.to_thread` callers queue behind them. The gate wraps only the collection; the Slack API calls around it stay unserialized. It is created lazily rather than at import, because a module-level `asyncio.Semaphore` binds to whichever loop is current when the module loads and the gateway's loop does not exist yet.
+
 Each surface emits a SEL audit event for the data-access via `sel.log_api_access`:
 
 - Slash command: `slack.sessions_slash_data_access` (caller = Slack user id)
