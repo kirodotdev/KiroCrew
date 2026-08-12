@@ -1645,6 +1645,10 @@ class TestRunAppBuild:
         next launch/update. Reporting a skipped build as ok would recreate the
         silent-broken-install failure this function exists to prevent, so the
         build fails with an explicit error instead.
+
+        Detection routes through ``platform_compat.is_bundled_interpreter()``;
+        the tests in ``test_platform_compat.py`` pin its sentinel to the
+        packaging layer so a bundler rename cannot silently un-match this guard.
         """
         (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         bundled = tmp_path / "App.app" / "Contents" / "Resources" / "backend-dist"

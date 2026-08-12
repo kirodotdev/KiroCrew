@@ -2802,8 +2802,11 @@ async def _run_app_build(
         # soft-skip: a Python app that declares a build step needs its packages
         # importable by the gateway, and skipping the install while reporting
         # success would recreate exactly the silent-broken-install shape this
-        # function is written to prevent.
-        if "backend-dist" in Path(sys.executable).resolve().parts:
+        # function is written to prevent. Detection lives in
+        # platform_compat.is_bundled_interpreter() — the single owner of the
+        # packaging-layout sentinel — so a bundler rename breaks its pinned test
+        # instead of silently un-matching an inline check here.
+        if platform_compat.is_bundled_interpreter():
             return {
                 "ok": False,
                 "name": app_name,

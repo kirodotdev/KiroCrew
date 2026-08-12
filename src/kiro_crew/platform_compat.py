@@ -75,6 +75,35 @@ _SUBPROCESS_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # child tree taskkill /T-reapable. Add DETACHED_PROCESS to the flags for a
 # fully detached, console-less child (e.g. the gateway respawn).
 
+# ── Desktop-app bundled interpreter detection ──
+#: Directory name the desktop build stages the bundled python-build-standalone
+#: runtime under (``Resources/backend-dist/…`` inside the app bundle). The
+#: authoritative spellings live in the packaging layer — electron-builder's
+#: ``extraResources`` mapping in ``website/electron/package.json`` and the
+#: staging steps in ``packaging/build-desktop.sh`` — and this constant MUST
+#: match them: ``test_platform_compat.py`` pins the two together so a packaging
+#: rename breaks a test instead of a runtime guarantee.
+BUNDLED_BACKEND_DIST_DIRNAME: str = "backend-dist"
+
+
+def is_bundled_interpreter() -> bool:
+    """Return True when this process runs on the desktop app's bundled interpreter.
+
+    Contract: the desktop build ships a python-build-standalone runtime inside
+    the application bundle, always under a ``backend-dist`` path component
+    (see :data:`BUNDLED_BACKEND_DIST_DIRNAME`). On macOS that bundle is
+    code-signed, so anything that would write into the interpreter's tree —
+    most notably ``pip install`` into its site-packages — invalidates the
+    signature and breaks subsequent launches/updates, and the write is
+    discarded on every app update anyway. Callers use this predicate to refuse
+    such writes loudly.
+
+    This is the ONE place the packaging layout's directory name is interpreted
+    at runtime; never re-inline the sentinel at a call site.
+    """
+    return BUNDLED_BACKEND_DIST_DIRNAME in Path(sys.executable).resolve().parts
+
+
 # ── macOS TCC-protected home subdirectories ──
 # macOS gates these home subdirectories behind TCC (Transparency, Consent and
 # Control). The FIRST read of any one of them by a given app triggers a modal

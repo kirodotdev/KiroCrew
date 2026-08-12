@@ -123,6 +123,15 @@ x64 gate doubles as proof the bundle runs under Rosetta. In
 intentional there), and `extraResources` ships the `backend-dist/` directory
 wholesale so single- and dual-backend layouts both package.
 
+> **Renaming `backend-dist/` is load-bearing at runtime.** The backend detects
+> "am I the bundled interpreter?" via
+> `platform_compat.is_bundled_interpreter()`
+> (`BUNDLED_BACKEND_DIST_DIRNAME`), which is what stops `pip` from writing
+> into the signed bundle during app builds. `test/test_platform_compat.py`
+> pins that constant to both `extraResources` here and
+> `packaging/build-desktop.sh`, so a rename fails a test — update the constant
+> and the packaging layer in the same change.
+
 **Trade-off:** the DMG carries two full Python backend trees, so it is
 roughly **2× the size** of a per-arch DMG — expect ~350–400 MB. That is the
 price of one artifact + one update feed; a per-arch feed split was
