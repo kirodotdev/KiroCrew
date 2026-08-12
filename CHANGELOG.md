@@ -90,6 +90,9 @@ weeks in the open.
   toggle, and the shared MCP gateway follows it.
 - **Connections** gained a provider registry, so an integration declares what it
   is asking for and its consent URL is validated before you are sent to it.
+- Clicking **Connect** now asks for the provider's approval link instead of
+  waiting for one, so the card offers it within seconds rather than only after
+  some later chat happens to reach that server.
 - Code Review Sage works against **GitHub Enterprise Server** hosts.
 - An MCP server that authenticates with OAuth now receives the scope list and
   client id in the fields kiro-cli actually reads, so those connections

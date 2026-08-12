@@ -61,6 +61,25 @@ export type McpManagedServer = {
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
 
 /**
+ * A Connections provider's approval-URL mint, as the card reads it.
+ *
+ * `idle` means no mint exists — distinct from `failed`, which is a mint that ran
+ * and produced nothing. `oauth_url` is present only while `waiting`, and only
+ * while the process holding the URL is alive: the backend reports `expired`
+ * rather than serving a URL no redirect can be redeemed against.
+ */
+export interface ConnectionMintState {
+  slug: string
+  state: 'idle' | 'minting' | 'waiting' | 'granted' | 'failed' | 'expired'
+  oauth_url?: string
+  reason?: string
+  /** Opaque id of the backend row, unique across gateway restarts as well as
+   *  within one process. Reported so a row can be told apart from its
+   *  successor for the same provider. */
+  token?: string
+}
+
+/**
  * A single task-runner plan step as sent to the server. Known fields are
  * typed; the payload is forwarded verbatim, so extra fields are permitted via
  * the index signature.
@@ -1763,6 +1782,11 @@ export const api = {
   mcpRemove: (name: string) => post('/api/mcp/remove', { name }).then(j),
   mcpOAuthRelay: (server: string, redirectUrl: string) =>
     post('/api/mcp/oauth/relay', { server, redirect_url: redirectUrl }).then(j) as Promise<{ ok: boolean }>,
+  // Connections approval-URL mint. POST starts one; GET is the card's feed for it.
+  connectionsMint: (slug: string) =>
+    post('/api/connections/mint', { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
+  connectionsMintState: (slug: string) =>
+    fetch(`/api/connections/mint?slug=${encodeURIComponent(slug)}`).then(j) as Promise<ConnectionMintState>,
   // MCP Gateway (shared pool)
   mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean }>,
   mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,

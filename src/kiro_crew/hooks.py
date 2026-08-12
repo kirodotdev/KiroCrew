@@ -2571,12 +2571,21 @@ def _emit_internal_read_audit(read_id: str, outcome: str) -> bool:
     return True
 
 
-# Registry of sanctioned audit-only credential reads: read_id -> the
-# credential-bearing location it covers. These are reads of paths that are NOT
-# classified sensitive (so they cannot route through ``safe_read_file_internal``
-# / ``_INTERNAL_READ_ALLOWLIST``) yet still hold a live secret and therefore owe
-# the same SEL audit trail. Every entry requires the same security-review
-# justification discipline as ``_INTERNAL_READ_ALLOWLIST``.
+# Registry of sanctioned audit-only credential accesses: read_id -> the
+# credential-bearing location it covers. Both classes below owe the same SEL
+# audit trail as ``_INTERNAL_READ_ALLOWLIST``, and neither can route through
+# ``safe_read_file_internal`` -- which returns the CONTENT of a FIXED sensitive
+# path:
+#
+#   1. A live secret at a path that is NOT classified sensitive, so the
+#      sensitive-path gate does not apply to it at all.
+#   2. A presence-only access under a classified directory at a per-subject
+#      COMPUTED name: there is no content to return and no fixed relative path
+#      to register, so the gate has nothing to act on -- but the access is still
+#      first-party contact with a credential store and still owes a trail.
+#
+# Every entry requires the same security-review justification discipline as
+# ``_INTERNAL_READ_ALLOWLIST``.
 _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # kiro-cli / amazon-q SQLite auth stores: live SSO bearer token on Linux.
     # Read read-only by ``kiro_crew.dashboard.handlers.kiro_usage_api`` for the
@@ -2591,6 +2600,16 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # no value is returned. The audit is owed regardless, because the file holds
     # live credential material whatever this reader touches.
     "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
+    # Class 2. kiro-cli's MCP OAuth artifact cache under ``~/.aws/sso/cache``.
+    # ``kiro_crew.connections.mint.grant_present`` STATS the paired
+    # ``<sha256(mcp_url)>.token.json`` / ``.registration.json`` artifacts to learn
+    # whether kiro-cli already holds a grant for ONE provider -- the mint's only
+    # consent-completion signal. The files are never opened, so no token material
+    # can enter the process, and the name is a hex digest of a registry-declared
+    # provider URL, so no other path in that directory is expressible. Audited on
+    # the observation a caller acts on, not per poll; see
+    # ``mint._grant_observed`` for why that boundary is not fail-closed.
+    "connections_mint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
 }
 
 
@@ -2603,6 +2622,10 @@ def emit_internal_read_audit(read_id: str, outcome: str) -> bool:
     still holds a live secret -- e.g. the kiro-cli auth store at
     ``~/.local/share/kiro-cli/data.sqlite3``. Such a reader still owes the same
     audit trail, so it calls this wrapper with its own ``read_id`` and outcome.
+    A presence-only access under a classified directory at a computed name lands
+    here for the mirror-image reason: there is no content to gate and no fixed
+    path to register, but the contact with the credential store is real. See
+    :data:`_AUDIT_ONLY_READ_IDS` for both classes.
 
     The ``read_id`` MUST be registered in ``_AUDIT_ONLY_READ_IDS`` -- this entry
     point enforces its own allowlist, mirroring the ``_INTERNAL_READ_ALLOWLIST``
