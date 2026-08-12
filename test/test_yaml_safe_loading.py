@@ -21,7 +21,21 @@ from yaml_helpers import load_with
 _REPO = Path(__file__).resolve().parents[1]
 
 # Built at runtime so this guard's own source does not contain the needles.
-_NEEDLES = tuple(f"yaml.{name}(" for name in ("load", "load_all", "unsafe_load"))
+# ``full_load`` is fenced alongside the obvious ones: FullLoader is the
+# historically exploitable path (it still constructs arbitrary Python objects
+# through tags), so leaving it out would let a future call site walk straight
+# through this fence.
+_NEEDLES = tuple(
+    f"yaml.{name}("
+    for name in (
+        "load",
+        "load_all",
+        "unsafe_load",
+        "unsafe_load_all",
+        "full_load",
+        "full_load_all",
+    )
+)
 
 # The bundled llama.cpp binding is third-party source, not ours to restyle.
 _SKIP_DIRS = ("_vendor", "__pycache__", "node_modules")
