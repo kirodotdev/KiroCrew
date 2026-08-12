@@ -299,12 +299,15 @@ async def api_ready(request: web.Request) -> web.Response:
 
 #: Accepted shape for ``dashboard.language`` — a conservative BCP-47 subset
 #: (``en``, ``zh-CN``, ``pt-BR``, ``zh-Hans-CN``). Deliberately validates SHAPE,
-#: not membership in the frontend's shipped-language list: keeping the set of
-#: available languages a pure frontend data change (``SUPPORTED_LANGUAGES`` +
-#: one catalog) means adding a language never needs a backend edit. An
-#: unrecognised-but-well-formed tag is safe because the SPA's
-#: ``resolveLanguage()`` falls back to browser detection for any code it has no
-#: catalog for.
+#: not membership in the frontend's shipped-language list: ``""`` and
+#: not-yet-shipped tags must stay writable (the SPA's ``resolveLanguage()``
+#: falls back to detection for any code it has no catalog for, so a persisted
+#: non-catalog value degrades gracefully client-side). Membership IS enforced,
+#: but at the point of use: ``context.ui_language_tag`` gates the agent-steer
+#: read path on ``_UI_LANGUAGE_CATALOGS`` so a non-catalog tag is never claimed
+#: to the model as the UI language (#1130). A new backend consumer of
+#: ``dashboard.language`` must route through that resolver rather than reading
+#: the raw field.
 _LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 
 

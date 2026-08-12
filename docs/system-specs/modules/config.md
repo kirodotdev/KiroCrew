@@ -923,12 +923,20 @@ OS — so naming the browser was wrong on that surface. The row annotates itself
 with the language Auto actually resolves to ("Auto — Deutsch"), which answers the
 question accurately on every surface.
 
-The backend validates **shape only** (`_LANGUAGE_TAG_RE`, a conservative BCP-47
-subset), not membership in the set of shipped catalogs. That keeps "which
-languages exist" a pure frontend data change: add `locales/<tag>.json`, register
-the picker entry in `SUPPORTED_LANGUAGES`, and add the static import plus
-`AUTHORED_CATALOGS` entry in `i18n/index.ts`. No backend edit is required; a
-well-formed tag with no catalog falls back to detection client-side.
+The backend's **write path** validates **shape only** (`_LANGUAGE_TAG_RE`, a
+conservative BCP-47 subset), not membership in the set of shipped catalogs — a
+well-formed tag with no catalog stays writable and falls back to detection
+client-side. The **agent-injection read path** additionally requires catalog
+membership: `context.ui_language_tag()` checks the tag against
+`context._UI_LANGUAGE_CATALOGS` (a mirror of the non-dev-only
+`SUPPORTED_LANGUAGES` entries) and treats a non-catalog tag exactly like
+`""`/Auto — no `[UI LANGUAGE]` steer is emitted, so the agent is never steered
+to a language the chrome cannot render (#1130). Adding a language is therefore
+the three frontend edits — add `locales/<tag>.json`, register the picker entry
+in `SUPPORTED_LANGUAGES`, and add the static import plus `AUTHORED_CATALOGS`
+entry in `i18n/index.ts` — **plus one mechanical backend entry** in
+`_UI_LANGUAGE_CATALOGS`, which the drift gate in
+`test/test_context_ui_language.py` names explicitly on failure.
 
 Shipped catalogs (ordered by global speaker count, which is also the picker
 order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`. Right-to-left
@@ -956,7 +964,8 @@ above is what says whether it worked.
 
 #### The tag reaches the agent, too
 
-`context.py::_build_ui_language_section` injects the configured tag into session
+`context.py::_build_ui_language_section` injects the configured tag — after the
+catalog-membership gate described above — into session
 context as a `[UI LANGUAGE] <tag>` block (next to `[CURRENT AGENT]`/`[RUNTIME]`,
 and in `minimal_context` mode as well). It exists for one string: the tool-call
 purpose (`__tool_use_purpose`), which the dashboard paints as the tool-call pill

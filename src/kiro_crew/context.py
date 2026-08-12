@@ -889,9 +889,35 @@ def _build_user_profile_section(cfg: "KiroCrewConfig") -> str:
 #: tag-shaped is dropped rather than pasted into the system prompt.
 _UI_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 
+#: The language catalogs the dashboard actually ships — a mirror of the
+#: non-dev-only entries in ``website/src/i18n/languages.ts``
+#: (``SUPPORTED_LANGUAGES``), which stays the single source of truth:
+#: ``test_context_ui_language.py`` parses that file and fails when this set
+#: drifts, so adding a language remains a frontend data change plus the one
+#: mechanical entry here that the drift test names explicitly.
+#:
+#: Membership is exact and case-sensitive because that is precisely how the
+#: frontend restores a PERSISTED choice: ``resolveLanguage()`` accepts a stored
+#: value only via ``isRestorableLanguage()`` → ``SUPPORTED_CODES.includes()``
+#: (no lowering, no primary-subtag fallback — those apply only to *browser*
+#: detection tags, which never reach this field). A stored ``zh-cn`` or
+#: ``zh-TW`` therefore degrades to auto-detect in the SPA, and the backend must
+#: reach the same verdict or the two disagree about the active language —
+#: which is exactly the bug this set exists to prevent (#1130).
+#:
+#: The dev-only ``en-XA`` pseudolocale is deliberately ABSENT: in a production
+#: build ``isRestorableLanguage()`` refuses to restore it (the chrome degrades
+#: to auto-detect), and even in a dev build steering a model to write
+#: pseudolocale prose is meaningless — the accent-and-bracket transform is
+#: generated, not a language a model can write. Treating it as non-catalog
+#: keeps injection behaviour identical across build modes.
+_UI_LANGUAGE_CATALOGS = frozenset(
+    {"en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"}
+)
+
 
 def ui_language_tag(cfg: "KiroCrewConfig") -> str:
-    """Return ``dashboard.language`` as a validated BCP-47 tag, or ``""``.
+    """Return ``dashboard.language`` as a validated, *shipped* tag, or ``""``.
 
     Public because the UI language now steers more than the session-context block
     below: the dashboard's auto-titler asks a background model for a session name
@@ -900,16 +926,36 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
     value (see ``_UI_LANGUAGE_TAG_RE`` for why the shape is re-checked here even
     though the writer validates it).
 
-    ``""`` means "the backend does not know" — either nothing was chosen (the
-    "follow the browser" sentinel, resolved in the SPA's ``resolveLanguage()``)
-    or the stored value is not tag-shaped. Callers must treat it as unknown
-    rather than as English.
+    Beyond shape, the tag must name a catalog the dashboard actually ships
+    (``_UI_LANGUAGE_CATALOGS``). A shape-valid tag with no catalog — e.g. a
+    persisted ``ar``, or a language later removed from the frontend registry —
+    renders the chrome in English (the SPA falls back to detection), so steering
+    the agent to it would put tool-call purpose pills, and the Slack/Discord task
+    titles derived from them, in a language the UI around them cannot render.
+    Those purposes persist in session history and are inherited by forked
+    sessions, so the mismatch is durable. A non-catalog tag therefore takes the
+    identical path to ``""``: inject nothing, and the model mirrors the
+    conversation instead (#1130).
+
+    ``""`` means "the backend does not know" — nothing was chosen (the
+    "follow the browser" sentinel, resolved in the SPA's ``resolveLanguage()``),
+    the stored value is not tag-shaped, or it names no shipped catalog. Callers
+    must treat it as unknown rather than as English.
     """
     lang = cfg.dashboard.language
     if not isinstance(lang, str):
         return ""
     lang = lang.strip()
     if not lang or not _UI_LANGUAGE_TAG_RE.match(lang):
+        return ""
+    if lang not in _UI_LANGUAGE_CATALOGS:
+        # Debug, not warning: this fires on every context build for as long as
+        # the value stays persisted, and the UI itself already degraded to
+        # auto-detect — but without a line here an operator cannot distinguish
+        # "not configured" from "rejected" when the steer is absent.
+        logger.debug(
+            "dashboard.language %r names no shipped catalog; not steering", lang
+        )
         return ""
     return lang
 
@@ -944,7 +990,8 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     silently degrade to the tag for anything missing from it anyway).
 
     Raw does not mean unchecked: the value is dropped unless it is genuinely a
-    ``str`` and tag-shaped (``_UI_LANGUAGE_TAG_RE``), so neither a malformed
+    ``str``, tag-shaped (``_UI_LANGUAGE_TAG_RE``), and names a shipped catalog
+    (``_UI_LANGUAGE_CATALOGS``), so neither a malformed
     config nor a stubbed one can paste arbitrary text into the system prompt or
     raise from a prompt builder — this runs on the session-start path, where an
     exception costs the whole turn.
