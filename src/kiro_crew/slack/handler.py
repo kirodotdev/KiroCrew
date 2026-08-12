@@ -3128,6 +3128,35 @@ async def handle_message(
                 model_window=_model_window,
             )
 
+        # If no compressed history from the local log (e.g. first mention in an
+        # existing thread), fetch the full thread from Slack and inject it as
+        # context so the LLM sees what was said before it was mentioned.
+        if is_new and not resumed and not compressed and thread_ts:
+            try:
+                _thread_replies = await slack.fetch_thread_replies(channel, thread_ts)
+                if _thread_replies and len(_thread_replies) > 1:
+                    # Format as a conversation transcript (skip the last message
+                    # which is the user's current message that triggered the bot)
+                    _lines: list[str] = []
+                    for _msg in _thread_replies[:-1]:
+                        _sender = _msg.get("user") or _msg.get("bot_id") or "unknown"
+                        _txt = _msg.get("text") or ""
+                        if _txt:
+                            _txt = redact(_txt)
+                            _lines.append(f"<{_sender}> {_txt}")
+                    if _lines:
+                        _thread_transcript = "\n".join(_lines)
+                        # Cap at ~4000 chars to avoid blowing the context window
+                        if len(_thread_transcript) > 4000:
+                            _thread_transcript = _thread_transcript[-4000:]
+                            _thread_transcript = "[...earlier messages truncated...]\n" + _thread_transcript
+                        compressed = (
+                            "[Prior thread messages (before you were mentioned)]\n"
+                            + _thread_transcript
+                        )
+            except Exception:
+                logger.debug("Failed to fetch thread replies for context injection", exc_info=True)
+
         # After a soft-cancel, kiro-cli drops the cancelled turn from its
         # conversation log — but the user+assistant text is persisted to our
         # local conversation_log. Re-inject just the cancelled turn as a

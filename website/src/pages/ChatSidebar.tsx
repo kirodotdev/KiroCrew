@@ -376,6 +376,7 @@ interface Slot {
   last_message?: string
   slack_linked?: boolean
   links?: SessionLink[]
+  channel_name?: string
   color_index?: number | null
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
   clean_mode?: boolean

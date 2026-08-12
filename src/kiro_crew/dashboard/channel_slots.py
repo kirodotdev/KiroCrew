@@ -624,6 +624,85 @@ def _reconcile_lock(state: "DashboardState") -> asyncio.Lock:
     return lock
 
 
+async def _backfill_channel_names(
+    state: "DashboardState",
+    metadata: dict[str, dict[str, Any]],
+    log: Any,
+) -> None:
+    """Backfill channel_name for existing Slack slots missing it.
+
+    Uses the ChannelNameResolver (triggers an API call if cache is cold).
+    Persists to metadata so subsequent restarts don't need the backfill.
+    """
+    resolver = getattr(state, "_channel_resolver", None)
+    slack = getattr(state, "slack_client", None)
+    if slack is None or log is None:
+        return
+    # Lazily init the resolver if not yet created
+    if resolver is None:
+        from kiro_crew.dashboard.chat_slack import _get_channel_resolver
+        try:
+            resolver = _get_channel_resolver(state)
+        except Exception:
+            return
+
+    # Collect channel IDs that need resolution
+    needs_resolve: dict[str, list["_ChatSlot"]] = {}  # channel_id → [slots]
+    for slot in list(state._slots.values()):
+        if slot.channel_name:
+            continue
+        ns = channel_namespace_of(slot.key)
+        if ns != "slack":
+            continue
+        channel_id = getattr(slot, "_slack_channel", "") or ""
+        if not channel_id and state.sessions:
+            # linked_session_key is the colon form; fall back to reconstructing it
+            session_key = getattr(slot, "linked_session_key", "") or ""
+            if not session_key:
+                # slot key is slack_<ts>, session key is slack:<ts>
+                session_key = "slack:" + slot.key.removeprefix("slack_")
+            _, ch = state.sessions.get_slack_link(session_key)
+            channel_id = ch or ""
+        if not channel_id or channel_id.startswith("D"):
+            continue
+        needs_resolve.setdefault(channel_id, []).append(slot)
+
+    if not needs_resolve:
+        return
+
+    # Resolve all at once (one API call max)
+    try:
+        names = await resolver.resolve_many(slack, list(needs_resolve.keys()))
+    except Exception:
+        logger.debug("backfill channel_name: resolve_many failed", exc_info=True)
+        return
+
+    backfilled = 0
+    loop = asyncio.get_running_loop()
+    for channel_id, slots in needs_resolve.items():
+        name = names.get(channel_id, "")
+        # Skip if the resolved name is just the channel ID itself (unresolved)
+        if not name or name == channel_id:
+            continue
+        for slot in slots:
+            slot.channel_name = name
+            session_key = getattr(slot, "linked_session_key", "") or ""
+            if not session_key:
+                session_key = "slack:" + slot.key.removeprefix("slack_")
+            if session_key and not session_key.startswith("dashboard:"):
+                try:
+                    await loop.run_in_executor(
+                        None, log.update_metadata, session_key, {"channel_name": name}
+                    )
+                    backfilled += 1
+                except Exception:
+                    logger.debug("backfill channel_name: failed for %s", session_key)
+
+    if backfilled:
+        state.push_slots_update()
+        logger.info("Backfilled channel_name for %d slot(s)", backfilled)
+
+
 async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) -> int:
     """One reconcile pass. Returns the number of slots surfaced.
 
@@ -914,6 +993,7 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
 
             _sync_dashboard_slots(state)
         state.push_slots_update()
+
     return surfaced
 
 

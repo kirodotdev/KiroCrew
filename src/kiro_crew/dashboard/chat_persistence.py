@@ -567,6 +567,8 @@ def _rehydrate_slot_from_history(
             slot._artifact = _artifact_meta
         if meta.get("pinned"):
             slot.pinned = True
+        if meta.get("channel_name"):
+            slot.channel_name = meta["channel_name"]
         if meta.get("color_index") is not None:
             slot.color_index = meta["color_index"]
         raw_tags = meta.get("tags")
@@ -1674,6 +1676,8 @@ def _save_slot_to_history(
                 meta_line["artifact"] = slot._artifact
             if slot.pinned:
                 meta_line["pinned"] = True
+            if slot.channel_name:
+                meta_line["channel_name"] = slot.channel_name
             if slot.color_index is not None:
                 meta_line["color_index"] = slot.color_index
             if slot.color_theme:
