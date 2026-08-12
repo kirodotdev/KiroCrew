@@ -42,7 +42,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.apps import install_receipt
+from kiro_crew.apps import install_receipt, official_catalog
 from kiro_crew.apps.admission import app_admission_denied, verified_signer
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import (
@@ -55,6 +55,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.official_catalog import load_official_catalog
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.sel import sel
 
@@ -1668,7 +1669,6 @@ async def list_registry() -> list[dict[str, Any]]:
 
     installed = await asyncio.to_thread(list_installed_apps)
     installed_map = {a["name"]: a for a in installed}
-
     # Snapshot the INDEX-declared author before the manifest merge below
     # overwrites ``author`` with the repo-fetched app.json value.
     # ``_apply_trust_fields`` derives ``verified`` from this snapshot only:
@@ -1717,6 +1717,31 @@ async def list_registry() -> list[dict[str, Any]]:
                 logger.info("Detected external install: %s", name)
         except (asyncio.TimeoutError, OSError):
             pass  # detection failed, treat as not installed
+
+    # Overlay the official catalog's curated fields LAST among the content
+    # sources, so they win over a fetched manifest -- that is what curation
+    # means: the catalog is ours, the manifest belongs to the app. It runs BEFORE
+    # the trust stamp so `_apply_trust_fields` still derives `verified` from the
+    # index-declared author snapshot, which the overlay deliberately leaves
+    # alone while the document's signature is not yet checked.
+    #
+    # Annotate-only: every catalog entry names something already listed here.
+    # Adding installable entries needs the install path to accept a
+    # commit-pinned source first, so an entry matching no row is ignored.
+    # Containment, not defensiveness. This handler has no try/except above it, so
+    # anything escaping the catalog step is an HTTP 500 for the WHOLE store --
+    # and the catalog is an enhancement to a listing that is already complete
+    # without it. "Anything went wrong, render what we had" is therefore the
+    # correct semantics at this seam specifically, and a broad catch here is not
+    # hiding a defect from us: it logs with a traceback, and the module's own
+    # precise guards still run first. Three separate escape routes were found
+    # here by review, each individually narrower than this seam.
+    try:
+        catalog = await asyncio.to_thread(load_official_catalog)
+        if catalog:
+            official_catalog.annotate(entries, catalog)
+    except Exception:  # noqa: BLE001 - degrade to the seed, never 500 the store
+        logger.warning("ignoring the official catalog after a failure", exc_info=True)
 
     return _apply_trust_fields(
         _enrich_with_install_status(entries, installed_map, detected)

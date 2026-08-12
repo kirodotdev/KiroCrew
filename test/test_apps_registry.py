@@ -1501,3 +1501,83 @@ class TestMergeManifestProjectsRegistryKeys:
         out = registry._merge_manifest(entry, manifest)
         assert "iconUrl" not in out
         assert "iconUrlDark" not in out
+
+
+class TestCatalogFailureNeverBreaksTheStore:
+    """`list_registry` runs inside `GET /api/apps/registry` with no try/except
+    above it, so anything escaping the catalog step is a 500 for the whole store.
+
+    The catalog is an ENHANCEMENT to a listing that is already complete without
+    it, which is what makes containment at this seam correct rather than merely
+    defensive: the fallback is not a degraded guess, it is exactly what the store
+    rendered before the catalog existed. Review found three separate escape
+    routes inside the module, each narrower than this seam -- these tests pin the
+    seam so a fourth one cannot reach a user.
+    """
+
+    async def _rows(self, monkeypatch):
+        monkeypatch.setattr(
+            registry, "_load_registry_file", lambda: [{"name": "seed-app"}]
+        )
+
+        async def _no_external():
+            return []
+
+        async def _passthrough(entry):
+            return entry
+
+        monkeypatch.setattr(registry, "_load_external_registries", _no_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _passthrough)
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+        return {r["name"]: r for r in await registry.list_registry()}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            RuntimeError("unexpected"),
+            TypeError("a field was not the type we assumed"),
+            KeyError("name"),
+            AttributeError("None has no attribute get"),
+            ValueError("bad value"),
+        ],
+        ids=lambda e: type(e).__name__,
+    )
+    async def test_a_raising_loader_still_returns_the_seed(self, exc, monkeypatch):
+        def boom():
+            raise exc
+
+        monkeypatch.setattr(registry, "load_official_catalog", boom)
+        rows = await self._rows(monkeypatch)
+        assert "seed-app" in rows, "the seed listing must survive a catalog failure"
+
+    @pytest.mark.asyncio
+    async def test_a_raising_annotate_still_returns_the_seed(self, monkeypatch):
+        """The overlay is the half that touches untrusted field types, so it is
+        the half most likely to raise on a document we did not anticipate."""
+        monkeypatch.setattr(
+            registry, "load_official_catalog", lambda: [{"name": "seed-app"}]
+        )
+
+        def boom(rows, entries):
+            raise TypeError("hostile field type")
+
+        monkeypatch.setattr(registry.official_catalog, "annotate", boom)
+        rows = await self._rows(monkeypatch)
+        assert "seed-app" in rows
+
+    @pytest.mark.asyncio
+    async def test_the_failure_is_logged_rather_than_swallowed(
+        self, monkeypatch, caplog
+    ):
+        """A broad catch is only acceptable because it is loud: without the
+        traceback this would hide our own bugs instead of a bad document."""
+
+        def boom():
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr(registry, "load_official_catalog", boom)
+        with caplog.at_level("WARNING", logger=registry.logger.name):
+            await self._rows(monkeypatch)
+        assert any("official catalog" in r.message for r in caplog.records)
+        assert any(r.exc_info for r in caplog.records), "expected a traceback"
