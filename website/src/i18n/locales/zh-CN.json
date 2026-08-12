@@ -1261,6 +1261,14 @@
         "suggested_flows": "推荐流程",
         "what_should_i_audit": "我该评审什么？"
       },
+      "utils": {
+        "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
+        "i_ll_clone_it_and_list_the_screens_only_pages_th": "I’ll clone it and list the screens. Only pages that render without a server can be seen.",
+        "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
+        "i_ll_pull_the_frames": "I’ll pull the frames.",
+        "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
+        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+      },
       "waitingScreen": {
         "cancel_this_run": "取消本次运行",
         "stop_this_run_and_discard_it": "停止并丢弃本次运行"

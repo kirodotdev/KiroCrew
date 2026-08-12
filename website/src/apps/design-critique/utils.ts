@@ -1,5 +1,6 @@
 import { HKEY, JOBKEY, LIVEKEY, LIVE_TTL_MS, SLOTSKEY } from './constants'
 import { fmtRelative } from '../../i18n/format'
+import { i18nT } from '../../i18n/t'
 import type { Detected, DiscoveryScreen, Finding, Flow, HistoryEntry, Job, Report, ReportScreen, Scope, Screen, SlotData } from './types'
 
 // What did the user hand us? Decide from the text they pasted.
@@ -23,16 +24,25 @@ export function detectKind(raw: string): Detected | null {
 }
 
 // Said back to the user before they start, so "a URL" is never ambiguous.
+//
+// The text is the TAIL of that line only. The kind's own name is rendered
+// separately, and localised, by `Composer.tsx`, so naming it again here would put
+// an English noun in front of the localised one — which is also why the caller no
+// longer has to strip a leading noun with a regex.
+//
+// Keys rather than literals: this runs per render, so the tail follows a language
+// change the same way the noun does. Until now the noun was localised and the tail
+// was not, which left one sentence in two languages.
 export function recognise(det: Detected | null): { ok: boolean; text: string } | null {
   if (!det) return null
   switch (det.kind) {
-    case 'figma': return { ok: true, text: 'Figma file — I’ll pull the frames.' }
-    case 'repo': return { ok: true, text: 'Code repo — I’ll clone it and list the screens. Only pages that render without a server can be seen.' }
-    case 'local': return { ok: true, text: 'Local code — I’ll list the screens. Only pages that render without a server can be seen.' }
+    case 'figma': return { ok: true, text: i18nT('apps.designCritique.utils.i_ll_pull_the_frames') }
+    case 'repo': return { ok: true, text: i18nT('apps.designCritique.utils.i_ll_clone_it_and_list_the_screens_only_pages_th') }
+    case 'local': return { ok: true, text: i18nT('apps.designCritique.utils.i_ll_list_the_screens_only_pages_that_render_wit') }
     case 'url': return det.local
-      ? { ok: true, text: 'Your dev server — it must be running right now. I’ll capture it live and measure real contrast and sizes.' }
-      : { ok: true, text: 'A live/deployed page — I’ll capture it and measure real contrast and sizes.' }
-    default: return { ok: false, text: 'Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving.' }
+      ? { ok: true, text: i18nT('apps.designCritique.utils.it_must_be_running_right_now_i_ll_capture_it_liv') }
+      : { ok: true, text: i18nT('apps.designCritique.utils.i_ll_capture_it_and_measure_real_contrast_and_si') }
+    default: return { ok: false, text: i18nT('apps.designCritique.utils.not_something_i_recognise_give_me_a_figma_link_a') }
   }
 }
 

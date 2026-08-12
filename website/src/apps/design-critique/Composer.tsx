@@ -142,7 +142,7 @@ export default function Composer(p: Props) {
           <p style={{ ...S.cardHint, color: recog.ok ? 'var(--muted)' : 'var(--error, #e5484d)' }}>
             <b style={{ color: recog.ok ? 'var(--text)' : 'inherit' }}>{recog.ok ? kindLabel((det || {}).kind as string) : i18nT('apps.designCritique.composer.unrecognised')}</b>
             {recog.ok ? ' · ' : ' — '}
-            {recog.text.replace(/^[^—]*— /, '')}
+            {recog.text}
           </p>
         ) : null}
         <p style={S.cardHint}>{recog
