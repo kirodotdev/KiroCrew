@@ -1064,7 +1064,21 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     - ``provenance``: ``"external"`` when ``_registry`` is set (the tag is
       applied server-side per configured registry and cannot be forged by
       index content); otherwise ``"builtin"`` when ``origin == "builtin"``,
-      else ``"core"`` (bundled ``app-registry.json`` or edition entry).
+      else ``"official"``.
+
+      ``"official"`` means "an app WE list", and the bundled
+      ``app-registry.json`` is one delivery of that list — the offline seed
+      that ships inside the wheel. It answers the same question the remote
+      signed catalog answers, so it gets the same value rather than a second
+      one: two provenance values for one claim would put a weaker integrity
+      guarantee (rides on the install artifact, cannot be revoked before the
+      next release) behind a label a client cannot tell apart from the
+      stronger one. The value names WHOSE list an app is on; how that list
+      reached the client is a separate axis, and belongs in a separate field
+      once there is more than one answer to record.
+
+      ``"core"`` was the previous spelling. Clients accept both during the
+      migration, so an older gateway's rows still label correctly.
     - ``verified``: ``True`` only when provenance is NOT ``"external"`` AND
       (``origin == "builtin"`` or the INDEX-declared author — snapshotted
       into ``_index_author`` by ``list_registry`` before the manifest merge
@@ -1089,7 +1103,7 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             entry.pop("featured", None)
         else:
             builtin = entry.get("origin") == "builtin"
-            entry["provenance"] = "builtin" if builtin else "core"
+            entry["provenance"] = "builtin" if builtin else "official"
             entry["verified"] = builtin or folded_author in FIRST_PARTY_AUTHORS
     return entries
 

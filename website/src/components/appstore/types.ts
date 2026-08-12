@@ -37,7 +37,9 @@ export type RegistryApp = {
    * present they are authoritative and the client must not re-derive
    * trust from ``_registry`` absence.
    */
-  provenance?: 'core' | 'external' | 'builtin'
+  // 'core' is the pre-migration spelling of 'official'; both mean "an app WE
+  // list", the bundled index being the offline seed of that list.
+  provenance?: 'official' | 'core' | 'external' | 'builtin'
   verified?: boolean
   installed: boolean
   installedVersion?: string
@@ -110,13 +112,20 @@ export type InstalledApp = {
  * server-attached, and a row carrying it is external by construction — so
  * a ``provenance`` value smuggled through an OLDER gateway (which copies
  * index keys verbatim and computes nothing) can never relabel an external
- * row as built-in or core. The ``origin`` fallback exists only for rows
+ * row as built-in or official. The ``origin`` fallback exists only for rows
  * from older gateways that emit neither field.
+ *
+ * ``'core'`` is the previous spelling of ``'official'`` and is accepted for as
+ * long as a client can meet an older gateway. Both mean "an app WE list": the
+ * bundled ``app-registry.json`` is the offline seed of that list, not a
+ * separate kind of app.
  */
 export function sourceLabel(app: Pick<RegistryApp, '_registry' | 'origin' | 'provenance'>): string {
   if (app._registry) return app._registry
   if (app.provenance === 'builtin') return i18nT('components.appstore.types.built_in')
-  if (app.provenance === 'core') return i18nT('components.appstore.types.kirocrew_registry')
+  if (app.provenance === 'official' || app.provenance === 'core') {
+    return i18nT('components.appstore.types.kirocrew_registry')
+  }
   // Legacy fallback (older gateway: no ``provenance`` field).
   if (app.origin === 'builtin') return i18nT('components.appstore.types.built_in')
   return i18nT('components.appstore.types.kirocrew_registry')

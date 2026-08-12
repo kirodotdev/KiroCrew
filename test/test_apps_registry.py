@@ -1229,7 +1229,7 @@ class TestApplyTrustFields:
         entry = {
             "name": "evil-app",
             "_registry": "evil-registry",
-            "provenance": "core",
+            "provenance": "official",
             "verified": True,
         }
         (out,) = registry._apply_trust_fields([entry])
@@ -1241,7 +1241,7 @@ class TestApplyTrustFields:
         (``_index_author``, taken by ``list_registry`` pre-merge)."""
         entry = {"name": "good-app", "_index_author": "KiroCrew"}  # brand-ok: author-spoof fixture
         (out,) = registry._apply_trust_fields([entry])
-        assert out["provenance"] == "core"
+        assert out["provenance"] == "official"
         assert out["verified"] is True
 
     def test_manifest_author_alone_never_mints_verified(self):
@@ -1258,7 +1258,7 @@ class TestApplyTrustFields:
     def test_core_third_party_author_is_not_verified_and_keeps_featured(self):
         entry = {"name": "community-app", "_index_author": "someone", "featured": 2}
         (out,) = registry._apply_trust_fields([entry])
-        assert out["provenance"] == "core"
+        assert out["provenance"] == "official"
         assert out["verified"] is False
         assert out["featured"] == 2  # curator flag preserved for core entries
 
@@ -1273,8 +1273,20 @@ class TestApplyTrustFields:
         degrade to unverified, not raise."""
         entry = {"name": "weird", "_index_author": 42}
         (out,) = registry._apply_trust_fields([entry])
-        assert out["provenance"] == "core"
+        assert out["provenance"] == "official"
         assert out["verified"] is False
+
+    def test_bundled_seed_row_is_official_not_a_separate_value(self):
+        """The bundled ``app-registry.json`` is the OFFLINE SEED of the list we
+        publish, not a different kind of app, so it carries the same provenance
+        a signed remote catalog will. Giving the seed its own value would put a
+        weaker integrity guarantee — it rides on the install artifact and cannot
+        be revoked before the next release — behind a label the client cannot
+        tell apart from the stronger one. Provenance names WHOSE list an app is
+        on; how the list arrived is a separate axis."""
+        entry = {"name": "launchdarkly", "repo": "https://example.com/org/app"}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "official"
 
     def test_index_author_snapshot_never_leaks_into_payload(self):
         entry = {"name": "x", "_index_author": "KiroCrew"}  # brand-ok: author-spoof fixture
@@ -1366,7 +1378,7 @@ class TestApplyTrustFields:
         monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
 
         rows = {r["name"]: r for r in await registry.list_registry()}
-        assert rows["core-app"]["provenance"] == "core"
+        assert rows["core-app"]["provenance"] == "official"
         assert rows["core-app"]["verified"] is True
         assert rows["core-app"]["featured"] == 1
         # Manifest-published author does not mint the badge.
