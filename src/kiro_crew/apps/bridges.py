@@ -2302,12 +2302,12 @@ def register_app(app_name: str) -> RegistrationResult:
         return result
 
     # NOTE: pruning of resources a manifest UPGRADE removed is NOT done here.
-    # register_app is called on the event loop by the enable/update handlers,
-    # and a prune (directory walk over every agent file + lock acquisition)
-    # scales with agent count and would stall chat/heartbeat. Those on-loop
-    # callers all deregister_app() first, so nothing stale survives for them to
-    # prune. The one path that re-registers WITHOUT a preceding deregister — the
-    # boot reconcile — does the prune itself, off the loop, in
+    # The enable/update route handlers all deregister_app() first, so nothing
+    # stale survives for them to prune — a prune here (a directory walk over
+    # every agent file + lock acquisition, scaling with agent count) would run
+    # redundantly on every one of those deregister-first calls. The one path
+    # that re-registers WITHOUT a preceding deregister — the boot reconcile —
+    # does the prune itself, off the loop, in
     # reconcile_enabled_app_resources(). See that function.
 
     # MCP servers BEFORE agents: _register_agents copies the app's own registered

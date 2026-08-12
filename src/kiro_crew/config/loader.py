@@ -6643,19 +6643,19 @@ def publish_materialized_agents(names: Iterable[str]) -> None:
 def schedule_materialized_agents_refresh() -> None:
     """Refresh the snapshot from ANY context without blocking an event loop.
 
-    ``apps.bridges._register_agents`` is the writer that must trigger this, and it
-    runs on the loop for the dashboard paths: ``register_app`` documents that "it
-    is called on the event loop by the enable/update handlers", so clicking Enable
-    in the App Store reaches it with the loop live. Scanning inline there is the
-    same directory-walk-per-agent-file stall the neighbouring prune comment warns
-    about, so the scan is handed to the default executor and this returns
-    immediately. In a synchronous context (CLI, tests, the boot warm already on an
-    executor) it refreshes inline.
-
-    The offloaded refresh lands a few milliseconds later, so a turn dispatched in
-    that window sees the pre-enable snapshot and falls back for that one turn,
-    then self-heals — strictly better than the alternative of staying stale until
-    the next gateway boot. Never raises; the scan itself swallows its errors.
+    ``apps.bridges._register_agents`` is the writer that must trigger this. The
+    dashboard enable/update handlers dispatch ``register_app`` to an executor
+    thread, so from those paths this runs in a synchronous context (no running
+    loop) and refreshes inline — the scan is already off the loop, serialized
+    inside the awaited registration, so no stale-snapshot window exists there.
+    The same inline branch covers the CLI, tests, and the boot warm already on
+    an executor. For a caller that does hold a live loop, scanning inline would
+    be the same directory-walk-per-agent-file stall the neighbouring prune
+    comment warns about, so the scan is handed to the default executor and this
+    returns immediately; that offloaded refresh lands a few milliseconds later,
+    and a turn dispatched in that window sees the previous snapshot for one
+    turn, then self-heals — strictly better than staying stale until the next
+    gateway boot. Never raises; the scan itself swallows its errors.
     """
     try:
         loop = asyncio.get_running_loop()

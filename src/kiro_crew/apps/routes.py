@@ -32,6 +32,7 @@ from kiro_crew.apps.backend import (
     stop_app_backend,
 )
 from kiro_crew.apps.bridges import (
+    RegistrationResult,
     deregister_app,
     deregister_app_crons_from_service,
     register_app,
@@ -380,6 +381,29 @@ async def _start_backend_after_install(name: str) -> None:
         logger.warning("Backend auto-start after install failed for app %s", name, exc_info=True)
 
 
+async def _register_app_off_loop(name: str) -> RegistrationResult:
+    """Run ``register_app`` on the subprocess executor, off the event loop.
+
+    ``register_app`` / ``deregister_app`` do real filesystem work under
+    ``KIROCREW_HOME`` — manifest reads, skill-dir symlink walks, agent JSON
+    writes, and ``mcp.json`` read + atomic write.  On a stalled filesystem
+    (e.g. a dead network mount) those calls block in the kernel; run on the
+    loop they freeze every task including the liveness heartbeat until the
+    stall watchdog kills the gateway.  Same offload pattern as ``install_app``
+    and ``start_app_backend`` on these handlers.
+    """
+    return await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), register_app, name
+    )
+
+
+async def _deregister_app_off_loop(name: str) -> RegistrationResult:
+    """Run ``deregister_app`` off the event loop (see ``_register_app_off_loop``)."""
+    return await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), deregister_app, name
+    )
+
+
 async def handle_install_app(request: web.Request) -> web.Response:
     """POST /api/apps/install — install an app from a local path."""
     try:
@@ -433,7 +457,7 @@ async def handle_install_app(request: web.Request) -> web.Response:
         invalidate_app_secret_cache(result.name)
 
         # Auto-register resources
-        reg = register_app(result.name)
+        reg = await _register_app_off_loop(result.name)
         # Spawn the backend now so the app is reachable without a gateway reboot
         # (see _start_backend_after_install). No-op for backend-less apps.
         await _start_backend_after_install(result.name)
@@ -492,12 +516,12 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 )
                 return web.json_response(reg_install, status=400)
             # Install succeeded — now safe to swap resources
-            deregister_app(name)
+            await _deregister_app_off_loop(name)
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), stop_app_backend, name
             )
             if info.get("enabled"):
-                reg_result = register_app(name)
+                reg_result = await _register_app_off_loop(name)
                 await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
                 )
@@ -520,7 +544,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
     # (The registry branch above locks inside install_from_registry.)
     async with app_lifecycle_lock(name):
         # Deregister old resources before update
-        deregister_app(name)
+        await _deregister_app_off_loop(name)
         await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), stop_app_backend, name
         )
@@ -533,7 +557,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         )
         if not up_result.ok:
             # Re-register old resources on failure
-            register_app(name)
+            await _register_app_off_loop(name)
             if info.get("enabled"):
                 await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
@@ -550,7 +574,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         # Re-register with new manifest if app was enabled
         up_reg = None
         if info.get("enabled"):
-            up_reg = register_app(name)
+            up_reg = await _register_app_off_loop(name)
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
@@ -906,7 +930,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), stop_app_backend, name
             )
-            deregister_app(name)
+            await _deregister_app_off_loop(name)
 
         # Step 4: Clean dependencies (atomic classify + ledger update)
         cleaned_deps: list[str] = []
@@ -1077,7 +1101,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
 
         # Register resources if gateway-managed
         if resources == "gateway":
-            reg = register_app(name)
+            reg = await _register_app_off_loop(name)
             backend = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
@@ -1145,7 +1169,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                     await asyncio.get_running_loop().run_in_executor(
                         subprocess_executor(), stop_app_backend, name
                     )
-                    deregister_app(name)
+                    await _deregister_app_off_loop(name)
                 disable_app(name)
                 sel().log_api_access(
                     caller="dashboard",
@@ -1471,7 +1495,7 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             return web.json_response(result, status=400)
 
         # Auto-register resources
-        reg = register_app(result["name"])
+        reg = await _register_app_off_loop(result["name"])
         # Spawn the backend now so apps with a server are reachable immediately —
         # without this the backend only starts on the next gateway reboot (via
         # start_enabled_app_backends), leaving the app's UI with "no reachable
@@ -1564,7 +1588,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         async with app_lifecycle_lock(name):
             r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
-                reg = register_app(r["name"])
+                reg = await _register_app_off_loop(r["name"])
                 # Spawn the backend immediately (see handle_registry_install) so
                 # the app is reachable without a gateway reboot. No-op for
                 # backend-less apps.
