@@ -116,7 +116,9 @@
       "loading.html",
       "token-prompt.html",
       "icon.png",
-      "icon-nightly.png"
+      "icon-nightly.png",
+      "trayTemplate.png",
+      "trayTemplate@2x.png"
     ],
     "extraResources": [
       {
