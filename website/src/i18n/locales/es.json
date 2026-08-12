@@ -6668,6 +6668,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "Cuenta",
+      "account_not_reported": "No informado",
+      "account_not_reported_help": "Se muestra cuando la identidad con la que has iniciado sesión puede vincularse a la cuenta a la que se facturan estos créditos. Ese vínculo no siempre está disponible, por lo que esto puede seguir sin informarse aunque se muestren los créditos.",
       "agent_templates": "Plantillas de agente",
       "auto_approved": "Aprobado automáticamente",
       "awaiting_first_prompt": "esperando el primer prompt",
@@ -6684,6 +6687,7 @@
       "est_cost": "Coste est.:",
       "failed": "Fallido",
       "filter_models": "Filtrar modelos",
+      "harness": "Harness",
       "healthy": "Correcto",
       "high": "Alto",
       "idle": "Inactivo",

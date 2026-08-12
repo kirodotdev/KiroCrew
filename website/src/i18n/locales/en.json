@@ -4594,6 +4594,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "Account",
+      "account_not_reported": "Not reported",
+      "account_not_reported_help": "Shown once the signed-in identity can be tied to the account these credits are billed to. That link is not always available, so this can stay unreported even while credits are shown.",
       "agent_templates": "Agent Templates",
       "auto_approved": "Auto-Approved",
       "awaiting_first_prompt": "awaiting first prompt",
@@ -4606,6 +4609,7 @@
       "est_cost": "Est. cost:",
       "failed": "Failed",
       "filter_models": "Filter models",
+      "harness": "Harness",
       "healthy": "Healthy",
       "high": "High",
       "idle": "Idle",

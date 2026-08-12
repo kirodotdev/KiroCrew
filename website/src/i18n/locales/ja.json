@@ -6494,6 +6494,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "アカウント",
+      "account_not_reported": "報告なし",
+      "account_not_reported_help": "サインイン中の識別情報を、これらのクレジットが請求されるアカウントに結び付けられた場合に表示されます。この結び付けは常に得られるわけではないため、クレジットが表示されていても報告なしのままになることがあります。",
       "agent_templates": "エージェントテンプレート",
       "auto_approved": "自動承認済み",
       "awaiting_first_prompt": "最初のプロンプトを待機中",
@@ -6510,6 +6513,7 @@
       "est_cost": "推定コスト:",
       "failed": "失敗",
       "filter_models": "モデルをフィルタリング",
+      "harness": "ハーネス",
       "healthy": "正常",
       "high": "高",
       "idle": "アイドル",

@@ -6494,6 +6494,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "账户",
+      "account_not_reported": "未报告",
+      "account_not_reported_help": "当已登录身份能够与这些额度的计费账户建立关联时显示。该关联并非总能获得，因此即使显示了额度，此处仍可能保持未报告。",
       "agent_templates": "代理模板",
       "auto_approved": "自动批准",
       "awaiting_first_prompt": "等待首个提示词",
@@ -6510,6 +6513,7 @@
       "est_cost": "预估费用：",
       "failed": "失败",
       "filter_models": "筛选模型",
+      "harness": "运行环境",
       "healthy": "正常",
       "high": "高",
       "idle": "空闲",

@@ -6668,6 +6668,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "Conta",
+      "account_not_reported": "Não informado",
+      "account_not_reported_help": "Exibido quando a identidade conectada pode ser vinculada à conta à qual esses créditos são cobrados. Esse vínculo não está sempre disponível, portanto isso pode permanecer não informado mesmo quando os créditos aparecem.",
       "agent_templates": "Modelos de agente",
       "auto_approved": "Aprovado automaticamente",
       "awaiting_first_prompt": "aguardando o primeiro prompt",
@@ -6684,6 +6687,7 @@
       "est_cost": "Custo est.:",
       "failed": "Falhou",
       "filter_models": "Filtrar modelos",
+      "harness": "Harness",
       "healthy": "Saudável",
       "high": "Alto",
       "idle": "Inativo",

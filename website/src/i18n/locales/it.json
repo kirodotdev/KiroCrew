@@ -6668,6 +6668,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "Account",
+      "account_not_reported": "Non riportato",
+      "account_not_reported_help": "Mostrato quando l'identità con cui hai effettuato l'accesso può essere collegata all'account a cui vengono addebitati questi crediti. Tale collegamento non è sempre disponibile, quindi questo campo può restare non riportato anche quando i crediti sono visibili.",
       "agent_templates": "Modelli di agente",
       "auto_approved": "Approvato automaticamente",
       "awaiting_first_prompt": "in attesa del primo prompt",
@@ -6684,6 +6687,7 @@
       "est_cost": "Costo stimato:",
       "failed": "Non riuscito",
       "filter_models": "Filtra i modelli",
+      "harness": "Harness",
       "healthy": "Integro",
       "high": "Alto",
       "idle": "Inattivo",

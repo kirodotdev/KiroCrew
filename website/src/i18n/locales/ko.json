@@ -6494,6 +6494,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "계정",
+      "account_not_reported": "보고되지 않음",
+      "account_not_reported_help": "로그인한 신원을 이 크레딧이 청구되는 계정과 연결할 수 있을 때 표시됩니다. 이 연결이 항상 가능한 것은 아니므로 크레딧이 표시되는 동안에도 보고되지 않은 상태로 남을 수 있습니다.",
       "agent_templates": "에이전트 템플릿",
       "auto_approved": "자동 승인됨",
       "awaiting_first_prompt": "첫 프롬프트 대기 중",
@@ -6510,6 +6513,7 @@
       "est_cost": "예상 비용:",
       "failed": "실패",
       "filter_models": "모델 필터",
+      "harness": "하네스",
       "healthy": "정상",
       "high": "높음",
       "idle": "유휴",

@@ -6668,6 +6668,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "Compte",
+      "account_not_reported": "Non communiqué",
+      "account_not_reported_help": "Affiché dès que l'identité connectée peut être reliée au compte auquel ces crédits sont facturés. Ce lien n'est pas toujours disponible, ce champ peut donc rester non communiqué même lorsque les crédits s'affichent.",
       "agent_templates": "Modèles d'agent",
       "auto_approved": "Approuvé automatiquement",
       "awaiting_first_prompt": "en attente du premier prompt",
@@ -6684,6 +6687,7 @@
       "est_cost": "Coût est. :",
       "failed": "Échec",
       "filter_models": "Filtrer les modèles",
+      "harness": "Harness",
       "healthy": "Sain",
       "high": "Élevé",
       "idle": "Inactif",

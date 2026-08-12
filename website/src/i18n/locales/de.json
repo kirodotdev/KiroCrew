@@ -6581,6 +6581,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "Konto",
+      "account_not_reported": "Nicht gemeldet",
+      "account_not_reported_help": "Wird angezeigt, sobald die angemeldete Identität dem Konto zugeordnet werden kann, dem diese Credits in Rechnung gestellt werden. Diese Zuordnung ist nicht immer verfügbar, daher kann dies auch dann ungemeldet bleiben, wenn Credits angezeigt werden.",
       "agent_templates": "Agenten-Vorlagen",
       "auto_approved": "Automatisch genehmigt",
       "awaiting_first_prompt": "wartet auf ersten Prompt",
@@ -6597,6 +6600,7 @@
       "est_cost": "Gesch. Kosten:",
       "failed": "Fehlgeschlagen",
       "filter_models": "Modelle filtern",
+      "harness": "Harness",
       "healthy": "Fehlerfrei",
       "high": "Hoch",
       "idle": "Inaktiv",
