@@ -33,6 +33,7 @@ type AppInfo = {
   author: string
   icon?: string
   iconUrl?: string
+  iconUrlDark?: string
   tags?: string[]
   highlights?: string[]
   screenshots?: string[]
@@ -250,6 +251,7 @@ export default function AppDetailPage() {
           // icon and hero instead of the generic Package box.
           icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
           iconUrl: registryEntry?.iconUrl || m.iconUrl || m.ui?.pages?.[0]?.iconUrl || '',
+          iconUrlDark: registryEntry?.iconUrlDark || m.iconUrlDark || '',
           tags: m.tags || registryEntry?.tags || [],
           highlights: m.highlights || registryEntry?.highlights || [],
           screenshots: registryEntry?.screenshots || m.screenshots || [],
@@ -660,7 +662,7 @@ export default function AppDetailPage() {
         {/* Hero */}
         <div className="flex items-start gap-5 mb-6">
           <div className="w-24 h-24 rounded-2xl bg-accent/10 flex items-center justify-center shrink-0 overflow-hidden">
-            <AppIcon icon={app.icon} iconUrl={app.iconUrl} size={64} />
+            <AppIcon icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} size={64} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-1 flex-wrap">

@@ -148,7 +148,13 @@ CODE_SUFFIXES: frozenset[str] = frozenset(
 # External repositories whose own docs/ layout is cited from our source. A path
 # qualified with one of these names is a correct cross-repo reference, not a dangling
 # link into this tree.
-_EXTERNAL_REPO_MARKERS: tuple[str, ...] = ("KiroCrewPublishCDK", "electron.git")
+_EXTERNAL_REPO_MARKERS: tuple[str, ...] = (
+    "KiroCrewPublishCDK",
+    "electron.git",
+    # The app catalog's publisher. Its distribution contract is documented in
+    # that repo, and the client cites it to explain the base URL it fetches.
+    "KiroCrewApps",
+)
 
 # ── Code-coupled documentation filenames ───────────────────────────────────────
 #

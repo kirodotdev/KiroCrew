@@ -12,7 +12,7 @@
 import { ArrowUp, BadgeCheck, Check, Monitor, Power } from 'lucide-react'
 import { Btn } from '../ui'
 import Clickable from '../Clickable'
-import HeroCapsule from './HeroCapsule'
+import AppIconTile from './AppIconTile'
 import { categoryFor } from './categories'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
 import { appDisplayName, appDescription } from './appManifest'
@@ -35,8 +35,9 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
       className="flex items-center gap-3.5 px-3.5 py-3 border border-border rounded-xl bg-card mb-2 cursor-pointer hover:border-border-strong transition-colors focus-ring"
       onClick={onOpen}
     >
-      {/* Hero capsule — 16:9 crop of the app's own art, gradient when absent */}
-      <HeroCapsule name={app.name} art={app} icon={app.icon} iconUrl={app.iconUrl} />
+      {/* The app's icon, not its hero art: a list is scanned, and hero art
+          belongs to the editorial surfaces that can give it a wide panel. */}
+      <AppIconTile name={app.name} icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 text-[14px] font-semibold text-text-strong">
           <span className="truncate">{appDisplayName(app)}</span>
