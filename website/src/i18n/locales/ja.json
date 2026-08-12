@@ -5689,7 +5689,8 @@
       "syncing": "同期中…",
       "these_hosts": "これらのホスト",
       "this_host": "このホスト",
-      "you_are_now_trusting_apps_from": "以下からのアプリを信頼するようになりました"
+      "you_are_now_trusting_apps_from": "以下からのアプリを信頼するようになりました",
+      "registry_url_install_public_repos_only": "レジストリ URL からのインストールはパブリックリポジトリでのみ動作します。プライベートリポジトリの場合は、まずローカルにクローンしてから、下の Install from Path を使用してください。"
     },
     "remoteArtifactCard": {
       "clone": "クローン",

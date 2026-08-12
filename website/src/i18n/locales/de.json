@@ -5775,7 +5775,8 @@
       "syncing": "Wird synchronisiert…",
       "these_hosts": "diese Hosts",
       "this_host": "dieser Host",
-      "you_are_now_trusting_apps_from": "Sie vertrauen nun Apps von"
+      "you_are_now_trusting_apps_from": "Sie vertrauen nun Apps von",
+      "registry_url_install_public_repos_only": "Die Installation per Registry-URL funktioniert nur für öffentliche Repositorys. Klonen Sie ein privates Repository zuerst lokal und verwenden Sie dann unten „Install from Path“."
     },
     "remoteArtifactCard": {
       "clone": "Klonen",

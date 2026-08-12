@@ -4116,7 +4116,8 @@
       "no_external_registries": "No external registries",
       "repo": "Repo *",
       "sync_registry_apps": "Sync registry apps",
-      "you_are_now_trusting_apps_from": "You are now trusting apps from"
+      "you_are_now_trusting_apps_from": "You are now trusting apps from",
+      "registry_url_install_public_repos_only": "Registry-URL install works only for public repos. For a private repo, clone it locally first, then use Install from Path below."
     },
     "remoteArtifactCard": {
       "clone": "Clone",

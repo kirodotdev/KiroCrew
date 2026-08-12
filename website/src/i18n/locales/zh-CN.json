@@ -5689,7 +5689,8 @@
       "syncing": "同步中…",
       "these_hosts": "这些主机",
       "this_host": "此主机",
-      "you_are_now_trusting_apps_from": "你现在信任来自以下来源的应用："
+      "you_are_now_trusting_apps_from": "你现在信任来自以下来源的应用：",
+      "registry_url_install_public_repos_only": "通过 Registry URL 安装仅适用于公开仓库。私有仓库请先克隆到本地，再使用下方的 Install from Path 安装。"
     },
     "remoteArtifactCard": {
       "clone": "克隆",

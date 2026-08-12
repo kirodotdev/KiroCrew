@@ -5775,7 +5775,8 @@
       "syncing": "सिंक हो रहा है…",
       "these_hosts": "ये होस्ट",
       "this_host": "यह होस्ट",
-      "you_are_now_trusting_apps_from": "आप अब इस स्रोत के ऐप्स पर भरोसा कर रहे हैं:"
+      "you_are_now_trusting_apps_from": "आप अब इस स्रोत के ऐप्स पर भरोसा कर रहे हैं:",
+      "registry_url_install_public_repos_only": "रजिस्ट्री-URL इंस्टॉल केवल सार्वजनिक रिपॉज़िटरी के लिए काम करता है। निजी रिपॉज़िटरी के लिए पहले उसे स्थानीय रूप से क्लोन करें, फिर नीचे दिए गए Install from Path का उपयोग करें।"
     },
     "remoteArtifactCard": {
       "clone": "क्लोन करें",

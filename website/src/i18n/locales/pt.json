@@ -5861,7 +5861,8 @@
       "syncing": "Sincronizando…",
       "these_hosts": "estes hosts",
       "this_host": "este host",
-      "you_are_now_trusting_apps_from": "Agora você confia nos apps de"
+      "you_are_now_trusting_apps_from": "Agora você confia nos apps de",
+      "registry_url_install_public_repos_only": "A instalação por URL de registro funciona apenas com repositórios públicos. Para um repositório privado, clone-o localmente primeiro e use o Install from Path abaixo."
     },
     "remoteArtifactCard": {
       "clone": "Clonar",

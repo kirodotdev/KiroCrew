@@ -5689,7 +5689,8 @@
       "syncing": "동기화 중…",
       "these_hosts": "이 호스트",
       "this_host": "이 호스트",
-      "you_are_now_trusting_apps_from": "이제 다음 출처의 앱을 신뢰합니다"
+      "you_are_now_trusting_apps_from": "이제 다음 출처의 앱을 신뢰합니다",
+      "registry_url_install_public_repos_only": "레지스트리 URL 설치는 공개 저장소에서만 작동합니다. 비공개 저장소는 먼저 로컬로 복제한 다음 아래의 Install from Path를 사용하세요."
     },
     "remoteArtifactCard": {
       "clone": "클론",

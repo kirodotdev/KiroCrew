@@ -5775,7 +5775,8 @@
       "syncing": "সিঙ্ক হচ্ছে…",
       "these_hosts": "এই হোস্টগুলো",
       "this_host": "এই হোস্ট",
-      "you_are_now_trusting_apps_from": "আপনি এখন অ্যাপ বিশ্বাস করছেন এই রেজিস্ট্রি থেকে:"
+      "you_are_now_trusting_apps_from": "আপনি এখন অ্যাপ বিশ্বাস করছেন এই রেজিস্ট্রি থেকে:",
+      "registry_url_install_public_repos_only": "রেজিস্ট্রি-URL ইনস্টল কেবল পাবলিক রিপোজিটরির জন্য কাজ করে। প্রাইভেট রিপোজিটরির জন্য প্রথমে সেটি লোকালি ক্লোন করুন, তারপর নিচের Install from Path ব্যবহার করুন।"
     },
     "remoteArtifactCard": {
       "clone": "ক্লোন করুন",

@@ -159,6 +159,10 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         <InfoTip text={i18nT('components.registryManager.org_owned_app_catalogs_hosted_in_git_repositorie')} />
       </CardTitle>
 
+      {bare && (
+        <p className="text-[12px] text-muted mb-3">{i18nT('components.registryManager.registry_url_install_public_repos_only')}</p>
+      )}
+
       {/* No hand-off: the notice sits beside unsaved form input, and the button
           navigates away — which would discard what the user typed. */}
       <ErrorNotice message={error} onDismiss={() => setError('')} className="mb-3 animate-rise" />

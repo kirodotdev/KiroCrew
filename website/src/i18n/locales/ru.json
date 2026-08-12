@@ -5947,7 +5947,8 @@
       "syncing": "Синхронизация…",
       "these_hosts": "этих хостов",
       "this_host": "этого хоста",
-      "you_are_now_trusting_apps_from": "Теперь вы доверяете приложениям из"
+      "you_are_now_trusting_apps_from": "Теперь вы доверяете приложениям из",
+      "registry_url_install_public_repos_only": "Установка по URL реестра работает только для публичных репозиториев. Для приватного репозитория сначала клонируйте его локально, затем используйте «Install from Path» ниже."
     },
     "remoteArtifactCard": {
       "clone": "Клонировать",
