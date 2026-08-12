@@ -111,10 +111,21 @@ Note: there IS a top-level `agents/` directory used at runtime for project-level
 
 Default model: `claude-opus-4.8`. Default tools: `execute_bash`, `fs_read`, `fs_write`, `code`, `grep`, `glob`, `use_aws`, `web_fetch`, `web_search`, `introspect`, `session`, `report`, `@kirocrew-cron`, `@kirocrew-core`.
 
-**Security enforcement** (`agent.py`): `repair_agent_configs()` is the single entry point (called at install, gateway startup, and periodically ~60s). It runs two passes:
-
-1. `_enforce_denied_commands()` — injects bundled `deniedCommands` patterns into ALL agent configs in `~/.kiro/agents/` (not just kirocrew). Uses mtime to skip unchanged files. Replaces the agent's denied commands entirely with bundled defaults (canonical source; user-added patterns via dashboard are not supported). Targets both `execute_bash` and `shell` tool settings.
-2. `_sanitize_agent_hooks()` — strips invalid hook keys from agent configs. Kiro-cli 2.4.2+ rejects unknown variants in the `hooks` field (e.g. `auto_approve_tools`), causing silent fallback to the default agent which loses the internal MCP server, kirocrew-core, kirocrew-cron. `_kiro_hooks_only()` filters to valid events (`preToolUse`, `postToolUse`, `userPromptSubmit`, `agentSpawn`, `stop`). Also uses mtime-based caching to skip unchanged files. Bundled `auto_approve_tools` patterns are now applied at runtime in the hooks layer (`_BUNDLED_AUTO_APPROVE_TOOLS` in `hooks.py`) rather than being serialized to the config file.
+**Agent compatibility repair** (`agent.py`): `repair_agent_configs()` is the single
+entry point (called at install, gateway startup, and periodically ~60s). Its
+`_sanitize_agent_hooks()` pass repairs only the exact host-managed filenames in
+`agent_files.OWNED_KIRO_AGENT_FILES`. Kiro-cli rejects the legacy
+`auto_approve_tools` variant in an agent spec's `hooks` field, causing silent
+fallback to the default agent which loses the internal MCP servers. The repair
+therefore removes that one Kiro Crew-authored legacy key and preserves every
+unknown key; an unfamiliar key may belong to a newer kiro-cli schema or to the
+user. Foreign specs, prefix lookalikes such as `kirocrew-custom.json`, and app
+materialized specs are never scanned or rewritten. Mtime-based caching skips
+unchanged owned files. Bundled `auto_approve_tools` patterns are applied at
+runtime in the hooks layer (`_BUNDLED_AUTO_APPROVE_TOOLS` in `hooks.py`) rather
+than being serialized to the config file. `_kiro_hooks_only()` remains the
+strict filter for newly generated Kiro Crew specs, where Kiro Crew owns the whole
+output schema.
 
 ## Custom Agent Support
 

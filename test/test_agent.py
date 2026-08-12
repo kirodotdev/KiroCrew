@@ -1471,9 +1471,10 @@ class TestKiroHooksFiltering:
             "_INTERNAL_HOOK_KEYS), then update this pinned set."
         )
 
-    def test_sanitize_agent_hooks_repairs_existing_file(self, tmp_path: Path):
-        """_sanitize_agent_hooks removes invalid hook keys from existing configs."""
+    def test_sanitize_agent_hooks_repairs_owned_files_subtractively(self, tmp_path: Path):
+        """The repair removes only Kiro Crew's legacy key from every owned spec."""
         from kiro_crew.agent import _hooks_sanitized_mtimes, _sanitize_agent_hooks
+        from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 
         kiro_dir = tmp_path / "agents"
         kiro_dir.mkdir()
@@ -1482,17 +1483,49 @@ class TestKiroHooksFiltering:
             "hooks": {
                 "auto_approve_tools": ["kirocrew browse *"],
                 "postToolUse": [{"matcher": "execute_bash", "command": "audit.sh"}],
+                "futureHookEvent": [{"command": "future.sh"}],
             },
         }
-        (kiro_dir / "kirocrew.json").write_text(json.dumps(broken_config))
+        for filename in OWNED_KIRO_AGENT_FILES:
+            (kiro_dir / filename).write_text(json.dumps(broken_config))
 
         _hooks_sanitized_mtimes.clear()
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir):
             _sanitize_agent_hooks()
 
-        repaired = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
-        assert "auto_approve_tools" not in repaired["hooks"]
-        assert "postToolUse" in repaired["hooks"]
+        for filename in OWNED_KIRO_AGENT_FILES:
+            repaired = json.loads((kiro_dir / filename).read_text(encoding="utf-8"))
+            assert "auto_approve_tools" not in repaired["hooks"]
+            assert "postToolUse" in repaired["hooks"]
+            assert "futureHookEvent" in repaired["hooks"]
+
+    @pytest.mark.parametrize(
+        "filename", ["other-tool.json", "kirocrew-custom.json", "sample-app--worker.json"]
+    )
+    def test_sanitize_agent_hooks_does_not_touch_unowned_files(self, tmp_path: Path, filename: str):
+        """Foreign, prefix-lookalike, and app materialized specs stay byte-identical."""
+        from kiro_crew.agent import _hooks_sanitized_mtimes, _sanitize_agent_hooks
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        original = json.dumps(
+            {
+                "name": "foreign-agent",
+                "hooks": {
+                    "auto_approve_tools": ["foreign tool"],
+                    "futureHookEvent": [{"command": "future.sh"}],
+                },
+            },
+            indent=2,
+        )
+        path = kiro_dir / filename
+        path.write_text(original, encoding="utf-8")
+
+        _hooks_sanitized_mtimes.clear()
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir):
+            _sanitize_agent_hooks()
+
+        assert path.read_text(encoding="utf-8") == original
 
     def test_sanitize_agent_hooks_skips_clean_file(self, tmp_path: Path):
         """_sanitize_agent_hooks does not rewrite configs that are already clean."""

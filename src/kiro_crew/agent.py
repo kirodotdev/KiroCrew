@@ -45,6 +45,7 @@ from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_F
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
 from kiro_crew.agent_files import (
+    OWNED_KIRO_AGENT_FILES,
     REQUIRED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
@@ -974,11 +975,10 @@ _INTERNAL_HOOK_KEYS = frozenset(
 )
 
 # Valid kiro-cli hook event names — the UNION of the hardcoded baseline (kiro-cli's
-# known schema) and any event key present in bundled defaults. Used as the single
-# filter on both the generation path (bundled defaults -> generated spec) and the
-# repair/validation path (on-disk repair, user-input) — a new event added to
-# defaults.json is automatically accepted on both without a matching allowlist
-# update (#3362).
+# known schema) and any event key present in bundled defaults. Used for generated
+# specs and user-input validation; startup repair is ownership-scoped and removes
+# only legacy keys Kiro Crew serialized. A new event added to defaults.json is
+# automatically accepted without a matching allowlist update (#3362).
 _VALID_HOOK_EVENTS = frozenset(
     {"preToolUse", "postToolUse", "userPromptSubmit", "agentSpawn", "stop"}
 ) | frozenset(
@@ -987,13 +987,18 @@ _VALID_HOOK_EVENTS = frozenset(
     if k not in _INTERNAL_HOOK_KEYS
 )
 
+# Repair is subtractive against the runtime-only key Kiro Crew is known to have
+# serialized into its generated specs. Unknown keys may belong to a newer
+# kiro-cli schema or to the user.
+_LEGACY_KIROCREW_HOOK_KEYS = frozenset({"auto_approve_tools"})
+
 
 def _kiro_hooks_only(hooks: dict) -> dict:
     """Return only kiro-cli valid hook keys, stripping everything else.
 
-    Used on both the generation path (trusted bundled defaults) and the
-    repair/validation path (on-disk repair, user-supplied config) — screens
-    unknown keys that kiro-cli would reject.
+    Used on the generation path (trusted bundled defaults) and for user-supplied
+    config validation. On-disk startup repair is deliberately narrower because
+    unknown keys may belong to a newer kiro-cli schema or to the user.
     """
     return {k: v for k, v in hooks.items() if k in _VALID_HOOK_EVENTS}
 
@@ -3349,7 +3354,7 @@ def sync_aim_packages() -> None:
 
 
 def repair_agent_configs() -> None:
-    """Sanitize invalid hook keys in all agent configs."""
+    """Remove legacy Kiro Crew hook keys from agent configs owned by Kiro Crew."""
     _sanitize_agent_hooks()
 
 
@@ -3357,16 +3362,19 @@ _hooks_sanitized_mtimes: dict[str, float] = {}
 
 
 def _sanitize_agent_hooks() -> None:
-    """Remove KiroCrew-internal hook keys from kiro-cli agent configs.
+    """Remove legacy Kiro Crew hook keys from agent configs owned by Kiro Crew.
 
     Kiro-cli rejects unknown variants in the ``hooks`` field (e.g.
     ``auto_approve_tools``), causing it to silently fall back to the
     default agent — losing kirocrew-core, kirocrew-cron.
 
-    Auto-repairs configs for users who already have the invalid key from
-    prior versions.
+    Auto-repairs configs carrying keys Kiro Crew wrote in prior versions. Files
+    outside :data:`OWNED_KIRO_AGENT_FILES` and unrecognized hook keys are left
+    untouched because Kiro Crew does not own their schema or contents.
     """
-    for f in kiro_agents_dir_path().glob("*.json"):
+    agents_dir = kiro_agents_dir_path()
+    for filename in OWNED_KIRO_AGENT_FILES:
+        f = agents_dir / filename
         try:
             mtime = f.stat().st_mtime
         except OSError:
@@ -3380,19 +3388,20 @@ def _sanitize_agent_hooks() -> None:
         if not isinstance(hooks, dict):
             _hooks_sanitized_mtimes[str(f)] = mtime
             continue
-        clean_hooks = _kiro_hooks_only(hooks)
-        if len(clean_hooks) == len(hooks):
+        removed_keys = [key for key in hooks if key in _LEGACY_KIROCREW_HOOK_KEYS]
+        if not removed_keys:
             _hooks_sanitized_mtimes[str(f)] = mtime
             continue
-        invalid_keys = [k for k in hooks if k not in _VALID_HOOK_EVENTS]
-        data["hooks"] = clean_hooks
+        data["hooks"] = {
+            key: value for key, value in hooks.items() if key not in _LEGACY_KIROCREW_HOOK_KEYS
+        }
         _atomic_json_write(f, data)
         _hooks_sanitized_mtimes[str(f)] = f.stat().st_mtime
-        logger.info("Removed invalid hook keys %s from %s", invalid_keys, f.name)
+        logger.info("Removed legacy Kiro Crew hook keys %s from %s", removed_keys, f.name)
         sel().log_api_access(
             caller="system",
             operation="sanitize_agent_hooks",
             outcome="ok",
             source="agent",
-            resources=f"{f.name}: removed {invalid_keys}",
+            resources=f"{f.name}: removed {removed_keys}",
         )
