@@ -250,6 +250,30 @@ class TestMirrorLink:
         assert link == ChannelLink("telegram", channel_id="123", thread_id=None)
 
     @pytest.mark.asyncio
+    async def test_an_explicit_link_withdraws_the_automatic_mirroring_opt_out(
+        self, tmp_path, monkeypatch
+    ):
+        """An explicit bind is explicit intent, so it clears a standing refusal.
+
+        A channel that re-asserts its own conversation every turn (Telegram)
+        declines while the flag is set. Leaving it set would make this endpoint
+        write a binding the channel then refuses to honour — the user is looking
+        at a link they made, and the chat stays silent.
+        """
+        state = _prep(tmp_path, monkeypatch)
+        state.register_channel_transport(_fake_transport("telegram"))
+        state.sessions.set_mirror_link = MagicMock()
+        state.sessions.set_mirror_opt_out = MagicMock()
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "telegram", "target_id": "user:123"},
+            )
+            assert resp.status == 200
+        state.sessions.set_mirror_opt_out.assert_called_once()
+        assert state.sessions.set_mirror_opt_out.call_args.args[1] is False
+
+    @pytest.mark.asyncio
     async def test_link_passes_thread_id(self, tmp_path, monkeypatch):
         state = _prep(tmp_path, monkeypatch)
         transport = _fake_transport("telegram")

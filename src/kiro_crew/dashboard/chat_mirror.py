@@ -453,15 +453,24 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
             logger.debug("mirror-link context delivery failed", exc_info=True)
 
     try:
-        state.sessions.set_mirror_link(
-            session_key,
-            link,
-            # Mark the binding inbound-capable only where the transport's inbound
-            # path actually resolves it. Without this the connect writes an
-            # outbound-only binding, ``resumed_session`` skips it, and the user's
-            # reply starts a brand-new session with none of this transcript.
-            accepts_inbound=_resumes_inbound(transport),
-        )
+        with state.sessions.batched_save():
+            # An explicit bind is explicit intent to mirror, so it withdraws any
+            # standing refusal of the AUTOMATIC bind. Without this the two
+            # disagree: a channel that re-asserts its own conversation every turn
+            # would keep declining while the user is looking at a link they just
+            # made, and a later automatic pass would have to guess which of the
+            # two the user meant.
+            state.sessions.set_mirror_opt_out(session_key, False)
+            state.sessions.set_mirror_link(
+                session_key,
+                link,
+                # Mark the binding inbound-capable only where the transport's
+                # inbound path actually resolves it. Without this the connect
+                # writes an outbound-only binding, ``resumed_session`` skips it,
+                # and the user's reply starts a brand-new session with none of
+                # this transcript.
+                accepts_inbound=_resumes_inbound(transport),
+            )
     except ConversationOwnershipConflict:
         # The precheck above covers the common case; this is the genuine race —
         # someone claimed the conversation while we were delivering. Report the

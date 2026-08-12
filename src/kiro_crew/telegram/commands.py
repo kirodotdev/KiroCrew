@@ -5,8 +5,8 @@ Commands:
   /compact     — trigger context compaction
   /model       — pick the model from an inline-button list
   /yolo        — auto-approve every tool for a bounded window
-  /link        — mirror this conversation's dashboard tab back here
-  /unlink      — stop mirroring
+  /link        — resume mirroring dashboard replies here (on by default)
+  /unlink      — stop mirroring dashboard replies here
   /stop        — stop the current reply and clear the queue (alias: /cancel)
   /help        — show available commands
 
@@ -124,8 +124,8 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("compact", "Compress the context when it gets long"),
     ("model", "Choose the model from a list"),
     ("yolo", "Auto-approve every tool for a while (on / off / renew)"),
-    ("link", "Mirror this conversation's dashboard tab here"),
-    ("unlink", "Stop mirroring the dashboard tab"),
+    ("link", "Resume mirroring dashboard replies here (on by default)"),
+    ("unlink", "Stop mirroring dashboard replies here"),
     ("stop", "Stop the current reply and clear the queue"),
     ("help", "Show the command list"),
 )

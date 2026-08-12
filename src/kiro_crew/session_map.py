@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
@@ -42,6 +44,29 @@ _KIRO_SESSIONS_DIR: Path | None = None
 def _kiro_sessions_dir() -> Path:
     """kiro-cli sessions directory, resolved against the live data home."""
     return _KIRO_SESSIONS_DIR if _KIRO_SESSIONS_DIR is not None else kiro_sessions_dir()
+
+
+# Per-conversation flag recording a refusal of automatic origin mirroring. Named
+# here rather than at the caller because it is an ON-DISK contract: the map
+# persists it, so renaming the literal would silently re-enable mirroring for
+# every conversation that had already turned it off.
+MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
+
+# Flags that are durable SETTINGS rather than session-scoped state, and so keep
+# their entry alive through :meth:`SessionMap.prune`. Membership is opt-in
+# BECAUSE immortality has a cost: an entry that prune can never collect is a row
+# the map carries forever, and every mutation rewrites the whole map. A flag
+# describing one session (Slack's ``temporary`` / ``incognito`` threads) must
+# stay collectable — one leaked row per such thread would grow without bound.
+_DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG})
+
+
+def _has_durable_flag(entry: dict) -> bool:
+    """True iff *entry* carries a flag that must outlive its native session."""
+    flags = entry.get("flags")
+    if not isinstance(flags, dict):
+        return False
+    return any(flags.get(name) for name in _DURABLE_FLAGS)
 
 
 class ConversationOwnershipConflict(RuntimeError):
@@ -82,7 +107,33 @@ class SessionMap:
         self._path = config_dir() / SESSION_MAP_FILENAME
         self._data: dict[str, dict] = {}  # key → {"sid", "slack_thread_ts", "slack_channel_id"}
         self._thread_to_session: dict[str, str] = {}  # slack_thread_ts → session_key
+        self._batch_depth = 0
+        self._batch_dirty = False
         self._load()
+
+    @contextmanager
+    def batched_save(self) -> Iterator[None]:
+        """Collapse every ``_save()`` inside this block into one write at exit.
+
+        A mutation rewrites the WHOLE map, so a caller making several related
+        mutations pays that cost once per call rather than once per operation —
+        and on the event loop each write is a stall every task shares. Nesting is
+        counted, and the write happens on the way out even if the block raises,
+        so a partial sequence is never left only in memory.
+
+        MUST NOT be held across an ``await``. The map carries no lock, so the
+        loop's own serialization is what keeps a batch from interleaving with
+        another mutation; yielding inside one would let a concurrent write land
+        between the mutations and be lost by this batch's write.
+        """
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0 and self._batch_dirty:
+                self._batch_dirty = False
+                self._write()
 
     def _load(self) -> None:
         self._thread_to_session.clear()
@@ -196,6 +247,12 @@ class SessionMap:
             self._thread_to_session.setdefault(ts, key)
 
     def _save(self) -> None:
+        if self._batch_depth:
+            self._batch_dirty = True
+            return
+        self._write()
+
+    def _write(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
         try:
@@ -348,27 +405,56 @@ class SessionMap:
         self._remove_entry(canonical_key(key))
 
     def prune(self) -> int:
-        """Remove entries whose session files no longer exist."""
+        """Remove entries whose session files no longer exist.
+
+        An entry carrying a DURABLE flag is never deleted, and when its ``sid``
+        has gone stale the ``sid`` is cleared instead. A durable flag is a
+        per-conversation SETTING, not session state: it can be written before the
+        conversation has ever run a turn (``/unlink`` as the very first message
+        leaves no ``sid``, no thread and no mirror), and it must outlive the
+        native session the conversation happened to be using. Deleting the entry
+        either way would silently revert the setting at the next restart, and the
+        user's next message would land on the default they had just turned off.
+
+        Session-SCOPED flags (a temporary or incognito thread) are deliberately
+        NOT durable: they describe one session, so keeping their entries alive
+        would leak a never-collected row per such thread and grow the map — which
+        every mutation rewrites — without bound.
+
+        Returns the number of entries removed; a ``sid``-only reset is a repair,
+        not a removal, so it is not counted.
+        """
         sessions_dir = _kiro_sessions_dir()
-        stale = [
-            k
-            for k, entry in self._data.items()
-            if entry.get("provider") != "claude_code"
-            and (
-                (entry.get("sid") and not (sessions_dir / f"{entry['sid']}.json").exists())
-                or (
-                    not entry.get("sid")
-                    and not entry.get("slack_thread_ts")
-                    and not entry.get("mirror")
-                )
-            )
-        ]
+        stale: list[str] = []
+        repaired = False
+        for key, entry in self._data.items():
+            if entry.get("provider") == "claude_code":
+                continue
+            sid = entry.get("sid")
+            durable = _has_durable_flag(entry)
+            if sid and not (sessions_dir / f"{sid}.json").exists():
+                if durable:
+                    entry["sid"] = ""
+                    repaired = True
+                else:
+                    stale.append(key)
+            elif (
+                not sid
+                and not entry.get("slack_thread_ts")
+                and not entry.get("mirror")
+                and not durable
+            ):
+                stale.append(key)
         for k in stale:
             del self._data[k]
         if stale:
             self._rebuild_thread_index()
             self._save()
             logger.info("Pruned %d stale session map entries", len(stale))
+        elif repaired:
+            # A sid-only reset still has to reach disk, or the next startup sees
+            # the same stale sid and repairs it again forever.
+            self._save()
         return len(stale)
 
     def mapped_sids_by_key(self) -> dict[str, str]:

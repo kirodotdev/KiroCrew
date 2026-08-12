@@ -10,7 +10,9 @@ turn + callback routing (transport_dispatch.py).
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -26,6 +28,7 @@ from kiro_crew.messaging.renderer import (
     OutputEvent,
 )
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.session_map import ConversationOwnershipConflict
 from kiro_crew.telegram.client import (
     TELEGRAM_CHUNK_LIMIT,
     TELEGRAM_MAX_TEXT,
@@ -242,6 +245,9 @@ class FakeSessions:
         self.queued: list = []
         self._gp = FakeProvider()
         self.mirror_links: dict[str, Any] = {}
+        self.mirror_opt_outs: set[str] = set()
+        self.batch_depth = 0
+        self.batched_writes: list[bool] = []
         self._pid: Any = None
 
     async def get_or_create(
@@ -281,9 +287,32 @@ class FakeSessions:
         return -1
 
     def set_mirror_link(self, key: str, link: Any) -> None:
+        self.batched_writes.append(self.batch_depth > 0)
         self.mirror_links[key] = link
 
+    def get_mirror_link(self, key: str) -> Any:
+        return self.mirror_links.get(key)
+
+    @contextmanager
+    def batched_save(self) -> Any:
+        self.batch_depth += 1
+        try:
+            yield
+        finally:
+            self.batch_depth -= 1
+
+    def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
+        self.batched_writes.append(self.batch_depth > 0)
+        if opted_out:
+            self.mirror_opt_outs.add(key)
+        else:
+            self.mirror_opt_outs.discard(key)
+
+    def mirror_opt_out(self, key: str) -> bool:
+        return key in self.mirror_opt_outs
+
     def clear_mirror_link(self, key: str) -> bool:
+        self.batched_writes.append(self.batch_depth > 0)
         return self.mirror_links.pop(key, None) is not None
 
     def clear_mirror_links_at(self, link: Any) -> list[str]:
@@ -2658,6 +2687,22 @@ class TestLinkCommand:
         assert sess.mirror_links == {}
         assert any("Unlinked" in t for t, _ in cli.sent)
 
+    def test_link_batches_its_writes_into_one_map_save(self) -> None:
+        # /link makes three mutations. Each would otherwise rewrite the entire
+        # session map, stalling the loop three times for one user action.
+        d, _cli, sess = _dispatcher({7})
+        asyncio.run(d._handle_link(("direct", "7"), 7))
+        assert sess.batched_writes and all(sess.batched_writes)
+        assert sess.batch_depth == 0
+
+    def test_unlink_batches_its_writes_into_one_map_save(self) -> None:
+        d, _cli, sess = _dispatcher({7})
+        asyncio.run(d._handle_link(("direct", "7"), 7))
+        sess.batched_writes.clear()
+        asyncio.run(d._handle_unlink(("direct", "7"), 7))
+        assert sess.batched_writes and all(sess.batched_writes)
+        assert sess.batch_depth == 0
+
     def test_unlink_leaves_other_locations_alone(self) -> None:
         # Exact-match sweep: a mirror into a DIFFERENT chat survives, and the
         # reply stays truthful when nothing points at this conversation.
@@ -2667,6 +2712,160 @@ class TestLinkCommand:
         asyncio.run(d._handle_unlink(("direct", "7"), 7))
         assert sess.mirror_links == {"dashboard:chat-9": other}
         assert any("wasn't linked" in t for t, _ in cli.sent)
+
+
+class TestAutomaticOriginMirror:
+    """A Telegram conversation mirrors itself, so dashboard turns reach the chat.
+
+    Issue #2959: a session started in Telegram had no ``telegram`` mirror unless
+    the user typed ``/link``, so ``_deliver_cross_surface_reply`` found no target
+    and a turn taken from the dashboard was never delivered back — the chat read
+    as dead while the conversation continued elsewhere.
+    """
+
+    @staticmethod
+    def _turn(d: Any, uid: str = "7", text: str = "hi") -> None:
+        asyncio.run(
+            d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id=uid, conversation_id=uid, text=text
+                )
+            )
+        )
+
+    def test_inbound_turn_binds_this_chat_as_the_mirror(self) -> None:
+        d, _cli, sess = _dispatcher({7})
+        self._turn(d)
+        link = sess.mirror_links[d._session_key(("direct", "7"))]
+        assert link == ChannelLink("telegram", channel_id="7", thread_id=None)
+
+    def test_forum_turn_binds_the_topic_not_the_supergroup_general(self) -> None:
+        # The bind shares _origin_mirror_link with /link, so a forum turn must
+        # carry the Topic id — a General-scoped binding would thread dashboard
+        # replies into the wrong place.
+        d, _cli, sess = _dispatcher(
+            {7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890]
+        )
+        asyncio.run(
+            d.handle_message(
+                TelegramInboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="-1001234567890",
+                    text="hi",
+                    chat_type="supergroup",
+                    thread_id="5",
+                    message_id=1,
+                )
+            )
+        )
+        route = ("forum", "-1001234567890:5")
+        link = sess.mirror_links[d._session_key(route)]
+        assert link == ChannelLink("telegram", channel_id="-1001234567890", thread_id="5")
+
+    def test_unlink_survives_the_next_message(self) -> None:
+        # The load-bearing half of the opt-out: mirroring is re-asserted every
+        # turn, so without a PERSISTED refusal "off" would last one message.
+        d, _cli, sess = _dispatcher({7})
+        self._turn(d)
+        asyncio.run(d._handle_unlink(("direct", "7"), 7))
+        assert sess.mirror_links == {}
+        self._turn(d, text="still off?")
+        assert sess.mirror_links == {}
+
+    def test_link_withdraws_the_opt_out_so_binding_resumes(self) -> None:
+        d, _cli, sess = _dispatcher({7})
+        asyncio.run(d._handle_unlink(("direct", "7"), 7))
+        asyncio.run(d._handle_link(("direct", "7"), 7))
+        sess.mirror_links.clear()  # prove the NEXT turn re-binds, not just /link
+        self._turn(d)
+        assert sess.mirror_links[d._session_key(("direct", "7"))] == ChannelLink(
+            "telegram", channel_id="7", thread_id=None
+        )
+
+    def test_steady_state_turn_does_not_rewrite_an_identical_binding(self) -> None:
+        # The bind is re-asserted every turn; skipping an unchanged write keeps
+        # the per-turn cost a read instead of a session-map save.
+        d, _cli, sess = _dispatcher({7})
+        self._turn(d)
+        writes: list[str] = []
+        original = sess.set_mirror_link
+
+        def _counting(key: str, link: Any) -> None:
+            writes.append(key)
+            original(key, link)
+
+        sess.set_mirror_link = _counting  # type: ignore[method-assign]
+        self._turn(d, text="second")
+        assert writes == []
+
+    def test_bind_repairs_a_binding_that_drifted_to_another_location(self) -> None:
+        # Self-healing: a live conversation whose binding was swept or rebound
+        # elsewhere must not stay silently unmirrored.
+        d, _cli, sess = _dispatcher({7})
+        key = d._session_key(("direct", "7"))
+        sess.mirror_links[key] = ChannelLink("telegram", channel_id="999")
+        self._turn(d)
+        assert sess.mirror_links[key] == ChannelLink(
+            "telegram", channel_id="7", thread_id=None
+        )
+
+    def test_a_refused_claim_does_not_break_the_turn(self) -> None:
+        # set_mirror_link raises ConversationOwnershipConflict when a rival holds
+        # the conversation. On the turn path an uncaught raise answers nothing.
+        d, cli, sess = _dispatcher({7})
+
+        def _refuse(key: str, link: Any) -> None:
+            raise ConversationOwnershipConflict("held by another session")
+
+        sess.set_mirror_link = _refuse  # type: ignore[method-assign]
+        self._turn(d, text="hello world")
+        assert cli.final_text() == "Answer: hello world"
+        assert sess.successes == ["telegram:kirocrew:direct:7"]
+
+    def test_the_binding_write_stays_on_the_loop_thread(self) -> None:
+        # SessionMap holds no lock, so the loop's own serialization is what keeps
+        # one read-modify-write from interleaving with another's. Offloading the
+        # write to a worker thread would remove that and let a late os.replace
+        # drop a persisted binding.
+        d, _cli, sess = _dispatcher({7})
+        wrote_on: list[int] = []
+        original = sess.set_mirror_link
+
+        def _recording(key: str, link: Any) -> None:
+            wrote_on.append(threading.get_ident())
+            original(key, link)
+
+        sess.set_mirror_link = _recording  # type: ignore[method-assign]
+        self._turn(d)
+        # asyncio.run drives the loop on THIS thread, so the loop's ident is ours.
+        assert wrote_on == [threading.get_ident()]
+
+    def test_an_explicit_relink_to_the_opted_out_chat_survives(self) -> None:
+        # The user /unlinked, then deliberately rebound this session to this same
+        # chat from the dashboard. That is indistinguishable by VALUE from an
+        # unlink that half-landed, so a bind that "repaired" the state would
+        # delete a link the user just made — re-creating the dead-chat symptom
+        # this feature exists to fix, for a user who did everything right.
+        d, _cli, sess = _dispatcher({7})
+        key = d._session_key(("direct", "7"))
+        explicit = ChannelLink("telegram", channel_id="7", thread_id=None)
+        sess.set_mirror_opt_out(key, True)
+        sess.mirror_links[key] = explicit
+        self._turn(d)
+        assert sess.mirror_links == {key: explicit}
+
+    def test_the_opt_out_leaves_an_explicit_mirror_elsewhere_alone(self) -> None:
+        # The dashboard can bind a surfaced session to any conversation. An
+        # opt-out for THIS chat says nothing about that target, so repairing an
+        # interrupted unlink must not double as deleting a link the user chose.
+        d, _cli, sess = _dispatcher({7})
+        key = d._session_key(("direct", "7"))
+        elsewhere = ChannelLink("telegram", channel_id="999", thread_id="4")
+        sess.mirror_links[key] = elsewhere
+        sess.set_mirror_opt_out(key, True)
+        self._turn(d)
+        assert sess.mirror_links == {key: elsewhere}
 
 
 def test_receipt_text_caps_displayed_items() -> None:

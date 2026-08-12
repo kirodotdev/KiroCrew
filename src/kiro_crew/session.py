@@ -82,6 +82,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -115,8 +116,9 @@ from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
 from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 from kiro_crew.sel import sel
-from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
+from kiro_crew.session_map import MIRROR_OPT_OUT_FLAG
+from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
 from kiro_crew.session_pid import (
     _build_child_map,
     _cleanup_orphaned_mcp_servers,
@@ -4191,6 +4193,37 @@ class SessionManager:
     def mirror_accepts_inbound(self, key: str) -> bool:
         """True iff this session's mirror is a session-resume (two-way) binding."""
         return self._session_map.mirror_accepts_inbound(key)
+
+    def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
+        """Record (or withdraw) a refusal of AUTOMATIC origin mirroring.
+
+        A channel that mirrors its own conversation by default needs an
+        in-channel "off" that the NEXT inbound message does not silently undo,
+        and clearing the binding cannot express that: an entry with no ``mirror``
+        is indistinguishable from one that was never linked, so the automatic
+        bind would fire again one message later. This flag is that difference.
+
+        Persisted, because the bind it suppresses is itself re-asserted on every
+        turn and survives a restart — an in-memory refusal would come back on
+        its own. Only the automatic bind consults it; an explicit ``/link`` or
+        dashboard link is a direct instruction and :meth:`set_mirror_link` never
+        reads it.
+        """
+        self._session_map.set_flag(key, MIRROR_OPT_OUT_FLAG, opted_out)
+
+    def mirror_opt_out(self, key: str) -> bool:
+        """True iff this conversation declined automatic origin mirroring."""
+        return self._session_map.get_flag(key, MIRROR_OPT_OUT_FLAG)
+
+    def batched_save(self) -> AbstractContextManager[None]:
+        """Collapse the session-map writes of a related mutation sequence into one.
+
+        Each mutation rewrites the whole map, so a caller making several of them
+        (a link, an unlink) pays that cost once per operation unless it says
+        otherwise. Must not be held across an ``await`` — see
+        :meth:`SessionMap.batched_save`.
+        """
+        return self._session_map.batched_save()
 
     def set_origin_link(self, key: str, link: ChannelLink) -> None:
         """Record the channel conversation this session was started from.
