@@ -1443,6 +1443,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
     "dashboard.prevent_sleep": {"type": "bool"},
+    # Beta opt-in for the composer's Worktrees control and its endpoints. The
+    # endpoints read this on every request, so a user who finds the feature
+    # unhelpful turns it off here and it is off immediately — no restart, and no
+    # worktree on disk is touched by the switch.
+    "dashboard.worktrees_enabled": {"type": "bool"},
     # User profile (onboarding step 2 + Settings > General > About You).
     # Structured slugs, not free text: context.py maps them to prompt-ready
     # descriptions in its [USER PROFILE] block. "" = unspecified/cleared.

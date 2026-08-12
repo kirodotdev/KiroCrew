@@ -137,7 +137,14 @@ describe('ChatPage follow-up worktree orchestration', () => {
     fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
     // Worktree BEFORE session: a git refusal must not leave an empty session.
     await waitFor(() => expect(api.createWorktree).toHaveBeenCalledWith('/repo', 'followup/add-rate-limits'))
-    await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo-wt-limits'))
+    // The session is scoped to the worktree AND labelled with the repo it came
+    // from: `project` is the worktree path, which cannot answer which repository
+    // this session belongs to.
+    await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith(
+      'chat-2',
+      '/repo-wt-limits',
+      expect.objectContaining({ repo: '/repo', path: '/repo-wt-limits' }),
+    ))
     expect((api.createWorktree as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0])
       .toBeLessThan((api.createChatSlot as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0])
     // The prompt is handed to the NEW slot through the prefill channel the

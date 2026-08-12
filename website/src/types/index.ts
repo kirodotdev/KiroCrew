@@ -291,6 +291,62 @@ export interface SteeringList {
   project: string
 }
 
+/**
+ * Which repository and branch a session's project directory belongs to.
+ *
+ * A LABEL, not an authority: `repo` is the main checkout (the thing `project`
+ * cannot tell you, because a worktree's path is not the repository's path), and
+ * every server-side filesystem decision re-derives the repo from the slot-project
+ * allow-list rather than trusting this.
+ */
+export interface WorktreeBinding {
+  repo: string
+  branch: string
+  base?: string
+  path: string
+}
+
+/** Recyclability classification. Only `merged` and `empty` allow reclaiming. */
+export type WorktreeVerdict =
+  | 'merged'
+  | 'merged_dirty'
+  | 'empty'
+  | 'fresh'
+  | 'active'
+  | 'dirty_check_failed'
+  | 'base_unknown'
+
+/** One worktree's live git state, read from disk per request (never cached in the slot). */
+export interface WorktreeEntry {
+  path: string
+  branch: string
+  head: string
+  detached: boolean
+  locked: boolean
+  is_main: boolean
+  base_known: boolean
+  /** `null` = could not be determined. Never treated as clean. */
+  dirty: boolean | null
+  /** Patch-unique commits vs the base; 0 with `own_commits > 0` means it landed. */
+  ahead: number
+  own_commits: number
+  behind: number
+  age_s: number
+  size_bytes: number
+  verdict: WorktreeVerdict
+  recyclable: boolean
+  error: string
+}
+
+export interface WorktreeListResponse {
+  repo: string
+  base_ref: string
+  base_sha: string
+  worktrees: WorktreeEntry[]
+  disk_bytes: number
+  error?: string
+}
+
 /** A skill result from the multi-provider discover endpoint. */
 export interface DiscoveredSkill {
   id: string
@@ -505,7 +561,7 @@ export interface ConfiguredChannelTarget {
 }
 
 export interface ChatSlot {
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab' | 'jira'; number: number; url: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; worktree?: WorktreeBinding; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab' | 'jira'; number: number; url: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Artifact companion binding: slug of the artifact this slot is a companion
    * chat for. Set at slot create and persisted in the history meta line, so the
    * binding survives a gateway restart and a History-page resume. */

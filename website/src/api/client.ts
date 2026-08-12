@@ -13,6 +13,8 @@ import type {
   SessionStorageCleanup,
   SessionStorageReport,
   SessionTrashResult,
+  WorktreeBinding,
+  WorktreeListResponse,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
@@ -1544,8 +1546,8 @@ export const api = {
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j),
   chatSlotWorkspace: (slot: string, workspace: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/workspace', { workspace }).then(j),
-  chatSlotProject: (slot: string, project: string) =>
-    post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j),
+  chatSlotProject: (slot: string, project: string, worktree?: WorktreeBinding) =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project, worktree }).then(j),
   // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
   // Resolves with the created path, or rejects with the server's message
   // (branch/dir already exists, not a git repo, git unavailable).
@@ -1555,6 +1557,26 @@ export const api = {
       path?: string
       branch?: string
       base?: string
+      error?: string
+    }>,
+  // Every worktree registered against `repo`, with dirty state, commit counts
+  // and a recyclability verdict. `size` walks each tree to total its bytes, so
+  // it is opt-in — the routine poll leaves it off. `fresh` bypasses the server's
+  // short TTL cache, which is what the explicit refresh control wants.
+  listWorktrees: (repo: string, size?: boolean, fresh?: boolean) =>
+    fetch(
+      '/api/worktree/list?repo=' + encodeURIComponent(repo)
+      + (size ? '&size=1' : '') + (fresh ? '&fresh=1' : ''),
+    ).then(j) as Promise<WorktreeListResponse>,
+  // `force` is the record that the user confirmed losing uncommitted work; the
+  // server refuses a dirty tree with 409 without it.
+  removeWorktree: (repo: string, path: string, force?: boolean) =>
+    post('/api/worktree/remove', { repo, path, force }).then(j) as Promise<{
+      ok?: boolean
+      path?: string
+      branch?: string
+      dirty?: boolean
+      verdict?: string
       error?: string
     }>,
   recentProjects: () => fetch('/api/recent-projects').then(j) as Promise<{ dirs: string[] }>,

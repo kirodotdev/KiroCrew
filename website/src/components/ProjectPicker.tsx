@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-react'
+import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search, GitBranch, AlertTriangle } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import { Toggle } from './ui'
 
 import { i18nT } from '../i18n/t'
 interface Props {
@@ -11,9 +12,19 @@ interface Props {
   anchorRef?: RefObject<HTMLElement | null>
   anchorRect?: DOMRect | null
   onSelect: (path: string) => void
+  // Worktree-sessions opt-in, surfaced here because the setting is about what a
+  // session may do with the directory being chosen. Writes the same instance
+  // config as the Settings entry. Omit the handler to hide the footer.
+  worktreesEnabled?: boolean
+  onWorktreesEnabledChange?: (v: boolean) => void
+  // Whether the session's current directory resolves to a git work tree.
+  // `null`/undefined = not determined yet, which renders no verdict either way:
+  // flashing "not a repository" while the probe is still in flight would be a
+  // false accusation against a directory that turns out to be one.
+  projectIsRepo?: boolean | null
 }
 
-export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect }: Props) {
+export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect, worktreesEnabled, onWorktreesEnabledChange, projectIsRepo }: Props) {
   const [tab, setTab] = useState<'recent' | 'browse'>('recent')
   const [input, setInput] = useState('')
   const [browsePath, setBrowsePath] = useState('')
@@ -278,6 +289,38 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
             ))}
           </div>
         </>
+      )}
+
+      {onWorktreesEnabledChange && (
+        <div className="shrink-0 w-full border-t border-border px-3 py-2 flex items-center gap-2">
+          <GitBranch size={12} className="text-accent shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[12px] text-text truncate">{i18nT('components.projectPicker.worktree_sessions')}</div>
+            {/* The verdict is about the CURRENT directory, while the switch writes
+                an instance-wide setting -- so a non-repo directory explains itself
+                here instead of disabling the switch, which would hold a global
+                setting hostage to whichever session happens to be open.
+
+                It is shown only once the beta is ON. `projectIsRepo` is also false
+                for a session with no project yet, so rendering it unconditionally
+                told users who had never enabled the feature that their folder was
+                wrong -- an alarm about a capability they had not asked for. */}
+            {worktreesEnabled && projectIsRepo === false ? (
+              <div id="pp-wt-desc" className="text-[11px] text-warn leading-snug flex items-start gap-1">
+                <AlertTriangle size={11} className="shrink-0 mt-[1px]" />
+                <span>{i18nT('components.projectPicker.this_folder_is_not_a_git_repository_pick_the_rep')}</span>
+              </div>
+            ) : (
+              <div id="pp-wt-desc" className="text-[11px] text-muted leading-snug">{i18nT('components.projectPicker.let_this_session_work_in_its_own_branch_checkout')}</div>
+            )}
+          </div>
+          <Toggle
+            checked={!!worktreesEnabled}
+            onChange={onWorktreesEnabledChange}
+            label={i18nT('components.projectPicker.worktree_sessions')}
+            describedBy="pp-wt-desc"
+          />
+        </div>
       )}
     </div>,
     document.body

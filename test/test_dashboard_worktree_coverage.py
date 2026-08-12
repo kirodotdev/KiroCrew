@@ -33,6 +33,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers import worktree as wt
+from kiro_crew.worktree import git_exec as gx
 
 # ── injected git boundary ────────────────────────────────────────────────
 
@@ -67,9 +68,16 @@ class FakeGit:
 
 @pytest.fixture
 def git(monkeypatch):
-    """Install a :class:`FakeGit` and hand it back for per-test programming."""
+    """Install a :class:`FakeGit` and hand it back for per-test programming.
+
+    Bound on BOTH modules: handler-owned helpers resolve ``_run_git`` through
+    this module's namespace, while the primitives that live in ``git_exec``
+    (``git_toplevel``, ``resolve_base_ref``) resolve ``run_git`` through theirs.
+    Patching only one leaves the other reaching a real git.
+    """
     fake = FakeGit()
     monkeypatch.setattr(wt, "_run_git", fake)
+    monkeypatch.setattr(gx, "run_git", fake)
     return fake
 
 
@@ -100,10 +108,10 @@ class TestRunGit:
 
     def test_missing_backend_becomes_sandbox_unavailable(self, monkeypatch):
         monkeypatch.setattr(
-            wt, "sandboxed_spawn_argv", MagicMock(side_effect=RuntimeError("no backend"))
+            gx, "sandboxed_spawn_argv", MagicMock(side_effect=RuntimeError("no backend"))
         )
-        with pytest.raises(wt.SandboxUnavailable, match="no backend"):
-            wt._run_git(["--version"], os.getcwd())
+        with pytest.raises(gx.SandboxUnavailable, match="no backend"):
+            gx.run_git(["--version"], os.getcwd())
 
     def test_terminal_prompt_is_disabled_and_overrides_are_prepended(self, monkeypatch, tmp_path):
         seen: dict = {}
@@ -117,58 +125,58 @@ class TestRunGit:
             seen["timeout"] = kwargs.get("timeout")
             return _proc(argv)
 
-        monkeypatch.setattr(wt, "sandboxed_spawn_argv", fake_spawn)
-        monkeypatch.setattr(wt.subprocess, "run", fake_run)
-        wt._run_git(["status"], str(tmp_path))
+        monkeypatch.setattr(gx, "sandboxed_spawn_argv", fake_spawn)
+        monkeypatch.setattr(gx.subprocess, "run", fake_run)
+        gx.run_git(["status"], str(tmp_path))
         assert seen["argv"][0] == "git"
         assert f"core.hooksPath={os.devnull}" in seen["argv"]
         assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
-        assert seen["timeout"] == wt._GIT_TIMEOUT
+        assert seen["timeout"] == gx.GIT_TIMEOUT
 
     def test_cleanup_file_is_unlinked(self, monkeypatch, tmp_path):
         scratch = tmp_path / "wrapper.json"
         scratch.write_text("{}", encoding="utf-8", newline="\n")
-        monkeypatch.setattr(wt, "sandboxed_spawn_argv", self._spawn(str(scratch)))
-        monkeypatch.setattr(wt.subprocess, "run", lambda argv, **kw: _proc(argv))
-        wt._run_git(["status"], str(tmp_path))
+        monkeypatch.setattr(gx, "sandboxed_spawn_argv", self._spawn(str(scratch)))
+        monkeypatch.setattr(gx.subprocess, "run", lambda argv, **kw: _proc(argv))
+        gx.run_git(["status"], str(tmp_path))
         assert not scratch.exists()
 
     def test_missing_cleanup_file_is_suppressed(self, monkeypatch, tmp_path):
         """``os.unlink`` on an already-gone wrapper must not surface as an error."""
         monkeypatch.setattr(
-            wt, "sandboxed_spawn_argv", self._spawn(str(tmp_path / "never-created"))
+            gx, "sandboxed_spawn_argv", self._spawn(str(tmp_path / "never-created"))
         )
-        monkeypatch.setattr(wt.subprocess, "run", lambda argv, **kw: _proc(argv))
-        assert wt._run_git(["status"], str(tmp_path)).returncode == 0
+        monkeypatch.setattr(gx.subprocess, "run", lambda argv, **kw: _proc(argv))
+        assert gx.run_git(["status"], str(tmp_path)).returncode == 0
 
     def test_cleanup_runs_even_when_the_spawn_raises(self, monkeypatch, tmp_path):
         scratch = tmp_path / "wrapper.json"
         scratch.write_text("{}", encoding="utf-8", newline="\n")
-        monkeypatch.setattr(wt, "sandboxed_spawn_argv", self._spawn(str(scratch)))
+        monkeypatch.setattr(gx, "sandboxed_spawn_argv", self._spawn(str(scratch)))
 
         def boom(argv, **kw):
-            raise subprocess.TimeoutExpired(argv, wt._GIT_TIMEOUT)
+            raise subprocess.TimeoutExpired(argv, gx.GIT_TIMEOUT)
 
-        monkeypatch.setattr(wt.subprocess, "run", boom)
+        monkeypatch.setattr(gx.subprocess, "run", boom)
         with pytest.raises(subprocess.TimeoutExpired):
-            wt._run_git(["status"], str(tmp_path))
+            gx.run_git(["status"], str(tmp_path))
         assert not scratch.exists()
 
     def test_launcher_stderr_prefix_is_a_refusal(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(wt, "sandboxed_spawn_argv", self._spawn())
+        monkeypatch.setattr(gx, "sandboxed_spawn_argv", self._spawn())
         monkeypatch.setattr(
-            wt.subprocess,
+            gx.subprocess,
             "run",
-            lambda argv, **kw: _proc(argv, 1, "", f"{wt._SANDBOX_LAUNCHER_PREFIX}denied\n"),
+            lambda argv, **kw: _proc(argv, 1, "", f"{gx.SANDBOX_LAUNCHER_PREFIX}denied\n"),
         )
-        with pytest.raises(wt.SandboxUnavailable, match="denied"):
-            wt._run_git(["status"], str(tmp_path))
+        with pytest.raises(gx.SandboxUnavailable, match="denied"):
+            gx.run_git(["status"], str(tmp_path))
 
     def test_none_stderr_is_not_a_refusal(self, monkeypatch, tmp_path):
         """``capture_output=False`` callers leave stderr None; that is a git error."""
-        monkeypatch.setattr(wt, "sandboxed_spawn_argv", self._spawn())
-        monkeypatch.setattr(wt.subprocess, "run", lambda argv, **kw: _proc(argv, 128, "", None))
-        assert wt._run_git(["status"], str(tmp_path)).returncode == 128
+        monkeypatch.setattr(gx, "sandboxed_spawn_argv", self._spawn())
+        monkeypatch.setattr(gx.subprocess, "run", lambda argv, **kw: _proc(argv, 128, "", None))
+        assert gx.run_git(["status"], str(tmp_path)).returncode == 128
 
 
 # ── small pure helpers ───────────────────────────────────────────────────
@@ -215,29 +223,29 @@ class TestNormPath:
 class TestRepoLock:
     @pytest.fixture(autouse=True)
     def _fresh_registry(self, monkeypatch):
-        monkeypatch.setattr(wt, "_REPO_LOCKS", {})
+        monkeypatch.setattr(gx, "_REPO_LOCKS", {})
 
     def test_same_root_returns_the_same_lock(self):
-        first = wt._repo_lock("/srv/repo")
-        assert wt._repo_lock("/srv/repo") is first
+        first = gx.repo_lock("/srv/repo")
+        assert gx.repo_lock("/srv/repo") is first
 
     def test_different_roots_get_different_locks(self):
-        assert wt._repo_lock("/srv/a") is not wt._repo_lock("/srv/b")
+        assert gx.repo_lock("/srv/a") is not gx.repo_lock("/srv/b")
 
     @pytest.mark.asyncio
     async def test_idle_locks_are_evicted_but_a_held_one_survives(self):
-        held = wt._repo_lock("held-root")
+        held = gx.repo_lock("held-root")
         await held.acquire()
         try:
             # Fill to exactly the cap: the sweep runs on the call that would
             # exceed it, so one more root than this would evict early.
-            for i in range(wt._MAX_REPO_LOCKS - 1):
-                wt._repo_lock(f"idle-{i}")
-            assert len(wt._REPO_LOCKS) == wt._MAX_REPO_LOCKS
-            wt._repo_lock("brand-new")
-            assert wt._REPO_LOCKS["held-root"] is held
-            assert "brand-new" in wt._REPO_LOCKS
-            assert len(wt._REPO_LOCKS) == 2
+            for i in range(gx._MAX_REPO_LOCKS - 1):
+                gx.repo_lock(f"idle-{i}")
+            assert len(gx._REPO_LOCKS) == gx._MAX_REPO_LOCKS
+            gx.repo_lock("brand-new")
+            assert gx._REPO_LOCKS["held-root"] is held
+            assert "brand-new" in gx._REPO_LOCKS
+            assert len(gx._REPO_LOCKS) == 2
         finally:
             held.release()
 
@@ -784,7 +792,7 @@ class TestCreateWorktreeSync:
         assert "odd failure" in payload["error"]
 
     def test_a_timeout_cleans_up_and_re_raises(self, sync_env):
-        sync_env.add_raises = subprocess.TimeoutExpired(["git"], wt._GIT_TIMEOUT)
+        sync_env.add_raises = subprocess.TimeoutExpired(["git"], gx.GIT_TIMEOUT)
         with pytest.raises(subprocess.TimeoutExpired):
             wt._create_worktree_sync(sync_env.root, "feat/x")
         assert sync_env.cleanups[0][2] == {
@@ -1040,7 +1048,7 @@ class TestEndpointGitBoundary:
         self, repo_dir, audit, monkeypatch
     ):
         monkeypatch.setattr(
-            wt, "_git_toplevel", MagicMock(side_effect=wt.SandboxUnavailable("no backend"))
+            wt, "_git_toplevel", MagicMock(side_effect=gx.SandboxUnavailable("no backend"))
         )
         async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
             resp = await client.post(
@@ -1160,7 +1168,7 @@ class TestEndpointCreateOutcomes:
     @pytest.mark.asyncio
     async def test_a_git_timeout_is_a_504(self, repo_dir, audit, monkeypatch):
         def timeout(root, branch):
-            raise subprocess.TimeoutExpired(["git"], wt._GIT_TIMEOUT)
+            raise subprocess.TimeoutExpired(["git"], gx.GIT_TIMEOUT)
 
         monkeypatch.setattr(wt, "_create_worktree_sync", timeout)
         async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
@@ -1174,7 +1182,7 @@ class TestEndpointCreateOutcomes:
     @pytest.mark.asyncio
     async def test_sandbox_unavailable_during_create_is_a_503(self, repo_dir, audit, monkeypatch):
         def refuse(root, branch):
-            raise wt.SandboxUnavailable("no backend")
+            raise gx.SandboxUnavailable("no backend")
 
         monkeypatch.setattr(wt, "_create_worktree_sync", refuse)
         async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
@@ -1208,7 +1216,7 @@ class TestEndpointCreateOutcomes:
         self, repo_dir, audit, monkeypatch
     ):
         """Two concurrent same-root requests must not interleave the create."""
-        monkeypatch.setattr(wt, "_REPO_LOCKS", {})
+        monkeypatch.setattr(gx, "_REPO_LOCKS", {})
         overlap = {"max": 0, "now": 0}
 
         def slow_create(root, branch):
@@ -1242,9 +1250,9 @@ class TestEndpointCreateOutcomes:
 
 class TestModuleContract:
     def test_sandbox_mode_and_hook_sink_are_pinned(self):
-        assert wt._SANDBOX_MODE == "strict"
-        assert wt._HOOKS_SINK == os.devnull
-        assert not os.path.isdir(wt._HOOKS_SINK)
+        assert gx.SANDBOX_MODE == "strict"
+        assert gx.HOOKS_SINK == os.devnull
+        assert not os.path.isdir(gx.HOOKS_SINK)
 
     def test_filter_regex_only_matches_driver_keys(self):
         assert wt._FILTER_KEY_RE.match("filter.a.process")

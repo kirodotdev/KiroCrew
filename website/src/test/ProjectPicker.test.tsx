@@ -473,4 +473,101 @@ describe('ProjectPicker', () => {
       expect(browseSpy).not.toHaveBeenCalled()
     })
   })
+
+  describe('worktree opt-in footer', () => {
+    it('omits the footer when no change handler is provided', async () => {
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()} />
+      )
+      expect(await screen.findByText('Recent')).toBeInTheDocument()
+      expect(screen.queryByText('Worktree sessions')).not.toBeInTheDocument()
+    })
+
+    it('renders the switch unchecked when the feature is off', async () => {
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()}
+          worktreesEnabled={false} onWorktreesEnabledChange={vi.fn()} />
+      )
+      expect(await screen.findByText('Worktree sessions')).toBeInTheDocument()
+      expect(screen.getByRole('switch', { name: 'Worktree sessions' })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('renders the switch checked when the feature is on', async () => {
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()}
+          worktreesEnabled={true} onWorktreesEnabledChange={vi.fn()} />
+      )
+      expect(await screen.findByRole('switch', { name: 'Worktree sessions' })).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('warns that the directory is not a git repository when the probe says so', async () => {
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()}
+          worktreesEnabled={true} onWorktreesEnabledChange={vi.fn()} projectIsRepo={false} />
+      )
+      expect(await screen.findByText(/Not a git repository/)).toBeInTheDocument()
+      // The verdict replaces the generic description rather than stacking with it.
+      expect(screen.queryByText(/Work in a private branch checkout/)).not.toBeInTheDocument()
+    })
+
+    it('describes the switch with the verdict line, so the reason is announced with it', async () => {
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()}
+          worktreesEnabled={true} onWorktreesEnabledChange={vi.fn()} projectIsRepo={false} />
+      )
+      const sw = await screen.findByRole('switch', { name: 'Worktree sessions' })
+      const describedBy = sw.getAttribute('aria-describedby')
+      expect(describedBy).toBe('pp-wt-desc')
+      expect(document.getElementById(describedBy!)?.textContent).toMatch(/Not a git repository/)
+    })
+
+    it('leaves the switch operable on a non-repo directory (the setting is instance-wide)', async () => {
+      const onWorktreesEnabledChange = vi.fn()
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()}
+          worktreesEnabled={false} onWorktreesEnabledChange={onWorktreesEnabledChange} projectIsRepo={false} />
+      )
+      const sw = await screen.findByRole('switch', { name: 'Worktree sessions' })
+      expect(sw).not.toBeDisabled()
+      fireEvent.click(sw)
+      expect(onWorktreesEnabledChange).toHaveBeenCalledWith(true)
+    })
+
+    it('stays silent about a non-repo directory until the beta is enabled', async () => {
+      // projectIsRepo is also false for a session with no project yet, so an
+      // ungated verdict tells someone who never asked for worktrees that their
+      // folder is wrong.
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()}
+          worktreesEnabled={false} onWorktreesEnabledChange={vi.fn()} projectIsRepo={false} />
+      )
+      await screen.findByRole('switch', { name: 'Worktree sessions' })
+      expect(screen.queryByText(/not a git repository/i)).not.toBeInTheDocument()
+    })
+
+    it('states no verdict while the repo probe is still undetermined', async () => {
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={vi.fn()} anchorRect={rect(100, 50)} onSelect={vi.fn()}
+          worktreesEnabled={true} onWorktreesEnabledChange={vi.fn()} projectIsRepo={null} />
+      )
+      expect(await screen.findByText(/Work in a private branch checkout/)).toBeInTheDocument()
+      expect(screen.queryByText(/Not a git repository/)).not.toBeInTheDocument()
+    })
+
+    it('reports the flipped value and does not commit a project or close the picker', async () => {
+      const onWorktreesEnabledChange = vi.fn()
+      const onSelect = vi.fn()
+      const onOpenChange = vi.fn()
+      renderWithProviders(
+        <ProjectPicker open={true} onOpenChange={onOpenChange} anchorRect={rect(100, 50)} onSelect={onSelect}
+          worktreesEnabled={false} onWorktreesEnabledChange={onWorktreesEnabledChange} />
+      )
+      fireEvent.click(await screen.findByRole('switch', { name: 'Worktree sessions' }))
+      expect(onWorktreesEnabledChange).toHaveBeenCalledWith(true)
+      // Flipping the opt-in must not double as picking a directory, and the
+      // picker stays open so the switch's effect is visible in place.
+      expect(onSelect).not.toHaveBeenCalled()
+      expect(onOpenChange).not.toHaveBeenCalled()
+    })
+  })
 })

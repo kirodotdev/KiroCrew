@@ -102,4 +102,6 @@ export interface DashboardConfig {
   link_previews: boolean
   mcp_app_panel: boolean
   folder_suggestions_enabled: boolean
+  /** Beta: the composer's Worktrees control and its endpoints. */
+  worktrees_enabled: boolean
 }

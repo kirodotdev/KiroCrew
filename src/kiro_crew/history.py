@@ -168,6 +168,12 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "mode",
         "workspace",
         "project",
+        # Paired with "project": a worktree binding labels the project directory,
+        # so the two are cleared together when a session leaves a tree. Without
+        # ownership here, carry_unowned_metadata would treat the absent key as
+        # another layer's state and copy the stale binding forward, resurrecting
+        # it on the next restart.
+        "worktree",
         "folder_id",
         "app",
         "artifact",

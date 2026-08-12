@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, GitBranch } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import VoiceStatusBar from './VoiceStatusBar'
@@ -320,6 +320,8 @@ interface ChatInputProps {
   onAgentClick?: (rect: DOMRect) => void
   onModelClick?: (rect: DOMRect) => void
   onProjectClick?: (rect: DOMRect) => void
+  /** Open the worktree popover, anchored to the button. Omitted when the session's project is not a git repo. */
+  onWorktreeClick?: (rect: DOMRect) => void
   contextPct?: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -566,6 +568,7 @@ function ChatInput({
   onAgentClick,
   onModelClick,
   onProjectClick,
+  onWorktreeClick,
   contextPct,
   contextUsedTokens,
   contextWindowTokens,
@@ -2704,7 +2707,7 @@ function ChatInput({
       </AnimatePresence>
 
       {/* Context shelf — plain full-width row below input */}
-      {!showGhost && (onProjectClick || (onModelClick && modelName)) && (
+      {!showGhost && (onProjectClick || onWorktreeClick || (onModelClick && modelName)) && (
         <div ref={shelfRef} className="pt-1 flex items-center gap-2 min-w-0">
           <div className="flex items-center gap-2 min-w-0 flex-1">
           {onAgentClick && agentName && (
@@ -2759,6 +2762,20 @@ function ChatInput({
             </>
           )}
           </div>
+          )}
+          {onWorktreeClick && (
+            /* Only shown once the session's project IS a worktree: the panel is
+               scoped to that repository, so without a binding there is nothing
+               for it to list. */
+            <button
+              className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer"
+              onClick={e => onWorktreeClick(e.currentTarget.getBoundingClientRect())}
+              title={i18nT('components.chatInput.worktrees')}
+              aria-label={i18nT('components.chatInput.worktrees')}
+            >
+              <GitBranch size={13} className="shrink-0 opacity-70" />
+              {!shelfCompact && <span className="truncate">{i18nT('components.chatInput.worktrees')}</span>}
+            </button>
           )}
           </div>
           <div className="flex items-center shrink-0">

@@ -552,6 +552,15 @@ def _rehydrate_slot_from_history(
             slot.workspace = meta["workspace"]
         if meta.get("project"):
             slot.project = meta["project"]
+        stored_worktree = meta.get("worktree")
+        if isinstance(stored_worktree, dict):
+            # Transcript metadata lives on disk and is user-editable, so keep only
+            # the string fields this feature defines rather than trusting the shape.
+            slot.worktree = {
+                key: value
+                for key, value in stored_worktree.items()
+                if key in ("repo", "branch", "base", "path") and isinstance(value, str)
+            }
         if meta.get("mode"):
             slot.mode = meta["mode"]
         if meta.get("folder_id"):
@@ -910,6 +919,15 @@ def _restore_recent_sessions_steps(
             slot.workspace = meta["workspace"]
         if meta.get("project"):
             slot.project = meta["project"]
+        stored_worktree = meta.get("worktree")
+        if isinstance(stored_worktree, dict):
+            # Transcript metadata lives on disk and is user-editable, so keep only
+            # the string fields this feature defines rather than trusting the shape.
+            slot.worktree = {
+                key: value
+                for key, value in stored_worktree.items()
+                if key in ("repo", "branch", "base", "path") and isinstance(value, str)
+            }
         if meta.get("mode"):
             slot.mode = meta["mode"]
         if meta.get("folder_id"):
@@ -1792,6 +1810,8 @@ def _save_slot_to_history(
                 meta_line["workspace"] = slot.workspace
             if slot.project:
                 meta_line["project"] = slot.project
+            if slot.worktree:
+                meta_line["worktree"] = dict(slot.worktree)
             if slot.folder_id:
                 meta_line["folder_id"] = slot.folder_id
             if slot._channel_folder_filed or existing_meta.get("channel_folder_filed"):

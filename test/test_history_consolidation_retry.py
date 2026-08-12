@@ -1055,6 +1055,47 @@ class TestForeignWritersCannotEraseTheAccounting:
         assert "pinned" not in meta, "an un-pinned slot could not clear its pin"
         assert meta.get("consolidation_attempts") == 1
 
+    def test_leaving_a_worktree_clears_the_binding_on_disk(
+        self, tmp_path, monkeypatch
+    ):
+        """Exiting a worktree must not leave the binding behind to be rehydrated.
+
+        ``worktree`` is written by the same save that writes ``project``, so it has
+        to be slot-OWNED: if it were not, carry_unowned_metadata would read the
+        absent key as another layer's durable state and copy the stale binding
+        forward, and the next restart would rehydrate a session into a tree it had
+        already left.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state.config_dir", lambda: tmp_path
+        )
+        log = ConversationLog(base_dir=tmp_path)
+        log.init()
+        log.append("dashboard:chat1", "user", "m0")
+        log.update_metadata(
+            "dashboard:chat1",
+            {
+                "project": "/repo/wt-a",
+                "worktree": {"repo": "/repo", "branch": "feat/a", "path": "/repo/wt-a"},
+                "consolidation_attempts": 1,
+            },
+        )
+
+        state = _dashboard_state(log)
+        slot = _rehydrate_slot_from_history(state, "chat1")
+        assert slot is not None
+        assert slot.worktree, "the binding did not survive rehydration to begin with"
+
+        slot.worktree = {}
+        slot.project = ""
+        slot._dirty = True
+        _save_slot_to_history(state, slot)
+
+        meta = log.get_metadata("dashboard:chat1")
+        assert "worktree" not in meta, "a left worktree came back after the save"
+        assert "project" not in meta
+        assert meta.get("consolidation_attempts") == 1, "unowned state was erased"
+
     def test_the_helper_never_shadows_an_owned_key(self):
         rebuilt = {"title": "new"}
         existing = {"title": "old", "consolidation_attempts": 2, "rotation_generation": 1}

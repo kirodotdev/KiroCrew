@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, GitBranch, Workflow, CircleDot, Users } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
@@ -419,6 +419,8 @@ interface Slot {
     kind?: 'change' | 'issue'
   }>
   source_links_total?: number
+  /** Set when this session's project directory is a git worktree. */
+  worktree?: { repo: string; branch: string; base?: string; path: string }
 }
 
 type SourceLinkState = NonNullable<NonNullable<Slot['source_links']>[number]['state']>
@@ -2502,6 +2504,21 @@ function ChatSidebar({
                   {(s.last_ts || s.created) && <span className="text-[11px] text-muted font-normal shrink-0">{fmtRelativeTime(s.last_ts || s.created!)}</span>}
                 </span>
               ) : null}
+              {/* Trailing detail on the agent/meta line, never a new stacked line:
+                  a session list item has a fixed set of lines and the sidebar
+                  width is user-controlled (AUTOSDE session-row-fixed-height). */}
+              {s.worktree?.branch && (
+                <span
+                  className="text-muted shrink-0 inline-flex items-center gap-0.5 max-w-[90px] font-normal"
+                  title={i18nT('pages.chatSidebar.worktree_chip_title', {
+                    path: s.worktree.path,
+                    branch: s.worktree.branch,
+                  })}
+                >
+                  <GitBranch size={10} className="shrink-0" aria-hidden />
+                  <span className="truncate">{s.worktree.branch}</span>
+                </span>
+              )}
             </div>
             <div className={`text-[13px] font-semibold leading-snug break-words text-text ${renamingSlot === s.key && renameScope === scope ? '' : 'line-clamp-2'}`} title={s.title && s.title !== s.key ? s.title : s.key}>
               {/* No separate fork glyph: forked titles already carry the

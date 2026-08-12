@@ -422,6 +422,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.worktree-sessions-beta",
+    "label": "Worktree sessions (beta)",
+    "description": "Let a session work in a git worktree — its own checkout of the repository on its own branch — so several sessions can edit one repository without overwriting each other. Adds a Worktrees control to the composer. Turning it off hides the control and leaves every worktree on disk untouched.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.your-role",
     "label": "Your Role",
     "description": "Kiro matches vocabulary and examples to your professional background",

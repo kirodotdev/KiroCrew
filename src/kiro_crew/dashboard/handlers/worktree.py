@@ -64,7 +64,6 @@ Other input protections
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import re
@@ -74,51 +73,24 @@ import subprocess
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.validation import MAX_FOLLOWUP_BRANCH, is_valid_followup_branch
+from kiro_crew.worktree.access import allowed_repo_roots as _allowed_repo_roots
+from kiro_crew.worktree.access import match_allowed_root as _match_allowed_root
+from kiro_crew.worktree.git_exec import SANDBOX_REFUSAL as _SANDBOX_REFUSAL
+from kiro_crew.worktree.git_exec import SandboxUnavailable
+from kiro_crew.worktree.git_exec import git_error as _git_error
+from kiro_crew.worktree.git_exec import git_toplevel as _git_toplevel
+from kiro_crew.worktree.git_exec import norm_path as _norm_path
+from kiro_crew.worktree.git_exec import repo_lock as _repo_lock
+from kiro_crew.worktree.git_exec import resolve_base_ref as _resolve_base_ref
+from kiro_crew.worktree.git_exec import run_git as _run_git
 
 logger = logging.getLogger(__name__)
 
-# Wall-clock ceiling for each git invocation. `worktree add` copies a working
-# tree, so it is not instant on a large repo, but it is local-only — a run
-# longer than this means something is wedged (a lock, a hook prompting for
-# input) and the request should fail rather than hold a connection open.
-_GIT_TIMEOUT = 120
-
 # Characters kept when turning a branch name into a directory suffix.
 _DIR_SLUG_STRIP_RE = re.compile(r"[^A-Za-z0-9._-]+")
-
-# `core.hooksPath` sink. A NON-DIRECTORY, non-replaceable OS device: git finds no
-# `post-checkout` under it and there is no directory anyone could drop one into.
-#
-# Two earlier shapes were both wrong. An in-repo sentinel
-# (`.git/kirocrew-no-hooks`) is resolved relative to the repo, so whoever prepared
-# the checkout could create it and put `post-checkout` inside — the suppression
-# became the execution vector. A gateway-owned `mkdtemp` directory moved the path
-# out of the repo but left a same-uid, process-lifetime directory that a
-# compromised agent could chmod and populate between calls. `os.devnull` has
-# no such window and needs no bookkeeping.
-_HOOKS_SINK = os.devnull
-
-
-def _git_no_repo_code() -> tuple[str, ...]:
-    """Config overrides that stop the REPOSITORY supplying a program to run.
-
-    ``-c`` beats every config file, so these hold even against a hostile
-    ``.git/config``:
-
-    * ``core.hooksPath`` -> :data:`_HOOKS_SINK`, so no ``post-checkout`` (the one
-      hook ``worktree add`` fires) can be found or planted.
-    * ``core.fsmonitor=false`` -> repo config can otherwise name an arbitrary
-      filesystem-monitor command that git spawns on index reads.
-
-    Together these remove the repo-controlled-code-execution vector, which is
-    what would otherwise argue for OS-sandbox isolation on this spawn.
-    """
-    return ("-c", f"core.hooksPath={_HOOKS_SINK}", "-c", "core.fsmonitor=false")
-
 
 # Bound the derived directory suffix so a long branch name cannot push the
 # resulting absolute path past the filesystem's component limit (255 on ext4).
@@ -134,114 +106,6 @@ _FILTER_KEY_RE = re.compile(r"^filter\.(?P<name>.+)\.(process|smudge|clean)$", r
 _FILTER_PROBE_FAILED = "unreadable git config"
 
 
-_SANDBOX_REFUSAL = (
-    "This host has no OS sandbox backend, so Kiro Crew will not run git for you. "
-    "Create the worktree manually."
-)
-
-# Prefix every failure the sandbox launcher itself reports (see `sandbox.py`'s
-# `sys.exit(f"sandbox: ...")` calls). Distinguishes "isolation could not be
-# established" from a genuine git error.
-_SANDBOX_LAUNCHER_PREFIX = "sandbox: "
-
-# STRICT, not the "standard" default. `_checkout_filter` runs `git config
-# --includes`, and `include.path` is repo-controlled: a hostile checkout can point
-# it at `~/.aws/credentials` (or `~/.netrc`, `~/.git-credentials`) and have git
-# READ that file as config. "standard" leaves those visible; "strict" bind-mounts
-# them away, along with `~/.ssh`. Nothing here
-# needs a credential: the base ref is resolved from local refs and no remote is
-# contacted, so strict costs the operation nothing.
-_SANDBOX_MODE = "strict"
-
-
-class SandboxUnavailable(RuntimeError):
-    """No OS sandbox backend, so the git spawn is refused rather than run bare."""
-
-
-# One lock per repo root, so two same-repo creates in this gateway never
-# interleave their check/create/cleanup sequences. Cross-request atomicity does
-# not depend on this (the branch claim in `_claim_branch` is what git enforces),
-# but it removes the same-destination window between the "does dest exist" probe
-# and `worktree add`, which is what lets `_cleanup_partial` treat an unregistered
-# leftover directory as its own.
-_REPO_LOCKS: dict[str, asyncio.Lock] = {}
-_MAX_REPO_LOCKS = 64
-
-
-def _repo_lock(root: str) -> asyncio.Lock:
-    """Return (creating if needed) the serialization lock for ``root``."""
-    lock = _REPO_LOCKS.get(root)
-    if lock is None:
-        if len(_REPO_LOCKS) >= _MAX_REPO_LOCKS:
-            # Drop idle entries so a long-lived gateway that has seen many repos
-            # does not accumulate locks forever. Held locks are kept.
-            for key in [k for k, v in _REPO_LOCKS.items() if not v.locked()]:
-                del _REPO_LOCKS[key]
-        lock = _REPO_LOCKS[root] = asyncio.Lock()
-    return lock
-
-
-def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-    """Run git with an argv list (never a shell) inside ``cwd``, OS-sandboxed.
-
-    Routed through the ``sandboxed_spawn_argv`` chokepoint, matching
-    ``git_coord.py``'s treatment of agent-influenced git: the repository is
-    agent-selected and the branch is LLM-authored, so this spawn takes the OS
-    isolation layer plus the credential-scrubbed environment rather than relying
-    on argument hygiene alone.
-
-    :exc:`SandboxUnavailable` is raised when the host has no sandbox backend and
-    ``agent.sandbox_allow_unsandboxed_exec`` is unset; the endpoint turns that
-    into a 503 telling the user to create the worktree themselves. Fail CLOSED —
-    a local convenience is not worth an unisolated spawn.
-
-    The repo-supplied-code guards are still applied on top, because sandboxing
-    bounds what a hook could reach but does not stop it running: the ``-c``
-    overrides in :func:`_git_no_repo_code` remove ``core.hooksPath`` and
-    ``core.fsmonitor``, and a repo declaring a checkout filter driver in either
-    repository config scope is refused before this runs
-    (:func:`_checkout_filter`).
-
-    The remaining protections are all here: an argv list with no shell, the
-    POSIX resource-limit ceiling (``resource_limit_preexec`` returns ``None`` on
-    Windows, where ``preexec_fn`` must be ``None``), a wall-clock timeout, and
-    ``GIT_TERMINAL_PROMPT=0`` so a credential helper cannot block on an
-    interactive prompt.
-    """
-    try:
-        argv, env, cleanup = sandboxed_spawn_argv(
-            ["git", *_git_no_repo_code(), *args], mode=_SANDBOX_MODE
-        )
-    except RuntimeError as exc:  # no sandbox backend and no explicit opt-in
-        raise SandboxUnavailable(str(exc)) from exc
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        proc = subprocess.run(
-            argv,
-            cwd=cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=False,
-            preexec_fn=resource_limit_preexec(),
-        )
-    finally:
-        if cleanup:
-            with contextlib.suppress(OSError):
-                os.unlink(cleanup)
-    # The launcher can only discover SOME isolation failures in the child, after
-    # `wrap_argv` has already returned: `unshare(NEWNS)` is permitted by the
-    # backend probe but denied at exec time on hosts that restrict mount
-    # namespaces (GitHub Actions runners are one — errno 1/EPERM). git never
-    # runs, so without this the non-zero exit is misread downstream as "not a git
-    # repository" or "cannot list worktrees". Surface it as the same refusal a
-    # missing backend gets, so the user is told the truth.
-    if proc.returncode != 0 and (proc.stderr or "").startswith(_SANDBOX_LAUNCHER_PREFIX):
-        raise SandboxUnavailable((proc.stderr or "").strip())
-    return proc
-
-
 def _dir_slug(branch: str) -> str:
     """Derive a filesystem-safe directory suffix from a branch name.
 
@@ -253,48 +117,6 @@ def _dir_slug(branch: str) -> str:
     tail = branch.rstrip("/").split("/")[-1]
     slug = _DIR_SLUG_STRIP_RE.sub("-", tail).strip("-.") or "followup"
     return slug[:_MAX_DIR_SLUG]
-
-
-def _resolve_base_ref(root: str) -> str:
-    """Pick the ref to branch from: the remote's default branch, else HEAD.
-
-    ``origin/HEAD`` is the repo's own declaration of its default branch, which
-    beats hardcoding "main" (repos whose default branch is named something else,
-    or with a different primary remote layout, would otherwise fail). Falls back
-    to ``HEAD`` so a repo with no remote — or no fetched ``origin/HEAD`` — still
-    works, at the cost of branching from whatever is currently checked out.
-    """
-    probe = _run_git(["rev-parse", "--verify", "--quiet", "origin/HEAD"], root)
-    if probe.returncode == 0 and probe.stdout.strip():
-        return "origin/HEAD"
-    return "HEAD"
-
-
-def _git_toplevel(repo: str) -> str | None:
-    """Return the work-tree root containing ``repo``, or None if not a repo."""
-    probe = _run_git(["rev-parse", "--show-toplevel"], repo)
-    if probe.returncode != 0:
-        return None
-    top = probe.stdout.strip()
-    return os.path.realpath(top) if top else None
-
-
-def _git_error(proc: subprocess.CompletedProcess[str]) -> str:
-    """Condense git's stderr into a single-line message for the UI."""
-    text = (proc.stderr or proc.stdout or "").strip()
-    if not text:
-        return "git failed"
-    # Keep the first meaningful line; git prefixes most failures with "fatal:".
-    for line in text.splitlines():
-        line = line.strip()
-        if line:
-            return line[:300]
-    return "git failed"
-
-
-def _norm_path(path: str) -> str:
-    """Normalized, case-folded form used to compare paths against git's output."""
-    return os.path.normcase(os.path.normpath(path))
 
 
 def _worktree_branches(root: str) -> dict[str, str] | None:
@@ -615,53 +437,6 @@ def _create_worktree_sync(root: str, branch: str) -> tuple[dict, int]:
         _cleanup_partial(root, dest, branch, claimed=True, created=True, base_sha=base_sha)
         return ({"error": "worktree add reported success but no directory was created"}, 500)
     return ({"ok": True, "path": dest, "branch": branch, "base": base, "reused": False}, 200)
-
-
-def _allowed_repo_roots(state: object) -> list[str]:
-    """Realpath'd project directories that some existing chat slot is scoped to.
-
-    This is the allow-list ``repo`` must fall inside. The frontend only ever
-    sends the active slot's own ``project``, so constraining to this set costs
-    the feature nothing while removing the endpoint's arbitrary-path surface:
-    without it, any authenticated dashboard caller could name *any* directory on
-    the host and have git run against it (CodeQL: "uncontrolled data used in
-    path expression"). Slot projects are set through
-    ``/api/chat/slots/{slot}/project``, which already realpaths and
-    sensitive-path-screens them.
-    """
-    roots: list[str] = []
-    slots = getattr(state, "_slots", None) or {}
-    for slot in list(getattr(slots, "values", list)()):
-        project = str(getattr(slot, "project", "") or "").strip()
-        if not project:
-            continue
-        resolved = os.path.realpath(project)
-        if os.path.isdir(resolved) and resolved not in roots:
-            roots.append(resolved)
-    return roots
-
-
-def _match_allowed_root(candidate: str, roots: list[str]) -> str | None:
-    """Return the allow-listed root that ``candidate`` names or sits inside.
-
-    Returns the value FROM ``roots`` (a server-held slot project), never the
-    caller's string — every filesystem operation downstream then runs on a path
-    the server chose, which is both the point of the barrier and why CodeQL's
-    "uncontrolled data used in path expression" no longer applies: the request
-    value is used for comparison only.
-
-    ``candidate`` must be normalized by the caller. Comparison goes through
-    ``os.path.normcase`` because Windows paths are case-insensitive and
-    ``realpath`` does not reliably canonicalize case there — without it a
-    differently-cased but identical path would be refused. The prefix test is
-    ``os.sep``-terminated, so ``/repo-evil`` does not pass as inside ``/repo``.
-    """
-    probe = os.path.normcase(candidate)
-    for root in roots:
-        normalized = os.path.normcase(root)
-        if probe == normalized or probe.startswith(normalized.rstrip(os.sep) + os.sep):
-            return root
-    return None
 
 
 async def api_worktree_create(request: web.Request) -> web.Response:

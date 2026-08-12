@@ -4710,7 +4710,8 @@
       "upload_file": "Subir archivo",
       "use_a_skill": "Usar una skill",
       "used": "Usado",
-      "voice_input": "Entrada de voz"
+      "voice_input": "Entrada de voz",
+      "worktrees": "Worktrees"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -5725,7 +5726,10 @@
       "search_recent_projects": "Buscar proyectos recientes",
       "search_recent_projects_2": "Buscar proyectos recientes…",
       "select": "Seleccionar",
-      "subdirectories": "Subdirectorios"
+      "subdirectories": "Subdirectorios",
+      "let_this_session_work_in_its_own_branch_checkout": "Work in a private branch checkout of this directory",
+      "this_folder_is_not_a_git_repository_pick_the_rep": "Not a git repository — pick the repository folder itself, not the folder above it",
+      "worktree_sessions": "Worktree sessions"
     },
     "publishHub": {
       "back": "Atrás",
@@ -6559,6 +6563,57 @@
       "refresh": "Actualizar",
       "title": "Git",
       "uncommitted": "{{count}} sin confirmar"
+    },
+    "worktreePanel": {
+      "back": "Back",
+      "body_clean_ahead_one": "Clean, but the verdict is {{verdict}} — {{count}} commit has not landed on the base branch.",
+      "body_clean_ahead_other": "Clean, but the verdict is {{verdict}} — {{count}} commits have not landed on the base branch.",
+      "body_clean_no_unlanded": "Clean, with no unlanded commits. Verdict: {{verdict}}.",
+      "body_dirty": "live only in this directory. Deleting it loses them permanently.",
+      "body_dirty_unknown": "Whether this tree is clean could not be determined, so it may hold work that exists nowhere else. Removing it anyway is not reversible.",
+      "branch_ref_kept_directory_only": "branch ref kept, directory only",
+      "cancel": "Cancel",
+      "close": "Close",
+      "could_not_create_the_worktree": "could not create the worktree",
+      "could_not_list_worktrees": "could not list worktrees",
+      "could_not_switch_worktree": "could not switch worktree",
+      "create": "Create",
+      "create_worktree": "Create worktree",
+      "delete_lose_changes": "Delete, lose changes",
+      "enter_main_checkout": "Enter main checkout",
+      "enter_tree": "Enter {{name}}",
+      "leave_this_worktree_before_removing_it": "Leave this worktree before removing it",
+      "main_checkout": "main checkout",
+      "move_this_session_into": "Move this session into {{path}}",
+      "n_trees_one": "{{count}} tree",
+      "n_trees_other": "{{count}} trees",
+      "new_branch_leave_empty_for_a_generated_name": "new branch — leave empty for a generated name",
+      "new_worktree_branch": "New worktree branch",
+      "no_worktrees_for_this_repository_yet": "No worktrees for this repository yet.",
+      "reading_git_state": "Reading git state…",
+      "recyclable_removes_without_asking": "Recyclable — removes without asking",
+      "refresh": "Refresh",
+      "remove": "Remove",
+      "removal_failed": "removal failed",
+      "remove_asks_first": "Remove (asks first)",
+      "remove_branch": "Remove {{branch}}",
+      "remove_tree": "Remove {{name}}",
+      "state_clean": "clean",
+      "state_dirty": "dirty",
+      "state_unknown": "unknown",
+      "this_session": "this session",
+      "this_session_is_already_here": "This session is already here",
+      "uncommitted_changes": "Uncommitted changes",
+      "verdict_active": "active",
+      "verdict_empty": "empty",
+      "verdict_fresh": "fresh",
+      "verdict_merged": "merged",
+      "verdict_merged_dirty": "merged · dirty",
+      "verdict_no_base": "no base",
+      "verdict_unknown": "unknown",
+      "worktrees": "Worktrees",
+      "n_trees_many": "{{count}} trees",
+      "body_clean_ahead_many": "Clean, but the verdict is {{verdict}} — {{count}} commits have not landed on the base branch."
     }
   },
   "hooks": {
@@ -8128,7 +8183,8 @@
       "crew_mode": "Crew Mode — los temas avanzan en subsesiones paralelas",
       "crew": "Crew",
       "autopilot_desc": "Una tarea, por etapas: primero planifica, tú apruebas y luego la ejecuta etapa por etapa.",
-      "crew_desc": "Varias tareas a la vez: cada tema avanza en su propia subsesión y responde en cuanto termina."
+      "crew_desc": "Varias tareas a la vez: cada tema avanza en su propia subsesión y responde en cuanto termina.",
+      "worktree_chip_title": "worktree {{path}}\nbranch {{branch}}"
     },
     "connectionsPage": {
       "access": "Acceso",
@@ -10248,7 +10304,9 @@
         "which_model_new_sessions_start_with_pick_a_model": "Con qué modelo empiezan las sesiones nuevas cuando su agente no tiene uno propio. Define un modelo por agente en Capacidades → Agentes, o elige uno dentro de una sesión para cambiarlo solo allí.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Qué parte del flujo de un subagente se conserva al inyectar su evento de finalización en la sesión principal. Inicio conserva el comienzo (predeterminado, igual que el comportamiento anterior). Cola conserva el resumen final. Ambos conserva un fragmento de cada extremo con un marcador entre ellos.",
         "widget_density": "Densidad de widgets",
-        "your_role": "Tu rol"
+        "your_role": "Tu rol",
+        "let_a_session_work_in_a_git_worktree_so_several_s": "Let a session work in a git worktree — its own checkout of the repository on its own branch — so several sessions can edit one repository without overwriting each other. Adds a Worktrees control to the composer. Turning it off hides the control and leaves every worktree on disk untouched.",
+        "worktree_sessions_beta": "Worktree sessions (beta)"
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

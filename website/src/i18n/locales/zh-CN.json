@@ -4564,7 +4564,8 @@
       "upload_file": "上传文件",
       "use_a_skill": "使用技能",
       "used": "已用",
-      "voice_input": "语音输入"
+      "voice_input": "语音输入",
+      "worktrees": "Worktrees"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -5559,7 +5560,10 @@
       "search_recent_projects": "搜索最近项目",
       "search_recent_projects_2": "搜索最近项目…",
       "select": "选择",
-      "subdirectories": "子目录"
+      "subdirectories": "子目录",
+      "let_this_session_work_in_its_own_branch_checkout": "Work in a private branch checkout of this directory",
+      "this_folder_is_not_a_git_repository_pick_the_rep": "Not a git repository — pick the repository folder itself, not the folder above it",
+      "worktree_sessions": "Worktree sessions"
     },
     "publishHub": {
       "back": "返回",
@@ -6385,6 +6389,53 @@
       "refresh": "刷新",
       "title": "Git",
       "uncommitted": "{{count}} 个未提交"
+    },
+    "worktreePanel": {
+      "back": "Back",
+      "body_clean_ahead_other": "Clean, but the verdict is {{verdict}} — {{count}} commits have not landed on the base branch.",
+      "body_clean_no_unlanded": "Clean, with no unlanded commits. Verdict: {{verdict}}.",
+      "body_dirty": "live only in this directory. Deleting it loses them permanently.",
+      "body_dirty_unknown": "Whether this tree is clean could not be determined, so it may hold work that exists nowhere else. Removing it anyway is not reversible.",
+      "branch_ref_kept_directory_only": "branch ref kept, directory only",
+      "cancel": "Cancel",
+      "close": "Close",
+      "could_not_create_the_worktree": "could not create the worktree",
+      "could_not_list_worktrees": "could not list worktrees",
+      "could_not_switch_worktree": "could not switch worktree",
+      "create": "Create",
+      "create_worktree": "Create worktree",
+      "delete_lose_changes": "Delete, lose changes",
+      "enter_main_checkout": "Enter main checkout",
+      "enter_tree": "Enter {{name}}",
+      "leave_this_worktree_before_removing_it": "Leave this worktree before removing it",
+      "main_checkout": "main checkout",
+      "move_this_session_into": "Move this session into {{path}}",
+      "n_trees_other": "{{count}} trees",
+      "new_branch_leave_empty_for_a_generated_name": "new branch — leave empty for a generated name",
+      "new_worktree_branch": "New worktree branch",
+      "no_worktrees_for_this_repository_yet": "No worktrees for this repository yet.",
+      "reading_git_state": "Reading git state…",
+      "recyclable_removes_without_asking": "Recyclable — removes without asking",
+      "refresh": "Refresh",
+      "remove": "Remove",
+      "removal_failed": "removal failed",
+      "remove_asks_first": "Remove (asks first)",
+      "remove_branch": "Remove {{branch}}",
+      "remove_tree": "Remove {{name}}",
+      "state_clean": "clean",
+      "state_dirty": "dirty",
+      "state_unknown": "unknown",
+      "this_session": "this session",
+      "this_session_is_already_here": "This session is already here",
+      "uncommitted_changes": "Uncommitted changes",
+      "verdict_active": "active",
+      "verdict_empty": "empty",
+      "verdict_fresh": "fresh",
+      "verdict_merged": "merged",
+      "verdict_merged_dirty": "merged · dirty",
+      "verdict_no_base": "no base",
+      "verdict_unknown": "unknown",
+      "worktrees": "Worktrees"
     }
   },
   "hooks": {
@@ -7914,7 +7965,8 @@
       "crew_mode": "Crew Mode — 多话题并行子会话",
       "crew": "Crew",
       "autopilot_desc": "一件事分步做完 —— 先给计划，你批准后逐阶段执行。",
-      "crew_desc": "多件事同时推进 —— 每个话题各跑一个子会话，完成一个就回一条。"
+      "crew_desc": "多件事同时推进 —— 每个话题各跑一个子会话，完成一个就回一条。",
+      "worktree_chip_title": "worktree {{path}}\nbranch {{branch}}"
     },
     "connectionsPage": {
       "access": "访问权限",
@@ -10009,7 +10061,9 @@
         "which_model_new_sessions_start_with_pick_a_model": "代理未指定模型时，新会话默认使用的模型。可在“代理能力 → 代理”中为每个代理单独设置模型，或在会话内选择模型以就地覆盖。",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "将子代理的完成事件注入父会话时，保留其输出流的哪一部分。头部保留开头（默认，与旧行为一致）。尾部保留最终摘要。两端则各保留一段，中间加分隔标记。",
         "widget_density": "小组件密度",
-        "your_role": "你的角色"
+        "your_role": "你的角色",
+        "let_a_session_work_in_a_git_worktree_so_several_s": "Let a session work in a git worktree — its own checkout of the repository on its own branch — so several sessions can edit one repository without overwriting each other. Adds a Worktrees control to the composer. Turning it off hides the control and leaves every worktree on disk untouched.",
+        "worktree_sessions_beta": "Worktree sessions (beta)"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

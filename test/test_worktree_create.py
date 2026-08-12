@@ -378,11 +378,11 @@ class TestNoRepositoryCodeExecution:
         `os.devnull` cannot be replaced or filled, so there is no window between
         one git call and the next in which a hook could appear.
         """
-        from kiro_crew.dashboard.handlers import worktree as wt
+        from kiro_crew.worktree import git_exec as wt
 
-        assert wt._HOOKS_SINK == os.devnull
-        assert not os.path.isdir(wt._HOOKS_SINK)
-        argv = wt._git_no_repo_code()
+        assert wt.HOOKS_SINK == os.devnull
+        assert not os.path.isdir(wt.HOOKS_SINK)
+        argv = wt.git_no_repo_code()
         assert f"core.hooksPath={os.devnull}" in argv
         assert "core.fsmonitor=false" in argv
 
@@ -869,7 +869,7 @@ class TestRound9Hardening:
     @pytest.mark.asyncio
     async def test_sandbox_unavailable_refuses_with_503(self, repo):
         """Fail CLOSED: no OS isolation available means the git spawn does not run."""
-        from kiro_crew.dashboard.handlers import worktree as wt
+        from kiro_crew.worktree import git_exec as wt
 
         with patch.object(
             wt, "sandboxed_spawn_argv", side_effect=RuntimeError("no backend")
@@ -888,9 +888,9 @@ class TestRound9Hardening:
         read that file as config. "standard" leaves those paths visible; strict
         bind-mounts them away. Pinned so the mode cannot silently widen.
         """
-        from kiro_crew.dashboard.handlers import worktree as wt
+        from kiro_crew.worktree import git_exec as wt
 
-        assert wt._SANDBOX_MODE == "strict"
+        assert wt.SANDBOX_MODE == "strict"
         seen: dict = {}
 
         def fake_spawn(argv, mode="standard", **kw):
@@ -901,7 +901,7 @@ class TestRound9Hardening:
         with patch.object(wt, "sandboxed_spawn_argv", side_effect=fake_spawn), patch.object(
             wt.subprocess, "run", return_value=ok
         ):
-            wt._run_git(["--version"], os.getcwd())
+            wt.run_git(["--version"], os.getcwd())
         assert seen["mode"] == "strict"
 
     def test_launcher_isolation_failure_is_a_refusal_not_a_git_error(self):
@@ -914,7 +914,7 @@ class TestRound9Hardening:
         a misdiagnosis that sent the user looking at their repo instead of the
         host. Round 9's CI run is where this surfaced.
         """
-        from kiro_crew.dashboard.handlers import worktree as wt
+        from kiro_crew.worktree import git_exec as wt
 
         denied = subprocess.CompletedProcess(
             args=["git"],
@@ -926,12 +926,12 @@ class TestRound9Hardening:
             wt, "sandboxed_spawn_argv", side_effect=_passthrough_spawn
         ), patch.object(wt.subprocess, "run", return_value=denied):
             with pytest.raises(SandboxUnavailable):
-                wt._run_git(["--version"], os.getcwd())
+                wt.run_git(["--version"], os.getcwd())
 
     def test_a_real_git_failure_is_still_a_git_failure(self):
         """Only the launcher's own `sandbox: ` prefix means "no isolation"; an
         ordinary non-zero git exit must pass through untouched."""
-        from kiro_crew.dashboard.handlers import worktree as wt
+        from kiro_crew.worktree import git_exec as wt
 
         failed = subprocess.CompletedProcess(
             args=["git"], returncode=128, stdout="", stderr="fatal: not a git repository\n"
@@ -939,7 +939,7 @@ class TestRound9Hardening:
         with patch.object(
             wt, "sandboxed_spawn_argv", side_effect=_passthrough_spawn
         ), patch.object(wt.subprocess, "run", return_value=failed):
-            proc = wt._run_git(["status"], os.getcwd())
+            proc = wt.run_git(["status"], os.getcwd())
         assert proc.returncode == 128
 
     def test_worktree_listing_survives_a_newline_in_a_path(self, repo, tmp_path):
