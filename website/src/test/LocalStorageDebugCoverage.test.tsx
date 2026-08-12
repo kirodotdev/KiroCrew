@@ -28,6 +28,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 
 import LocalStorageDebug from '../pages/LocalStorageDebug'
+import { i18nT } from '../i18n/t'
+
+// Resolve the button's tooltip through the SAME lookup the component uses, rather
+// than repeating its English wording here. The literal this test used to match
+// ("Delete cached scroll positions") stopped existing when the copy was rewritten
+// to "Delete cached row heights and saved reading positions ...", which turned a
+// pure copy edit into a red shard. Going through the catalog means a reworded
+// string can never break this test, while a MISSING key still will -- which is
+// the failure actually worth catching.
+const ORPHAN_TITLE = i18nT(
+  'pages.localStorageDebug.delete_cached_scroll_positions_from_old_sessions',
+)
 
 /** Approximate quota the page assumes (5 MiB). */
 const QUOTA = 5 * 1024 * 1024
@@ -241,7 +253,7 @@ describe('LocalStorageDebug actions', () => {
 
     render(<LocalStorageDebug />)
 
-    fireEvent.click(screen.getByTitle(/Delete cached scroll positions/))
+    fireEvent.click(screen.getByTitle(ORPHAN_TITLE))
 
     expect(localStorage.getItem('vc_heights_a')).toBeNull()
     expect(localStorage.getItem('vc_heights_b')).toBeNull()
