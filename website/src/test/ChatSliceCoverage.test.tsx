@@ -1134,6 +1134,60 @@ describe('chatSlice thunks', () => {
     expect(chat(store).activeSlot).toBeNull()
   })
 
+  // The dismissed tab must not wait on an unrelated conversation's transcript.
+  // The peer's history fetch is unbounded, so awaiting it before the removal
+  // pins the close control for as long as that load takes; only the state
+  // transitions are ordered, and `switchSlot.pending` completes those
+  // synchronously.
+  it('removes the dismissed slot before the peer history fetch resolves', async () => {
+    let releasePeer: (v: unknown) => void = () => {}
+    const peerFetch = new Promise(resolve => { releasePeer = resolve })
+    apiMock.chatSlotDetail.mockReturnValue(peerFetch)
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    const pending = store.dispatch(deleteSlot('doomed'))
+    // Let the thunk run up to its first real suspension point.
+    await Promise.resolve()
+
+    // The peer's transcript is still in flight...
+    expect(apiMock.chatSlotDetail).toHaveBeenCalledWith('peer')
+    // ...yet the tab is already gone and focus already moved.
+    expect(root(store).dashboard.slots.map(s => s.key)).not.toContain('doomed')
+    expect(chat(store).activeSlot).toBe('peer')
+
+    releasePeer({ messages: [], running: false })
+    await pending
+    expect(chat(store).activeSlot).toBe('peer')
+  })
+
+  // The thunk still owns the navigation it started: a caller that awaits the
+  // dismissal reads the store afterwards, so resolution must mean the peer
+  // settled, not merely that the DELETE returned.
+  it('does not resolve the dismissal until the peer navigation settles', async () => {
+    let releasePeer: (v: unknown) => void = () => {}
+    const peerFetch = new Promise(resolve => { releasePeer = resolve })
+    apiMock.chatSlotDetail.mockReturnValue(peerFetch)
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    let settled = false
+    const pending = store.dispatch(deleteSlot('doomed')).then(r => { settled = true; return r })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    releasePeer({ messages: [{ role: 'user', content: 'peer history' }], running: false })
+    const outcome = await pending
+    expect(settled).toBe(true)
+    expect(outcome.type).toBe('chat/deleteSlot/fulfilled')
+    expect(chat(store).slotLoading).toBe(false)
+  })
+
   it('evicts every per-slot cache once a delete succeeds', async () => {
     apiMock.chatSlotDetail.mockResolvedValue({ messages: [{ role: 'user', content: 'hi' }], running: false })
     apiMock.deleteChatSlot.mockResolvedValue({})

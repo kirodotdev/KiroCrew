@@ -1196,14 +1196,28 @@ export const deleteSlot = createAsyncThunk(
     // backend that emits a distinct `slot.surface` keeps "switch to a peer
     // session" pinned to the same nav destination.
     const deletedSurface = deletedSlot ? slotSurfaceKey(deletedSlot) : ''
-    // Navigate before removeSlotOptimistic to prevent useEffect race
+    // Navigate before removeSlotOptimistic to prevent a useEffect race: the
+    // active slot must already name a surviving peer by the time this slot
+    // leaves the list.
+    //
+    // What that ordering constrains is the STATE transitions, not the I/O.
+    // `switchSlot.pending` assigns `activeSlot` synchronously as it is
+    // dispatched, so the invariant above holds from that call — not from the
+    // moment its history fetch resolves. That fetch is unbounded (the peer's
+    // whole transcript, megabytes on a long session), so it is carried as a
+    // promise rather than awaited here: blocking on it would hold the dismissed
+    // tab on screen for the length of an unrelated conversation's load, which
+    // reads as a dead close control. The peer paints from the `slotMessages`
+    // cache when it has one, or from `slotLoading` behind the already-removed
+    // tab when it does not.
+    let navigation: Promise<unknown> | undefined
     if (root.chat.activeSlot === key) {
       const sameSurface = new Set(root.dashboard.slots.filter(s => slotSurfaceKey(s) === deletedSurface).map(s => s.key))
       const prev = root.chat.slotHistory.filter(k => k !== key && sameSurface.has(k)).pop()
         || root.dashboard.slots.filter(s => s.key !== key && sameSurface.has(s.key)).map(s => s.key)[0]
       dispatch({ type: 'chat/setActiveSlot', payload: null })
       if (prev) {
-        await dispatch(switchSlot(prev)).unwrap().catch(() => dispatch({ type: 'chat/clearSlotState' }))
+        navigation = dispatch(switchSlot(prev)).unwrap().catch(() => dispatch({ type: 'chat/clearSlotState' }))
       } else {
         dispatch({ type: 'chat/clearSlotState' })
       }
@@ -1215,6 +1229,15 @@ export const deleteSlot = createAsyncThunk(
     } catch {
       dispatch(fetchSlots())
       throw new Error('save failed')
+    } finally {
+      // Settle the peer navigation before this thunk reports back, on the
+      // failure path too. Callers that await it treat resolution as "the
+      // dismissal is done" and then read the store (an app agent tearing its
+      // session down, the create-first-then-delete mode switch), so resolving
+      // mid-fetch would hand them a half-loaded peer. Rejection is already
+      // absorbed by the `.catch` above, so this cannot throw and cannot mask
+      // the error being propagated.
+      await navigation
     }
     return key
   },
