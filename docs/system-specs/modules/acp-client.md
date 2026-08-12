@@ -152,10 +152,13 @@ Custom agents use cold start with `--agent <name>` flag at spawn time.
 
 `initialize` → `session/load` or `session/new` → `set_mode` (conditional) → `set_model` (conditional) → drain notifications → `session/prompt`
 
-`ensure_ready()` re-creates `_work_dir` on every call (idempotent `mkdir -p`) so
-that prompts still succeed if the directory was deleted externally between
-calls. kiro-cli's spawned shell inherits the client's cwd and does not revalidate
-it per-command.
+`ensure_ready()` creates `_work_dir` once per instance (off-loop `mkdir -p`,
+remembered via a flag) so the per-prompt warm path pays no filesystem syscall;
+`_spawn()` re-creates it (also off-loop) on every spawn, and `_reset_state()`
+clears the process and session id together, so every session-init path re-enters
+`_spawn` first. A per-prompt re-check could not repair external deletion for a
+live child anyway: kiro-cli's spawned shell inherits the client's cwd by inode,
+not by path, so re-creating the directory does not restore it.
 
 Steps 1–2 (`initialize`, `session/load` or `session/new`) block until a JSON-RPC
 response arrives (base 240s) because the session ID is required before proceeding.

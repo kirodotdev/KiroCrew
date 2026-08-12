@@ -24,7 +24,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from kiro_crew import platform_compat
 from kiro_crew.acp._dispatch import (
@@ -94,6 +94,8 @@ __all__ = [
 
 
 # ── AcpRuntime ──
+
+_T = TypeVar("_T")
 
 _STDOUT_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB
 # How many in-flight request ids to name in the oversize-frame warning. A dropped
@@ -644,12 +646,46 @@ class AcpRuntime:
 
     # ── Lifecycle ──
 
+    def _discard_sandbox_cleanup(self) -> None:
+        """Unlink and forget the sandbox temp file allocated by ``wrap_argv``.
+
+        Mirrors ``AcpClient._discard_sandbox_cleanup``: once no child will
+        exec the launcher/profile file — spawn failed, was cancelled, or the
+        runtime is shutting down — it must be removed, or each attempt leaks
+        one file into the temp dir for the gateway's lifetime.
+        """
+        if self._sandbox_cleanup:
+            try:
+                os.remove(self._sandbox_cleanup)
+            except OSError:
+                pass
+            self._sandbox_cleanup = None
+
+    async def _to_thread_guarding_sandbox(
+        self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any
+    ) -> _T:
+        """``asyncio.to_thread`` that discards the sandbox file on failure.
+
+        After ``wrap_argv`` has allocated the sandbox temp file, every
+        suspension point before the exec is a leak window: a cancellation
+        unwinds ``spawn`` without reaching the shutdown cleanup, orphaning the
+        file. Route any offload in that window through here so the file is
+        removed before re-raising.
+        """
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        except BaseException:
+            self._discard_sandbox_cleanup()
+            raise
+
     async def spawn(self) -> None:
         """Start the kiro-cli acp subprocess and complete protocol handshake."""
         if self._process is not None:
             raise AcpRuntimeError("Runtime already spawned")
 
-        self._work_dir.mkdir(parents=True, exist_ok=True)
+        # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
+        # slow storage; the loop must never wait on the kernel here.
+        await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
 
         try:
             kiro_bin = await _resolve_kiro_bin_for_spawn()
@@ -693,7 +729,11 @@ class AcpRuntime:
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
         # No-op + loud warning where cgroup delegation is unavailable. --scope
         # execs into the target, so self._pid below is still the real child.
-        argv = cgroup_scope_argv(argv)
+        # Off-loop: first call probes /proc + /sys and the config read touches
+        # the config dir (mkdir + file read) — blocking syscalls that must not
+        # run on the loop. Guarded: wrap_argv above allocated the sandbox temp
+        # file, so a cancellation here must not orphan it.
+        argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
 
         env = {**os.environ}
         if self._extra_env:
@@ -709,7 +749,11 @@ class AcpRuntime:
         env = scrub_agent_denied_env(env)
 
         env["PATH"] = augmented_path(env.get("PATH", ""))
-        resolve_krb5_ccname(env)
+        # Resolve KRB5CCNAME off-loop: it lstat/stats /tmp/krb5cc_<uid>, and a
+        # blocking syscall on the event loop stalls every other task. Guarded:
+        # the sandbox temp file is live, so a cancellation here must not
+        # orphan it.
+        await self._to_thread_guarding_sandbox(resolve_krb5_ccname, env)
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
@@ -718,7 +762,11 @@ class AcpRuntime:
         # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
         # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
         # Respects a pre-set value; see resource_status.inject_xdist_auto_cap.
-        inject_xdist_auto_cap(env)
+        # Off-loop: resolving the cap reads the raw config, and that read
+        # enters config_dir() (mkdir + file IO + JSON parse) — blocking
+        # syscalls that must not run on the loop. Guarded: the sandbox temp
+        # file is live, so a cancellation here must not orphan it.
+        await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
 
         self._process = await create_subprocess_limited(
             *argv,
@@ -902,11 +950,7 @@ class AcpRuntime:
                 except Exception:
                     logger.debug("AcpRuntime: PID untracking failed for %s", pid, exc_info=True)
 
-        if self._sandbox_cleanup:
-            try:
-                os.remove(self._sandbox_cleanup)
-            except OSError:
-                pass
+        self._discard_sandbox_cleanup()
 
     # ── Reader Task (single owner of stdout) ──
 
