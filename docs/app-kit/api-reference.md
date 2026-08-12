@@ -140,6 +140,92 @@ lives in a component is only available to surfaces that render that component, w
 transcript print raw marker text. `website/src/test/chatProtocolBoundary.test.ts` asserts that, and
 also that no other non-test source defines the markers a second time.
 
+## Chat Transcript Rendering
+
+`ChatMessageList` renders a transcript. Which component draws a given row is a **registry** keyed by
+the message's `role`, so you add a row type or replace one instead of forking the list.
+
+```jsx
+import { ChatMessageList } from '@kirocrew/app-sdk'
+
+<ChatMessageList messages={messages} running={running} />
+```
+
+That renders the built-in rows. To change one, pass `renderers`.
+
+### Adding a row the transcript does not draw
+
+Four roles are deliberately undrawn — `thinking`, `system`, `done` and `queued` — because the
+dashboard shows them through other affordances. `file` is undrawn too. Claim one and it is yours:
+
+```jsx
+const renderers = [{
+  id: 'queued-card',
+  roles: ['queued'],
+  render: (m, ctx) => ctx.row(<div className="queued">{m.content}</div>),
+}]
+
+<ChatMessageList messages={messages} running={running} renderers={renderers} />
+```
+
+### Replacing a built-in row
+
+Reuse the built-in's `id`:
+
+```jsx
+const renderers = [{
+  id: 'error',                       // replaces the built-in error row
+  roles: ['error'],
+  render: (m, ctx) => ctx.row(<MyErrorCard text={m.content} />),
+}]
+```
+
+Import `defaultMessageRenderers` if you need to read what the built-ins do, and `resolveRenderer` /
+`mergeRenderers` if you are composing a registry yourself rather than handing one to
+`ChatMessageList`.
+
+### What a renderer is handed
+
+| Field | Purpose |
+|---|---|
+| `index`, `messages` | position and the whole transcript, for a row that must look ahead |
+| `running` | whether the session is producing output |
+| `key` | the row's stable React key |
+| `wrapper(children, isUser)` | bubble layout; `isUser` right-aligns |
+| `row(children, tight)` | full-width layout for cards, pills and banners |
+| `onFileOpen` | open a path, when the host supports it |
+| `autoDeniedIds` | tool calls a policy or hook blocked |
+| `renderTool` | the host's tool row, if it passed one |
+
+Two rules the registry relies on:
+
+- **Shape beats role.** Resolution is first-match, and your entries sit between the two built-ins
+  recognised by message *shape* — a stop event and a sub-agent completion, which claim `'*'` and gate
+  on a `match` predicate — and the role-keyed ones. This matters because a stop event reaches the
+  transcript as role `system`, which is also a role you are invited to claim: were a role claim
+  allowed to outrank a `kind` check, claiming `system` would swallow the stop card and pressing Stop
+  would draw your row instead. A role claim cannot know about `kind`, so it does not outrank one.
+  Replacing a shape-matched row is still possible and stays explicit — reuse its `id`.
+- **Returning `null` is different from not claiming a role.** An entry that exists and draws nothing
+  says "no row by design"; no entry at all says "nothing handles this". Both look identical on
+  screen, so `website/src/test/messageRenderers.test.ts` pins which is which.
+
+### Exports
+
+| Export | Kind | Purpose |
+|---|---|---|
+| `ChatMessageList` | component | the transcript |
+| `defaultMessageRenderers` | value | the built-in registry, in resolution order |
+| `mergeRenderers(extra)` | function | shape-matched defaults, then host entries, then the rest |
+| `resolveRenderer(message, renderers)` | function | first entry that claims the message |
+| `ToolCallPill` | component | the store-free tool row the default registry uses |
+| `MessageRenderer` | type | `{ id, roles, match?, render }` |
+| `MessageRenderContext` | type | what `render` is handed |
+
+The registry takes no store and no router dependency, and reads live state only through the context
+it is handed — an app runs outside the dashboard's React root and has no store to select from. A row
+that genuinely needs live app state is supplied by the host as an entry.
+
 ## Gateway API Surface
 
 The sections below document the canonical Gateway API surface as exposed by the

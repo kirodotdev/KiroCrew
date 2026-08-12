@@ -308,3 +308,12 @@ export { default as ChatPanel } from './ChatPanel'
 export * from './protocol'
 export { default as ChatEmbed } from './ChatEmbed'
 export { default as ChatMessageList } from './ChatMessageList'
+// The transcript's row registry, so an app can add a row type or replace one
+// instead of forking the message list.
+export {
+  defaultMessageRenderers,
+  mergeRenderers,
+  resolveRenderer,
+  ToolCallPill,
+} from './messageRenderers'
+export type { MessageRenderer, MessageRenderContext } from './messageRenderers'

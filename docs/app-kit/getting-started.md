@@ -192,6 +192,11 @@ choices and steer acknowledgements inline in its prose (`[OPTIONS: a | b]`,
 Types: `ParsedOptions`, `FollowUpDerivation`, `ChatMessage`. React-free, so it also works in a worker
 or a test. Worked examples: [api-reference.md](api-reference.md#chat-marker-protocol).
 
+To render a transcript rather than parse one, `ChatMessageList` draws it and its row
+**registry** lets you add a row type or replace one without forking the list — including the
+roles the dashboard leaves undrawn. See
+[api-reference.md](api-reference.md#chat-transcript-rendering).
+
 ## Shared UI Components
 
 Available in `@kirocrew/app-sdk/ui`:
