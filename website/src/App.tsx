@@ -1204,8 +1204,8 @@ export default function App() {
             // the builtin lucide glyph, then the generic package icon.
             const customIconUrl = target.iconUrl
             const builtinIcon = target.builtin ? getBuiltinIcon(iconName) : undefined
-            const baseIcon = customIconUrl
-              ? <AppIcon iconUrl={customIconUrl} icon={iconName} size={16} />
+            const baseIcon = customIconUrl || target.iconUrlDark
+              ? <AppIcon iconUrl={customIconUrl} iconUrlDark={target.iconUrlDark} icon={iconName} size={16} />
               : target.pageIconUrl
                 ? <img src={'/apps/' + a.name + '/ui/' + target.pageIconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
                 : builtinIcon

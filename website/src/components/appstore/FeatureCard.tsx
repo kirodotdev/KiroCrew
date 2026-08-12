@@ -46,7 +46,7 @@ export default function FeatureCard({ app, onOpen, onGet, onEnable, busy }: {
           />
         ) : (
           <div className="w-[52px] h-[52px] rounded-[14px] bg-white/15 border border-white/25 backdrop-blur-sm grid place-items-center text-white">
-            {(app.iconUrl || app.icon) ? <AppIcon icon={app.icon} iconUrl={app.iconUrl} size={32} /> : <Package size={26} />}
+            {(app.iconUrl || app.iconUrlDark || app.icon) ? <AppIcon icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} size={32} /> : <Package size={26} />}
           </div>
         )}
       </div>

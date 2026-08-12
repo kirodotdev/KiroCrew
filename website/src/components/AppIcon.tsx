@@ -9,12 +9,17 @@
  *       selected  → --ico-a: var(--accent) --ico-b: var(--text)
  *     Non-app-asset iconUrls (e.g. registry blob proxy) render as a plain <img>.
  *  2. A lucide-react icon from ICON_MAP (falls back to Package).
+ *
+ * Both paths honour ``iconUrlDark``: the inline path rarely needs it (theme
+ * tokens already repaint first-party SVGs), but a raster icon has fixed bytes,
+ * so an app that wants to read well on both backgrounds ships two files.
  */
 import { useEffect, useId, useMemo, useState } from 'react'
 import DOMPurify from 'dompurify'
 import {
   Shield, Bot, Search, Tag, Users, Zap, Star, Package, Cat,
 } from 'lucide-react'
+import { useTheme } from '../hooks/useTheme'
 
 const ICON_MAP: Record<string, typeof Shield> = {
   Shield, Bot, Search, Tag, Users, Zap, Star, Package, Cat,
@@ -57,18 +62,35 @@ function uniquifyIds(markup: string, prefix: string): string {
 export default function AppIcon({
   icon,
   iconUrl,
+  iconUrlDark,
   size = 20,
   selected = false,
 }: {
   icon?: string
   iconUrl?: string
+  /**
+   * Optional dark-appearance variant. Resolution mirrors ``useHeroArt``:
+   * prefer the current theme's art, fall back to the other one. Falling back
+   * in BOTH directions matters — an app that ships only a dark icon should
+   * render it in light mode rather than dropping to the lucide glyph, which
+   * would read as "this app has no icon".
+   *
+   * First-party ``/app-assets/`` SVGs do not need this: they are inlined and
+   * painted from the --ico-a/--ico-b theme tokens, so one file already covers
+   * both appearances. It exists for the raster path, where the bytes are fixed.
+   */
+  iconUrlDark?: string
   size?: number
   /** Lit (accent-dominant) vs idle (muted + accent highlight). */
   selected?: boolean
 }) {
+  const { theme } = useTheme()
+  const url = (theme === 'dark'
+    ? (iconUrlDark || iconUrl)
+    : (iconUrl || iconUrlDark)) || undefined
   const [imgFailed, setImgFailed] = useState(false)
   const [markup, setMarkup] = useState<string | null>(
-    isAppAssetSvg(iconUrl) ? svgCache.get(iconUrl) ?? null : null,
+    isAppAssetSvg(url) ? svgCache.get(url) ?? null : null,
   )
   const rawId = useId()
   // React's useId yields ':r0:' style tokens; sanitize for use in SVG ids.
@@ -87,29 +109,30 @@ export default function AppIcon({
 
   useEffect(() => {
     // Reset per-URL state so a reused AppIcon instance never shows a stale
-    // icon or a sticky failure when its iconUrl changes. Hydrate synchronously
-    // from cache when available; otherwise clear and fetch below.
+    // icon or a sticky failure when its icon changes — including a THEME flip,
+    // which changes ``url`` without any prop the parent re-keys on. Hydrate
+    // synchronously from cache when available; otherwise clear and fetch below.
     setImgFailed(false)
-    const cached = isAppAssetSvg(iconUrl) ? svgCache.get(iconUrl) ?? null : null
+    const cached = isAppAssetSvg(url) ? svgCache.get(url) ?? null : null
     setMarkup(cached)
-    if (!isAppAssetSvg(iconUrl) || svgCache.has(iconUrl)) return
+    if (!isAppAssetSvg(url) || svgCache.has(url)) return
     let cancelled = false
-    fetch(iconUrl)
+    fetch(url)
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error('fetch failed'))))
       .then((text) => {
         if (text.trim().startsWith('<svg')) {
-          svgCache.set(iconUrl, text)
+          svgCache.set(url, text)
           if (!cancelled) setMarkup(text)
         }
       })
       .catch(() => { if (!cancelled) setImgFailed(true) })
     return () => { cancelled = true }
-  }, [iconUrl])
+  }, [url])
 
   // Themeable inline SVG path. The `.app-icon` class sets idle tokens
   // (--ico-a: muted, --ico-b: accent); `data-selected` OR an ancestor
   // `.group:hover` promotes to the lit accent-dominant state (see index.css).
-  if (isAppAssetSvg(iconUrl) && !imgFailed) {
+  if (isAppAssetSvg(url) && !imgFailed) {
     if (scopedMarkup) {
       return (
         <span
@@ -125,11 +148,12 @@ export default function AppIcon({
     return <span className="inline-flex shrink-0" style={{ width: size, height: size }} />
   }
 
-  // Non-app-asset image (e.g. registry blob proxy).
-  if (iconUrl && !imgFailed) {
+  // Non-app-asset image (e.g. registry blob proxy). Raster art cannot repaint
+  // from theme tokens, which is the whole reason ``iconUrlDark`` exists.
+  if (url && !imgFailed) {
     return (
       <img
-        src={iconUrl}
+        src={url}
         alt=""
         className="rounded-lg object-contain"
         style={{ width: size, height: size }}

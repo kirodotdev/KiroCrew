@@ -94,10 +94,21 @@ Path form depends on distribution: a registry app uses a repo-relative path
 
 | Field | Rendered where | Aspect |
 |-------|----------------|--------|
-| `iconPath` | Card and row icon, and the gradient fallback's centerpiece | Square PNG with transparency; 256x256 or larger |
+| `iconPath` / `iconPathDark` | Card and row icon, the sidebar glyph, and the gradient fallback's centerpiece | Square, **512x512**, **opaque** — no transparency. The dark variant is optional |
 | `screenshots` / `screenshotsDark` | Detail-page gallery with a lightbox; the first screenshot is also the last-resort hero | Landscape; around 1200px wide |
 | `heroImage` / `heroImageDark` | Discover rows, Library rows, the featured spotlight, feature cards, and the detail banner when no detail-specific art exists | 16:9 (for example 1200x675) |
 | `heroImageDetail` / `heroImageDetailDark` | Detail-page banner only, preferred there over `heroImage` | 25:6 (for example 1200x288) |
+
+The required icon must be **opaque**. An opaque tile carries its own
+background, so it reads correctly on any surface — which is what makes
+`iconPathDark` genuinely optional rather than a latent bug. A transparent icon
+that looks right on light chrome turns into a dark smear on dark chrome, and an
+app that then omits the dark variant ships a broken card.
+
+Built-in first-party apps take a different path: their icon is an SVG under
+`/app-assets/`, inlined and painted from the theme's `--ico-a` / `--ico-b`
+tokens, so a single file covers both appearances and no dark variant exists.
+Raster art cannot repaint, which is the whole reason the variant field is here.
 
 Ship hero art. Every store surface uses it, and it is the difference between
 looking like a product and looking like a list entry.
