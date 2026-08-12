@@ -591,35 +591,47 @@ class TestRouteRegistration:
 
     @staticmethod
     def _registered_routes() -> set:
-        """``(verb, path, handler_attr)`` triples parsed out of ``start_dashboard``.
+        """``(verb, path, handler_attr)`` triples parsed out of the route table.
 
-        The registrations live inside ``async def start_dashboard``, which cannot
-        be invoked from a unit test (it binds a port and starts services), so the
-        router itself is not reachable here — the AST is. This is still strictly
-        stronger than a substring scan: it pins the HTTP verb and the handler
-        attribute, so a GET registered as POST, or a route wired to the wrong
-        handler, both fail.
+        The registrations live in ``dashboard/routes/`` (moved out of
+        ``async def start_dashboard``, which cannot be invoked from a unit test
+        because it binds a port and starts services), so the AST is what is
+        reachable here. This is still strictly stronger than a substring scan: it
+        pins the HTTP verb and the handler attribute, so a GET registered as POST,
+        or a route wired to the wrong handler, both fail.
+
+        Both ``server`` and every slice module are scanned, so the assertions hold
+        wherever a route lives and keep holding if it moves between slices.
         """
         import ast
+        import importlib
         import inspect
 
+        from kiro_crew.dashboard import routes as routes_pkg
         from kiro_crew.dashboard import server as core_server
 
-        tree = ast.parse(inspect.getsource(core_server))
-        found = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if not node.func.attr.startswith("add_"):
-                continue
-            if len(node.args) < 2 or not isinstance(node.args[0], ast.Constant):
-                continue
-            handler = node.args[1]
-            if not isinstance(handler, ast.Attribute):
-                continue
-            found.add(
-                (node.func.attr.removeprefix("add_").upper(), node.args[0].value, handler.attr)
+        sources = [inspect.getsource(core_server)]
+        for name in routes_pkg.REGISTRAR_NAMES:
+            sources.append(
+                inspect.getsource(importlib.import_module(f"kiro_crew.dashboard.routes.{name}"))
             )
+
+        found = set()
+        for src in sources:
+            tree = ast.parse(src)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if not node.func.attr.startswith("add_"):
+                    continue
+                if len(node.args) < 2 or not isinstance(node.args[0], ast.Constant):
+                    continue
+                handler = node.args[1]
+                if not isinstance(handler, ast.Attribute):
+                    continue
+                found.add(
+                    (node.func.attr.removeprefix("add_").upper(), node.args[0].value, handler.attr)
+                )
         return found
 
     def test_new_routes_are_registered_with_verb_and_handler(self):

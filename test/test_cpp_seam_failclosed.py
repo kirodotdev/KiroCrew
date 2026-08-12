@@ -947,6 +947,9 @@ def test_dashboard_contributor_sites_use_safe_context_call() -> None:
     fail-closed shims: sync ``safe_context_call`` for sso_login_handler /
     contribute_routes, async ``async_safe_context_call`` for start/stop_services."""
     src = _read_source("kiro_crew.dashboard.server")
+    # The sso_login_handler seam is resolved where its route is registered, which
+    # is the connections slice of the route table rather than server.py itself.
+    src += _read_source("kiro_crew.dashboard.routes.connections")
     for sym in ("sso_login_handler", "contribute_routes", "start_services", "stop_services"):
         assert sym in src, f"production site for {sym} disappeared"
     assert "safe_context_call(" in src

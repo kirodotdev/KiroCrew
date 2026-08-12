@@ -387,13 +387,23 @@ class TestEndpoint:
         A `hasattr(handlers, ...)` check passes even if the
         `app.router.add_get("/api/security/posture", ...)` line is deleted — which
         would ship a 404 with the whole suite green.
+
+        The registration lives in the route table under ``dashboard/routes/``, so
+        both that package and ``server`` are scanned and the assertion holds
+        wherever the route sits.
         """
+        import importlib
         import inspect
 
-        from kiro_crew.dashboard import handlers, server
+        from kiro_crew.dashboard import handlers
+        from kiro_crew.dashboard import routes as routes_pkg
+        from kiro_crew.dashboard import server
 
         assert hasattr(handlers, "api_security_posture")
-        src = inspect.getsource(server)
+        src = inspect.getsource(server) + "".join(
+            inspect.getsource(importlib.import_module(f"kiro_crew.dashboard.routes.{name}"))
+            for name in routes_pkg.REGISTRAR_NAMES
+        )
         assert '"/api/security/posture"' in src
         assert "handlers.api_security_posture" in src
 
