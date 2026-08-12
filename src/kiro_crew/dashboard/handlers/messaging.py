@@ -2279,6 +2279,26 @@ async def api_browser_auth_retry(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=500)
 
 
+def _browser_config_snapshot() -> dict[str, Any]:
+    """Read the Browser Mode surface. BLOCKING -- callers on the event loop must
+    offload it.
+
+    Every field is a filesystem read: three flag/token files under the data home,
+    plus a launcher probe that resolves over the Node-augmented PATH. The probe is
+    the expensive one -- it lists the Node toolchain candidate dirs (once per
+    process, then cached) and walks PATH looking for a launcher, so on a network
+    HOME those stats are slow enough to be worth keeping off the loop.
+    """
+    return {
+        "enabled": browser_mode_enabled(),
+        "engine": get_browser_engine(),
+        "engines": list(BROWSER_ENGINES),
+        "extension_mode": has_playwright_extension(),
+        "token": get_extension_token() is not None,
+        "installed": is_playwright_installed(),
+    }
+
+
 async def api_browser_config_get(request: web.Request) -> web.Response:
     """GET /api/browser/config — browser mode, engine, extension mode, token."""
     _sel().log_tool_invocation(
@@ -2287,16 +2307,7 @@ async def api_browser_config_get(request: web.Request) -> web.Response:
         outcome="completed",
         downstream_service="browser",
     )
-    return web.json_response(
-        {
-            "enabled": browser_mode_enabled(),
-            "engine": get_browser_engine(),
-            "engines": list(BROWSER_ENGINES),
-            "extension_mode": has_playwright_extension(),
-            "token": get_extension_token() is not None,
-            "installed": is_playwright_installed(),
-        }
-    )
+    return web.json_response(await asyncio.to_thread(_browser_config_snapshot))
 
 
 async def api_browser_config_save(request: web.Request) -> web.Response:

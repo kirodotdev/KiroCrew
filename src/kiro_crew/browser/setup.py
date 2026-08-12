@@ -320,7 +320,9 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
             "detail": (
                 "Browser Mode is on. To finish setup, install Node.js "
                 "(https://nodejs.org) — the agent's browser tools start working "
-                "once it is available."
+                "once it is available. If Node is already installed but sits "
+                "outside the PATH this service inherits, point "
+                "KIROCREW_NODE_BIN_DIR at its bin directory."
             ),
             "engine": engine,
         }
@@ -1665,8 +1667,17 @@ def check_playwright_launchable() -> tuple[bool, str]:
     check agrees with what the proxy would actually spawn. Returns
     ``(ok, detail)`` where ``detail`` is the resolved launcher, or an install
     hint when nothing is resolvable (e.g. Node/npm absent).
+
+    Resolves on the Node-AUGMENTED PATH, which is what makes that agreement
+    real: ``run_proxy`` augments PATH before resolving and
+    ``ensure_playwright_installed`` primes on the augmented PATH too, so a raw
+    ``os.environ["PATH"]`` here reports "no launcher" on exactly the hosts the
+    augmentation exists to serve -- a service whose PATH omits the Node
+    toolchain, where the launcher IS resolvable and the browser DOES run. That
+    answer reaches the operator as Settings' durable "browser tools are not
+    installed" line.
     """
-    cmd = _resolve_playwright_cmd()
+    cmd = _resolve_playwright_cmd(node_augmented_path(os.environ.get("PATH", "")))
     if cmd is None:
         return (
             False,

@@ -99,6 +99,22 @@ _NODE_MANAGER_DIRS = (
     "{home}/.volta/bin",
     "{home}/n/bin",
 )
+# Standalone Node TREES -- an unpacked distribution rather than a manager's
+# per-version store, so there is no version to glob and no shim to consult.
+# These are where an operator unpacking a nodejs.org tarball by hand puts one.
+# Only ``bin`` dirs of a Node-only tree belong here, never a general-purpose bin
+# dir: every entry is PREPENDED to the pinned PATH of build subprocesses, where a
+# dir full of unrelated user binaries would shadow the system tools that pinning
+# exists to guarantee.
+_NODE_TREE_DIRS = (
+    "{home}/.local/node/bin",
+    "{home}/.local/share/node/bin",
+)
+# Standalone trees under the DATA home -- where ``ensure-node.sh`` unpacks the
+# unofficial glibc-2.17 build, i.e. a Node Kiro Crew installed itself. Relative
+# paths, resolved against ``data_home()`` separately from the ``$HOME`` templates
+# above because that call can fail (see :func:`node_bin_dirs`).
+_NODE_TREE_DATA_HOME_DIRS = ("node-glibc217/bin",)
 # Marker file written by ``ensure-node.sh`` recording the node bin dir it
 # resolved. The Makefile already consumes it; this keeps Python callers on the
 # same answer instead of re-deriving one.
@@ -183,6 +199,13 @@ def node_bin_dirs() -> tuple[str, ...]:
     3. The highest version found under each per-version manager root
        (mise / asdf / nvm / fnm).
     4. Shim dirs (mise shims, volta, n).
+    5. Standalone Node trees -- the glibc-2.17 build ``ensure-node.sh`` unpacks
+       into the data home (:data:`_NODE_TREE_DATA_HOME_DIRS`), then a
+       hand-unpacked nodejs.org tarball under ``~/.local``
+       (:data:`_NODE_TREE_DIRS`). Last because a manager's install is the version
+       the build was resolved against; a tree found here is a fallback that keeps
+       a plainly-installed Node from reading as "no Node at all" on a daemon
+       whose ``$PATH`` omits it.
 
     Every entry is verified to contain an executable ``node``, so the result is
     only ever real toolchain directories. Only the BEST version per manager root
@@ -230,6 +253,16 @@ def node_bin_dirs() -> tuple[str, ...]:
             ordered.append(str(matches[0]))
 
     ordered.extend(d.format(home=home, mise_data=mise_data) for d in _NODE_MANAGER_DIRS)
+    # Under a KIROCREW_HOME override data_home() mkdirs, so it can raise on an
+    # unwritable path. Only the data-home candidates depend on it; swallowing here
+    # keeps a failure from taking out the manager and $HOME tiers with them.
+    try:
+        dh: Path | None = data_home()
+    except OSError:
+        dh = None
+    if dh is not None:
+        ordered.extend(str(dh / rel) for rel in _NODE_TREE_DATA_HOME_DIRS)
+    ordered.extend(d.format(home=home) for d in _NODE_TREE_DIRS)
 
     out: list[str] = []
     seen: set[str] = set()

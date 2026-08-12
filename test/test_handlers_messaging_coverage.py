@@ -1187,6 +1187,30 @@ class TestBrowserConfig:
             "installed": True,
         }
 
+    def test_get_does_not_probe_on_the_event_loop(self, monkeypatch) -> None:
+        """Every field is a filesystem read and the launcher probe resolves over
+        the Node-augmented PATH, so on a network HOME answering this route inline
+        would stall the loop for every other request and the heartbeat."""
+        import threading
+
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+
+        def _probe() -> bool:
+            seen.append(threading.current_thread())
+            return True
+
+        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: True)
+        monkeypatch.setattr(mod, "get_browser_engine", lambda: "chromium")
+        monkeypatch.setattr(mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(mod, "get_extension_token", lambda: None)
+        monkeypatch.setattr(mod, "is_playwright_installed", _probe)
+
+        resp = _run(mod.api_browser_config_get, _Req(_state()))
+
+        assert _payload(resp)["installed"] is True
+        assert seen and seen[0] is not loop_thread
+
     def _stub_enable_side_effects(self, monkeypatch) -> None:
         monkeypatch.setattr(mod, "generate_playwright_config", lambda engine=None: None)
         monkeypatch.setattr(

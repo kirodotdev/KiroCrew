@@ -68,6 +68,11 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(
         env_mod, "_marker_node_bin_dir", lambda: None, raising=True
     )
+    # The standalone-tree tier reads data_home(); keep it inside the fake HOME so
+    # a real ensure-node.sh install on the developer's box cannot leak in.
+    monkeypatch.setattr(
+        env_mod, "data_home", lambda: home / ".kiro" / "crew", raising=True
+    )
     return home
 
 
@@ -303,3 +308,62 @@ def test_find_node_tool_returns_absolute_path(isolated_home):
 
 def test_find_node_tool_returns_none_when_absent(isolated_home):
     assert env_mod.find_node_tool("npm", "") is None
+
+
+# --- standalone Node trees (no version manager, no marker) ---
+def test_hand_unpacked_tarball_under_local_node_is_found(isolated_home):
+    """A nodejs.org tarball unpacked by hand is a real toolchain, not "no Node".
+
+    Nothing about this host is a version manager and nothing wrote the marker, so
+    before the tree tier existed the resolver returned empty and every caller
+    that pins PATH reported Node as missing on a machine that plainly had it.
+    """
+    d = _fake_node_bin(isolated_home / ".local" / "node" / "bin")
+    assert str(d) in env_mod.node_bin_dirs()
+
+
+def test_ensure_node_glibc217_tree_is_found_without_the_marker(isolated_home):
+    """The tree Kiro Crew's own installer unpacks must not depend on the marker.
+
+    ``ensure-node.sh`` writes ``<data-home>/node-bin-dir`` after installing, but a
+    tree installed under a different KIROCREW_HOME (or a marker since deleted)
+    left the product unable to see the Node it installed itself.
+    """
+    d = _fake_node_bin(env_mod.data_home() / "node-glibc217" / "bin")
+    assert str(d) in env_mod.node_bin_dirs()
+
+
+def test_a_manager_install_outranks_a_standalone_tree(isolated_home):
+    """Build callers get the manager's version -- the one engines were resolved
+    against -- and the standalone tree only as a fallback behind it."""
+    tree = _fake_node_bin(isolated_home / ".local" / "node" / "bin")
+    managed = _fake_node_bin(
+        isolated_home / ".local/share/mise/installs/node/24.0.0/bin"
+    )
+
+    dirs = env_mod.node_bin_dirs()
+    assert dirs.index(str(managed)) < dirs.index(str(tree))
+
+
+def test_a_general_purpose_bin_dir_is_not_a_node_tree(isolated_home):
+    """``~/.local/bin`` holds node BESIDE unrelated user binaries, and every entry
+    here is prepended to a deliberately pinned build PATH -- adding it would let
+    a user copy of any tool shadow the system one that pinning guarantees."""
+    _fake_node_bin(isolated_home / ".local" / "bin")
+    assert env_mod.node_bin_dirs() == ()
+
+
+def test_npm_and_npx_resolve_through_a_standalone_tree(isolated_home):
+    """The failure that surfaced this was an unresolvable ``npm``/``npx``, not
+    ``node`` -- resolution has to cover the tools the installers actually spawn."""
+    d = isolated_home / ".local" / "node" / "bin"
+    _fake_node_bin(d)
+    npx = d / ("npx.cmd" if platform_compat.IS_WINDOWS else "npx")
+    npx.write_text("@echo off\n" if platform_compat.IS_WINDOWS else "#!/bin/sh\nexit 0\n")
+    npx.chmod(0o755)
+
+    # An empty base path stands in for a service PATH that omits the tree.
+    for tool in ("node", "npm", "npx"):
+        found = env_mod.find_node_tool(tool, "")
+        assert found is not None, tool
+        assert Path(found).parent == d

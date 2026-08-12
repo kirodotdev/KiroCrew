@@ -1114,6 +1114,31 @@ class TestCheckPlaywrightLaunchable:
         assert ok is False
         assert "@playwright/mcp" in detail
 
+    def test_resolves_an_npx_only_reachable_via_the_node_toolchain(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A service PATH omitting the Node toolchain must not read as "no launcher".
+
+        ``run_proxy`` and ``ensure_playwright_installed`` both resolve on the
+        Node-augmented PATH, so a check resolving on the raw environment PATH
+        would contradict the process that actually spawns the browser -- and that
+        contradiction surfaces to the operator as Settings reporting the browser
+        tools uninstalled on a host where browsing works.
+        """
+        node_dir = tmp_path / "node" / "bin"
+        node_dir.mkdir(parents=True)
+        npx = node_dir / ("npx" if IS_POSIX else "npx.cmd")
+        npx.write_text("#!/bin/sh\nexit 0\n" if IS_POSIX else "@echo off\n")
+        npx.chmod(0o755)
+
+        monkeypatch.delenv("KIROCREW_PLAYWRIGHT_CMD", raising=False)
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        monkeypatch.setattr(setup_mod, "node_augmented_path", lambda base: str(node_dir))
+
+        ok, detail = check_playwright_launchable()
+        assert ok is True
+        assert Path(detail).parent == node_dir
+
 
 class TestRegisterPlaywrightProxy:
     def test_creates_mcp_json_and_registers_canonical(
