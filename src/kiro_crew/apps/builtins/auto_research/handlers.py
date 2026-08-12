@@ -128,6 +128,10 @@ _FIRST_CYCLE_GRACE_SECS = 600
 _TRUST_TTL_SECS = 24 * 3600
 _CAMPAIGN_ID_RE = re.compile(r"^[a-f0-9]{8}$")
 
+# Cap on a stored model id. Longest ids in the wild (fully-qualified Bedrock
+# inference profiles) are ~60 chars; anything past this is not a model id.
+_MAX_MODEL_LEN = 128
+
 
 def _unresponsive_deadline(idle_secs: int) -> int:
     """Idle seconds (no slot activity AND no new finding) before unresponsive.
@@ -278,6 +282,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     "ALTER TABLE campaigns ADD COLUMN reserve_fraction REAL NOT NULL DEFAULT 0.15"
                 )
+            # Explicit per-campaign model pick ('' = inherit the research
+            # agent's / backend's default — never a hardcoded id).
+            if "model" not in cols:
+                conn.execute("ALTER TABLE campaigns ADD COLUMN model TEXT NOT NULL DEFAULT ''")
             conn.commit()
             _INITIALIZED_DBS.add(key)
         except Exception:
@@ -370,6 +378,28 @@ def _audit(operation: str, campaign_id: str, **extra: Any) -> None:
 # --- Validation ---
 
 
+def _campaign_model(config: dict) -> str:
+    """The campaign's explicit model pick from a create/fork config, normalized.
+
+    '' means "no explicit pick" — the worker slot inherits the research agent's
+    (and ultimately the backend's) default resolution. A concrete id is stored
+    verbatim (trimmed); over-length ids are rejected in ``validate_campaign``
+    rather than truncated, so a bad id gets a 400 that names the problem instead
+    of being stored as a different string.
+
+    Availability is NOT screened here: no advertised-model list exists outside a
+    live session. If the pick stops being served, the session layer's withhold
+    (``_pinned_model_withheld`` in chat_runner) KEEPS the pin, runs the worker on
+    the backend default, and posts a notice card — but that card lands in the
+    app-owned ``research-<cid>`` transcript, which the Research Lab page does not
+    render, so the fallback is not visible on this app's own surfaces.
+    """
+    raw = config.get("model")
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()
+
+
 def validate_campaign(config: dict) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
@@ -381,6 +411,24 @@ def validate_campaign(config: dict) -> dict:
     # RL v2: validate execution_mode against supported modes.
     if config.get("execution_mode", DEFAULT_EXECUTION_MODE) not in VALID_EXECUTION_MODES:
         errors.append("Execution mode must be 'agent' or 'workflow'")
+
+    raw_model = config.get("model")
+    if raw_model is not None and not isinstance(raw_model, str):
+        errors.append("Model must be a string")
+    elif isinstance(raw_model, str) and len(raw_model.strip()) > _MAX_MODEL_LEN:
+        # Reject rather than truncate: a sliced id is a *different* string that
+        # is never served, which would take the silent-fallback path instead of
+        # a 400 that names the problem.
+        errors.append(f"Model id too long (max {_MAX_MODEL_LEN} characters)")
+    elif (
+        _campaign_model(config)
+        and config.get("execution_mode", DEFAULT_EXECUTION_MODE) == "workflow"
+    ):
+        # The workflow engine resolves its own models per step; a campaign-level
+        # pin would be silently ignored, which the AGENTS.md contract forbids.
+        errors.append(
+            "Model selection requires agent mode — workflow mode runs on the default model"
+        )
 
     max_cycles = config.get("max_cycles", 30)
     if max_cycles > MAX_CYCLES_HARD_CAP:
@@ -624,8 +672,8 @@ def create_campaign(config: dict) -> dict:
         "INSERT INTO campaigns (id,name,question,sub_questions,sources,scope_constraints,"
         "max_cycles,idle_secs,success_criteria,auto_approve,parent_id,parallel_workers,"
         "execution_mode,max_subquestions_per_round,depth_decay,reserve_fraction,"
-        "status,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "model,status,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             campaign_id,
             name,
@@ -643,6 +691,7 @@ def create_campaign(config: dict) -> dict:
             max_subq,
             depth_decay,
             reserve_fraction,
+            _campaign_model(config),
             CampaignStatus.READY,
             time.time(),
         ),
@@ -1129,16 +1178,27 @@ async def _launch_loop(request: web.Request, cid: str) -> None:
     db = _get_db()
     row = db.execute(
         "SELECT name, question, sub_questions, sources, scope_constraints, max_cycles, idle_secs, "
-        "success_criteria, auto_approve, parallel_workers FROM campaigns WHERE id = ?",
+        "success_criteria, auto_approve, parallel_workers, model FROM campaigns WHERE id = ?",
         (cid,),
     ).fetchone()
     db.close()
     if row is None:
         return
     _write_brief(cid, row)
+    # Pin the campaign's explicit model pick on the worker slot ('' = inherit
+    # the research agent's / backend's default resolution — never a hardcoded
+    # id here). If a concrete pick is not served for this account, the session
+    # layer's withhold (_pinned_model_withheld) KEEPS the pin and runs the
+    # worker on the backend default — the notice it posts lands in the hidden
+    # research-<cid> transcript, not on the Research Lab page.
+    campaign_model = row["model"] or ""
     slot = state.get_or_create_slot(
-        name=f"research-{cid}", agent=_RESEARCH_AGENT, app="auto-research"
+        name=f"research-{cid}", agent=_RESEARCH_AGENT, app="auto-research", model=campaign_model
     )
+    # get_or_create_slot only applies kwargs on CREATE; on resume the slot
+    # already exists, so re-pin explicitly — the campaign row stays the single
+    # source of truth for the worker's model across gateway restarts.
+    slot.model = campaign_model
     # Give the app-owned worker slot a meaningful title (the campaign's human
     # name) instead of the "New Session…" placeholder. The slot is driven by
     # autonudge, whose injected messages carry role "nudge" (not "user"), so the
@@ -2060,7 +2120,7 @@ async def _handle_action(request: web.Request) -> web.Response:
     if action == "fork":
         db = _get_db()
         parent = db.execute(
-            "SELECT id, question, sources, status FROM campaigns WHERE id = ?",
+            "SELECT id, question, sources, status, model FROM campaigns WHERE id = ?",
             (cid,),
         ).fetchone()
         db.close()
@@ -2082,6 +2142,7 @@ async def _handle_action(request: web.Request) -> web.Response:
             "success_criteria": body.get("success_criteria"),
             "auto_approve": body.get("auto_approve", False),
             "parent_id": cid,
+            "model": parent["model"] or "",  # fork continues on the parent's pick
             "grill_tree": body.get("grill_tree"),
         }
         loop = asyncio.get_running_loop()

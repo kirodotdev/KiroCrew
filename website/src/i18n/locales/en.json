@@ -195,6 +195,8 @@
         "max_cycles_2": "Max cycles",
         "min": "min",
         "min_20_characters": "Min 20 characters.",
+        "model": "Model",
+        "model_default_inherit": "Default (inherit)",
         "moderate": "Moderate",
         "new_campaign": "New Campaign",
         "new_campaign_2": "+ New Campaign",

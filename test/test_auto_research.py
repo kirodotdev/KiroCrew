@@ -133,6 +133,73 @@ class TestValidation:
         assert r["estimated_cycles"] == 40
         assert r["estimated_duration_min"] == 80
 
+    def test_model_allowed_in_agent_mode(self):
+        r = validate_campaign(
+            {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "execution_mode": "agent",
+                "model": "test-model-x",
+            }
+        )
+        assert r["can_start"]
+
+    def test_model_rejected_in_workflow_mode(self):
+        # The workflow engine resolves its own models; a campaign-level pin
+        # would be silently ignored, so the create must be refused instead.
+        r = validate_campaign(
+            {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "execution_mode": "workflow",
+                "model": "test-model-x",
+            }
+        )
+        assert not r["can_start"]
+        assert any("agent mode" in e for e in r["errors"])
+
+    def test_empty_model_fine_in_workflow_mode(self):
+        # '' / missing means "inherit" — valid in every mode.
+        for model in ("", "   ", None):
+            cfg = {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "execution_mode": "workflow",
+            }
+            if model is not None:
+                cfg["model"] = model
+            r = validate_campaign(cfg)
+            assert r["can_start"], f"model={model!r} should validate"
+
+    def test_non_string_model_rejected(self):
+        r = validate_campaign(
+            {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "model": ["not", "a", "string"],
+            }
+        )
+        assert not r["can_start"]
+        assert any("string" in e for e in r["errors"])
+
+    def test_overlength_model_rejected_not_truncated(self):
+        # A sliced id would be a different string that is never served (silent
+        # fallback); the create must be refused with an error naming the cap.
+        from kiro_crew.apps.builtins.auto_research.handlers import _campaign_model
+
+        long_id = "m" * 200
+        r = validate_campaign(
+            {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "model": long_id,
+            }
+        )
+        assert not r["can_start"]
+        assert any("too long" in e for e in r["errors"])
+        # And the normalizer no longer slices: it returns the trimmed input.
+        assert _campaign_model({"model": f"  {long_id}  "}) == long_id
+
 
 class TestStagnation:
     def test_no_dir(self):
@@ -305,6 +372,22 @@ class TestCRUD:
         c = create_campaign({"question": "How do teams handle rate limiting?", "sources": ["web"]})
         assert len(c["id"]) == 8
         assert c["status"] == "ready"
+
+    def test_model_stored_and_defaults_to_inherit(self):
+        # No pick -> '' (inherit); explicit pick stored verbatim (trimmed).
+        c1 = create_campaign(
+            {"question": "How do teams handle rate limiting?", "sources": ["web"]}
+        )
+        assert get_campaign(c1["id"])["model"] == ""
+        update_campaign_status(c1["id"], CampaignStatus.STOPPED)
+        c2 = create_campaign(
+            {
+                "question": "How do teams handle rate limiting?",
+                "sources": ["web"],
+                "model": "  test-model-x  ",
+            }
+        )
+        assert get_campaign(c2["id"])["model"] == "test-model-x"
 
     def test_update_running(self):
         c = create_campaign(
@@ -1599,6 +1682,49 @@ class TestLoopLaunch:
         assert state.get_or_create_slot.return_value._trust is True
 
     @pytest.mark.asyncio
+    async def test_launch_pins_campaign_model_on_slot(self, monkeypatch):
+        # The campaign's explicit model pick must reach the worker slot both at
+        # creation (get_or_create_slot kwarg) and on resume (explicit re-pin:
+        # the factory only applies kwargs when it CREATES the slot).
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        c = create_campaign(
+            {
+                "question": "Research question about something here",
+                "sources": ["web"],
+                "model": "test-model-x",
+            }
+        )
+        svc = MagicMock()
+        svc.add = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        state = MagicMock()
+        slot = SimpleNamespace(key=f"research-{c['id']}", model="stale-previous-model")
+        state.get_or_create_slot.return_value = slot
+        await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        assert state.get_or_create_slot.call_args.kwargs["model"] == "test-model-x"
+        assert slot.model == "test-model-x"
+
+    @pytest.mark.asyncio
+    async def test_launch_defaults_to_inherit_model(self, monkeypatch):
+        # No explicit pick -> '' is threaded through, meaning the slot inherits
+        # the research agent's / backend's default resolution.
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        c = create_campaign(
+            {"question": "Research question about something here", "sources": ["web"]}
+        )
+        svc = MagicMock()
+        svc.add = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        state = MagicMock()
+        slot = SimpleNamespace(key=f"research-{c['id']}")
+        state.get_or_create_slot.return_value = slot
+        await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        assert state.get_or_create_slot.call_args.kwargs["model"] == ""
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
     async def test_launch_sets_slot_title_from_campaign_name(self, monkeypatch):
         # The worker slot is autonudge-driven (messages are role "nudge", not
         # "user"), so the LLM auto-titler never fires and the slot would show
@@ -2018,6 +2144,7 @@ class TestForkAndGrillTreeHTTP:
                 "sub_questions": [],
                 "sources": ["web"],
                 "max_cycles": 5,
+                "model": "test-model-x",  # parent created with an explicit pick
             }
         )
         pid = parent["id"]
@@ -2042,6 +2169,7 @@ class TestForkAndGrillTreeHTTP:
         row = h.get_campaign(child_id)
         assert row is not None and row["parent_id"] == pid
         assert row["name"].startswith("Forked: ")
+        assert row["model"] == "test-model-x"  # fork continues on the parent's pick
         assert (h._campaign_dir(child_id) / "parent_findings.md").read_text(encoding="utf-8") == (
             "# Parent findings\nsome evidence"
         )
