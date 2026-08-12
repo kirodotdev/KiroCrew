@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../api/client'
 import { Badge, Btn } from '../ui'
-import HeroCapsule from './HeroCapsule'
+import AppIconTile from './AppIconTile'
 import type { InstalledApp } from './types'
 import { appDisplayName, appDescription } from './appManifest'
 
@@ -72,15 +72,14 @@ export default function InstalledAppCard({
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 flex-1 min-w-0">
-            {/* Hero capsule — same art and fallback chain as Discover's rows,
-                so one app looks like itself on both tabs. */}
-            <HeroCapsule
+            {/* Same tile and fallback chain as Discover's rows, so one app
+                looks like itself on both tabs. */}
+            <AppIconTile
               name={app.name}
-              art={{ heroImage: m?.heroImage, heroImageDark: m?.heroImageDark, screenshots: m?.screenshots, repo: m?.repo }}
               icon={pageIcon}
               iconUrl={iconUrl}
               iconUrlDark={iconUrlDark}
-              className="w-24 h-[54px] mt-0.5"
+              className="w-11 h-11 mt-0.5"
             />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
