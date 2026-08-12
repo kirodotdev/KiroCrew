@@ -413,6 +413,19 @@ cron/heartbeat/lesson extraction) to extract:
 - `preferences_update` → overwrites `preferences.md` if changed
 - `projects_update` → overwrites `projects.md` if changed
 
+Both markdown writes are **guarded compare-and-swap** writes, offloaded via
+`asyncio.to_thread` because the guarded writers take a cross-process advisory
+lock and this coroutine runs on the event loop thread. The prompt asks for the
+complete file and the reply is written verbatim, so the consolidator passes the
+pre-LLM snapshot as `expected=` to `write_preferences` / `write_projects`: if a
+concurrent session rewrote the file during the LLM turn (seconds), the reply was
+computed from a stale view and is dropped rather than clobbering the newer
+content, and the next consolidation re-merges from fresh. The same writers
+reject degenerate bodies — see the guard in `memory-skills-hooks.md`. Both
+prompt keys explicitly forbid answering with a placeholder such as `unchanged`,
+which a model would otherwise emit in response to "repeat the existing content
+if nothing changed" and which used to replace the entire file with that word.
+
 Non-blocking via `asyncio.create_task`. Requires `SessionManager` to be passed
 at construction time; consolidation is silently skipped if no session manager
 is available.

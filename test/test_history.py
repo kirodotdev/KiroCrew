@@ -3765,3 +3765,104 @@ class TestMetadataReadSurvivesATransientSharingViolation:
         assert any(
             "could not read metadata" in r.getMessage() for r in caplog.records
         ), f"no warning recorded; got {[r.getMessage() for r in caplog.records]}"
+
+
+class TestMarkdownMemoryClobberGuard:
+    """Regression tests for the projects.md 'unchanged' clobber.
+
+    The consolidation prompt asked for "the COMPLETE updated projects file"
+    and added "Return existing if unchanged".  A model reading that as a
+    sentinel request answered ``{"projects_update": "unchanged"}``, and the
+    whole file was replaced by that word.
+    """
+
+    def _consolidator(self, tmp_path):
+        from kiro_crew.memory import MemoryStore
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        return conv_log, mem, HistoryConsolidator(log=conv_log, memory=mem, migrated=False)
+
+    @pytest.mark.asyncio
+    async def test_prompt_forbids_placeholder_reply(self, tmp_path):
+        conv_log, mem, consolidator = self._consolidator(tmp_path)
+        conv_log.append("dashboard:chat-1", "user", "we started project foo")
+
+        captured: list[str] = []
+
+        async def fake_llm(prompt):
+            captured.append(prompt)
+            return {}
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
+            await consolidator._consolidate("dashboard:chat-1", include_history=True)
+
+        prompt = captured[0]
+        # The ambiguous phrasing that invited the placeholder reply is gone,
+        # and the placeholder is now explicitly forbidden for both keys.
+        assert "Return existing if unchanged" not in prompt
+        assert prompt.count("repeat the existing content above verbatim") == 2
+        assert prompt.count("NEVER answer with a placeholder") == 2
+
+    @pytest.mark.asyncio
+    async def test_placeholder_reply_does_not_clobber(self, tmp_path):
+        conv_log, mem, consolidator = self._consolidator(tmp_path)
+        real = "# Active Projects\n\n" + "".join(
+            f"## Project {i}\n- owner: someone\n- status: being actively tracked\n\n"
+            for i in range(12)
+        )
+        mem.write_projects(real, force=True)
+        conv_log.append("dashboard:chat-1", "user", "nothing new today")
+
+        async def fake_llm(_prompt):
+            return {"history_entry": "quiet day", "projects_update": "unchanged"}
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm), patch.object(
+            conv_log, "mark_consolidated"
+        ) as marked:
+            await consolidator._consolidate("dashboard:chat-1", include_history=True)
+
+        assert "Project 7" in mem.read_projects()
+        # A placeholder is a benign no-op: consolidation still advances.
+        marked.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stale_reply_does_not_drop_concurrent_update(self, tmp_path):
+        """A concurrent session's write must survive a slow LLM turn."""
+        conv_log, mem, consolidator = self._consolidator(tmp_path)
+        real = "# Active Projects\n\n" + "".join(
+            f"## Project {i}\n- owner: someone\n- status: being actively tracked\n\n"
+            for i in range(12)
+        )
+        mem.write_projects(real, force=True)
+        conv_log.append("dashboard:chat-1", "user", "add project bar")
+
+        snapshot = mem.read_projects()
+
+        async def fake_llm(_prompt):
+            # Another session lands its update while this "LLM turn" runs.
+            mem.write_projects(snapshot + "\n## Project from other session\n- new\n", force=True)
+            return {
+                "history_entry": "added bar",
+                "projects_update": snapshot + "\n## Project bar\n- from stale view\n",
+            }
+
+        with patch.object(consolidator, "_call_llm", side_effect=fake_llm), patch.object(
+            conv_log, "mark_consolidated"
+        ) as marked, patch.object(mem, "append_history") as appended, patch.object(
+            consolidator, "_note_failed_attempt"
+        ) as charged:
+            await consolidator._consolidate("dashboard:chat-1", include_history=True)
+
+        current = mem.read_projects()
+        assert "Project from other session" in current
+        assert "Project bar" not in current
+        # Stale-CAS reject aborts BEFORE any durable side effect, so the offset
+        # is not advanced and no history summary is written; the full span is
+        # retried against the fresh file next cycle (no duplicate summary).
+        marked.assert_not_called()
+        appended.assert_not_called()
+        # A concurrency event must not count toward permanent abandonment.
+        charged.assert_not_called()

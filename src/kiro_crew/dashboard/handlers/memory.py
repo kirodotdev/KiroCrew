@@ -40,6 +40,7 @@ from kiro_crew.embeddings import (
     validate_custom_model_path,
 )
 from kiro_crew.executors import embed_executor, run_in_embed_pool
+from kiro_crew.memory import MemoryWriteLockTimeout
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -75,7 +76,16 @@ async def api_memory_preferences(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         content = body.get("content", "")
-        mem.write_preferences(content)
+        # Explicit human edit from the memory editor: honour it even when it
+        # shrinks or clears the file.  Offloaded — the guarded writer takes a
+        # cross-process lock and this handler runs on the event loop.
+        try:
+            await asyncio.to_thread(mem.write_preferences, content, force=True)
+        except MemoryWriteLockTimeout:
+            return web.json_response(
+                {"error": "memory busy, retry", "code": "memory_write_locked"},
+                status=503,
+            )
         return web.json_response({"ok": True})
     return web.json_response({"content": mem.read_preferences()})
 
@@ -90,7 +100,16 @@ async def api_memory_projects(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         content = body.get("content", "")
-        mem.write_projects(content)
+        # Explicit human edit from the memory editor: honour it even when it
+        # shrinks or clears the file.  Offloaded — the guarded writer takes a
+        # cross-process lock and this handler runs on the event loop.
+        try:
+            await asyncio.to_thread(mem.write_projects, content, force=True)
+        except MemoryWriteLockTimeout:
+            return web.json_response(
+                {"error": "memory busy, retry", "code": "memory_write_locked"},
+                status=503,
+            )
         return web.json_response({"ok": True})
     return web.json_response({"content": mem.read_projects()})
 

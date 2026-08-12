@@ -136,9 +136,9 @@ def _seed_profile(ws: Path, seed: SeedProfile) -> None:
     memory = MemoryStore(workspace=ws)
     memory.init()
     if seed.preferences:
-        memory.write_preferences(seed.preferences)
+        memory.write_preferences(seed.preferences, force=True)
     if seed.projects:
-        memory.write_projects(seed.projects)
+        memory.write_projects(seed.projects, force=True)
     if seed.lessons:
         lessons_file = ws / "lessons.jsonl"
         with lessons_file.open("a", encoding="utf-8") as f:
