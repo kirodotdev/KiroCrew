@@ -65,8 +65,15 @@ from functools import partial, wraps
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import github_client, provider, store, watch
+from kiro_crew.apps.builtins.issue_radar.backend import (
+    dispatch,
+    github_client,
+    provider,
+    store,
+    watch,
+)
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
@@ -4145,6 +4152,165 @@ async def _handle_pulls_bulk(request: web.Request) -> web.Response:
     })
 
 
+async def _handle_get_dispatch_readiness(request: web.Request) -> web.Response:
+    """GET /dispatch-readiness?owner=<o>&repo=<r> — whether an issue in this repo
+    can be handed to an implementation attempt, and if not, why.
+
+    The gate ships on its own, ahead of anything that runs an agent, so that no
+    caller has to re-derive the rule from a raw path and the phase which does run
+    one has no judgement left to make. ``reason`` is a stable machine-readable
+    code (see ``dispatch.REASON_*``) because "unset" and "you set it and it
+    broke" need different sentences in the UI, and an empty string cannot tell
+    them apart.
+    """
+    key = _key_from_request(request)
+    owner, repo = key.owner, key.repo
+    if not owner or not repo:
+        return web.json_response(
+            {"code": "repo_required", "error": "missing ?owner= and ?repo="}, status=400
+        )
+
+    if not await asyncio.to_thread(_connected, key):
+        return web.json_response(
+            {
+                "code": "repo_not_connected",
+                "error": f"{owner}/{repo} is not connected — call /connect first",
+            },
+            status=404,
+        )
+
+    local_path = await asyncio.to_thread(
+        partial(store.read_repo_local_path, owner, repo, provider=key.provider, host=key.host)
+    )
+    # Re-validated on every read rather than trusted: a checkout deleted after it
+    # was recorded must not keep reporting ready. Readiness is derived from the RAW
+    # value, never from the redacted echo below, so redaction cannot change a
+    # verdict.
+    ready, reason = await asyncio.to_thread(dispatch.readiness, local_path)
+    # The echo is redacted even though the write route is dashboard-only (it is
+    # deliberately absent from _MIXED_INTERNAL_API_PATHS): the value is read back
+    # out of an app config file that is not itself agent-unwritable, and nothing
+    # re-validates a stored string on read, so an arbitrary one can reach this
+    # response. Redaction is a no-op on real checkout paths -- it rewrites only
+    # credential patterns, not hex directory names -- so the settings field still
+    # round-trips what the user typed.
+    return web.json_response(
+        {
+            **_identity(key),
+            "ready": ready,
+            "reason": reason,
+            "local_path": redact(local_path or ""),
+        }
+    )
+
+
+async def _handle_set_repo_local_path(request: web.Request) -> web.Response:
+    """POST /repo/local-path — record, or clear, a connected repo's local checkout.
+
+    Issue Radar reads everything through the provider CLI and needs no clone;
+    implementing an issue does. Validation happens here and REFUSES rather than
+    falling back, because an unusable path stored as if it were fine is worse than
+    no path at all, and dispatch must never point an agent at a directory the user
+    did not name.
+
+    ``local_path`` is REQUIRED. An explicit ``""`` clears the value; an omitted
+    field is a bad request, because reading "absent" as "clear it" let any caller
+    that forgot the key wipe a stored path and get a 200 saying it was never set.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"code": "invalid_body", "error": "request body must be JSON"}, status=400
+        )
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"code": "invalid_body", "error": "request body must be a JSON object"}, status=400
+        )
+
+    key = _key_from_body(body)
+    owner, repo = key.owner, key.repo
+    if not owner or not repo:
+        return web.json_response(
+            {"code": "repo_required", "error": "missing 'owner' and 'repo'"}, status=400
+        )
+
+    raw = body.get("local_path")
+    if raw is None:
+        # An omitted field is NOT a request to clear. Treating it as one meant any
+        # caller that forgot the key silently wiped a stored path, and the response
+        # said "no_local_path" as though that had always been true. Clearing stays
+        # possible, but it has to be asked for with an explicit empty string.
+        return web.json_response(
+            {
+                "code": "invalid_local_path",
+                "error": "missing 'local_path' (send \"\" to clear it)",
+            },
+            status=400,
+        )
+    if not await asyncio.to_thread(_connected, key):
+        return web.json_response(
+            {
+                "code": "repo_not_connected",
+                "error": f"{owner}/{repo} is not connected — call /connect first",
+            },
+            status=404,
+        )
+
+    if raw is not None and not isinstance(raw, str):
+        return web.json_response(
+            {"code": "invalid_local_path", "error": "'local_path' must be a string"}, status=400
+        )
+
+    wanted = (raw or "").strip()
+    stored = ""
+    if wanted:
+        resolved = await asyncio.to_thread(dispatch.resolve_checkout, wanted)
+        if resolved is None:
+            return web.json_response(
+                {
+                    "code": "invalid_local_path",
+                    "error": (
+                        "local_path must be an absolute path to an existing git checkout "
+                        "(a directory containing .git), outside the protected directories"
+                    ),
+                },
+                status=400,
+            )
+        # Store the RESOLVED path, so readiness later re-checks the same directory
+        # the validator accepted rather than re-resolving a symlink that moved.
+        stored = str(resolved)
+
+    try:
+        await asyncio.to_thread(
+            partial(
+                store.set_repo_local_path,
+                owner,
+                repo,
+                stored,
+                provider=key.provider,
+                host=key.host,
+            )
+        )
+    except KeyError:
+        # Disconnected between the check above and the store's lock. Answering 200
+        # here would report a path as saved that no entry holds.
+        return web.json_response(
+            {
+                "code": "repo_not_connected",
+                "error": "the repo was disconnected before the path could be saved",
+            },
+            status=404,
+        )
+    ready, reason = await asyncio.to_thread(dispatch.readiness, stored)
+    # Same redacted echo as the GET: the frontend seeds its readiness cache from
+    # this response, so the two must not disagree about what a stored path renders
+    # as.
+    return web.json_response(
+        {**_identity(key), "ready": ready, "reason": reason, "local_path": redact(stored)}
+    )
+
+
 def register_routes(app: web.Application) -> None:
     """Register this app's routes on the gateway's aiohttp Application.
 
@@ -4188,6 +4354,16 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post("/api/apps/issue-radar/pulls/bulk", _require_enabled(_handle_pulls_bulk))
     app.router.add_get("/api/apps/issue-radar/investigation", _require_enabled(_handle_get_investigation))
     app.router.add_put("/api/apps/issue-radar/investigation", _require_enabled(_handle_put_investigation))
+    # Dispatch gate (RFC phase 0). Deliberately NOT added to
+    # _MIXED_INTERNAL_API_PATHS: unlike /investigation, nothing an agent runs needs
+    # to write a checkout path, and admitting the internal secret here would let a
+    # session point a later dispatch at a directory the user never named.
+    app.router.add_get(
+        "/api/apps/issue-radar/dispatch-readiness", _require_enabled(_handle_get_dispatch_readiness)
+    )
+    app.router.add_post(
+        "/api/apps/issue-radar/repo/local-path", _require_enabled(_handle_set_repo_local_path)
+    )
     app.router.add_get("/api/apps/issue-radar/recommendations", _require_enabled(_handle_get_recommendations))
     app.router.add_post("/api/apps/issue-radar/recommendations", _require_enabled(_handle_generate_recommendations))
     app.router.add_post("/api/apps/issue-radar/labels/create", _require_enabled(_handle_create_label))

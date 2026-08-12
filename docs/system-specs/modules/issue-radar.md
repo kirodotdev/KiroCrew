@@ -44,6 +44,8 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | POST | `/labels/apply` | Apply label changes (add/remove) |
 | POST | `/issue/state` | Close/reopen an issue |
 | GET/PUT | `/investigation` | Per-issue investigation record. The PUT is the ONE app route also reachable with the gateway internal secret (`_MIXED_INTERNAL_API_PATHS`), because it is the write behind the `issue_radar_record_investigation` MCP tool — see [Recording findings](#recording-findings) |
+| GET | `/dispatch-readiness` | Whether an issue in this repo may be handed to an implementation attempt, plus a machine-readable `reason` — see [Dispatch readiness](#dispatch-readiness) |
+| POST | `/repo/local-path` | Record a connected repo's local checkout. `local_path` is REQUIRED; an explicit `""` clears it and an omitted field is a 400. Validates and REFUSES; never falls back to a directory the user did not name |
 | GET/POST | `/recommendations` | AI label taxonomy recommendations |
 | POST | `/labels/create` | Create a new repo label |
 | GET | `/tagging` | The untagged queue (also serves `bulk_max`, the bulk-apply cap, so the client chunks on the server's real limit; and `titles` bounded to the slice a recommendation's examples can cite) (open issues with ZERO labels) plus any cached per-issue label suggestions for it. Never runs the model, so opening the Tagging dashboard costs nothing; suggestions for issues that have since been labelled elsewhere are filtered out |
@@ -57,6 +59,97 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/pull/runs` | The CI runs on a PR's head commit, each with its id plus server-computed `cancellable`/`rerunnable`, so the UI never offers an action the provider will refuse |
 | POST | `/pull/run` | Cancel or re-run one CI run (`failed_only` re-runs just the failed jobs) |
 | POST | `/pulls/bulk` | Apply ONE action to many PRs (`_BULK_PR_ACTIONS`: close, reopen, approve, comment, auto_merge, cancel_auto_merge; max `_BULK_PR_MAX` = 50). `approve` additionally requires a `head_shas` map keyed by PR number, covering EVERY number in the request (see rule 2). Sequential, because the PRs share one provider rate limit. Partial failure is reported per PR rather than failing the batch |
+
+## Dispatch readiness
+
+Every read in this app goes through the user's own provider CLI, which is why
+connecting a repo needs one dialog and no clone. Asking an agent to *implement*
+an issue does need a working copy, so a connected repo carries an optional
+`local_path` in its `config.json` entry and dispatch is gated on it. Phase 0 of
+[the dispatch RFC](../../request-for-change/rfc-issue-radar-dispatch.md) is this
+gate alone: nothing here runs an agent or touches git.
+
+`backend/dispatch.py` owns both halves:
+
+- `resolve_checkout(raw)` returns the path as a usable git work-tree root or
+  `None`. `~` is expanded and symlinks resolved BEFORE the sensitivity test, so a
+  link planted in a benign directory cannot smuggle its target past it;
+  absoluteness is asserted on the expanded input and BEFORE `realpath`, which
+  would otherwise make every value absolute and the test vacuous; the resolved
+  path must not be sensitive per `security.is_sensitive_path`; and it must be a
+  directory holding a USABLE `.git`. `.git` may be a directory (an ordinary clone)
+  or a FILE (a linked worktree's `gitdir:` pointer), and both are validated
+  POSITIVELY rather than by existence: a clone needs `HEAD` plus an object and ref
+  store, a `commondir` may relocate those but its target is then checked too, and
+  a pointer file's target must itself hold those admin markers rather than merely
+  be a directory. An empty `.git` directory, a dangling pointer, and a pointer to
+  an ordinary directory all `exists()` while being unusable, and reporting `ready`
+  for one is the same defect as rendering a check that never ran as a check that
+  passed. The validation is filesystem-only —
+  no `git` subprocess on a per-read path — so a tree that passes these markers and
+  still fails `worktree add` fails loudly at dispatch time instead. A bare
+  repository has no work tree to edit and is refused.
+  A value the OS cannot resolve at all (an embedded NUL, plus the
+  platform-specific shapes that raise `OSError`) is refused rather than raised,
+  so a malformed request cannot reach the route as a 500.
+- `readiness(local_path)` returns `(ready, reason)` with `reason` one of `ok`,
+  `no_local_path`, or `checkout_unusable`. The last two are deliberately
+  distinct: one asks the user to set a value, the other tells them the value they
+  set broke. An empty string cannot carry that difference, and the UI needs a
+  different sentence for each.
+
+Five properties are load-bearing rather than incidental:
+
+- **The echoed `local_path` is redacted; readiness is derived from the raw value.**
+  Both routes return the stored path so the settings field can render it, and both
+  pass it through `security.redact()` first. Nothing re-validates a stored string
+  on read and the `config.json` it comes back out of is not agent-unwritable, so
+  the echo is treated as output rather than as a value the route vouched for.
+  Redaction rewrites credential patterns only, not hex directory names, so a real
+  checkout path still round-trips. The `(ready, reason)` pair is computed from the
+  raw value, so redaction can never change a verdict.
+
+- **Readiness is re-derived on every read**, never trusted from storage. A
+  checkout deleted after it was recorded must not keep reporting ready, for the
+  same reason a check that never ran must not render as a check that passed.
+- **The write route refuses instead of falling back.** A path that does not
+  validate stores nothing, so dispatch can never be pointed at a directory the
+  user did not name. The resolved path is what gets stored, so a later readiness
+  check re-examines the directory the validator accepted.
+- **An omitted `local_path` is a bad request, not a request to clear.** Reading
+  "absent" as "clear it" let any caller that forgot the key wipe a stored path and
+  receive a 200 reporting `no_local_path` as though it had always been unset.
+  Clearing is still available, spelled `""`.
+- **A repo that disconnects mid-write is a 404, not a 200.** The connected-check
+  runs before `store.set_repo_local_path` takes the config lock, so a concurrent
+  disconnect lands in between; the store raises `KeyError` when no entry matches
+  rather than writing nothing and returning normally, and the route maps that to
+  the same `repo_not_connected` refusal the pre-check uses. Reporting a path as
+  saved that no entry holds is the same class of defect as rendering a check that
+  never ran as a check that passed.
+
+Neither route is in `_MIXED_INTERNAL_API_PATHS`. Unlike `/investigation`, nothing
+an agent runs needs to write a checkout path, and admitting the internal secret
+here would let a session choose the directory a later dispatch works in.
+
+Refusing the route is necessary but not sufficient, because the value is read back
+out of a file. `apps/issue-radar/data` — the DIRECTORY, not just its
+`config.json` — is therefore on `security._WRITE_PROTECTED_HOME_PATHS` (the
+file-edit tool gate) **and** `_WRITE_PROTECTED_BASH_LEAVES` (the shell gate,
+matched verb-independently). Closing one and not the other leaves the same file
+reachable by the other route, and protecting only the leaf leaves the store
+replaceable: renaming the directory aside and moving a prepared one into place
+never names the protected leaf.
+Reads stay allowed on the tool path (it holds no secret and the app reads it on
+every request). Two authorization inputs live in that file: `repos[]` is the
+connected-repo gate every route checks, and `repos[].local_path` is what the
+dispatch gate validates. A gate whose input the agent can author would be
+vouching for the agent's own choice. Unlike Kiro Crew's own `config.json` —
+deliberately not on the bash list because the loader clamps an inflated value at
+load time — nothing re-validates a stored checkout path on read. The store opens
+the path directly and does not route through either gate, so the dashboard's own
+writes still work. Both gates anchor a non-default `KIROCREW_HOME` as well, so the
+protection does not depend on the data home sitting at its default path.
 
 ## Recording findings
 
