@@ -6816,7 +6816,7 @@ class GatewayOrchestrator:
         try:
             from kiro_crew.instances import run_marker
 
-            if not self._no_dashboard and self._dashboard_port:
+            if self._dashboard_port:
                 run_marker.clear_marker(self._dashboard_port)
         except Exception:
             logger.debug("Gateway run-marker clear skipped", exc_info=True)

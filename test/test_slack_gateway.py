@@ -2449,7 +2449,11 @@ class TestRunMethod:
         orch._init_subagents = MagicMock()
         orch._init_task_runner = MagicMock()
         orch._init_dashboard = AsyncMock()
-        orch._init_api_server = AsyncMock()
+
+        async def _init_api_server():
+            orch._dashboard_port = 6123
+
+        orch._init_api_server = AsyncMock(side_effect=_init_api_server)
         orch._init_autonudge = AsyncMock()
         orch._check_for_updates = AsyncMock()
         orch._shutdown = AsyncMock()
@@ -2466,12 +2470,19 @@ class TestRunMethod:
                                     with patch("os._exit"):
                                         with patch("resource.getrlimit", return_value=(256, 10240)):
                                             with patch("resource.setrlimit"):
-                                                await orch.run()
+                                                with patch(
+                                                    "kiro_crew.instances.run_marker.write_marker"
+                                                ):
+                                                    with patch(
+                                                        "kiro_crew.instances.run_marker.clear_marker"
+                                                    ) as clear_marker:
+                                                        await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
 
         orch._init_dashboard.assert_not_awaited()
         orch._init_api_server.assert_awaited_once()
+        clear_marker.assert_called_once_with(6123)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
