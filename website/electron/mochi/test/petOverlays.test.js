@@ -172,6 +172,7 @@ function stubElectronForOpen() {
     setAcceptFirstMouse() {}
     setIgnoreMouseEvents() {}
     setVisibleOnAllWorkspaces() {}
+    setContentProtection() {}
     setAlwaysOnTop() {}
     loadURL() {}
     isVisible() { return false; }
