@@ -172,6 +172,13 @@ function stubElectronForOpen() {
     setAcceptFirstMouse() {}
     setIgnoreMouseEvents() {}
     setVisibleOnAllWorkspaces() {}
+    // #3125 started calling setContentProtection to keep the overlay out of
+    // screen captures, but this double was not taught the method, so every
+    // createOverlayForDisplay threw "win.setContentProtection is not a
+    // function" and Electron Shell Tests went red on main. Recording the
+    // argument rather than swallowing it, so the behaviour #3125 shipped is
+    // actually asserted instead of merely not crashing.
+    setContentProtection(on) { this.contentProtection = on; }
     setAlwaysOnTop() {}
     loadURL() {}
     isVisible() { return false; }
@@ -225,6 +232,10 @@ test("the pet overlay is a non-activating panel on macOS only", () => {
   try {
     mod.openPetWindow("http://localhost:6777", "tok");
     assert.strictEqual(created.length, 1, "one overlay for the single display");
+    // #3125: the overlay must be excluded from screen captures on every
+    // platform, otherwise a region capture bakes the pet into the image and the
+    // macOS screenshot picker offers the overlay instead of the app underneath.
+    assert.strictEqual(created[0].contentProtection, true, "content protection on");
     const { type } = created[0].opts;
     if (process.platform === "darwin") {
       assert.strictEqual(type, "panel");
