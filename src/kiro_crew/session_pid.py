@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.providers.base import LLMProvider
@@ -184,6 +185,40 @@ def _pid_file_lock():  # type: ignore[no-untyped-def]
             yield
 
 
+def _rewrite_pid_file(path: Path, content: str) -> bool:
+    """Replace *path*'s content atomically; log and return ``False`` on failure.
+
+    Atomic (temp file + rename) because a plain ``write_text`` truncates the
+    file to zero BEFORE writing the kept entries: a failure inside that window
+    leaves a SHORT file whose surviving content is perfectly well-formed, and
+    every dropped entry is an agent runtime no reaper can find again.
+
+    A failure here is REPORTED, not propagated. Pruning an entry is idempotent
+    and self-retrying: the next sweep — or the next gateway start — re-reads the
+    file, finds that PID already dead, and prunes it again, so a failed rewrite
+    costs one stale line rather than a runtime. Propagating would be worse than
+    the problem: ``cleanup_orphaned_sessions`` runs unguarded on the gateway's
+    startup path, and on Windows ``replace_with_retry`` deliberately declines to
+    retry a sharing violation while an event loop is running (an indexer or AV
+    scanner holding the temp file is enough), so an escaping error there aborts
+    startup entirely.
+
+    The tracking direction is the opposite case and must NOT be quieted this
+    way: failing to RECORD a freshly spawned PID is unrecoverable, because no
+    reaper can identify that runtime afterwards.
+    """
+    try:
+        atomic_write(path, content)
+        return True
+    except OSError:
+        logger.error(
+            "Could not rewrite PID file %s; its entries stay until the next sweep",
+            path,
+            exc_info=True,
+        )
+        return False
+
+
 # Basenames of agent runtimes whose lifecycle Kiro Crew manages through PID-file
 # tracking (kiro_pids.txt / kiro_session_pids.txt). Used to re-validate tracked
 # PIDs before a kill, and as a NEGATIVE gate in the work-orphan sweep: these
@@ -308,7 +343,15 @@ def _kill_pid_tree(pid: int) -> tuple[int, bool]:
 
 
 def _write_back_pid_file(killed_or_dead: set[str]) -> None:
-    """Remove *killed_or_dead* entries from the session PID file."""
+    """Remove *killed_or_dead* entries from the session PID file.
+
+    Rewrites via :func:`atomic_write` (temp file + rename). A plain
+    ``write_text`` truncates the file to zero BEFORE writing the kept entries,
+    so a crash or a write failure inside that window leaves a SHORT file whose
+    surviving content is perfectly well-formed — every dropped entry becomes an
+    agent runtime no reaper can ever find again, with nothing raised and
+    nothing logged. Rename makes the file either wholly old or wholly new.
+    """
     with _session_pid_file_lock():
         path = _session_pid_file_path()
         if path.exists():
@@ -316,10 +359,7 @@ def _write_back_pid_file(killed_or_dead: set[str]) -> None:
             keep = [
                 entry for entry in current if entry.strip() and entry.strip() not in killed_or_dead
             ]
-            path.write_text(
-                ("\n".join(keep) + "\n") if keep else "",
-                encoding="utf-8",
-            )
+            _rewrite_pid_file(path, ("\n".join(keep) + "\n") if keep else "")
 
 
 def _sweep_pid_entries(
@@ -638,10 +678,7 @@ def _cleanup_orphaned_mcp_servers() -> int:
 
         if lines_to_remove:
             kept = [ln for ln in lines if ln.strip() not in lines_to_remove]
-            path.write_text(
-                "\n".join(kept) + "\n" if kept else "",
-                encoding="utf-8",
-            )
+            _rewrite_pid_file(path, "\n".join(kept) + "\n" if kept else "")
 
     return killed
 
@@ -912,7 +949,7 @@ def _untrack_child_pids(pids: Mapping[int, object]) -> None:
         lines = [
             ln for ln in lines if ":" not in ln.strip() or ln.strip().split(":")[0] not in to_remove
         ]
-        path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
+        _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
 def _untrack_pid(pid: int) -> None:
@@ -923,7 +960,7 @@ def _untrack_pid(pid: int) -> None:
             return
         lines = path.read_text(encoding="utf-8").splitlines()
         lines = [ln for ln in lines if ln.strip() != str(pid)]
-        path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
+        _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
 def _untrack_session_pid(pid: int) -> None:
@@ -943,7 +980,7 @@ def _untrack_session_pid(pid: int) -> None:
         lines = [
             ln for ln in lines if ln.strip() != prefix and not ln.strip().startswith(prefix + ":")
         ]
-        path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
+        _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
 # ── Sweep-protected PIDs ──────────────────────────────────────────────────

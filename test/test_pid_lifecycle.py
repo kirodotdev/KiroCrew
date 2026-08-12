@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
@@ -2143,3 +2144,169 @@ class TestSweepSparesLiveProcess:
         finally:
             victim.kill()
             victim.wait()
+
+
+class TestPidFileRewriteIsAtomic:
+    """A PID-file rewrite must be atomic AND must never propagate its failure.
+
+    Atomic: ``Path.write_text`` truncates the target to zero BEFORE writing the
+    kept entries. A failure — or a hard kill — inside that window leaves a SHORT
+    file whose surviving content is still perfectly well-formed: nothing raised,
+    nothing logged, and every dropped entry is an agent runtime that no reaper
+    can ever find again, because these PID files are the ONLY record of which
+    runtimes this gateway owns.
+
+    Reported, not propagated: pruning an entry is idempotent and self-retrying,
+    so a failed rewrite costs one stale line. Propagating would cost the whole
+    gateway — ``cleanup_orphaned_sessions`` runs unguarded on the startup path,
+    and on Windows ``replace_with_retry`` declines to retry a sharing violation
+    while an event loop is running.
+
+    These tests fail the rename and then assert the original file is untouched,
+    which a truncating writer cannot satisfy because by then it has already
+    destroyed the original.
+    """
+
+    @staticmethod
+    def _fail_rename(*_args: object, **_kwargs: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    @staticmethod
+    def _assert_reported(caplog: pytest.LogCaptureFixture) -> None:
+        assert any(
+            r.levelno >= logging.ERROR and "Could not rewrite PID file" in r.getMessage()
+            for r in caplog.records
+        ), "a failed PID-file rewrite must be reported at ERROR, never silently"
+
+    def test_write_back_failure_preserves_every_entry(
+        self,
+        session_pid_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew.session_pid import _write_back_pid_file
+
+        original = "100:200:tokA\n101:201:tokB\n102:202:tokC\n"
+        session_pid_file.write_text(original, encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.atomic_write.replace_with_retry", self._fail_rename)
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.session_pid"):
+            _write_back_pid_file({"101:201:tokB"})
+
+        # The rewrite never landed, so the ledger must still name all three
+        # runtimes. A truncating writer leaves only two — and the two it leaves
+        # look entirely valid, which is what makes the loss silent.
+        assert session_pid_file.read_text(encoding="utf-8") == original
+        self._assert_reported(caplog)
+
+    def test_untrack_session_pid_failure_preserves_every_entry(
+        self,
+        session_pid_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew.session_pid import _untrack_session_pid
+
+        gw = os.getpid()
+        original = f"{gw}:900:tokX\n{gw}:901:tokY\n"
+        session_pid_file.write_text(original, encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.atomic_write.replace_with_retry", self._fail_rename)
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.session_pid"):
+            _untrack_session_pid(900)
+
+        assert session_pid_file.read_text(encoding="utf-8") == original
+        self._assert_reported(caplog)
+
+    def test_untrack_pid_failure_preserves_every_entry(
+        self,
+        pid_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew.session_pid import _untrack_pid
+
+        original = "700\n701\n702\n"
+        pid_file.write_text(original, encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.atomic_write.replace_with_retry", self._fail_rename)
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.session_pid"):
+            _untrack_pid(701)
+
+        assert pid_file.read_text(encoding="utf-8") == original
+        self._assert_reported(caplog)
+
+    def test_untrack_child_pids_failure_preserves_every_entry(
+        self,
+        pid_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew.session_pid import _untrack_child_pids
+
+        original = "800:1\n801:1\n"
+        pid_file.write_text(original, encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.atomic_write.replace_with_retry", self._fail_rename)
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.session_pid"):
+            _untrack_child_pids({801: object()})
+
+        assert pid_file.read_text(encoding="utf-8") == original
+        self._assert_reported(caplog)
+
+    @pytest.mark.asyncio
+    async def test_windows_loop_sharing_violation_does_not_abort_caller(
+        self,
+        session_pid_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The startup path survives a Windows sharing violation on the rename.
+
+        ``replace_with_retry`` deliberately refuses to sleep-retry while an event
+        loop is running, so on Windows a scanner holding the temp file surfaces
+        as an immediate ``PermissionError``. ``cleanup_orphaned_sessions`` calls
+        this rewrite unguarded during gateway start, so the error escaping here
+        would abort startup.
+        """
+        from kiro_crew.session_pid import _write_back_pid_file
+
+        def _sharing_violation(*_a: object, **_kw: object) -> None:
+            raise PermissionError(32, "The process cannot access the file")
+
+        original = "100:200:tokA\n101:201:tokB\n"
+        session_pid_file.write_text(original, encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.platform_compat.IS_WINDOWS", True)
+        monkeypatch.setattr("kiro_crew.atomic_write.os.replace", _sharing_violation)
+
+        # Runs with a live event loop, which is what disables the retry.
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.session_pid"):
+            _write_back_pid_file({"101:201:tokB"})
+
+        assert session_pid_file.read_text(encoding="utf-8") == original
+        self._assert_reported(caplog)
+
+    def test_successful_rewrite_lands_and_leaves_no_temp_residue(
+        self, session_pid_file: Path
+    ) -> None:
+        from kiro_crew.session_pid import _write_back_pid_file
+
+        session_pid_file.write_text("100:200:tokA\n101:201:tokB\n", encoding="utf-8")
+
+        _write_back_pid_file({"101:201:tokB"})
+
+        assert session_pid_file.read_text(encoding="utf-8") == "100:200:tokA\n"
+        # atomic_write's mkstemp companion must not survive the rename.
+        assert not list(session_pid_file.parent.glob("*.tmp"))
+
+    def test_no_truncating_writer_remains_in_session_pid(self) -> None:
+        """Ratchet: every PID-file rewrite goes through the atomic chokepoint."""
+        import kiro_crew.session_pid as sp
+
+        source = Path(str(sp.__file__)).read_text(encoding="utf-8")
+        assert ".write_text(" not in source, (
+            "session_pid.py must rewrite PID files through _rewrite_pid_file(): "
+            "Path.write_text truncates the file before writing, so a failure "
+            "mid-write silently drops entries and leaks their runtimes until "
+            "the host reboots."
+        )
