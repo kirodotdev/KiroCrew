@@ -2,6 +2,16 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [Unreleased]
+
+- **Slack manifest: private channels now work out of the box.** The shipped app
+  manifest adds the `groups:history` and `users:read` bot scopes and subscribes
+  to the `message.groups` event, so a tracked private channel actually delivers
+  messages and profile lookups resolve real names. **Existing installs are not
+  fixed by upgrading alone**: Slack only grants new scopes on reinstall — update
+  the app's manifest (or re-import it), then reinstall the app to the workspace
+  and copy the new bot token. (#3206)
+
 ## [0.2.0] — 2026-08-09
 
 The first feature release after launch: a real browser for the agent, four new

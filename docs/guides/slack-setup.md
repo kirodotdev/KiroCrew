@@ -139,19 +139,25 @@ Go to **Features → OAuth & Permissions → Bot Token Scopes** and add:
 | `chat:write` | Send, update, and delete messages |
 | `channels:history` | Read channel messages (for @mentions) |
 | `channels:read` | List public channels (the channel picker) and read channel metadata |
-| `groups:history` | Read private-channel messages and thread context |
-| `groups:read` | Same, for private channels the bot is in |
+| `groups:history` | Read messages and thread replies in private channels the bot is in |
+| `groups:read` | List private channels the bot is in and read their metadata |
 | `im:history` | Read DM history |
 | `im:read` | View DM metadata |
 | `im:write` | Open DMs |
 | `reactions:write` | Add and remove emoji reactions |
 | `files:read` | Read uploaded files |
 | `files:write` | Upload screenshots |
+| `users:read` | Profile lookups (`users.info`) resolve a sender's real name. Without it the lookup fails and is caught: the display name falls back to the matching `slack.allowed_users` entry, then to the raw Slack member ID |
 | `commands` | Slash commands |
-| `users:read` | Resolve Slack member IDs to profile and display names |
 
 The `emoji:read` bot scope is deliberately **not** in the shipped manifest.
 Add it only if you want custom workspace emojis to appear in the emoji picker.
+
+> **Upgrading an existing app?** Adding a scope to the manifest does not
+> retroactively grant it: Slack only grants new scopes when the app is
+> **reinstalled** to the workspace. After adding scopes (or importing an
+> updated manifest), go to **Settings → Install App → Reinstall to Workspace**
+> and copy the new Bot Token.
 
 ### Step 4. Add User Scopes
 

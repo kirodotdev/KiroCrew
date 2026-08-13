@@ -3174,9 +3174,10 @@ async def handle_message(
 
             # Fallback thread metadata: when thread_parent_text is unavailable
             # (e.g. fetch_message failed), try conversations.replies to get parent info.
-            # Note: requires channels:history (public) or groups:history (private, Level 3
-            # High Risk on Amazon Slack). Gracefully degrades — if scope is missing, thread
-            # context is simply skipped.
+            # Note: requires channels:history (public) or groups:history (private). Both
+            # ship in the manifest, but installs created before groups:history was added
+            # need a reinstall to gain it. Gracefully degrades — if scope is missing,
+            # thread context is simply skipped.
             _thread_meta: str | None = None
             if (
                 is_new
