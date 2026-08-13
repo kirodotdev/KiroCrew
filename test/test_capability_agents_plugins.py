@@ -178,7 +178,7 @@ def no_agent_rebuild(monkeypatch):
     """Stub the agent-config rebuild — it is filesystem-heavy and not under test."""
     rebuilds: List[bool] = []
     monkeypatch.setattr(
-        "kiro_crew.agent.install_agent", lambda *a, **k: rebuilds.append(True)
+        "kiro_crew.dashboard.handlers.agents.install_agent", lambda *a, **k: rebuilds.append(True)
     )
     cleared: List[bool] = []
     monkeypatch.setattr(

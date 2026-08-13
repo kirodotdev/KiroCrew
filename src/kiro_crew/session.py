@@ -96,6 +96,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -2155,8 +2156,6 @@ class SessionManager:
           mtime, so entries also expire after ``_AGENT_MODEL_CACHE_TTL`` seconds
           and are re-resolved.
         """
-        from kiro_crew.agent import kiro_agents_dir_path
-
         try:
             dir_mtime = kiro_agents_dir_path().stat().st_mtime
         except OSError:

@@ -17,6 +17,7 @@ from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.agent import AGENT_FILENAME, get_shipped_tools, install_agent, kiro_agents_dir_path
 from kiro_crew.agent_discovery import (
     clear_list_agents_cache,
     list_agents,
@@ -82,8 +83,6 @@ def _namespaced_agent_file_exists(agent_name: str) -> bool:
     # Resolved per call, not read from a module constant: the agents dir tracks
     # the live data home (see config.md "Data Home"), and a frozen constant would
     # glob the real ~/.kiro from an isolated run.
-    from kiro_crew.agent import kiro_agents_dir_path
-
     try:
         for path in kiro_agents_dir_path().glob(f"*--{agent_name}.json"):
             try:
@@ -122,8 +121,6 @@ def _sel():
 def _auto_install_agent() -> None:
     """Re-install agent config to kiro-cli so changes take effect immediately."""
     try:
-        from kiro_crew.agent import install_agent  # noqa: F811
-
         install_agent()
         logger.info("Auto-applied agent config via dashboard")
     except Exception:
@@ -141,8 +138,6 @@ def _installed_agent_config() -> Path:
     This is the live config that kiro-cli reads.  Dashboard MCP toggle
     and sync operations write here — NOT to agents/defaults.json.
     """
-    from kiro_crew.agent import AGENT_FILENAME, kiro_agents_dir_path  # noqa: F811
-
     return kiro_agents_dir_path() / AGENT_FILENAME
 
 
@@ -173,8 +168,6 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # so they don't reappear on upgrade.  Stored in ~/.kiro/crew/config.json
             # (NOT kirocrew.json — kiro-cli rejects unknown fields).
             # Per-key dict so removing from allowedTools only doesn't affect tools.
-            from kiro_crew.agent import get_shipped_tools  # noqa: F811
-
             shipped = get_shipped_tools()
             removed_per_key: dict[str, list[str]] = {}
             for key in ("tools", "allowedTools"):
@@ -479,8 +472,6 @@ async def api_capability_skills_install(request: web.Request) -> web.Response:
         # Regenerate agent config to pick up new skill paths. install_agent()
         # does filesystem-heavy config rebuilding — offload it so it never
         # blocks the asyncio event loop (chat/heartbeat) under a slow FS.
-        from kiro_crew.agent import install_agent  # noqa: F811
-
         await asyncio.to_thread(install_agent)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
@@ -507,8 +498,6 @@ async def api_capability_skills_uninstall(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": (res.message or "uninstall failed")[:500]}, status=500
             )
-        from kiro_crew.agent import install_agent  # noqa: F811
-
         await asyncio.to_thread(install_agent)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
@@ -564,8 +553,6 @@ async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.R
             return web.json_response({"error": _redact_external(message)}, status=500)
         # Filesystem-heavy config rebuild — offload so it never blocks the asyncio
         # event loop (chat turn + liveness heartbeat) on a slow FS.
-        from kiro_crew.agent import install_agent  # noqa: F811
-
         await asyncio.to_thread(install_agent)
         # list_agents() caches on a (count, newest-mtime-ns) signature, so a
         # mutation landing inside one mtime tick would otherwise serve a stale
@@ -1168,8 +1155,6 @@ async def api_slash_commands(request: web.Request) -> web.Response:
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/DELETE/PATCH /api/agents/detail/{name} — view, delete, or update agent config."""
     name = request.match_info["name"]
-    from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
-
     # Parse body early so JSONDecodeError returns 400, not 404 from the file loop.
     patch_body = None
     if request.method == "PATCH":
@@ -1514,8 +1499,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         discovered_names = {a.name for a in discovered_agents}
 
         # Add new agents
-        from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
-
         mc_kiro_agents = {a.kiro_agent for a in cfg.agents.values()}
         for disc in discovered_agents:
             if (

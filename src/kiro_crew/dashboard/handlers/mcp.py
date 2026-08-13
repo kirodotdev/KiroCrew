@@ -14,6 +14,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.agent import _atomic_json_write, kiro_agents_dir_path, rebuild_agent_config
 from kiro_crew.config.loader import _resolve_stub_servers
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
@@ -193,10 +194,6 @@ def _get_apply_lock() -> asyncio.Lock:
 
 def _write_mcp_json(data: dict) -> None:
     """Atomically write global mcp.json to prevent partial reads."""
-    from kiro_crew.agent import (  # noqa: F811  # circular import: agent imports handlers
-        _atomic_json_write,
-    )
-
     _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
     _atomic_json_write(_GLOBAL_MCP_JSON, data)
 
@@ -335,10 +332,6 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         cfg.get("mcpServers", {}).pop(alias, None)
         cfg.get("mcpServers", {}).pop(name, None)
     try:
-        from kiro_crew.agent import (  # noqa: F811 circular: agent imports handlers
-            _atomic_json_write,
-        )
-
         _atomic_json_write(path, cfg)
     except OSError as exc:
         logger.warning("Cannot write agent config %s: %s", path, exc)
@@ -457,10 +450,6 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
     if not changed:
         return
     try:
-        from kiro_crew.agent import (  # noqa: F811 circular: agent imports handlers
-            _atomic_json_write,
-        )
-
         _atomic_json_write(path, cfg)
     except OSError as exc:
         logger.warning("Cannot write agent config %s: %s", path, exc)
@@ -607,8 +596,6 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     when ``--agent <name>`` is passed.  For kirocrew (or no agent),
     reads from global ``~/.kiro/settings/mcp.json`` as before.
     """
-    from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
-
     agent = request.query.get("agent", "")
 
     # Resolve KiroCrew agent name → kiro agent name so "default" → "kirocrew"
@@ -1264,10 +1251,6 @@ def _load_json_or_empty(path: Path) -> dict[str, Any]:
 
 def _atomic_write(path: Path, data: dict) -> None:
     """Atomic JSON write; reuses the agent helper."""
-    from kiro_crew.agent import (  # noqa: F811  # circular: agent imports dashboard handlers
-        _atomic_json_write,
-    )
-
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_json_write(path, data)
 
@@ -1910,10 +1893,6 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
     rebuild_ok = False
     rebuild_error: str | None = None
     try:
-        # circular import: kiro_crew.agent imports dashboard handlers, so
-        # this is delayed to runtime to break the cycle at module load.
-        from kiro_crew.agent import rebuild_agent_config  # noqa: F811
-
         await asyncio.to_thread(rebuild_agent_config)
         rebuild_ok = True
     except Exception as exc:
@@ -2090,7 +2069,6 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     so the dashboard session stays authenticated.  Returns the verified state
     ``{ok, enabled, running, ping_ok}``.
     """
-    from kiro_crew.agent import _atomic_json_write  # circular import
     from kiro_crew.config.loader import config_path  # circular import
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # circular import
 
@@ -2197,7 +2175,6 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     Whether a stubbed server SHARES its backend is not per-row: that is the one
     global switch (``mcp_gateway.enabled``), reported by the status endpoint.
     """
-    from kiro_crew.agent import kiro_agents_dir_path
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
     from kiro_crew.mcp_gateway.rewriter import UNPOOLABLE_SERVERS
 
@@ -2283,7 +2260,6 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     Returns ``{ok, name, stub, ...}`` for the single form and
     ``{ok, names, stub, ...}`` for the batch form.
     """
-    from kiro_crew.agent import _atomic_json_write
     from kiro_crew.config.loader import config_path  # noqa: F811
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # circular: agents imports mcp
 

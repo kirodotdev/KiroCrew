@@ -41,7 +41,7 @@ async def test_api_agent_config_put_succeeds(tmp_path):
             return_value={"toolsSettings": {"execute_bash": {"deniedCommands": ["rm -rf"]}}},
         ),
         patch(
-            "kiro_crew.agent.get_shipped_tools",
+            "kiro_crew.dashboard.handlers.agents.get_shipped_tools",
             return_value={"tools": ["a", "c"], "allowedTools": ["b"]},
         ),
     ):
@@ -97,7 +97,7 @@ async def test_api_agent_config_put_strips_governed_grants(tmp_path, monkeypatch
         patch("kiro_crew.dashboard.handlers._find_agent_config", return_value=defaults),
         patch("kiro_crew.dashboard.handlers._reset_all_sessions", new_callable=AsyncMock),
         patch("kiro_crew.dashboard.handlers.config_path", return_value=mc_cfg),
-        patch("kiro_crew.agent.get_shipped_tools", return_value={"tools": [], "allowedTools": []}),
+        patch("kiro_crew.dashboard.handlers.agents.get_shipped_tools", return_value={"tools": [], "allowedTools": []}),
     ):
         response = await api_agent_config(request)
 

@@ -279,7 +279,7 @@ class TestResolveAgentModel:
         """``stat()`` on an absent dir raises OSError; mtime 0.0 must be used as
         the cache stamp rather than the lookup blowing up."""
         missing = tmp_path / "nope"
-        with patch("kiro_crew.agent.kiro_agents_dir_path", return_value=missing):
+        with patch("kiro_crew.session.kiro_agents_dir_path", return_value=missing):
             assert SessionManager._resolve_agent_model("researcher") == "auto"
         assert SessionManager._agent_model_cache["researcher"][1] == 0.0
 
@@ -289,7 +289,7 @@ class TestResolveAgentModel:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "researcher.json").write_text("{not json", encoding="utf-8")
-        with patch("kiro_crew.agent.kiro_agents_dir_path", return_value=agents):
+        with patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents):
             assert SessionManager._resolve_agent_model("researcher") == "auto"
 
     def test_a_readable_agent_file_supplies_its_pinned_model(self, tmp_path) -> None:
@@ -298,14 +298,14 @@ class TestResolveAgentModel:
         (agents / "researcher.json").write_text(
             '{"name": "researcher", "model": "sonnet-9"}', encoding="utf-8"
         )
-        with patch("kiro_crew.agent.kiro_agents_dir_path", return_value=agents):
+        with patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents):
             assert SessionManager._resolve_agent_model("researcher") == "sonnet-9"
 
     def test_a_raising_spec_reader_falls_back_to_auto(self, tmp_path) -> None:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "researcher.json").write_text('{"name": "researcher"}', encoding="utf-8")
-        with patch("kiro_crew.agent.kiro_agents_dir_path", return_value=agents), patch(
+        with patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents), patch(
             "kiro_crew.session.spec_model", side_effect=RuntimeError("bad spec")
         ):
             assert SessionManager._resolve_agent_model("researcher") == "auto"
