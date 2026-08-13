@@ -18,6 +18,7 @@ import shutil
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import _get_skills
+from kiro_crew.frontmatter import PROVIDER_PREVIEW, parse_frontmatter
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
 from kiro_crew.skill_providers.base import ProviderRegistry
@@ -588,7 +589,7 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
         return web.json_response(_empty)
 
     # Parse YAML frontmatter to extract description
-    meta = _parse_frontmatter(content)
+    meta = parse_frontmatter(content, PROVIDER_PREVIEW)
     _sel().log_tool_invocation(
         session_key=request.get("session_key", "dashboard"),
         tool_name="preview_skill_from_provider",
@@ -611,19 +612,3 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
         "files": [_redact_external(f) for f in files[:200]],
         "file_count": len(files),
     })
-
-
-def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter key-value pairs from a SKILL.md."""
-    if not content.startswith("---"):
-        return {}
-    end = content.find("\n---", 3)
-    if end == -1:
-        return {}
-    frontmatter = content[4:end]
-    result: dict = {}
-    for line in frontmatter.split("\n"):
-        if ":" in line and not line.startswith(" "):
-            key, _, value = line.partition(":")
-            result[key.strip()] = value.strip()
-    return result

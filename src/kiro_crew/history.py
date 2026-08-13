@@ -27,18 +27,14 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect, stream_and_collect_json
 from kiro_crew.messaging.link import legacy_key
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
-from kiro_crew.skills import (
-    _BLOCK_SCALAR_INDICATORS,
-    AUTO_SKILL_MAX_PROCEDURE_CHARS,
-    AutoSkillProvenance,
-    _fold_block_scalar,
-)
+from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, AutoSkillProvenance
 from kiro_crew.skills_dedupe import (
     VERDICT_DUP,
     VERDICT_NEW,
@@ -4083,32 +4079,13 @@ def _frontmatter_value(text: str | None, key: str) -> str:
     ``triggers`` through this reader into a staged candidate that overwrites
     the live skill on approval — reading the indicator verbatim would collapse
     a block-scalar description to ``""`` and inject a bogus ``>`` trigger on
-    that round-trip.
+    that round-trip. The grammar (plus the leading-whitespace opener
+    tolerance, verbatim plain values, and first-duplicate-wins lookup) is
+    pinned as ``frontmatter.SKILL_UPDATE``.
     """
     if not text:
         return ""
-    m = re.match(r"^\s*---\n(.*?)\n---", text, re.DOTALL)
-    if not m:
-        return ""
-    lines = m.group(1).split("\n")
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        i += 1
-        if ":" not in ln or ln[:1].isspace():
-            continue
-        k, raw = ln.split(":", 1)
-        if k.strip() != key:
-            continue
-        value = raw.strip()
-        if value in _BLOCK_SCALAR_INDICATORS:
-            block: list[str] = []
-            while i < len(lines) and (not lines[i].strip() or lines[i][:1].isspace()):
-                block.append(lines[i])
-                i += 1
-            return _fold_block_scalar(value, block)
-        return value
-    return ""
+    return frontmatter_value(text, key, SKILL_UPDATE)
 
 
 def _merge_trigger_lists(live: str, candidate: str, *, cap: int = 12) -> str:
@@ -4143,7 +4120,9 @@ def _strip_skill_frontmatter(text: str | None) -> str:
     A skill body read off disk carries its frontmatter header; only the prose
     below it may be fed to (or accepted from) the update-merge turn, because
     ``stage_skill_candidate`` re-emits frontmatter of its own. Text without a
-    leading block is returned unchanged (stripped).
+    leading block is returned unchanged (stripped). A fence LOCATOR, not a
+    field parser — deliberately outside ``kiro_crew.frontmatter``; editing
+    its grammar means revisiting ``_frontmatter_value``'s dialect too.
     """
     if not text:
         return ""

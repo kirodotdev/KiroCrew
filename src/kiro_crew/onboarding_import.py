@@ -38,6 +38,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.embeddings import make_sync_embed_fn
+from kiro_crew.frontmatter import BLOCK_SCALAR_INDICATORS, ONBOARDING_IMPORT, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -47,7 +48,6 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
-from kiro_crew.skills import _BLOCK_SCALAR_INDICATORS
 from kiro_crew.vector_memory import VectorMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -1888,21 +1888,17 @@ def _add_hermes_json_schedules(
 
 
 def _frontmatter(text: str) -> tuple[dict[str, str], str]:
-    if not text.startswith("---"):
-        return {}, text
-    lines = text.splitlines()
-    metadata: dict[str, str] = {}
-    end = 0
-    for index, line in enumerate(lines[1:], start=1):
-        if line.strip() == "---":
-            end = index
-            break
-        if ":" in line:
-            key, value = line.split(":", 1)
-            metadata[key.strip()] = value.strip().strip("\"'")
-    if not end:
-        return {}, text
-    return metadata, "\n".join(lines[end + 1 :]).strip()
+    """Split frontmatter for the import screen (``frontmatter.ONBOARDING_IMPORT``).
+
+    Deliberately lenient on the opener and on indented keys — narrowing what
+    this map reads would weaken the diagnostics built on it. Its grammar
+    diverges from the loader's (indented prose can overwrite a real value,
+    and the closer must be an exact ``---`` line, not a ``---`` prefix), so
+    the activation DECISION does not ride on this map alone:
+    ``_column0_activation_declared`` mirrors the loader's region and key
+    rules separately.
+    """
+    return split_frontmatter(text, ONBOARDING_IMPORT)
 
 
 def _column0_activation_declared(text: str) -> bool:
@@ -1935,7 +1931,7 @@ def _column0_activation_declared(text: str) -> bool:
         if key != "always":
             continue
         value = raw.strip().strip("\"'").casefold()
-        if value in {"1", "true", "yes"} or value in _BLOCK_SCALAR_INDICATORS:
+        if value in {"1", "true", "yes"} or value in BLOCK_SCALAR_INDICATORS:
             return True
     return False
 
