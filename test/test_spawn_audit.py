@@ -777,6 +777,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/handlers_system.py::_scan_mcp_processes",
         "dashboard/handlers_system.py::_get_static_system_info",
         "dashboard/port_reclaim.py::_listeners_on_port",
+        # Bundle-freshness startup probe: fixed `git rev-parse HEAD` list-argv
+        # (no shell=True) with git PINNED via trusted_system_bin (fixed system
+        # dirs, never PATH — a planted shim in an agent-writable PATH dir cannot
+        # be selected; absent trusted git → skip, no spawn). cwd is the module's
+        # OWN install directory (Path(__file__).parent), never a request- or
+        # agent-supplied path. Runs once at dashboard startup, only in a
+        # source/dev checkout where the baked _build_info commit is absent, and
+        # its output is compared (read-only) against dist/build-id.json to log
+        # a staleness warning. No agent input reaches command, args, or cwd.
+        "dashboard/stale_bundle_guard.py::_backend_commit",
         "env.py::_run",
         "env.py::activate_mise",
         # Node bootstrap: runs the bundled ``ensure-node.sh`` (a fixed `bash
