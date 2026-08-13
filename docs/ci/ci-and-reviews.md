@@ -91,7 +91,7 @@ Every job here is blocking.
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
 | `backend-test-sandbox` | The two suites the sharded matrix deselects because they need unprivileged user namespaces: `test_script_hooks.py` and `test_cron_script.py` |
-| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces backend >= 80% and frontend >= 60% on the raw line-rate (floors live in the job's `env:` block) |
+| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block) |
 | `frontend-lint` | `tsc -b`, `eslint --max-warnings 1116`, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
 | `frontend-test` | `vitest run --coverage` |
@@ -115,6 +115,23 @@ Details worth knowing:
   converts any non-success upstream result into an explicit failure, because GitHub
   treats a **skipped** required check as satisfied. It also compares the raw
   line-rate and rounds only for display, so 79.95% cannot pass an 80% floor.
+- **`coverage-gate` enforces two different shapes.** The project floors
+  (`BACKEND_MIN`, `FRONTEND_MIN`) compare one lane-wide average; the per-file floor
+  (`PER_FILE_MIN`, `scripts/check_per_file_coverage.py`) requires *every measured
+  file* to clear it. Both are needed because an average is satisfiable without
+  touching the files that carry the risk — a well-covered large file pays for a
+  bare small one. The per-file gate exempts only the files listed in
+  `.github/coverage-baselines/{backend,frontend}.txt`, and that list may only
+  shrink: an unlisted file below the floor fails, a listed file that slides further
+  fails, and a listed file that *clears* the floor by the same noise band fails
+  until it is removed. Refresh with `--update-baseline`, which **prunes only** —
+  it cannot add a path or rewrite a recorded rate, so neither a new offender nor a
+  regression can be cleared by refreshing instead of by adding tests; seeding a
+  new lane is a separate `--seed-baseline`. The floor's rationale and measured
+  cost live in the script's docstring, not here, so they cannot go stale in two
+  places. Per-file enforcement is skipped for a lane whose suite ran as a
+  coverage-free subset, because subset rates are not comparable to a baseline
+  recorded on the full suite.
 - **`eslint --max-warnings 1116` is a ratchet baseline.** Burn it down, never raise
   it.
 - **The i18n gates split into three tiers,** and only two can fail: diff-scoped

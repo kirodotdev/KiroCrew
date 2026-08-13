@@ -706,6 +706,14 @@ jobs:
     env:
       BACKEND_MIN: 80
       FRONTEND_MIN: 60
+      # The per-file floor, applied to BOTH lanes with a per-lane baseline of
+      # the files that were already below it. A project-wide average lets a
+      # well-covered large file pay for a bare small one, so it can be satisfied
+      # without touching the files that carry the risk; a per-file floor removes
+      # that subsidy. The rationale, the measured cost of this number, and the
+      # three baseline rules live in scripts/check_per_file_coverage.py's
+      # docstring -- deliberately not restated here, where it would go stale.
+      PER_FILE_MIN: 80
     # Always run so the required check emits a real verdict. Without
     # `if: always()`, a failing OR skipped dependency would SKIP this job, and
     # GitHub treats a skipped required check as SATISFIED -- silently defeating
@@ -773,6 +781,30 @@ jobs:
             exit 1
           fi
 
+      # Checked out for the per-file gate: it needs scripts/check_per_file_coverage.py
+      # and the two baselines from the tree. It sits BEFORE the artifact
+      # downloads because actions/checkout cleans the workspace by default and
+      # would otherwise delete them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The gate parses the Cobertura reports through defusedxml rather than the
+      # stdlib parser, which resolves external entities -- and on a fork PR the
+      # report is produced by contributor-controlled code. Installed here because
+      # this job otherwise needs no Python dependencies.
+      #
+      # setup-python is a PREREQUISITE, not decoration: the runner image's /usr
+      # interpreter is externally managed (PEP 668), so `uv pip install --system`
+      # against it exits 2 with "externally managed". coverage-combine provisions
+      # the same pair for the same reason.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Install the per-file gate's XML parser
+        run: uv pip install --system 'defusedxml>=0.7,<1'
+
       - name: Download backend coverage
         if: needs.coverage-combine.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -818,6 +850,26 @@ jobs:
               print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
               sys.exit(1)
           PY
+
+      - name: Check per-file coverage, backend (floor ${{ env.PER_FILE_MIN }}%)
+        # Gated on the same condition as the project floor: on a frontend-only
+        # diff the backend suite ran as a coverage-free subset, and a subset's
+        # per-file rates are not comparable to a baseline recorded on the full
+        # suite -- enforcing them there would fail files whose tests never ran.
+        if: needs.coverage-combine.result == 'success'
+        run: |
+          python3 scripts/check_per_file_coverage.py backend-cov/coverage.xml \
+            --label Backend --floor "$PER_FILE_MIN" \
+            --baseline .github/coverage-baselines/backend.txt
+
+      - name: Check per-file coverage, frontend (floor ${{ env.PER_FILE_MIN }}%)
+        if: needs.changes.outputs.only_backend != 'true'
+        run: |
+          F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
+          python3 scripts/check_per_file_coverage.py "$F" \
+            --label Frontend --floor "$PER_FILE_MIN" \
+            --baseline .github/coverage-baselines/frontend.txt
 
       - name: Coverage summary
         if: always()
