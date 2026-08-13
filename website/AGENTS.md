@@ -17,7 +17,7 @@ them.
 | shared components, a11y, URL sanitization, data fetching | [frontend-conventions](docs/frontend-conventions.md) |
 | any user-facing string, date, number, or sort order | [i18n-catalog](docs/i18n-catalog.md) + [i18n gates](../docs/ci/i18n-gates.md) |
 | `src/extensions.ts`, edition composition, registries | [extension-seams](docs/extension-seams.md) |
-| tests (vitest, MSW, Playwright, Electron) | [testing](docs/testing.md) |
+| tests (vitest, MSW, Playwright, Electron), or a test that fails only in CI | [testing](docs/testing.md) |
 | the Electron desktop shell | [electron/README.md](electron/README.md) |
 | anything backend, or a whole-system question | [`../AGENTS.md`](../AGENTS.md) |
 

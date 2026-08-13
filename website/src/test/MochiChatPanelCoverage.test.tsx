@@ -283,6 +283,13 @@ describe('ChatPanel scroll position pill', () => {
     scroller.scrollTo = scrollTo as unknown as typeof scroller.scrollTo
 
     expect(screen.queryByRole('button', { name: 'Scroll to Latest' })).not.toBeInTheDocument()
+    // The panel re-pins the scroller to the end on 50/150/300ms timers once the
+    // history lands, so the initial `scrollTop` of 0 is not a state this test can
+    // rely on: whichever timer has already run leaves the scroller AT the bottom,
+    // the scroll below reads as "still at the latest turn" and the pill never
+    // renders. Park the scroller away from the end explicitly, so the reported
+    // scroll means the same thing regardless of which timers have fired.
+    scroller.scrollTop = 0
     fireEvent.scroll(scroller)
     const pill = await screen.findByRole('button', { name: 'Scroll to Latest' })
 

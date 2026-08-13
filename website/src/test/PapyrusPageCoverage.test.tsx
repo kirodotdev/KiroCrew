@@ -158,6 +158,12 @@ function openWorkspace(store = createTestStore()) {
 async function workspaceReady() {
   await screen.findByTestId('papyrus-workspace')
   await screen.findByLabelText('editor')
+  // The editor mounts against `mainFile` BEFORE the open-main effect sets
+  // `currentFile`, so a mounted editor does not mean the first read has been
+  // issued — the read query is still disabled until then. Wait for that read,
+  // or a test that takes this barrier as "settled" (clearing `readFile`, or
+  // counting saves) credits the mount-time read to whatever it does next.
+  await waitFor(() => expect(api.readFile).toHaveBeenCalled())
 }
 
 function makeDirty(text: string) {

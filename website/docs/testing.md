@@ -92,6 +92,61 @@ are in
 The short version holds here too: never fix a flake with a rerun, a longer timeout,
 or a weakened assertion. Poll for the condition you actually care about.
 
+## Determinism: establish the state you assert on
+
+Every CI-only failure this suite has produced so far reduces to one mistake: **the
+test asserted against a state it did not establish**, and got away with it locally
+because the component happened to be slower than the assertion. The shard runs four
+workers under coverage, so "happened to be" stops holding. Two concrete shapes to
+recognize — both have shipped as red shards.
+
+**A mounted element is not a settled state.** `findBy*` proves a node rendered, not
+that the async work behind it finished. A component that renders against a fallback
+prop mounts *before* the effect that sets the real value, so its query has not even
+been issued yet:
+
+```tsx
+// WRONG: the editor renders against `mainFile` before the open-main effect sets
+// `currentFile`, so the read query is still disabled — `mockClear` clears nothing
+// and the mount-time read lands afterwards, credited to the click.
+await screen.findByLabelText('editor')
+api.readFile.mockClear()
+await user.click(fileRow)
+expect(api.readFile).not.toHaveBeenCalled()
+
+// RIGHT: wait for the thing the assertion is actually about.
+await screen.findByLabelText('editor')
+await waitFor(() => expect(api.readFile).toHaveBeenCalled())
+api.readFile.mockClear()
+```
+
+Put that wait in the file's shared `…Ready()` helper rather than in the one test
+that tripped over it: the barrier is wrong for every test using it, and the next
+one to notice will be another red shard.
+
+**A default DOM value the component overwrites is not a fixture.** If production
+code writes `scrollTop`, `value`, or `open` on a timer or in an effect, a test that
+relies on the initial value is racing it — and losing the race is silent, because
+the state just reads as "already correct" and the branch under test never runs:
+
+```tsx
+// WRONG: the panel re-pins the scroller on 50/150/300ms timers after history
+// lands. Once one has fired, this scroll reads as "already at the bottom" and the
+// pill never renders — a 1000ms `findByRole` timeout with no hint why.
+fireEvent.scroll(scroller)
+
+// RIGHT: park it where the test needs it, so the event means one thing.
+scroller.scrollTop = 0
+fireEvent.scroll(scroller)
+```
+
+**Reproduce before you fix.** Both examples above were confirmed by *forcing* the
+race locally — an `await new Promise(r => setTimeout(r, 400))` before the assertion,
+or a `mockImplementation` that resolves on a timer — which turns a CI-only flake
+into a deterministic local failure. Keep the forced delay in place while you verify
+the fix, then remove it: a fix that only passes once the delay is gone has not been
+shown to fix anything.
+
 ## Manual procedures
 
 A few flows are deliberately not automated. They are documented rather than
