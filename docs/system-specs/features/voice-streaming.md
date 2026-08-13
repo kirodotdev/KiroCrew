@@ -64,7 +64,8 @@ Stored in `~/.kiro/crew/config.json` under `voice_reply`:
 | `engine` | generative | generative, neural, long-form, standard (Polly only) |
 | `rate` | 100% | 50%–200% (Polly only) |
 | `pitch` | +0% | -20% to +20% (Polly only) |
-| `enabled` | true | Controls auto-speak and Slack voice replies |
+| `enabled` | true | Master voice switch; gates Slack voice replies. Independent of `auto_speak` |
+| `auto_speak` | false | Dashboard auto-speak: speak each assistant reply automatically. Independent of `enabled` — the manual 🔊 Speak button works regardless of either flag |
 | `aws_profile` | _(empty)_ | AWS CLI profile name for Polly calls. Empty = use default credentials |
 | `region` | _(empty)_ | AWS region for Polly. Empty = use CLI default |
 | `piper_model` | _(empty)_ | Path to a Piper `.onnx` voice model. Required for Piper |
@@ -113,7 +114,7 @@ instruction for two of the three kinds.
 
 ### API
 
-- `GET /api/voice/config` — returns current settings + `autoSpeak` flag
+- `GET /api/voice/config` — returns current settings + `autoSpeak` flag (mirrors `auto_speak`, not `enabled`)
 - `PUT /api/voice/config` — update settings (partial patch), persists to config.json
 - `POST /api/voice/synthesize` — `{ slot, text, voice?, engine?, rate?, pitch? }`
 - `GET /api/voice/voices` — list available Polly voices via `aws polly
