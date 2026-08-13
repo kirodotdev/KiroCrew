@@ -61,7 +61,7 @@ from kiro_crew.dashboard.theme_validate import (
 )
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import safe_read_file_bytes_nolink
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -239,18 +239,17 @@ def _clone_github(url: str, dest: Path) -> str | None:
     # The URL is agent/user-influenced and git clone runs arbitrary remote
     # content, so route through the sandbox chokepoint (OS filesystem isolation
     # + credential-scrubbed env) and apply the fork-bomb/resource ceiling via
-    # preexec_fn — same discipline as git_coord._git.
+    # run_limited — same discipline as git_coord._git.
     argv, env, cleanup = sandboxed_spawn_argv(
         ["git", "clone", "--depth", "1", "--quiet", "--", url, str(dest)]
     )
     try:
-        proc = subprocess.run(
+        proc = run_limited(
             argv,
             capture_output=True,
             text=True,
             timeout=_THEME_CLONE_TIMEOUT_SEC,
             env=env,
-            preexec_fn=resource_limit_preexec(),
         )
     except FileNotFoundError:
         return "git is not available on the server"

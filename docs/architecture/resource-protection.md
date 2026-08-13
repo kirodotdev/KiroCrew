@@ -82,11 +82,25 @@ runner's test spawn (`task_executor.py`), agent-selected git (`git_coord.py`), s
 hooks (`hooks.py`), the knowledge worker pool (`knowledge/llm_pool.py`), voice
 synthesis (`voice_reply.py`), the source-provider CLI spawns
 (`dashboard/handlers/source_providers.py`), and the builtin app subprocesses under
-`apps/builtins/`. Synchronous `subprocess.run` / `Popen` spawns, notably cron scripts
-(`cron_script.py`) and app-backend dependency installs (`apps/backend.py`), still pass
-`resource_limit_preexec()` as `preexec_fn=`: they wedge a worker thread rather than the
-event loop, so the hazard below does not apply to them with the same force. Migrating
-them is tracked follow-up work.
+`apps/builtins/`. Synchronous `subprocess.run` / `Popen` spawns route through
+`run_limited()` / `popen_limited()`, the sync siblings of the async wrapper: same
+post-exec delivery, same refusal of a caller-supplied `preexec_fn`, and the same
+fallback to `preexec_fn` when a profile carries policy but no shim is available.
+The core gateway is migrated, including cron scripts (`cron_script.py`) and
+app-backend dependency installs (`apps/backend.py`). Ten call sites still pass
+`resource_limit_preexec()` as `preexec_fn=` — the builtin app backends under
+`apps/builtins/` and two standalone scripts under `deploy/skills/` — and they are
+pinned by a shrink-only ratchet in `test/test_spawn_preexec_guard.py`, which fails
+on any NEW synchronous `preexec_fn` spawn anywhere under `src/kiro_crew`. A
+synchronous spawn wedges a worker thread rather than the event loop, so the hazard
+below does not apply to it with the same force, but it is the same `fork()` and the
+child still inherits every open fd until it `exec`s.
+
+Because the shim source rides in argv as a single ~8 KB `-c` element, the sync
+wrappers reset what the spawn reports back — `CompletedProcess.args`, `Popen.args`,
+and the `cmd` of a `CalledProcessError` / `TimeoutExpired` — to the command's own
+argv, so a `check=True` or timeout failure does not put the whole shim into the log
+line.
 
 `test/test_spawn_audit.py` enforces that every sandbox-routed spawn also applies the
 ceiling, so the helper cannot regress into dead code.

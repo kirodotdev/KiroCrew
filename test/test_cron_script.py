@@ -281,10 +281,10 @@ class TestCommandCronShellResolution:
 
         strict = MagicMock(returncode=0, stdout="x.{a,a}\n", stderr="")
         expanding = MagicMock(returncode=0, stdout="x.a x.a\n", stderr="")
-        with patch.object(cron_script.subprocess, "run", return_value=strict):
+        with patch.object(cron_script, "run_limited", return_value=strict):
             assert cron_script._shell_is_posix_strict("/bin/dash") is True
         cron_script._POSIX_STRICT_CACHE.clear()
-        with patch.object(cron_script.subprocess, "run", return_value=expanding):
+        with patch.object(cron_script, "run_limited", return_value=expanding):
             assert cron_script._shell_is_posix_strict("/bin/sh-is-really-bash") is False
 
     def test_windows_refuses_command_cron_shell(self, monkeypatch):

@@ -94,12 +94,15 @@ _ROUTED_TOKENS = (
 # fixed-argv internal probes (no agent-influenced child) are exempted in
 # ``PREEXEC_EXEMPT`` below.
 #
-# ``create_subprocess_limited`` is the preferred form: it delivers the same
-# limits AFTER exec via the spawn shim instead of in a fork child of this
-# threaded gateway. The two ``*_preexec`` names remain valid only for the
-# synchronous spawns that have not moved yet.
+# ``create_subprocess_limited`` (async) and ``run_limited`` / ``popen_limited``
+# (sync) are the preferred forms: they deliver the same limits AFTER exec via the
+# spawn shim instead of in a fork child of this threaded gateway. The two
+# ``*_preexec`` names remain valid only for the spawns that have not moved yet --
+# the builtin app backends and the standalone deploy scripts.
 _PREEXEC_TOKENS = (
     "create_subprocess_limited",
+    "run_limited",
+    "popen_limited",
     "resource_limit_preexec",
     "session_host_preexec",
 )
@@ -788,6 +791,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here
         # individually because _SPAWN_NAMES collects bare-name calls to it.
         "sandbox.py::create_subprocess_limited",
+        # The synchronous siblings of the above, same reasoning: they wrap an argv
+        # they are handed and cannot route on its behalf.
+        "sandbox.py::run_limited",
+        "sandbox.py::popen_limited",
         # The AppArmor profile installer. All three spawn FIXED, operator-facing
         # tooling with no agent-influenced input: `apparmor_parser --version`,
         # `apparmor_parser -Q --skip-cache <temp profile this module generated>`.

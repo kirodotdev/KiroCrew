@@ -4650,3 +4650,114 @@ async def create_subprocess_limited(
     return await asyncio.create_subprocess_exec(
         *prefix, resolved, *argv[1:], preexec_fn=None, **kwargs
     )
+
+
+def _prepare_limited_spawn(
+    argv: "Sequence[str]", profile: str, kwargs: "dict[str, Any]", caller: str
+) -> "tuple[list[str], Callable[[], None] | None]":
+    """Resolve *argv* into the command to spawn plus the ``preexec_fn`` to pass.
+
+    Shared by :func:`run_limited` and :func:`popen_limited`, which differ only in
+    which ``subprocess`` entry point they hand the result to.
+
+    Two things make this the sync twin of :func:`create_subprocess_limited`
+    rather than a copy of it:
+
+    * The PATH search runs INLINE. The async wrapper hops to a worker thread
+      because ``shutil.which`` stats every ``PATH`` entry and one stalled
+      NFS/autofs mount would freeze the event loop. A synchronous caller is
+      already off the loop, so the hop would buy nothing and cost a thread.
+    * ``shell=True`` is refused. The shim ``exec``s an argv vector, so there is
+      no correct place to put a prefix in front of a shell command STRING;
+      wrapping it anyway would change what the shell parses.
+    """
+    if "preexec_fn" in kwargs:
+        raise TypeError(
+            f"{caller} owns preexec_fn: limits are applied post-exec by the "
+            "spawn shim, not post-fork"
+        )
+    if kwargs.get("shell"):
+        raise TypeError(
+            f"{caller} cannot wrap shell=True: the shim prefixes an argv "
+            "vector, and a shell command is a single string"
+        )
+    if not argv:
+        raise ValueError(f"{caller} requires a command")
+    prefix = spawn_shim_argv(profile)
+    if not prefix:
+        # No shim (Windows, a no-op profile, or a truncated install): keep
+        # whatever policy the profile carries on the legacy fork path. Dropping
+        # the caps silently would be worse than the fork hazard.
+        return list(argv), _preexec_for_profile(profile)
+    if not _needs_path_search(argv):
+        # Explicit path: exec resolves it, so stat-ing it here would only
+        # pre-empt a failure exec reports anyway.
+        resolved = argv[0]
+    else:
+        resolved = _resolve_spawn_target(argv, kwargs.get("env"), kwargs.get("cwd"))
+    return [*prefix, resolved, *argv[1:]], None
+
+
+def run_limited(
+    argv: "Sequence[str]",
+    *,
+    profile: str = RLIMIT_PROFILE_TOOL,
+    **kwargs: "Any",
+) -> "subprocess.CompletedProcess[Any]":
+    """``subprocess.run`` with resource limits applied AFTER ``exec``.
+
+    The synchronous counterpart of :func:`create_subprocess_limited`, and the
+    drop-in replacement for ``subprocess.run(..., preexec_fn=
+    resource_limit_preexec())``. Every keyword argument is forwarded untouched
+    except ``preexec_fn``, which this owns.
+
+    A synchronous spawn wedges the calling worker thread rather than the event
+    loop, so it does not take the whole gateway down the way the async hazard
+    did -- but it is the same ``fork()`` of the same multi-GB, ~118-thread
+    process, and the child still inherits a duplicate of every open fd until it
+    ``exec``s. Taking ``preexec_fn`` out of the picture removes both.
+
+    ``CompletedProcess.args`` and the ``cmd`` of a ``CalledProcessError`` /
+    ``TimeoutExpired`` are the command's own argv, not the shim's. That is
+    maintained here rather than free: the shim source rides in argv as a ~8 KB
+    ``-c`` string, and both exceptions render ``cmd`` into their message, so
+    reporting the spawned argv would put the whole shim in every failure log
+    line.
+    """
+    cmd, preexec = _prepare_limited_spawn(argv, profile, kwargs, "run_limited")
+    reported = list(argv)
+    try:
+        result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        exc.cmd = reported
+        raise
+    result.args = reported
+    return result
+
+
+def popen_limited(
+    argv: "Sequence[str]",
+    *,
+    profile: str = RLIMIT_PROFILE_TOOL,
+    **kwargs: "Any",
+) -> "subprocess.Popen[Any]":
+    """``subprocess.Popen`` with resource limits applied AFTER ``exec``.
+
+    Same contract as :func:`run_limited`, for callers that need the handle
+    rather than the result -- a long-running child they will ``communicate()``
+    with, poll, or signal later.
+
+    The returned ``Popen`` is the command's own process, not a wrapper's, so
+    ``pid``, ``returncode``, signal delivery, and
+    ``platform_compat.kill_process_tree`` behave as they did before.
+
+    ``Popen.args`` is reset to the command's own argv for the same reason
+    :func:`run_limited` rewrites ``cmd``: ``communicate(timeout=...)`` builds its
+    ``TimeoutExpired`` from ``self.args``, so leaving the shim there would put
+    ~8 KB of shim source into the timeout message. Nothing in CPython reads
+    ``self.args`` functionally -- only ``__repr__`` and that exception.
+    """
+    cmd, preexec = _prepare_limited_spawn(argv, profile, kwargs, "popen_limited")
+    proc = subprocess.Popen(cmd, preexec_fn=preexec, **kwargs)
+    proc.args = list(argv)
+    return proc

@@ -145,7 +145,7 @@ def _manifest(
 
 
 def _capture_popen(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Freeze the spawn at Popen and capture the argv + kwargs it built."""
+    """Freeze the spawn at the limiter and capture the argv + kwargs it built."""
 
     seen: dict[str, Any] = {}
 
@@ -154,7 +154,7 @@ def _capture_popen(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen["kwargs"] = kwargs
         raise _StopSpawn()
 
-    monkeypatch.setattr(bmod.subprocess, "Popen", _popen)
+    monkeypatch.setattr(bmod, "popen_limited", _popen)
     return seen
 
 
@@ -164,7 +164,13 @@ def _record_runs(
     result: Any = None,
     exc: BaseException | None = None,
 ) -> list[list[str]]:
-    """Record every ``subprocess.run`` argv, optionally failing the call."""
+    """Record every run argv, optionally failing the call.
+
+    Both entry points, because this module has two: the dependency installers go
+    through ``run_limited`` (resource limits applied post-exec), while the nvm and
+    lsof probes are plain ``subprocess.run`` -- they carry no resource policy, so
+    there was nothing for the limiter to deliver for them.
+    """
 
     calls: list[list[str]] = []
 
@@ -176,6 +182,7 @@ def _record_runs(
             return result
         return SimpleNamespace(returncode=0, stdout="")
 
+    monkeypatch.setattr(bmod, "run_limited", _run)
     monkeypatch.setattr(bmod.subprocess, "run", _run)
     return calls
 
@@ -213,8 +220,6 @@ def spawn_root(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(bmod, "app_execution_denied", lambda _name, **_kw: None)
     monkeypatch.setattr(bmod, "wrap_argv", lambda argv, **_kw: (list(argv), None))
     monkeypatch.setattr(bmod, "cgroup_scope_argv", lambda argv: list(argv))
-    monkeypatch.setattr(bmod, "resource_limit_preexec", lambda: None)
-    monkeypatch.setattr(bmod, "build_resource_limit_preexec", lambda: None)
     monkeypatch.setattr(bmod, "_health_check_loop", lambda *_a, **_k: None)
     _install_fake_socket(monkeypatch, connect_exc=OSError("connection refused"))
     return root
@@ -637,7 +642,7 @@ class TestAdoptExistingInstance:
         (spawn_root / "server.py").write_text("x = 1\n")
         _install_fake_socket(monkeypatch, connect_exc=None)  # port answers => occupied
         monkeypatch.setattr(
-            bmod.subprocess, "Popen", lambda *_a, **_k: pytest.fail("spawned onto a taken port")
+            bmod, "popen_limited", lambda *_a, **_k: pytest.fail("spawned onto a taken port")
         )
         return spawn_root
 
@@ -785,7 +790,7 @@ class TestNodeDispatch:
         (spawn_root / "server.js").write_text("// noop\n")
         monkeypatch.setattr(bmod, "_find_node_binary", lambda: None)
         monkeypatch.setattr(
-            bmod.subprocess, "Popen", lambda *_a, **_k: pytest.fail("spawned without node")
+            bmod, "popen_limited", lambda *_a, **_k: pytest.fail("spawned without node")
         )
         with caplog.at_level(logging.ERROR):
             assert bmod._start_app_backend_body("nodeless", _manifest("server.js")) is None
@@ -969,7 +974,7 @@ class TestSpawnOutcome:
             "_record_app_pid",
             lambda name, pid, port: recorded.append((name, pid, port)),
         )
-        monkeypatch.setattr(bmod.subprocess, "Popen", lambda *_a, **_k: _FakeProc(pid=777))
+        monkeypatch.setattr(bmod, "popen_limited", lambda *_a, **_k: _FakeProc(pid=777))
         ap = bmod._start_app_backend_body("okapp", _manifest("server.py"))
         assert ap is not None
         assert ap.pid == 777
@@ -992,7 +997,7 @@ class TestSpawnOutcome:
             kwargs["stdout"].flush()
             return _FakeProc(returncode=1)
 
-        monkeypatch.setattr(bmod.subprocess, "Popen", _popen)
+        monkeypatch.setattr(bmod, "popen_limited", _popen)
         with caplog.at_level(logging.ERROR):
             assert bmod._start_app_backend_body("dyingapp", _manifest("server.py")) is None
         assert any("PORT COLLISION" in r.getMessage() for r in caplog.records)
@@ -1697,7 +1702,7 @@ class TestDefensiveBranches:
         monkeypatch.setattr(bmod, "sel", _no_sel)
         monkeypatch.setattr(bmod.urllib.request, "urlopen", lambda *_a, **_k: _FakeResp(500))
         monkeypatch.setattr(
-            bmod.subprocess, "Popen", lambda *_a, **_k: pytest.fail("spawned onto a taken port")
+            bmod, "popen_limited", lambda *_a, **_k: pytest.fail("spawned onto a taken port")
         )
         result = bmod._start_app_backend_body(
             "occupied", _manifest("server.py", port=str(bmod._MIN_PORT + 14))
