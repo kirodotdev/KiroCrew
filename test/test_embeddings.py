@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
+import sys
 import threading
 import time
 import urllib.error
 from functools import lru_cache
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -162,6 +164,134 @@ class TestPlatformLibsDirname:
         monkeypatch.setattr("kiro_crew.embeddings.sys.platform", platform_str)
         monkeypatch.setattr("kiro_crew.embeddings.platform.machine", lambda: machine)
         assert _platform_libs_dirname() is None
+
+
+def _stub_bundled_linux_libs(root: Path) -> None:
+    libs = root / embeddings_mod._LIBS_DIR_NAME / "linux_x86_64"
+    libs.mkdir(parents=True)
+    for name in embeddings_mod._REQUIRED_VENDORED_LIBS["linux_x86_64"]:
+        (libs / name).write_bytes(b"\x7fELF")
+
+
+def _load_bundled_linux_llama(monkeypatch, vendor: Path, cpu_probe):
+    env_was_set = embeddings_mod._LIB_PATH_ENV in os.environ
+    prior_env = os.environ.get(embeddings_mod._LIB_PATH_ENV)
+    monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", vendor)
+    monkeypatch.setattr(
+        embeddings_mod, "_platform_libs_dirname", lambda: "linux_x86_64"
+    )
+    monkeypatch.setattr(embeddings_mod, "_linux_x86_64_cpu_flags", cpu_probe)
+    embeddings_mod._load_llama_class.cache_clear()
+    try:
+        result = embeddings_mod._load_llama_class()
+        active_lib_path = os.environ.get(embeddings_mod._LIB_PATH_ENV)
+        return result, active_lib_path
+    finally:
+        embeddings_mod._load_llama_class.cache_clear()
+        if env_was_set:
+            assert prior_env is not None
+            os.environ[embeddings_mod._LIB_PATH_ENV] = prior_env
+        else:
+            os.environ.pop(embeddings_mod._LIB_PATH_ENV, None)
+
+
+class TestBundledLinuxX86CpuGate:
+    def test_cpuinfo_parser_normalizes_sse3_and_intersects_processors(
+        self, tmp_path: Path
+    ) -> None:
+        cpuinfo = tmp_path / "cpuinfo"
+        cpuinfo.write_text(
+            "processor: 0\nflags: pni ssse3 avx avx2 bmi2 f16c fma\n\n"
+            "processor: 1\nflags: pni ssse3 avx bmi2 f16c fma\n",
+            encoding="utf-8",
+        )
+
+        flags = embeddings_mod._linux_x86_64_cpu_flags(cpuinfo)
+
+        assert flags is not None
+        assert "sse3" in flags
+        assert "avx" in flags
+        assert "avx2" not in flags
+
+    def test_unreadable_cpuinfo_is_unknown(self, tmp_path: Path) -> None:
+        assert embeddings_mod._linux_x86_64_cpu_flags(tmp_path / "missing") is None
+
+    def test_compatible_cpu_continues_to_native_import(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_bundled_linux_libs(tmp_path)
+        fake_llama_cpp = ModuleType("llama_cpp")
+        expected = object()
+        setattr(fake_llama_cpp, "Llama", expected)
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+
+        result, active_lib_path = _load_bundled_linux_llama(
+            monkeypatch,
+            tmp_path,
+            lambda: embeddings_mod._LINUX_X86_64_REQUIRED_CPU_FLAGS,
+        )
+
+        assert result is expected
+        assert active_lib_path is not None
+        assert Path(active_lib_path).parts[-2:] == ("llama_cpp_libs", "linux_x86_64")
+        assert embeddings_mod._LIB_PATH_ENV not in os.environ
+
+    def test_missing_cpu_features_refuse_before_native_import(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_bundled_linux_libs(tmp_path)
+
+        with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
+            result, active_lib_path = _load_bundled_linux_llama(
+                monkeypatch, tmp_path, lambda: frozenset({"sse3", "ssse3"})
+            )
+
+        assert result is None
+        assert active_lib_path is None
+        assert "missing avx, avx2, bmi2, f16c, fma" in caplog.text
+        assert "SIGILL" in caplog.text
+        assert embeddings_mod._LIB_PATH_ENV not in os.environ
+
+    def test_unknown_cpu_features_fail_closed(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_bundled_linux_libs(tmp_path)
+
+        with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
+            result, active_lib_path = _load_bundled_linux_llama(
+                monkeypatch, tmp_path, lambda: None
+            )
+
+        assert result is None
+        assert active_lib_path is None
+        assert "Cannot verify CPU compatibility" in caplog.text
+        assert embeddings_mod._LIB_PATH_ENV not in os.environ
+
+    def test_operator_override_bypasses_the_bundled_cpu_gate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _stub_bundled_linux_libs(tmp_path)
+        override = tmp_path / "operator-libs"
+        override.mkdir()
+        monkeypatch.setenv(embeddings_mod._LIB_PATH_ENV, str(override))
+        fake_llama_cpp = ModuleType("llama_cpp")
+        expected = object()
+        setattr(fake_llama_cpp, "Llama", expected)
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+
+        def unexpected_cpu_probe():
+            raise AssertionError("operator runtime must not use the bundled CPU gate")
+
+        result, active_lib_path = _load_bundled_linux_llama(
+            monkeypatch, tmp_path, unexpected_cpu_probe
+        )
+
+        assert result is expected
+        assert active_lib_path == str(override)
+        assert os.environ[embeddings_mod._LIB_PATH_ENV] == str(override)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
