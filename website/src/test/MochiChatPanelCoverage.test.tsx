@@ -284,14 +284,28 @@ describe('ChatPanel scroll position pill', () => {
 
     expect(screen.queryByRole('button', { name: 'Scroll to Latest' })).not.toBeInTheDocument()
     // The panel re-pins the scroller to the end on 50/150/300ms timers once the
-    // history lands, so the initial `scrollTop` of 0 is not a state this test can
-    // rely on: whichever timer has already run leaves the scroller AT the bottom,
-    // the scroll below reads as "still at the latest turn" and the pill never
-    // renders. Park the scroller away from the end explicitly, so the reported
-    // scroll means the same thing regardless of which timers have fired.
-    scroller.scrollTop = 0
+    // history lands, so a plain `scrollTop` write is not a state this test can
+    // rely on: a timer that runs after the write puts the scroller back AT the
+    // bottom, the scroll below reads as "still at the latest turn" and the pill
+    // never renders. Park the scroller away from the end with an own accessor —
+    // the getter pins the reported position mid-scroll and the setter swallows
+    // the panel's re-pin writes (a plain no-setter property would make those
+    // strict-mode writes throw inside the panel's timers). The element is
+    // per-test, so the override dies with it and needs no restore.
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => 500,
+      set: () => {},
+    })
     fireEvent.scroll(scroller)
-    const pill = await screen.findByRole('button', { name: 'Scroll to Latest' })
+    // React handles scroll at continuous (non-sync) priority, so the pill's
+    // commit is scheduled rather than flushed inside `fireEvent`. On a loaded
+    // CI runner that scheduling can outlive the default 1s query budget; give
+    // the appearance the same generous ceiling the file's other timing-driven
+    // assertions use.
+    const pill = await screen.findByRole(
+      'button', { name: 'Scroll to Latest' }, { timeout: 5000 },
+    )
 
     // The pill dims under the pointer, which is how it reads as pressable.
     await userEvent.hover(pill)
