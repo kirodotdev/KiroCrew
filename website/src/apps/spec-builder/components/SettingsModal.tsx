@@ -1,5 +1,6 @@
 // SettingsModal — override where specs are stored (empty = keep specs inside
-// each project's .kiro/specs). Reads GET /settings, writes POST /settings.
+// each project's .kiro/specs) and which model runs spec generation (empty =
+// inherit the chat default). Reads GET /settings, writes POST /settings.
 //
 // Chrome comes from the shared <Modal>: role="dialog", aria-modal, Escape and
 // backdrop dismissal, scroll lock and the labelled close button are all owned
@@ -10,6 +11,8 @@ import { specApi } from '../api'
 import { Btn } from './shared'
 import { Input } from '../../../components/ui'
 import Modal from '../../../components/Modal'
+import SimpleSelect from '../../../components/SimpleSelect'
+import { useAvailableModels } from '../../../hooks/useAvailableModels'
 
 import { i18nT } from '../../../i18n/t'
 export interface SettingsModalProps {
@@ -19,15 +22,22 @@ export interface SettingsModalProps {
 
 export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
   const [basePath, setBasePath] = useState('')
+  // Explicit model pick for spec generation. '' = inherit whatever the chat
+  // session would resolve to — mirrors the Research app's per-campaign picker.
+  const [model, setModel] = useState('')
+  const availableModels = useAvailableModels()
 
-  // Server read through React Query (repo `use-react-query` rule); the input
-  // stays local state because it is an edit buffer, seeded once the read lands.
+  // Server read through React Query (repo `use-react-query` rule); the inputs
+  // stay local state because they are edit buffers, seeded once the read lands.
   const settingsQuery = useQuery({
     queryKey: ['spec-builder', 'settings'],
     queryFn: () => specApi.getSettings(),
   })
   useEffect(() => {
-    if (settingsQuery.data) setBasePath(settingsQuery.data.base_path || '')
+    if (settingsQuery.data) {
+      setBasePath(settingsQuery.data.base_path || '')
+      setModel(settingsQuery.data.model || '')
+    }
   }, [settingsQuery.data])
   // Report a failed read through the page-level error the caller already owns.
   // Save is disabled in that state (see the footer), and a control that is
@@ -41,20 +51,21 @@ export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
   // within ~30s showed the OLD path and made the save look like it had not taken.
   const queryClient = useQueryClient()
   const saveMutation = useMutation({
-    mutationFn: (base: string) => specApi.saveSettings(base),
-    onSuccess: (_data, base) => {
-      queryClient.setQueryData(['spec-builder', 'settings'], { base_path: base })
+    mutationFn: (next: { base_path: string; model: string }) =>
+      specApi.saveSettings(next.base_path, next.model),
+    onSuccess: (_data, next) => {
+      queryClient.setQueryData(['spec-builder', 'settings'], next)
       void queryClient.invalidateQueries({ queryKey: ['spec-builder', 'settings'] })
       onClose()
     },
     onError: (e) => setErr((e as Error).message),
   })
   const busy = saveMutation.isPending
-  // basePath is seeded from the query, so until the read LANDS the buffer is still
-  // the initial '' -- saving then would overwrite a configured path with nothing.
-  // Guarding on the write alone (`busy`) left exactly that window open.
+  // basePath/model are seeded from the query, so until the read LANDS the buffers
+  // are still the initial '' -- saving then would overwrite configured values with
+  // nothing. Guarding on the write alone (`busy`) left exactly that window open.
   const unloaded = settingsQuery.isPending || settingsQuery.isError
-  const save = () => saveMutation.mutate(basePath.trim())
+  const save = () => saveMutation.mutate({ base_path: basePath.trim(), model })
 
   return (
     <Modal
@@ -85,6 +96,25 @@ export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
         value={basePath}
         onChange={(e) => setBasePath(e.target.value)}
         placeholder={i18nT('apps.specBuilder.components.settingsModal.empty_keep_specs_with_each_project_recommended')}
+      />
+      <div className="text-[13px] font-semibold mt-4 mb-1.5">{i18nT('apps.specBuilder.components.settingsModal.which_model_should_run_spec_generation')}</div>
+      <div className="text-[12px] text-muted mb-2.5 leading-relaxed">
+        {i18nT('apps.specBuilder.components.settingsModal.default_keeps_the_model_your_chat_agent_resolves')}
+      </div>
+      {/* Options come from the shared advertised-models hook (GET /api/models),
+          never a static list; 'auto' is excluded like the Research picker — an
+          app-level pin of 'auto' would shadow the chain it means to defer to.
+          triggerFallback keeps a RETAINED pin visible when it is not in the
+          advertised list (cold model cache on first open, or a model the
+          account no longer serves): without it the trigger would claim
+          "Default (inherit)" while the stamp keeps applying that model. */}
+      <SimpleSelect
+        aria-label={i18nT('apps.specBuilder.components.settingsModal.spec_generation_model')}
+        options={availableModels.map((m) => m.name).filter((n) => n !== 'auto')}
+        clearLabel={i18nT('apps.specBuilder.components.settingsModal.model_default_inherit')}
+        triggerFallback={model || undefined}
+        value={model}
+        onChange={setModel}
       />
     </Modal>
   )

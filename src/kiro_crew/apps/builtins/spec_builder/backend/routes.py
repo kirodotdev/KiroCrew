@@ -275,6 +275,14 @@ def _audit_tool(
 
 # ── settings + index (app-owned bookkeeping) ─────────────────────────────────
 
+#: Longest model id the settings file stores, mirroring the Research app's cap
+#: on its per-campaign pick — both bound the same wire field (``slot.model``).
+#: The write handler REJECTS an over-length id (a sliced id is a *different*
+#: string that is never served, so truncating would trade a clear 400 for a
+#: silent fallback); the read chokepoint below degrades one to inherit instead,
+#: because a load has nobody to hand a 400 to.
+_MAX_MODEL_LEN = 128
+
 
 def _load_settings() -> dict:
     """Read settings, treating the file's SHAPE and its FIELDS as untrusted.
@@ -287,17 +295,39 @@ def _load_settings() -> dict:
     dict, so it passed, and every reader then called ``.strip()`` on a list —
     500ing spec creation and the settings read. The field is normalized here, at
     the single read chokepoint, so no caller has to re-check its type.
+
+    ``model`` gets the same treatment: a non-string or over-length value loads
+    as ``""`` (= inherit the session layer's resolution), never as an error. An
+    UNKNOWN model name is deliberately kept: no advertised-model list exists
+    outside a live session, and the session layer's withhold
+    (``_pinned_model_withheld`` in chat_runner) already keeps the pin, runs the
+    worker on the backend default and surfaces a notice when a pick stops being
+    served.
     """
     try:
         data = json.loads(_settings_path().read_text())
     except (OSError, json.JSONDecodeError):
-        return {"base_path": ""}
+        return {"base_path": "", "model": ""}
     if not isinstance(data, dict):
-        return {"base_path": ""}
+        return {"base_path": "", "model": ""}
     if not isinstance(data.get("base_path"), str):
         # Copy rather than mutate: the parsed object is this function's own, but
         # returning a normalized view keeps the rule local to the chokepoint.
         data = {**data, "base_path": ""}
+    raw_model = data.get("model")
+    if not isinstance(raw_model, str) or len(raw_model.strip()) > _MAX_MODEL_LEN:
+        data = {**data, "model": ""}
+    else:
+        model = raw_model.strip()
+        # A value the redactor would alter is credential-shaped: slot.model is
+        # serialized into dashboard payloads RAW (it is an id, not prose, so no
+        # sink scrubs it), and settings.json is agent-writable -- so a credential
+        # planted here would ride the stamp to the browser. Degrade to inherit;
+        # this also fails closed when the security module is unavailable, same
+        # as _redact itself. The write path rejects the same shape with a 400.
+        if model and _redact(model) != model:
+            model = ""
+        data = {**data, "model": model}
     return data
 
 
@@ -1288,8 +1318,10 @@ async def _ensure_worker_slot(
             )
             return None
         slot = existing
+        created = False
     else:
         slot = state.get_or_create_slot(name=slot_key, app=APP_NAME)
+        created = True
     # The indexed working_dir is NOT trusted input. It is app state on disk, and
     # the agent this app runs can be talked into rewriting files -- so a rewritten
     # index entry would become the worker's cwd on the next message, and relative
@@ -1312,6 +1344,17 @@ async def _ensure_worker_slot(
         _audit("spec_working_dir_denied", f"{name}: {_redact(wd)}", outcome="denied")
         logger.warning("spec %s has no usable indexed working_dir — refusing", name)
         return None
+    # The app-wide default model, read only for a slot this call CREATED and
+    # that has no explicit pick: a per-slot model set through the chat API stays
+    # authoritative, and an existing slot restored across a gateway restart must
+    # keep running exactly as it was -- the help copy promises a changed default
+    # applies to spec sessions started AFTER the change, so re-stamping an
+    # adopted slot here would contradict it. Off the loop like every other file
+    # read on this path; the identity re-check below covers this await window as
+    # well as _safe_dir's.
+    default_model = ""
+    if created and not str(getattr(slot, "model", "") or ""):
+        default_model = str((await asyncio.to_thread(_load_settings)).get("model", "") or "")
     # Second window: _safe_dir ran off-loop, so re-assert the identity before
     # stamping ownership and the project onto the slot. Without this a stale
     # request repointed a replacement spec's worker at ITS OWN directory.
@@ -1325,6 +1368,12 @@ async def _ensure_worker_slot(
         # discovered spec it would edit files outside the project entirely.
         if safe_wd is not None:
             slot.project = str(safe_wd)
+        # '' = inherit: the session layer's resolution chain applies unchanged.
+        # A concrete pick rides slot.model, which chat_runner already resolves
+        # first — and if the pick stops being served, its withhold keeps the pin
+        # and runs the turn on the backend default with a notice.
+        if default_model and not str(getattr(slot, "model", "") or ""):
+            slot.model = default_model
         if not getattr(slot, "_titled", False):
             slot.title = f"Spec: {name}"
             slot._titled = True
@@ -2327,7 +2376,12 @@ async def _handle_get_settings(request: web.Request) -> web.Response:
     # agent-writable -- _load_settings says so itself and validates only its
     # SHAPE -- so a credential parked in base_path would otherwise be rendered
     # verbatim in the dashboard.
-    return web.json_response({"base_path": _redact(str(s.get("base_path", "")))})
+    return web.json_response(
+        {
+            "base_path": _redact(str(s.get("base_path", ""))),
+            "model": _redact(str(s.get("model", ""))),
+        }
+    )
 
 
 async def _handle_put_settings(request: web.Request) -> web.Response:
@@ -2337,6 +2391,51 @@ async def _handle_put_settings(request: web.Request) -> web.Response:
     if isinstance(body, web.Response):
         return body
     base = str(body.get("base_path", "")).strip()
+    # Same contract as the Research app's per-campaign pick: a non-string or
+    # over-length model is a 400 that names the problem (a sliced id is a
+    # different string that is never served, so truncating would trade the 400
+    # for a silent fallback). '' = inherit. Unknown names are KEPT — availability
+    # is only decidable in a live session, where the withhold path owns it.
+    #
+    # An OMITTED key preserves the stored value: settings.json predates this
+    # field, so a legacy client PUTting only base_path must not silently erase
+    # a configured model. Clearing requires an explicit "" — absence is not a
+    # statement about the model.
+    if "model" not in body:
+        model = str((await asyncio.to_thread(_load_settings)).get("model", "") or "")
+    else:
+        raw_model = body.get("model")
+        if not isinstance(raw_model, str):
+            return web.json_response(
+                {"code": "model_not_a_string", "error": "model must be a string"}, status=400
+            )
+        model = raw_model.strip()
+        if len(model) > _MAX_MODEL_LEN:
+            return web.json_response(
+                {
+                    "code": "model_too_long",
+                    "error": f"model id too long (max {_MAX_MODEL_LEN} characters)",
+                },
+                status=400,
+            )
+        # GET serves this field through _redact, whose fail-closed branch returns a
+        # literal placeholder when the security module is unavailable. A client that
+        # round-trips that read back would otherwise persist the placeholder as the
+        # app-wide default and stamp it onto every new spec slot. Checked
+        # separately from the credential-shape test below: the placeholder is
+        # ordinary prose that the redactor leaves unchanged.
+        if model == _UNSCRUBBABLE:
+            return web.json_response(
+                {"code": "model_invalid", "error": "model must be a model id"}, status=400
+            )
+        # Reject any value the redactor would alter: a credential-shaped string
+        # would otherwise be persisted and ride the slot stamp to the browser raw
+        # (slot.model is an id, not prose -- no downstream sink scrubs it). Fails
+        # closed with _redact when the security module is unavailable.
+        if model and _redact(model) != model:
+            return web.json_response(
+                {"code": "model_invalid", "error": "model must be a model id"}, status=400
+            )
     if base:
         if not Path(base).is_absolute():
             return web.json_response({"code": "base_path_not_absolute", "error": "base_path must be an absolute path"}, status=400)
@@ -2349,9 +2448,17 @@ async def _handle_put_settings(request: web.Request) -> web.Response:
                 {"code": "base_path_not_a_directory", "error": "base_path must be an existing, non-sensitive directory"}, status=400
             )
         base = str(safe_base)
-    await asyncio.to_thread(_save_settings, {"base_path": base})
-    _audit("settings_update", f"base_path={'set' if base else 'default'}")
-    return web.json_response({"ok": True, "base_path": base})
+    await asyncio.to_thread(_save_settings, {"base_path": base, "model": model})
+    _audit(
+        "settings_update",
+        f"base_path={'set' if base else 'default'} model={'set' if model else 'default'}",
+    )
+    # Through _redact like the GET: the omitted-key branch echoes a value read
+    # from disk, so a credential-looking string in the file would otherwise
+    # reach the dashboard raw here even though the GET path scrubs it.
+    return web.json_response(
+        {"ok": True, "base_path": _redact(base), "model": _redact(model)}
+    )
 
 
 def _discover_folder_specs(index: dict) -> bool:

@@ -3946,13 +3946,17 @@
         },
         "settingsModal": {
           "cancel": "বাতিল",
+          "default_keeps_the_model_your_chat_agent_resolves": "ডিফল্ট আপনার চ্যাট এজেন্ট যে মডেল নির্ধারণ করে সেটিই রাখে। বাছাই করা মডেল পরিবর্তনের পরে শুরু হওয়া spec সেশনে প্রযোজ্য হয় — চলমান spec তার বর্তমান মডেল রাখে।",
           "empty_keep_specs_with_each_project_recommended": "ফাঁকা = spec প্রতিটি প্রকল্পের সঙ্গেই রাখুন (প্রস্তাবিত)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "spec প্রতিটি প্রকল্পের ভিতরে রাখতে এটি ফাঁকা রাখুন (আপনার কোডের পাশে .kiro/specs ফোল্ডার — Kiro-র আদর্শ)। অথবা সব spec এক জায়গায় জমা করতে একটি ফোল্ডার পথ দিন।",
+          "model_default_inherit": "ডিফল্ট (উত্তরাধিকার)",
           "save": "সংরক্ষণ করো",
           "saving": "সংরক্ষণ হচ্ছে…",
           "settings": "সেটিংস",
+          "spec_generation_model": "spec তৈরির মডেল",
           "spec_storage_folder_path": "spec সংরক্ষণ ফোল্ডারের পথ",
-          "where_should_specs_be_saved": "spec কোথায় সংরক্ষণ করা হবে?"
+          "where_should_specs_be_saved": "spec কোথায় সংরক্ষণ করা হবে?",
+          "which_model_should_run_spec_generation": "spec তৈরিতে কোন মডেল চলবে?"
         },
         "shimmer": {
           "loading_specs": "spec লোড হচ্ছে…",

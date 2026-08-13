@@ -4070,13 +4070,17 @@
         },
         "settingsModal": {
           "cancel": "Отмена",
+          "default_keeps_the_model_your_chat_agent_resolves": "По умолчанию используется модель, которую уже выбирает ваш чат-агент. Выбор применяется к сессиям спеков, начатым после изменения — спек в работе сохраняет текущую модель.",
           "empty_keep_specs_with_each_project_recommended": "Пусто = хранить спеки вместе с каждым проектом (рекомендуется)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "Оставьте поле пустым, чтобы хранить спеки внутри каждого проекта (папка .kiro/specs рядом с кодом — стандарт Kiro). Либо укажите путь к папке, чтобы собирать все спеки в одном месте.",
+          "model_default_inherit": "По умолчанию (наследовать)",
           "save": "Сохранить",
           "saving": "Сохранение…",
           "settings": "Настройки",
+          "spec_generation_model": "Модель генерации спеков",
           "spec_storage_folder_path": "Путь к папке хранения спеков",
-          "where_should_specs_be_saved": "Где сохранять спеки?"
+          "where_should_specs_be_saved": "Где сохранять спеки?",
+          "which_model_should_run_spec_generation": "Какая модель должна выполнять генерацию спеков?"
         },
         "shimmer": {
           "loading_specs": "Загрузка спеков…",

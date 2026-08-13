@@ -341,20 +341,20 @@ class TestCleanStr:
 
 class TestSettingsStore:
     def test_a_missing_file_reads_as_the_default(self):
-        assert r._load_settings() == {"base_path": ""}
+        assert r._load_settings() == {"base_path": "", "model": ""}
 
     @pytest.mark.parametrize("text", ["not json", "[1, 2]", "null", '"a string"'])
     def test_a_malformed_or_wrongly_shaped_file_reads_as_the_default(self, text):
         r._settings_path().parent.mkdir(parents=True, exist_ok=True)
         r._settings_path().write_text(text)
-        assert r._load_settings() == {"base_path": ""}
+        assert r._load_settings() == {"base_path": "", "model": ""}
 
     def test_a_non_string_base_path_is_normalized_at_the_read_chokepoint(self):
         # {"base_path": []} is a dict, so an outer-shape-only guard passed it and
         # every reader then called .strip() on a list -- a 500 on spec creation.
         r._settings_path().parent.mkdir(parents=True, exist_ok=True)
         r._settings_path().write_text(json.dumps({"base_path": [], "other": 1}))
-        assert r._load_settings() == {"base_path": "", "other": 1}
+        assert r._load_settings() == {"base_path": "", "other": 1, "model": ""}
 
     def test_save_then_load_round_trips_and_creates_the_state_dir(self, tmp_path):
         r._save_settings({"base_path": str(tmp_path)})
@@ -2783,7 +2783,10 @@ class TestHandleSettings:
 
     @pytest.mark.asyncio
     async def test_the_default_is_an_empty_base_path(self):
-        assert _body(await r._handle_get_settings(_mk("GET", "settings"))) == {"base_path": ""}
+        assert _body(await r._handle_get_settings(_mk("GET", "settings"))) == {
+            "base_path": "",
+            "model": "",
+        }
 
     @pytest.mark.asyncio
     async def test_a_stored_base_path_is_redacted_on_its_way_out(self):
@@ -2819,14 +2822,18 @@ class TestHandleSettings:
         out = await r._handle_put_settings(
             _mk("PUT", "settings", body={"base_path": f" {tmp_path} "})
         )
-        assert _body(out) == {"ok": True, "base_path": str(Path(os.path.realpath(tmp_path)))}
+        assert _body(out) == {
+            "ok": True,
+            "base_path": str(Path(os.path.realpath(tmp_path))),
+            "model": "",
+        }
         assert r._load_settings()["base_path"] == str(Path(os.path.realpath(tmp_path)))
 
     @pytest.mark.asyncio
     async def test_an_empty_base_path_clears_the_override(self, tmp_path):
         r._save_settings({"base_path": str(tmp_path)})
         out = await r._handle_put_settings(_mk("PUT", "settings", body={"base_path": ""}))
-        assert _body(out) == {"ok": True, "base_path": ""}
+        assert _body(out) == {"ok": True, "base_path": "", "model": ""}
         assert r._load_settings()["base_path"] == ""
 
 

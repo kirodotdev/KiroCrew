@@ -3884,13 +3884,17 @@
         },
         "settingsModal": {
           "cancel": "キャンセル",
+          "default_keeps_the_model_your_chat_agent_resolves": "デフォルトでは、チャットエージェントが解決するモデルをそのまま使います。選択したモデルは、変更後に開始するスペックセッションに適用されます。進行中のスペックは現在のモデルを使い続けます。",
           "empty_keep_specs_with_each_project_recommended": "空 = 各プロジェクトでスペックを保持（推奨）",
           "leave_this_empty_to_keep_specs_inside_each_proje": "空のままにして、各プロジェクト内にスペックを保持します（コードの横の .kiro/specs フォルダー — Kiro 標準）。\n        または、フォルダーパスを設定してすべてのスペックを一か所に集めてください。",
+          "model_default_inherit": "デフォルト（継承）",
           "save": "保存",
           "saving": "保存中…",
           "settings": "設定",
+          "spec_generation_model": "スペック生成モデル",
           "spec_storage_folder_path": "スペック保存フォルダーのパス",
-          "where_should_specs_be_saved": "スペックはどこに保存しますか？"
+          "where_should_specs_be_saved": "スペックはどこに保存しますか？",
+          "which_model_should_run_spec_generation": "スペック生成にはどのモデルを使いますか？"
         },
         "shimmer": {
           "loading_specs": "スペック読み込み中…",

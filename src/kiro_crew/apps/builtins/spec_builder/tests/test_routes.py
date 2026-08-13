@@ -165,15 +165,97 @@ async def test_settings_roundtrip(tmp_path, monkeypatch):
     async with _make_client(monkeypatch, tmp_path) as client:
         resp = await client.get(f"{_BASE}/settings")
         assert resp.status == 200
-        assert (await resp.json())["base_path"] == ""
+        body = await resp.json()
+        assert body["base_path"] == ""
+        assert body["model"] == ""
 
         abs_base = str(tmp_path / "specs-home")
         resp = await client.put(f"{_BASE}/settings", json={"base_path": abs_base})
         assert resp.status == 200
-        assert (await resp.json()) == {"ok": True, "base_path": abs_base}
+        assert (await resp.json()) == {"ok": True, "base_path": abs_base, "model": ""}
 
         resp = await client.get(f"{_BASE}/settings")
         assert (await resp.json())["base_path"] == abs_base
+
+
+@pytest.mark.asyncio
+async def test_settings_model_roundtrips_and_empty_means_inherit(tmp_path, monkeypatch):
+    """The app-wide default model round-trips, and '' round-trips AS '' — an
+    empty selection must come back as inherit, not be dropped or persisted as a
+    literal model name. An unknown name is kept (availability is only decidable
+    in a live session, where the withhold path owns it)."""
+    async with _make_client(monkeypatch, tmp_path) as client:
+        resp = await client.put(f"{_BASE}/settings", json={"base_path": "", "model": "  test-model-x  "})
+        assert resp.status == 200
+        assert (await resp.json()) == {"ok": True, "base_path": "", "model": "test-model-x"}
+
+        resp = await client.get(f"{_BASE}/settings")
+        assert (await resp.json())["model"] == "test-model-x"
+
+        # Clearing the pick round-trips back to inherit.
+        resp = await client.put(f"{_BASE}/settings", json={"base_path": "", "model": ""})
+        assert resp.status == 200
+        resp = await client.get(f"{_BASE}/settings")
+        assert (await resp.json())["model"] == ""
+
+
+@pytest.mark.asyncio
+async def test_settings_write_without_model_key_preserves_the_stored_model(tmp_path, monkeypatch):
+    """settings.json predates the model field, so a legacy client PUTting only
+    base_path must not silently erase a configured model. Absence preserves;
+    clearing requires an explicit ''."""
+    async with _make_client(monkeypatch, tmp_path) as client:
+        resp = await client.put(f"{_BASE}/settings", json={"base_path": "", "model": "test-model-x"})
+        assert resp.status == 200
+
+        # Legacy-shaped write: no model key at all.
+        resp = await client.put(f"{_BASE}/settings", json={"base_path": ""})
+        assert resp.status == 200
+        assert (await resp.json())["model"] == "test-model-x"
+
+        resp = await client.get(f"{_BASE}/settings")
+        assert (await resp.json())["model"] == "test-model-x", "an omitted key erased the model"
+
+
+@pytest.mark.asyncio
+async def test_settings_rejects_malformed_model(tmp_path, monkeypatch):
+    """Mirrors the Research app's write contract: a non-string is a 400 that
+    names the problem, and an over-length id is rejected rather than truncated
+    (a sliced id is a different string that is never served)."""
+    async with _make_client(monkeypatch, tmp_path) as client:
+        resp = await client.put(f"{_BASE}/settings", json={"base_path": "", "model": ["not", "a", "string"]})
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "model_not_a_string"
+
+        resp = await client.put(
+            f"{_BASE}/settings",
+            json={"base_path": "", "model": "m" * (routes._MAX_MODEL_LEN + 1)},
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "model_too_long"
+
+        # GET serves the field through _redact; its fail-closed placeholder must
+        # not be storable as a model if a client round-trips the read back.
+        resp = await client.put(
+            f"{_BASE}/settings", json={"base_path": "", "model": routes._UNSCRUBBABLE}
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "model_invalid"
+
+
+def test_load_settings_degrades_malformed_model_to_inherit(tmp_path, monkeypatch):
+    """settings.json is agent-writable, so its model FIELD is untrusted like its
+    shape: a list, a number, or an over-length string loads as '' (= inherit),
+    mirroring the base_path hardening at the same chokepoint."""
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(routes, "_SETTINGS_PATH", settings_path)
+    bad_values: list[object] = [[], 7, None, "m" * (routes._MAX_MODEL_LEN + 1)]
+    for bad in bad_values:
+        settings_path.write_text(json.dumps({"base_path": "", "model": bad}))
+        assert routes._load_settings()["model"] == "", f"{bad!r} did not degrade"
+    # A sane value survives the same chokepoint, trimmed.
+    settings_path.write_text(json.dumps({"base_path": "", "model": " test-model-x "}))
+    assert routes._load_settings()["model"] == "test-model-x"
 
 
 @pytest.mark.asyncio
@@ -2038,6 +2120,172 @@ async def test_only_our_own_slot_is_adopted_and_a_missing_one_is_created(monkeyp
     assert fresh._app == routes.APP_NAME and fresh.project == "/new"
 
 
+@pytest.mark.asyncio
+async def test_default_model_is_stamped_on_a_bare_slot(monkeypatch, tmp_path):
+    """The app-wide default model from settings lands on a worker slot that has
+    no explicit pick — the single creation chokepoint, same place project and
+    title are stamped."""
+    monkeypatch.setattr(routes, "_safe_dir", lambda raw, **_k: Path(raw))
+    monkeypatch.setattr(routes, "_SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(routes, "_STATE_DIR", tmp_path)
+    routes._save_settings({"base_path": "", "model": "test-model-x"})
+
+    class _New:
+        key = "spec-builder-fresh"
+        _app = ""
+        project = ""
+        model = ""
+        _titled = False
+
+    fresh = _New()
+
+    class _State:
+        def get_slot(self, key):
+            return None
+
+        def get_or_create_slot(self, name, app=""):
+            return fresh
+
+    out = await routes._ensure_worker_slot(_State(), "fresh", {"working_dir": "/new"})
+    assert out is fresh
+    assert fresh.model == "test-model-x", "the app default was not stamped"
+
+
+@pytest.mark.asyncio
+async def test_default_model_never_overwrites_an_explicit_slot_pick(monkeypatch, tmp_path):
+    """A per-slot model set through the chat API stays authoritative: the ensure
+    chokepoint runs on EVERY dispatch, so an unconditional stamp would silently
+    revert an explicit pick on the next message — the main defect to avoid."""
+    monkeypatch.setattr(routes, "_safe_dir", lambda raw, **_k: Path(raw))
+    monkeypatch.setattr(routes, "_SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(routes, "_STATE_DIR", tmp_path)
+    routes._save_settings({"base_path": "", "model": "test-model-x"})
+
+    class _Ours:
+        key = "spec-builder-mine"
+        _app = routes.APP_NAME
+        project = ""
+        model = "test-model-explicit"
+        _titled = True
+
+    ours = _Ours()
+
+    class _State:
+        def get_slot(self, key):
+            return ours
+
+        def get_or_create_slot(self, name, app=""):
+            raise AssertionError("should not recreate an existing owned slot")
+
+    out = await routes._ensure_worker_slot(_State(), "mine", {"working_dir": "/p"})
+    assert out is ours
+    assert ours.model == "test-model-explicit", "an explicit per-slot pick was overwritten"
+
+
+@pytest.mark.asyncio
+async def test_empty_default_model_leaves_the_slot_inheriting(monkeypatch, tmp_path):
+    """'' = inherit: with no app default configured, the slot's model stays
+    empty and the session layer's resolution chain applies unchanged."""
+    monkeypatch.setattr(routes, "_safe_dir", lambda raw, **_k: Path(raw))
+    monkeypatch.setattr(routes, "_SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(routes, "_STATE_DIR", tmp_path)
+    routes._save_settings({"base_path": "", "model": ""})
+
+    class _New:
+        key = "spec-builder-plain"
+        _app = ""
+        project = ""
+        model = ""
+        _titled = False
+
+    fresh = _New()
+
+    class _State:
+        def get_slot(self, key):
+            return None
+
+        def get_or_create_slot(self, name, app=""):
+            return fresh
+
+    out = await routes._ensure_worker_slot(_State(), "plain", {"working_dir": "/new"})
+    assert out is fresh
+    assert fresh.model == "", "an empty default must not stamp anything"
+
+
+@pytest.mark.asyncio
+async def test_default_model_is_not_stamped_on_an_adopted_slot(monkeypatch, tmp_path):
+    """A slot that already exists (restored across a gateway restart, or simply
+    re-ensured on a later dispatch) keeps running exactly as it was: the help
+    copy promises a changed default applies to spec sessions started AFTER the
+    change, so only a slot this call CREATES may receive the stamp."""
+    monkeypatch.setattr(routes, "_safe_dir", lambda raw, **_k: Path(raw))
+    monkeypatch.setattr(routes, "_SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(routes, "_STATE_DIR", tmp_path)
+    routes._save_settings({"base_path": "", "model": "test-model-x"})
+
+    class _Restored:
+        key = "spec-builder-mine"
+        _app = routes.APP_NAME
+        project = ""
+        model = ""  # inheriting, and it must STAY inheriting
+        _titled = True
+
+    ours = _Restored()
+
+    class _State:
+        def get_slot(self, key):
+            return ours
+
+        def get_or_create_slot(self, name, app=""):
+            raise AssertionError("should not recreate an existing owned slot")
+
+    out = await routes._ensure_worker_slot(_State(), "mine", {"working_dir": "/p"})
+    assert out is ours
+    assert ours.model == "", "an adopted slot was re-stamped with the app default"
+
+
+def test_load_settings_degrades_a_credential_shaped_model_to_inherit(tmp_path, monkeypatch):
+    """slot.model is serialized into dashboard payloads raw and settings.json is
+    agent-writable, so a value the redactor would alter must never survive the
+    read chokepoint. The marker stands in for any credential-shaped string; the
+    fake redactor mirrors the real one's contract (clean text passes unchanged)."""
+    monkeypatch.setattr(routes, "_SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(routes, "_STATE_DIR", tmp_path)
+    monkeypatch.setattr(
+        routes, "_redact", lambda t: t.replace("SECRET-MARKER", "[redacted]")
+    )
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"base_path": "", "model": "SECRET-MARKER"})
+    )
+    assert routes._load_settings()["model"] == "", (
+        "a credential-shaped model survived the read chokepoint"
+    )
+    # Contract check on the fake: a clean id passes through untouched.
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"base_path": "", "model": "clean-model"})
+    )
+    assert routes._load_settings()["model"] == "clean-model"
+
+
+@pytest.mark.asyncio
+async def test_settings_write_rejects_a_credential_shaped_model(tmp_path, monkeypatch):
+    """The write path is the other half of the load-chokepoint degrade: a
+    credential-shaped value gets a machine-readable 400 instead of being
+    persisted and riding the slot stamp to the browser."""
+    monkeypatch.setattr(
+        routes, "_redact", lambda t: t.replace("SECRET-MARKER", "[redacted]")
+    )
+    async with _make_client(monkeypatch, tmp_path) as client:
+        resp = await client.put(
+            f"{_BASE}/settings", json={"base_path": "", "model": "SECRET-MARKER"}
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "model_invalid"
+        # Nothing was persisted.
+        resp = await client.get(f"{_BASE}/settings")
+        assert (await resp.json())["model"] == ""
+
+
 def test_dispatching_handlers_refuse_a_foreign_slot():
     """Source guard: any handler that dispatches a turn must bail when the slot
     could not be claimed, rather than passing None into _dispatch_turn."""
@@ -3337,7 +3585,7 @@ def test_persisted_shapes_are_validated(tmp_path, monkeypatch):
     for bad in ("[]", '"nope"', "null", "3"):
         routes._settings_path().parent.mkdir(parents=True, exist_ok=True)
         routes._settings_path().write_text(bad)
-        assert routes._load_settings() == {"base_path": ""}, bad
+        assert routes._load_settings() == {"base_path": "", "model": ""}, bad
         assert routes._load_settings().get("base_path") == ""
 
     # A malformed ENTRY is dropped; well-formed siblings survive.

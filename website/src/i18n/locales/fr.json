@@ -4008,13 +4008,17 @@
         },
         "settingsModal": {
           "cancel": "Annuler",
+          "default_keeps_the_model_your_chat_agent_resolves": "Par défaut conserve le modèle que votre agent de chat résout déjà. Un choix s’applique aux sessions de spec démarrées après le changement — une spec en cours conserve son modèle actuel.",
           "empty_keep_specs_with_each_project_recommended": "Vide = garder les specs avec chaque projet (recommandé)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "Laisse ce champ vide pour garder les specs dans chaque projet (un dossier .kiro/specs à côté de ton code — le standard Kiro). Ou indique un chemin de dossier pour rassembler toutes les specs au même endroit.",
+          "model_default_inherit": "Par défaut (hériter)",
           "save": "Enregistrer",
           "saving": "Enregistrement…",
           "settings": "Paramètres",
+          "spec_generation_model": "Modèle de génération de specs",
           "spec_storage_folder_path": "Chemin du dossier de stockage des specs",
-          "where_should_specs_be_saved": "Où enregistrer les specs ?"
+          "where_should_specs_be_saved": "Où enregistrer les specs ?",
+          "which_model_should_run_spec_generation": "Quel modèle doit exécuter la génération de specs ?"
         },
         "shimmer": {
           "loading_specs": "Chargement des specs…",

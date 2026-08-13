@@ -85,6 +85,8 @@ export interface BrowseResponse {
 
 export interface SettingsResponse {
   base_path?: string
+  /** App-wide default model for spec generation. '' = inherit the chat default. */
+  model?: string
 }
 
 /** Body for POST /specs. */
@@ -169,9 +171,9 @@ export const specApi = {
     const q = new URLSearchParams(identity(id) as Record<string, string>).toString()
     return req<void>('/specs/' + enc(name) + (q ? '?' + q : ''), { method: 'DELETE' })
   },
-  getSettings: () => req<{ base_path: string }>('/settings'),
-  saveSettings: (base_path: string) =>
-    req<{ ok: boolean }>('/settings', { method: 'POST', body: JSON.stringify({ base_path }) }),
+  getSettings: () => req<{ base_path: string; model?: string }>('/settings'),
+  saveSettings: (base_path: string, model: string) =>
+    req<{ ok: boolean }>('/settings', { method: 'POST', body: JSON.stringify({ base_path, model }) }),
   browse: (path: string) => {
     // Not copy: a URL. Built through URLSearchParams so the remaining literal has
     // the same shape as every other endpoint path in this file.

@@ -3884,13 +3884,17 @@
         },
         "settingsModal": {
           "cancel": "취소",
+          "default_keeps_the_model_your_chat_agent_resolves": "기본값은 채팅 에이전트가 해석하는 모델을 그대로 사용합니다. 선택한 모델은 변경 이후 시작되는 스펙 세션에 적용되며, 진행 중인 스펙은 현재 모델을 유지합니다.",
           "empty_keep_specs_with_each_project_recommended": "비움 = 각 프로젝트에 스펙 보관(권장)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "비워 두면 각 프로젝트 안에 스펙을 보관합니다(코드 옆의 .kiro/specs 폴더 — Kiro 표준).\n 또는 폴더 경로를 설정해 모든 스펙을 한곳에 모을 수 있습니다.",
+          "model_default_inherit": "기본값(상속)",
           "save": "저장",
           "saving": "저장 중…",
           "settings": "설정",
+          "spec_generation_model": "스펙 생성 모델",
           "spec_storage_folder_path": "스펙 저장 폴더 경로",
-          "where_should_specs_be_saved": "스펙을 어디에 저장할까요?"
+          "where_should_specs_be_saved": "스펙을 어디에 저장할까요?",
+          "which_model_should_run_spec_generation": "스펙 생성에 어떤 모델을 사용할까요?"
         },
         "shimmer": {
           "loading_specs": "스펙 불러오는 중…",

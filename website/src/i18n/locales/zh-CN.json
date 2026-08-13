@@ -3884,13 +3884,17 @@
         },
         "settingsModal": {
           "cancel": "取消",
+          "default_keeps_the_model_your_chat_agent_resolves": "默认沿用聊天代理当前解析到的模型。所选模型对更改后启动的 spec 会话生效——进行中的 spec 会继续使用其当前模型。",
           "empty_keep_specs_with_each_project_recommended": "留空 = 将 spec 保存在各自的项目中（推荐）",
           "leave_this_empty_to_keep_specs_inside_each_proje": "留空即可将 spec 保存在每个项目内部（代码旁的 .kiro/specs 文件夹，这是 Kiro 的标准做法）。或者设置一个文件夹路径，把所有 spec 集中存放。",
+          "model_default_inherit": "默认（继承）",
           "save": "保存",
           "saving": "正在保存…",
           "settings": "设置",
+          "spec_generation_model": "spec 生成模型",
           "spec_storage_folder_path": "spec 存放文件夹路径",
-          "where_should_specs_be_saved": "spec 应保存在哪里？"
+          "where_should_specs_be_saved": "spec 应保存在哪里？",
+          "which_model_should_run_spec_generation": "应由哪个模型运行 spec 生成？"
         },
         "shimmer": {
           "loading_specs": "正在加载 spec…",
