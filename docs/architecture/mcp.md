@@ -120,6 +120,17 @@ from the live `kirocrew` binary, strips stale remote-transport fields (`url`,
 gateway is actually running under while preserving the user's own env keys.
 User customizations such as `autoApprove` are preserved.
 
+Under an enterprise MCP registry, `_refresh_dynamic_fields()` also maintains a
+`"type": "registry"` marker on these three entries — added when
+`agent.mcp_registry_mode` is declared, and REMOVED when it is not. The marker is
+maintained rather than preserved because it tracks the account the gateway is
+signed in to, not a user preference, and because the client's filter is
+symmetric: outside registry mode a marked entry is the one that gets dropped.
+`command`/`args` stay either way, since the registry path is not the only
+consumer of this spec (doctor's handshake probe and the CC sidecar sync both
+launch from it). See
+[../guides/enterprise-mcp-governance.md](../guides/enterprise-mcp-governance.md).
+
 `kirocrew-computer` carries **no `autoApprove` key and none may ever be added.**
 kiro-cli approves an auto-approved MCP tool locally and emits no permission
 request, so `hooks.on_tool_call` (the PreToolUse deny floor, sensitive-path

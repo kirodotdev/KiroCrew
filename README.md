@@ -303,8 +303,9 @@ from the dashboard. Incognito and temporary session modes let you opt out when
 a conversation should not persist.
 
 **Skills, MCP, and apps.** Markdown skills supply reusable workflows and can be
-loaded only when relevant. The built-in `kirocrew-core` and `kirocrew-cron` MCP
-servers expose task, subagent, learning, messaging, and scheduling tools. You
+loaded only when relevant. The built-in `kirocrew-core`, `kirocrew-cron` and
+`kirocrew-computer` MCP servers expose task, subagent, learning, messaging,
+scheduling, and desktop-automation tools. You
 can discover additional MCP servers from Kiro or Kiro Crew configuration. The
 App Kit adds installable interfaces and domain workflows. Apps can add dashboard
 pages, use scoped Gateway APIs, subscribe to events, and register lifecycle

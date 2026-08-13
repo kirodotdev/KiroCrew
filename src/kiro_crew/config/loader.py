@@ -1084,6 +1084,22 @@ class AgentConfig:
         default="acp",
         metadata=_meta("Provider", "LLM provider backend (KiroACP / kiro-cli).", enum=["acp"]),
     )
+    mcp_registry_mode: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enterprise MCP Registry Mode",
+            "Set true when this Kiro account is governed by an enterprise MCP "
+            "registry (Kiro console -> Shared settings -> MCP Registry URL, which "
+            "applies to IAM Identity Center and API-key sign-ins). In registry "
+            "mode the client connects ONLY to mcpServers entries carrying "
+            "'type': \"registry\" that resolve to a catalog entry of the same "
+            "name, so Kiro Crew stamps that marker on the servers it manages. "
+            "Leave false on a personal account: with no registry configured the "
+            "filter inverts and registry-marked entries are the ones dropped. "
+            "The administrator must also allow-list kirocrew-core, kirocrew-cron "
+            "and kirocrew-computer in the registry by those exact names.",
+        ),
+    )
     acp_backend: str = field(
         default="",
         metadata=_meta(
@@ -5588,6 +5604,7 @@ class KiroCrewConfig:
                 role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
                 reasoning_effort=agent_data.get("reasoning_effort", ""),
                 provider=agent_data.get("provider", "acp"),
+                mcp_registry_mode=_safe_bool(agent_data.get("mcp_registry_mode", False), False),
                 acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
                 default_agent=agent_data.get("default_agent", ""),
                 sandbox=agent_data.get("sandbox", "auto"),

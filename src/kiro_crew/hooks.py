@@ -2586,6 +2586,13 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # justification in _INTERNAL_READ_ALLOWLIST -- identical posture, different
     # storage layout).
     "kiro_usage_api.sqlite_token": ".local/share/{kiro-cli,amazon-q}/data.sqlite3",
+    # Same store, read by ``kiro_crew.kiro_cli.signed_in_via_idc`` to answer one
+    # question for the enterprise MCP-governance diagnostic: did this identity come
+    # from Identity Center? Only the two non-secret ``auth.idc.*`` marker rows are
+    # selected, and only their COUNT leaves the function -- no token row is read and
+    # no value is returned. The audit is owed regardless, because the file holds
+    # live credential material whatever this reader touches.
+    "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
 }
 
 

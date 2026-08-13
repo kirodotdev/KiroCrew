@@ -53,6 +53,7 @@ from kiro_crew.embeddings import (
     resolve_custom_model,
     verify_vendored_libs,
 )
+from kiro_crew.kiro_cli import mcp_governance_may_apply
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
 from kiro_crew.platform import (
@@ -271,6 +272,105 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
             for line in detail.splitlines():
                 print(f"      {line}")
         issues.append(f"{ref} probe")
+
+
+# Non-secret rows kiro-cli writes when the signed-in identity came from IAM
+# Identity Center. Presence is the signal; the values (a start URL and a region)
+# are never read into a message, and no token key is touched.
+def _doctor_mcp_governance(agent_path: Path, issues: list[str]) -> None:
+    """Render the `MCP Governance` section of `kirocrew doctor`.
+
+    Speaks up in two situations: governance can reach this identity (Identity
+    Center or an API key), where an administrator's registry may be in force, and
+    the registry declaration or its markers are present on an identity governance
+    CANNOT reach, which is the inverse failure and just as silent. Stays quiet on
+    an ordinary personal install, where a governance warning would be pure noise.
+
+    This exists because the section above cannot detect either failure.
+    Governance is enforced inside kiro-cli when it assembles a session: it drops
+    every ``mcpServers`` entry whose registry marker does not match the account's
+    access mode. Kiro Crew's own handshake probe spawns each server directly and
+    therefore still reports it healthy, so an affected host reads green here
+    while `spawn_run`, `cron_add` and `learn_add` are absent from every session.
+    """
+    try:
+        declared = KiroCrewConfig.load().agent.mcp_registry_mode
+    except Exception:
+        logger.debug("config load failed in governance check", exc_info=True)
+        declared = False
+
+    try:
+        spec = json.loads(agent_path.read_text(encoding="utf-8"))
+        servers = spec.get("mcpServers") or {}
+    except Exception:
+        servers = {}
+    if not isinstance(servers, dict):
+        # `or {}` only replaces a FALSY value, so a string or list here survives
+        # and the membership walk below would raise, aborting the whole doctor
+        # run — on exactly the malformed spec someone is running doctor to find.
+        servers = {}
+
+    marked = sorted(
+        name
+        for name in _MANAGED_MCPS
+        if isinstance(servers.get(name), dict) and servers[name].get("type") == "registry"
+    )
+    names = ", ".join(sorted(_MANAGED_MCPS))
+    governed_capable = mcp_governance_may_apply()
+
+    # Nothing to say: an identity governance cannot reach, with no registry
+    # declaration and no leftover markers, is the ordinary case.
+    if not governed_capable and not declared and not marked:
+        return
+
+    print("\nMCP Governance (enterprise):")
+
+    if not governed_capable:
+        # The inverse filter. Outside registry mode a MARKED entry is the one the
+        # client drops, so this state breaks the same servers, equally silently —
+        # reachable by copying the guide onto a personal account, or by leaving an
+        # enterprise account with the declaration still set. Safe to assert only
+        # because neither governance-capable signal is present: no Identity Center
+        # rows AND no API key, which leaves Builder ID or social sign-in.
+        print("  identity: not Identity Center or API key — an admin MCP registry cannot apply")
+        if declared:
+            print(
+                "  ❌ registry mode is declared, so kiro-cli treats these servers as "
+                "registry-provided and drops them on an ungoverned account"
+            )
+        else:
+            print("  ❌ registry markers are present on the spec without the declaration")
+        print(f"      affected: {', '.join(marked) if marked else names}")
+        print("      fix:  kirocrew config set agent.mcp_registry_mode false")
+        issues.append("MCP registry mode on non-IDC account")
+        return
+
+    print("  identity: Identity Center or API key — an admin MCP registry can apply")
+    if declared:
+        print(f"  registry mode: on — {len(marked)}/{len(_MANAGED_MCPS)} managed servers marked")
+        if len(marked) < len(_MANAGED_MCPS):
+            print("  ❌ markers missing — re-run `kirocrew setup --agent-only`")
+            issues.append("MCP registry markers")
+            return
+        # Deliberately not a success line. Whether the administrator actually
+        # allow-listed these names is not knowable locally, so claiming green
+        # here would repeat the overstatement this section exists to correct.
+        print("  cannot verify the registry itself — that lives with your administrator")
+        print(f"      these names must be allow-listed, exactly: {names}")
+        print(
+            "      if tools are still missing in sessions, the account may no longer be "
+            "registry-governed — try `kirocrew config set agent.mcp_registry_mode false`"
+        )
+        return
+
+    print("  registry mode: off")
+    print(
+        "  ⚠️  If MCP tools are missing in sessions while probing OK above, your "
+        "administrator has configured an MCP Registry URL. In that mode kiro-cli "
+        "connects only to servers marked 'type': \"registry\"."
+    )
+    print("      Declare it:  kirocrew config set agent.mcp_registry_mode true")
+    print(f"      Then have your admin allow-list, by these exact names: {names}")
 
 
 def _doctor_data_home() -> None:
@@ -1051,6 +1151,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     print("\nMCP Tools")
     if agent_path.exists():
         _doctor_mcp_tools(agent_path, issues)
+        # After the probe, deliberately: the probe reporting green is the exact
+        # condition this section exists to explain.
+        _doctor_mcp_governance(agent_path, issues)
 
     # ── Python Runtime ──
     print("\nRuntime")
