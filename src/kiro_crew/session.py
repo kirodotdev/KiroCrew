@@ -96,6 +96,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
@@ -175,6 +176,16 @@ def _is_claude_backend(provider: Any) -> bool:
     return backend == "claude"
 
 
+def _provider_label(provider: Any) -> str:
+    """Backend identity key for *provider* — see ``providers.acp.provider_label``.
+
+    Deferred import for the same reason ``_is_claude_backend`` defers it.
+    """
+    from kiro_crew.providers.acp import provider_label  # circular: providers -> session
+
+    return provider_label(provider)
+
+
 def _provider_effectively_alive(provider: Any) -> bool:
     """Whether a session's provider should be treated as live (NOT stale).
 
@@ -216,7 +227,7 @@ def detect_provider_switch(session_map: "SessionMap", session_key: str, new_prov
     is achieved via KiroCrew's own history replay (build_session_replay), never
     via session_id translation.
     """
-    stored_provider = session_map.get_provider(session_key) or "acp"
+    stored_provider = session_map.get_provider(session_key) or PROVIDER_LABEL_DEFAULT
     if stored_provider == new_provider:
         return False
     # Only counts as a switch if there's actually a stored SID to discard
@@ -1587,6 +1598,10 @@ class SessionManager:
         companion subagent runtime spawns with the SAME security posture as the
         parent (sandboxed + MCP-gateway-routed), never a bare unsandboxed
         process. Returns {} when the parent/client can't be resolved.
+
+        The backend travels with the posture: a companion runtime shares its
+        parent's process topology, so resolving it independently would spawn a
+        different agent than the session it belongs to.
         """
         provider = self.get_provider(parent_session_key)
         if provider is None:
@@ -1601,6 +1616,7 @@ class SessionManager:
             ("_mcp_gateway_overlay", "mcp_gateway_overlay"),
             ("_mcp_gateway_settings_mcp_json", "mcp_gateway_settings_mcp_json"),
             ("_mcp_gateway_socket", "mcp_gateway_socket"),
+            ("backend", "acp_backend"),
         ):
             val = getattr(client, attr, None)
             if val is not None:
@@ -2729,7 +2745,9 @@ class SessionManager:
                 is_cc_now = (
                     ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider)
                 ) or _is_claude_backend(provider)
-                current_provider = "claude_code" if is_cc_now else "acp"
+                current_provider = (
+                    PROVIDER_LABEL_CLAUDE if is_cc_now else _provider_label(provider)
+                )
                 if detect_provider_switch(self._session_map, key, current_provider):
                     resume_sid = None
                     _provider_switched = True
@@ -2868,14 +2886,22 @@ class SessionManager:
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
-                    if _provider_switched or (
+                    _replay_needed = (
                         getattr(provider, "_history_replay_needed", False) is True
-                    ):
+                    )
+                    if _provider_switched or _replay_needed:
                         # provider_switch_replay OR F2 load-recovery fell back to
                         # a fresh native session (stale lock never cleared):
                         # replay KiroCrew's conversation_log into the new session
                         # on the first prompt so the slot isn't context-free.
                         sess.provider_switch_replay = True
+                    if _replay_needed and _provider_label(provider) != PROVIDER_LABEL_DEFAULT:
+                        # SessionMap.get() only self-prunes entries whose kiro
+                        # transcript is gone; a backend that owns its own storage
+                        # is never file-checked, so a failed load is the only
+                        # signal its sid went stale. Drop it here or every later
+                        # turn re-attempts the same doomed load.
+                        self._session_map.clear_sid(key)
                     self._sessions[key] = sess
                     logger.info(
                         "New session: %s agent=%s resumed=%s provider_switch=%s (total=%d)",
@@ -2894,7 +2920,7 @@ class SessionManager:
                     _cwd_str = provider.cwd
                     if not is_stateless and isinstance(provider, AcpProvider):
                         sid = provider.client._session_id
-                        _prov_label = "claude_code" if _is_claude_backend(provider) else "acp"
+                        _prov_label = _provider_label(provider)
                         if sid:
                             self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                     elif (
@@ -3774,7 +3800,7 @@ class SessionManager:
                         # on next startup doesn't see a missing entry, default
                         # to "acp", and falsely fire a switch for users still
                         # on claude_code.
-                        _prov_label = "claude_code" if _is_claude_backend(sess.provider) else "acp"
+                        _prov_label = _provider_label(sess.provider)
                         self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                 elif ClaudeCodeProvider is not None and isinstance(
                     sess.provider, ClaudeCodeProvider

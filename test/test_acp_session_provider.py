@@ -37,12 +37,17 @@ def _make_handle(
     return handle
 
 
-def _make_runtime(alive: bool = True) -> MagicMock:
-    """Create a mock AcpRuntime."""
+def _make_runtime(alive: bool = True, acp_backend: str = "") -> MagicMock:
+    """Create a mock AcpRuntime.
+
+    ``acp_backend`` mirrors the real constructor's default (kiro), because the
+    provider's ``backend`` delegates to it rather than returning a constant.
+    """
     runtime = MagicMock()
     runtime.is_alive.return_value = alive
     runtime._process = MagicMock(returncode=None if alive else 1)
     runtime._last_activity = 0.0
+    runtime.acp_backend = acp_backend
     return runtime
 
 
@@ -413,11 +418,24 @@ class TestAcpSessionProviderClientCompat:
     """Tests for the AcpClient-compatible API surface."""
 
     def test_backend_is_empty_for_kiro(self):
-        """backend property returns empty string (kiro, not claude)."""
+        """backend reports empty string for a kiro runtime (not claude)."""
         handle = _make_handle()
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
         assert provider.backend == ""
+
+    def test_backend_reports_the_runtimes_backend(self):
+        """Delegated, not constant.
+
+        This provider replaces the placeholder AcpClient on
+        ``AcpProvider._client`` once startup finishes, so it is the only place
+        a started provider's backend can still be read. Returning kiro
+        unconditionally would persist every KAS session under the kiro label.
+        """
+        handle = _make_handle()
+        runtime = _make_runtime(acp_backend="kas")
+        provider = AcpSessionProvider(handle, runtime)
+        assert provider.backend == "kas"
 
     def test_has_active_turn(self):
         """has_active_turn is a METHOD (parity with AcpClient) delegating to

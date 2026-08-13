@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
+from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -654,7 +655,11 @@ class SessionMap:
         if not entry:
             return None
         sid = entry["sid"]
-        if entry.get("provider") == "claude_code":
+        # Only kiro-cli keeps transcripts at a flat path this process can stat.
+        # For every other backend the sid's validity is decided by session/load
+        # itself, so skip the file check rather than pruning a live session.
+        # An absent label means kiro-cli, so normalize before comparing.
+        if (entry.get("provider") or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT:
             return sid
         sessions_dir = _kiro_sessions_dir()
         if sid and (sessions_dir / f"{sid}.json").exists():
@@ -782,7 +787,9 @@ class SessionMap:
         stale: list[str] = []
         repaired = False
         for key, entry in self._data.items():
-            if entry.get("provider") == "claude_code":
+            # Only kiro-cli's transcripts are stat-able here; other backends
+            # own their own storage. An absent label means kiro-cli.
+            if (entry.get("provider") or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT:
                 continue
             sid = entry.get("sid")
             durable = _has_durable_flag(entry)

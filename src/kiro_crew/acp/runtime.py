@@ -40,6 +40,11 @@ from kiro_crew.acp.client import (
     _KiroExecutableTrustError,
     _resolve_kiro_bin_for_spawn,
 )
+from kiro_crew.acp.kas_assets import (
+    KasAssetsMissing,
+    build_kas_argv,
+    resolve_kas_entry,
+)
 from kiro_crew.acp.session_handle import (
     AcpRuntimeDead,
     AcpRuntimeError,
@@ -47,7 +52,10 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_CLIENT_CAPABILITIES,
+    KAS_CLIENT_CAPABILITIES,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
@@ -218,6 +226,10 @@ KIRO_CLI_SUBCMD = "acp"
 CLIENT_NAME = "kirocrew"
 CLIENT_VERSION = "0.1.2"
 PROTOCOL_VERSION = "2025-08-22"
+# KAS validates this field against a numeric schema and rejects the kiro-cli
+# date string with "expected number, received string", so the two backends must
+# be sent different types. 1 is what the ACP SDK and KAS's own TUI send.
+PROTOCOL_VERSION_KAS = 1
 
 
 def _drop_key_part(value: object) -> str:
@@ -490,6 +502,7 @@ class AcpRuntime:
         max_rss_mb: float = _DEFAULT_MAX_RSS_MB,
         model: str | None = None,
         expect_mcp_reports: bool = True,
+        acp_backend: str = ACP_BACKEND_KIRO,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -500,6 +513,7 @@ class AcpRuntime:
 
             self._work_dir = config_dir() / "workspace"
         self._agent = agent
+        self._acp_backend = acp_backend
         if model is not None:
             if not MODEL_ID_RE.match(model):
                 raise ValueError(
@@ -582,6 +596,17 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    @property
+    def acp_backend(self) -> str:
+        """Which ACP backend this runtime's process speaks.
+
+        Public because the backend has to survive being read back off a
+        started provider: the runtime is the only object that still knows it
+        once ``AcpProvider`` swaps its placeholder client for a session
+        provider.
+        """
+        return self._acp_backend
 
     @property
     def supports_image_prompt(self) -> bool:
@@ -689,19 +714,19 @@ class AcpRuntime:
             self._discard_sandbox_cleanup()
             raise
 
-    async def spawn(self) -> None:
-        """Start the kiro-cli acp subprocess and complete protocol handshake."""
-        if self._process is not None:
-            raise AcpRuntimeError("Runtime already spawned")
+    async def _resolve_spawn_argv(self) -> list[str]:
+        """Pre-sandbox argv for this runtime's backend.
 
-        # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
-        # slow storage; the loop must never wait on the kernel here.
-        await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
+        Explicit per-backend construction: the two agents share no flags, and
+        only kiro-cli needs its agent file materialized first.
+        """
+        if self._acp_backend == ACP_BACKEND_KAS:
+            node, script = await asyncio.to_thread(resolve_kas_entry)
+            # No --agent: KAS takes custom agents over the wire in session/new
+            # (_meta.kiro.customAgents), not from a CLI flag.
+            return build_kas_argv(node, script)
 
-        try:
-            kiro_bin = await _resolve_kiro_bin_for_spawn()
-        except _KiroExecutableTrustError as exc:
-            raise AcpRuntimeError(str(exc)) from exc
+        kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
             raise AcpRuntimeError(f"{KIRO_CLI_BIN} not found in PATH")
 
@@ -723,6 +748,23 @@ class AcpRuntime:
             # (e.g. GPT for image generation) — post-session set_model cannot
             # cross provider boundaries, and agent configs may pin a model.
             argv += ["--model", self._model]
+        return argv
+
+    async def spawn(self) -> None:
+        """Start the kiro-cli acp subprocess and complete protocol handshake."""
+        if self._process is not None:
+            raise AcpRuntimeError("Runtime already spawned")
+
+        # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
+        # slow storage; the loop must never wait on the kernel here.
+        await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
+
+        try:
+            argv = await self._resolve_spawn_argv()
+        except _KiroExecutableTrustError as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+        except KasAssetsMissing as exc:
+            raise AcpRuntimeError(str(exc)) from exc
 
         # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
         # MCP-gateway overlay is NOT delivered through the sandbox: its broker
@@ -730,11 +772,17 @@ class AcpRuntime:
         # needs no bind-mount and works with sandbox mode "off". strip_python_env
         # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
+        # is_kiro_cli drives a macOS-only delegation: when kiro's internal
+        # sandbox is enabled, wrap_argv skips its own seatbelt because the two
+        # cannot nest (kernel EPERM). KAS is a Node process with no such
+        # internal sandbox, so claiming otherwise would hand isolation to a
+        # layer that never starts and leave it unconfined. KAS has no nesting
+        # constraint either, so it takes Crew's seatbelt directly.
         argv, self._sandbox_cleanup = wrap_argv(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
-            is_kiro_cli=True,
+            is_kiro_cli=self._acp_backend != ACP_BACKEND_KAS,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -849,8 +897,16 @@ class AcpRuntime:
                     # telemetry — bucketed as "(none)" instead of "kirocrew". Nest it to
                     # match AcpClient and be picked up for acpClientName attribution.
                     "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "clientCapabilities": ACP_CLIENT_CAPABILITIES,
+                    "protocolVersion": (
+                        PROTOCOL_VERSION_KAS
+                        if self._acp_backend == ACP_BACKEND_KAS
+                        else PROTOCOL_VERSION
+                    ),
+                    "clientCapabilities": (
+                        KAS_CLIENT_CAPABILITIES
+                        if self._acp_backend == ACP_BACKEND_KAS
+                        else ACP_CLIENT_CAPABILITIES
+                    ),
                 },
             )
             self._can_load_session = bool(
@@ -1578,12 +1634,16 @@ class AcpRuntime:
         if not self._can_load_session:
             raise AcpRuntimeError("Backend does not advertise session/load support")
 
-        load_params = {
+        load_params: dict[str, Any] = {
             "sessionId": resume_sid,
             "cwd": str(cwd if cwd else self._work_dir),
             "mcpServers": [],  # kiro-cli gets its servers via --agent
-            "_meta": {"_kiro.dev/session_file": session_file},
         }
+        if session_file:
+            # Only kiro-cli is handed a transcript path. A backend that locates
+            # the session itself from sessionId is called with an empty path, and
+            # sending the field anyway would advertise a path that does not exist.
+            load_params["_meta"] = {"_kiro.dev/session_file": session_file}
         self._session_inits_in_flight += 1
         loaded_session_id = ""
         try:

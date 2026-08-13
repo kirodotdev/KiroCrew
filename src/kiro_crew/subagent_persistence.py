@@ -16,6 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.providers.cleanup import _is_safe_path
 
@@ -319,21 +320,21 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
 
 
 def _cleanup_session_files_sync(
-    session_id: str, provider: str = "acp", *, cwd: str = ""
+    session_id: str, provider: str = PROVIDER_LABEL_DEFAULT, *, cwd: str = ""
 ) -> None:
     """Delete LLM provider session files for a completed subagent.
 
     Synchronous — used during tombstone pruning (which runs in the reaper loop).
     Best-effort: logs warnings on failure, never raises.
 
-    For ``claude_code`` provider, *cwd* is required to derive the CC
-    project directory name.  If not provided, cleanup is skipped with a
-    debug-level log (the files will leak until manual deletion).
+    Only the kiro-cli backend stores transcripts where this function can reach
+    them. Any other *provider* is logged and its files are left in place, since
+    reporting success without deleting anything hides the leak.
     """
     if not session_id or session_id in (".", ".."):
         return
     try:
-        if provider == "acp":
+        if provider == PROVIDER_LABEL_DEFAULT:
             sessions_dir = kiro_sessions_dir()
             for suffix in (".json", ".jsonl"):
                 target = sessions_dir / f"{session_id}{suffix}"
@@ -351,6 +352,16 @@ def _cleanup_session_files_sync(
                         target,
                         exc_info=True,
                     )
+        else:
+            # Every other backend owns its own session storage, which this
+            # function has no route to. Say so rather than returning as if the
+            # files had been removed.
+            logger.debug(
+                "_cleanup_session_files_sync: no cleanup route for provider %s; "
+                "session %s files retained",
+                provider,
+                session_id,
+            )
     except Exception:
         logger.warning(
             "_cleanup_session_files_sync: unexpected error cleaning session %s",

@@ -1084,6 +1084,15 @@ class AgentConfig:
         default="acp",
         metadata=_meta("Provider", "LLM provider backend (KiroACP / kiro-cli).", enum=["acp"]),
     )
+    acp_backend: str = field(
+        default="",
+        metadata=_meta(
+            "ACP Backend",
+            "Which ACP agent to drive. Only '' (kiro-cli) is selectable; the "
+            "'kas' plumbing is present but not yet usable.",
+            enum=[""],
+        ),
+    )
     default_agent: str = field(
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
@@ -3644,6 +3653,41 @@ def _normalize_jail(value: object) -> str:
     return JAIL_MODE_AUTO
 
 
+def _normalize_acp_backend(value: object) -> str:
+    """Coerce a persisted ``agent.acp_backend`` to a selectable backend.
+
+    Anything not selectable — an unknown value, or a backend the code understands
+    but cannot yet serve a session with — normalizes to the default (kiro-cli)
+    with a warning rather than propagating: ``AcpProvider`` rejects an unknown
+    backend by raising, and a value that is merely incomplete would instead fail
+    on the operator's first message. Both must degrade to the working default at
+    startup, with the reason in the log.
+
+    The import is deferred because it cannot be done at module scope: reaching
+    ``kiro_crew.acp.types`` executes the ``kiro_crew.acp`` package init, which
+    imports the ACP client and runtime, which import this module — and this
+    module is imported first by the gateway and desktop entrypoints.
+    """
+    from kiro_crew.acp.types import (
+        ACP_BACKEND_KIRO,
+        ACP_BACKENDS_KNOWN,
+        ACP_BACKENDS_SELECTABLE,
+    )
+
+    if isinstance(value, str) and value in ACP_BACKENDS_SELECTABLE:
+        return value
+    if value not in (None, ""):
+        known_but_unusable = isinstance(value, str) and value in ACP_BACKENDS_KNOWN
+        logger.warning(
+            "Ignoring agent.acp_backend %r (%s); using the default backend. "
+            "Selectable values: %s",
+            value,
+            "not usable yet" if known_but_unusable else "unknown",
+            ", ".join(repr(b) for b in sorted(ACP_BACKENDS_SELECTABLE)),
+        )
+    return ACP_BACKEND_KIRO
+
+
 def _validate_activation(value: str) -> str:
     """Return *value* if it is a valid activation mode, else ``mention`` (deny-by-default)."""
     return value if value in _VALID_ACTIVATIONS else ACTIVATION_MENTION
@@ -5544,6 +5588,7 @@ class KiroCrewConfig:
                 role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
                 reasoning_effort=agent_data.get("reasoning_effort", ""),
                 provider=agent_data.get("provider", "acp"),
+                acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
                 default_agent=agent_data.get("default_agent", ""),
                 sandbox=agent_data.get("sandbox", "auto"),
                 sandbox_allow_no_isolation=bool(
@@ -6591,6 +6636,7 @@ class KiroCrewConfig:
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,
+                acp_backend=self.agent.acp_backend,
                 effort_per_model=_eff_per_model,
                 tool_search=tool_search,
                 mcp_gateway_overlay=_gw_overlay,

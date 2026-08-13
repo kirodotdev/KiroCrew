@@ -95,6 +95,51 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # ── ACP Backend Identifiers ──
 
 ACP_BACKEND_CLAUDE = "claude"
+ACP_BACKEND_KAS = "kas"
+# The kiro-cli backend is spelled as the empty string throughout, so name it
+# rather than leaving every call site to infer it from "not claude".
+ACP_BACKEND_KIRO = ""
+# Membership gate for the ``acp_backend`` kwarg. An unrecognized value would
+# otherwise fall through every ``_is_<backend>`` check and silently spawn
+# kiro-cli, so provider construction rejects it instead.
+ACP_BACKENDS_KNOWN = frozenset(
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_KAS,
+    }
+)
+# What an operator may actually persist in ``agent.acp_backend``, which is a
+# narrower question than what the code understands. KAS is plumbed and tested but
+# cannot serve a session yet: production names an agent on every session, KAS
+# advertises only its own built-in modes, and Crew's agent reaches it through
+# ``_meta.kiro.customAgents`` on ``session/new`` — not wired up yet. Config
+# resolution degrades an unselectable value to the default so the refusal lands
+# at startup with a reason instead of on the operator's first message.
+ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO})
+
+# ── Provider labels ──
+# The backend identity key persisted in the session map. It indexes three
+# things, so every producer must agree on it: resume compatibility
+# (detect_provider_switch), session-map persistence, and session-file cleanup
+# routing. Defined here rather than in providers.acp because session.py needs
+# the vocabulary and cannot import that module at module scope.
+#
+# An absent label means kiro-cli, which is the default backend.
+PROVIDER_LABEL_DEFAULT = "acp"
+PROVIDER_LABEL_CLAUDE = "claude_code"
+PROVIDER_LABEL_KAS = "kas"
+
+# KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
+# level of clientCapabilities; every other capability it honours lives under
+# _meta.kiro. The ones there are CALLBACK capabilities — KAS calls back into the
+# client to service them — and Kiro Crew implements none, so leaving them
+# undeclared (= false) is correct rather than a gap. Only the settings channel
+# is opened, because that is how a client selects KAS feature flags.
+KAS_CLIENT_CAPABILITIES: dict = {
+    **ACP_CLIENT_CAPABILITIES,
+    "_meta": {"kiro": {"settings": {}}},
+}
 
 # ── Claude backend permission modes ──
 # Values an edition writes into a per-session settings.local.json

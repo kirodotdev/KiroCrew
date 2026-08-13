@@ -39,12 +39,32 @@ isolates the agent, and stacking a second sandbox would break it.
 
 Set via `kirocrew config set agent.sandbox auto`.
 
+## ACP Backend
+
+`agent.acp_backend` selects which ACP agent Kiro Crew drives. `agent.provider`
+stays `acp` either way — the backend is a choice *within* ACP, not a different
+provider.
+
+| Value | Agent | Status |
+|-------|-------|--------|
+| `""` (default) | kiro-cli | the only supported value |
+| `kas` | kiro-agent (KAS) | plumbed, **not yet usable** |
+
+**Leave this unset.** The KAS backend's spawn and session plumbing is in place,
+but Kiro Crew does not yet send your configured agent to KAS, so every session
+would fail to activate it. Setting `kas` is refused at startup with that reason
+rather than failing on your first message.
+
+An unrecognized value logs a warning and falls back to the default backend, so a
+typo costs you a line in the log rather than a gateway that will not start.
+
 ## Key Settings
 
 ```json
 {
   "agent": {
     "provider": "acp",
+    "acp_backend": "",
     "approval_mode": "auto",
     "model": "auto",
     "reasoning_effort": "",

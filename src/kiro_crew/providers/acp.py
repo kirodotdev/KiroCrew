@@ -24,7 +24,13 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_KNOWN,
     EVENT_COMPACTION_STATUS,
+    PROVIDER_LABEL_CLAUDE,
+    PROVIDER_LABEL_DEFAULT,
+    PROVIDER_LABEL_KAS,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
@@ -246,6 +252,14 @@ class AcpProvider(LLMProvider):
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
     ) -> None:
+        # An unrecognized backend would pass every ``_is_<backend>`` check and
+        # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
+        # error. Fail at construction instead.
+        if acp_backend not in ACP_BACKENDS_KNOWN:
+            raise ValueError(
+                f"Unknown acp_backend {acp_backend!r}; "
+                f"expected one of {sorted(ACP_BACKENDS_KNOWN)}"
+            )
         kwargs: dict[str, Any] = {
             "work_dir": work_dir,
             "model": model,
@@ -344,6 +358,21 @@ class AcpProvider(LLMProvider):
     def is_claude_backend(self) -> bool:
         """True when this ACP provider talks to claude-agent-acp (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_CLAUDE
+
+    @property
+    def is_kas_backend(self) -> bool:
+        """True when this ACP provider talks to KAS (kiro-agent)."""
+        return self._client.backend == ACP_BACKEND_KAS
+
+    @property
+    def is_kiro_backend(self) -> bool:
+        """True when this ACP provider talks to kiro-cli.
+
+        Stated positively so call sites that mean "kiro" say so, rather than
+        inferring it from ``not is_claude_backend`` — an inference that silently
+        captures every future backend.
+        """
+        return self._client.backend == ACP_BACKEND_KIRO
 
     @property
     def is_session_sharing_eligible(self) -> bool:
@@ -573,6 +602,7 @@ class AcpProvider(LLMProvider):
             mcp_gateway_overlay=mcp_gateway_overlay,
             mcp_gateway_settings_mcp_json=mcp_gateway_settings_mcp_json,
             mcp_gateway_socket=mcp_gateway_socket,
+            acp_backend=self._client.backend,
         )
         _t_spawn = time.monotonic()
         try:
@@ -608,8 +638,17 @@ class AcpProvider(LLMProvider):
             handle = None
             resumed = False
             if resume_sid:
-                session_file = kiro_sessions_dir() / f"{resume_sid}.json"
-                if session_file.exists():
+                if self.is_kas_backend:
+                    # KAS locates the transcript itself from sessionId, and in
+                    # remote-session mode there are no local files to stat at
+                    # all. Attempt the load and let failure fall through to a
+                    # fresh session/new with history replay.
+                    session_file = None
+                    should_load = True
+                else:
+                    session_file = kiro_sessions_dir() / f"{resume_sid}.json"
+                    should_load = session_file.exists()
+                if should_load:
                     # F2 load-recovery: retry past a stale "active in another
                     # process" lock (Phase 1); on persistent failure fall through
                     # to a fresh session/new below WITH KiroCrew history replay
@@ -621,7 +660,7 @@ class AcpProvider(LLMProvider):
                     try:
                         handle = await self._load_session_with_retry(
                             runtime,
-                            str(session_file),
+                            str(session_file) if session_file else "",
                             resume_sid,
                             work_dir,
                             agent,
@@ -663,6 +702,7 @@ class AcpProvider(LLMProvider):
                         mcp_gateway_overlay=mcp_gateway_overlay,
                         mcp_gateway_settings_mcp_json=mcp_gateway_settings_mcp_json,
                         mcp_gateway_socket=mcp_gateway_socket,
+                        acp_backend=self._client.backend,
                     )
                     try:
                         await runtime.spawn()
@@ -1285,3 +1325,35 @@ def is_claude_backend(provider: Any) -> bool:
     property without an isinstance gate.
     """
     return isinstance(provider, AcpProvider) and provider.is_claude_backend
+
+
+def provider_label(provider: Any) -> str:
+    """Backend identity key for *provider*.
+
+    This key indexes three things, so all producers must agree on it:
+    resume compatibility (``detect_provider_switch``), the value persisted in
+    the session map, and session-file cleanup routing.
+
+    Resolved from the client's backend STRING rather than the ``is_*_backend``
+    properties, matching ``session._is_claude_backend``. A ``MagicMock(spec=...)``
+    constrains attribute names but not their values, so reading a property would
+    make every spec'd provider in the test suite look like every backend at once.
+
+    Both shapes a runtime-backed session can arrive in are accepted: an
+    ``AcpProvider`` whose ``client`` was swapped for an ``AcpSessionProvider``
+    once startup completed, and a bare ``AcpSessionProvider`` handed out for a
+    shared subagent session. Missing either one persists a KAS session under
+    the kiro label, and the map then prunes its id for want of a kiro
+    transcript.
+    """
+    if isinstance(provider, AcpSessionProvider):
+        backend = provider.backend
+    elif isinstance(provider, AcpProvider):
+        backend = getattr(getattr(provider, "client", None), "backend", "")
+    else:
+        return PROVIDER_LABEL_DEFAULT
+    if backend == ACP_BACKEND_CLAUDE:
+        return PROVIDER_LABEL_CLAUDE
+    if backend == ACP_BACKEND_KAS:
+        return PROVIDER_LABEL_KAS
+    return PROVIDER_LABEL_DEFAULT
