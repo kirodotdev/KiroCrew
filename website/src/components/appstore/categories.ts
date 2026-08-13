@@ -101,14 +101,94 @@ export function categoryFor(tags?: unknown): Category {
   return 'Other'
 }
 
+/**
+ * Published category id (catalog slug) → this client's category id.
+ *
+ * Written out rather than derived: the catalog publishes `oncall-ops` while this
+ * client's id is `On-call & Ops`, which no mechanical slugify produces
+ * (`on-call-ops`). A table fails loudly when a new published id has no home
+ * here; a transform would silently invent one.
+ *
+ * Values are INDEXES into `CATEGORY_ORDER` rather than repeated string
+ * literals. Spelling an id twice invites the two spellings to drift, and these
+ * ids are compared byte-for-byte (`categoryFor(...) !== category`, `Map` keys),
+ * so a drifted copy would not fail loudly -- it would quietly match nothing.
+ *
+ * The mapping is deliberately NOT total in either direction. `Designer Tools`
+ * has no published counterpart, and a published id absent from this table is
+ * DROPPED rather than shown -- the rail's copy comes from this client's i18n
+ * catalog, so an unknown id could only render as a raw slug.
+ */
+export const PUBLISHED_CATEGORY_ID: Record<string, Category> = {
+  'developer-tools': CATEGORY_ORDER[0],
+  'designer-tools': CATEGORY_ORDER[1],
+  'oncall-ops': CATEGORY_ORDER[2],
+  'productivity': CATEGORY_ORDER[3],
+  'agents-automation': CATEGORY_ORDER[4],
+  'research-writing': CATEGORY_ORDER[5],
+  'other': CATEGORY_ORDER[6],
+}
+
+/**
+ * Merge a published rail order into the client's canonical order.
+ *
+ * The published document decides the relative order of the categories it NAMES.
+ * A category it does not name keeps its position relative to its local
+ * neighbours instead of being flushed to the end — otherwise a document that
+ * simply forgot `Designer Tools` would silently demote it, which is a
+ * presentation change nobody authored.
+ *
+ * Concretely: published ids are laid down in published order, and each unnamed
+ * category is re-inserted after the last named category that precedes it
+ * locally. An empty or unusable list returns the canonical order unchanged,
+ * which is the answer the rail used before the document existed.
+ */
+export function mergeCategoryOrder(publishedIds: readonly string[]): Category[] {
+  // `hasOwnProperty`, not `in`: a published id of `toString` would otherwise
+  // resolve to an inherited Object.prototype member.
+  const mapped: Category[] = []
+  for (const id of publishedIds) {
+    if (!Object.prototype.hasOwnProperty.call(PUBLISHED_CATEGORY_ID, id)) continue
+    const category = PUBLISHED_CATEGORY_ID[id]
+    if (!mapped.includes(category)) mapped.push(category)
+  }
+  if (mapped.length === 0) return [...CATEGORY_ORDER]
+
+  const named = new Set(mapped)
+  // Walk the canonical order once, collecting each unnamed category under the
+  // named one it currently follows. `null` holds those that precede every named
+  // category, so they stay at the front rather than jumping to the back.
+  const trailing = new Map<Category | null, Category[]>()
+  let anchor: Category | null = null
+  for (const category of CATEGORY_ORDER) {
+    if (named.has(category)) {
+      anchor = category
+      continue
+    }
+    const bucket = trailing.get(anchor)
+    if (bucket) bucket.push(category)
+    else trailing.set(anchor, [category])
+  }
+
+  const out: Category[] = [...(trailing.get(null) || [])]
+  for (const category of mapped) {
+    out.push(category)
+    for (const extra of trailing.get(category) || []) out.push(extra)
+  }
+  return out
+}
+
 /** Count apps per category, omitting empty categories, in canonical order. */
-export function categoryCounts(apps: { tags?: unknown }[]): { category: Category; count: number }[] {
+export function categoryCounts(
+  apps: { tags?: unknown }[],
+  order: readonly Category[] = CATEGORY_ORDER,
+): { category: Category; count: number }[] {
   const counts = new Map<Category, number>()
   for (const app of apps) {
     const c = categoryFor(app.tags)
     counts.set(c, (counts.get(c) || 0) + 1)
   }
-  return CATEGORY_ORDER
+  return order
     .filter(c => counts.has(c))
     .map(c => ({ category: c, count: counts.get(c)! }))
 }

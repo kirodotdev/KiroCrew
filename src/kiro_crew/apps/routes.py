@@ -71,6 +71,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
+from kiro_crew.apps.official_editorial import load_category_order
 from kiro_crew.apps.registry import (
     _git_url_host,
     get_registry_app_by_repo,
@@ -1311,8 +1312,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         module_name = name.replace("-", "_")
         if module_name in BUILTIN_NAMES:
             try:
-                mod = importlib.import_module(
-                    f"kiro_crew.apps.builtins.{module_name}")
+                mod = importlib.import_module(f"kiro_crew.apps.builtins.{module_name}")
                 if hasattr(mod, "on_disable"):
                     mod.on_disable(request.app)
             except Exception as exc:
@@ -1438,10 +1438,21 @@ async def handle_open_app(request: web.Request) -> web.Response:
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     apps = await list_registry()
+    # Published rail order rides along on the response the store already makes,
+    # rather than a second endpoint the page would have to wait on separately.
+    # Off the event loop: the first call after a cache expiry does network I/O.
+    # A failure degrades to the client's built-in order, so it must never 500 the
+    # store -- the same contract the catalog annotation above already keeps.
+    try:
+        category_order = await asyncio.to_thread(load_category_order)
+    except Exception:  # noqa: BLE001 - presentation is never worth a failed store
+        logger.warning("ignoring the editorial category order", exc_info=True)
+        category_order = []
     return web.json_response(
         {
             "apps": apps,
             "serverPlatform": get_server_platform(),
+            "categoryOrder": category_order,
         }
     )
 

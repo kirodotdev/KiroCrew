@@ -32,7 +32,7 @@ import AppListRow from '../components/appstore/AppListRow'
 import InstalledAppCard from '../components/appstore/InstalledAppCard'
 import TrustAppModal, { isTrustDeniedError, useTrustGate, type TrustAppTarget } from '../components/appstore/TrustAppModal'
 import SourcesPopover from '../components/appstore/SourcesPopover'
-import { categoryFor, categoryCounts, type Category } from '../components/appstore/categories'
+import { categoryFor, categoryCounts, mergeCategoryOrder, type Category } from '../components/appstore/categories'
 import { hasHeroArt } from '../components/appstore/useHeroArt'
 import { isVerified, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 
@@ -110,7 +110,10 @@ export default function AppsPage() {
     queryFn: () => api.listApps(),
   })
 
-  const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{ apps: RegistryApp[] }>({
+  const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
+    apps: RegistryApp[]
+    categoryOrder: string[]
+  }>({
     queryKey: ['registry'],
     // api.listRegistry() types `apps` as unknown[]; the backend payload matches
     // RegistryApp, so narrow it here at the single fetch boundary.
@@ -119,7 +122,18 @@ export default function AppsPage() {
       // Normalize at the single fetch boundary: registry.py yields minimal
       // rows when an app.json fetch fails, and external registries are
       // user-supplied JSON, so display fields may be missing or mistyped.
-      return { apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp) }
+      //
+      // `categoryOrder` is published presentation, so it gets the same
+      // treatment: a non-array, or a member that is not a string, collapses to
+      // an empty list, which `mergeCategoryOrder` reads as "use the canonical
+      // order".
+      const publishedOrder = Array.isArray(res.categoryOrder)
+        ? res.categoryOrder.filter((id): id is string => typeof id === 'string')
+        : []
+      return {
+        apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp),
+        categoryOrder: publishedOrder,
+      }
     },
     staleTime: 5 * 60_000, // cache for 5min to avoid re-fetching on tab switch
   })
@@ -188,7 +202,18 @@ export default function AppsPage() {
   const featured = useMemo(() => pickFeatured(browseApps), [browseApps])
   const [spotlight, ...secondary] = featured
 
-  const categories = useMemo(() => categoryCounts(browseApps), [browseApps])
+  // The published rail order decides the sequence of the categories it names;
+  // anything it omits keeps its canonical position. An absent or unusable
+  // document leaves the order exactly as it was before the editorial document
+  // existed.
+  const categoryOrder = useMemo(
+    () => mergeCategoryOrder(registryData?.categoryOrder || []),
+    [registryData],
+  )
+  const categories = useMemo(
+    () => categoryCounts(browseApps, categoryOrder),
+    [browseApps, categoryOrder],
+  )
 
   const sources: SourceRow[] = useMemo(() => {
     // Count built-ins from browseApps so the SOURCES totals describe the same

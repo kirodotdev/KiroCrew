@@ -169,23 +169,27 @@ def _https_request(url: str) -> urllib.request.Request:
     scheme = urllib.parse.urlsplit(url).scheme
     if scheme != "https":
         raise ValueError(f"the catalog URL must be https, not {scheme!r}")
-    return urllib.request.Request(
-        url, method="GET", headers={"Accept": "application/json"}
-    )
+    return urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
 
 
-def _download() -> dict[str, Any] | None:
-    """GET the catalog document. Returns None on any failure.
+def fetch_document(url: str) -> dict[str, Any] | None:
+    """GET one JSON document from the catalog origin. Returns None on any failure.
 
-    Fetching the catalog is an enhancement to a store that already works from
-    the seed index, so every failure here is a degradation rather than an error:
-    the caller renders the seed.
+    Takes the URL because a second document (``editorial.json``) is served from
+    the same origin under the same trust basis, and the guards below -- https
+    only, redirects refused, a byte cap before decode, and the exception family
+    that a narrower tuple lets escape -- are security behaviour that must not
+    drift into a second copy. The scheme guard is what keeps this general form
+    from becoming a file read if a caller ever passes something configurable.
+
+    Every failure is a degradation rather than an error: each caller has a
+    working answer without the document.
     """
     try:
-        req = _https_request(OFFICIAL_CATALOG_URL)
+        req = _https_request(url)
         with _open_catalog(req) as resp:
             if resp.status != 200:
-                logger.info("official catalog returned HTTP %s", resp.status)
+                logger.info("%s returned HTTP %s", url, resp.status)
                 return None
             raw = resp.read(MAX_BYTES + 1)
     # `HTTPException` is the family, not a courtesy addition to the tuple. It is
@@ -201,17 +205,22 @@ def _download() -> dict[str, Any] | None:
         OSError,
         ValueError,
     ) as exc:
-        logger.info("could not fetch the official catalog: %s", exc)
+        logger.info("could not fetch %s: %s", url, exc)
         return None
     if len(raw) > MAX_BYTES:
-        logger.warning("official catalog exceeds %d bytes; ignoring it", MAX_BYTES)
+        logger.warning("%s exceeds %d bytes; ignoring it", url, MAX_BYTES)
         return None
     try:
         doc = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        logger.warning("official catalog is not valid JSON: %s", exc)
+        logger.warning("%s is not valid JSON: %s", url, exc)
         return None
     return doc if isinstance(doc, dict) else None
+
+
+def _download() -> dict[str, Any] | None:
+    """Fetch THIS module's document. The registry's own call into the seam."""
+    return fetch_document(OFFICIAL_CATALOG_URL)
 
 
 def load_official_catalog(fetcher: Any = None) -> list[dict[str, Any]]:
