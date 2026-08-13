@@ -10,6 +10,7 @@ strictly worse than the boot cost the cache removes.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,20 @@ from kiro_crew.mcp_gateway.rewriter import (
 # ``shutil.which`` bare-name resolution path is never entered and the fixture
 # behaves identically on every CI platform.
 _CMD = "/usr/bin/env"
+
+
+def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
+    """Every rewrite parameter must stay classified as fingerprinted or output-neutral."""
+    assert set(inspect.signature(rewrite_agents).parameters) == {
+        "source_dir",
+        "overlay_dir",
+        "socket_path",
+        "work_dir",
+        "sandbox_mode",
+        "approval_mode",
+        "stub_servers",
+        "pooling_enabled",
+    }
 
 
 def _mk_tree(root: Path, *, n_agents: int = 2, with_env: bool = True) -> Path:
