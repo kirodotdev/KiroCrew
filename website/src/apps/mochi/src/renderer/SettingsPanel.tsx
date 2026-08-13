@@ -121,7 +121,14 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
 
   // Listen for native window close (red × button)
   useEffect(() => {
-    const off = api?.onSettingsCloseRequested?.(() => handleClose())
+    const off = api?.onSettingsCloseRequested?.(() => {
+      // Before the config loads nothing is staged, so a native close may
+      // proceed immediately — and must not touch handleClose, whose const
+      // binding sits below the loading early-return and is still in TDZ on
+      // this render's closure.
+      if (!config || !original) { onClose(); return }
+      handleClose()
+    })
     return () => { off?.() }
   })
 

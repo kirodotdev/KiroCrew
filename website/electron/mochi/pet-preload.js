@@ -162,6 +162,22 @@ exposePetApi({
   // dismiss any more).
   closeSettings: () => ipcRenderer.send("mochi-settings:close"),
   /**
+   * Main -> renderer: the native close button was clicked; run the Unsaved
+   * Changes guard instead of dying. The acknowledgement goes back AFTER the
+   * subscriber returns, so a subscriber that throws never acks and the shell's
+   * bounded fallback destroys the window rather than leaving it unclosable.
+   * The shell verifies the ack came from the window it asked, so one Settings
+   * window cannot acknowledge another's request.
+   */
+  onSettingsCloseRequested: (cb) => {
+    const handler = () => {
+      cb();
+      ipcRenderer.send("mochi-settings:close-request-ack");
+    };
+    ipcRenderer.on("mochi-settings:close-request", handler);
+    return () => ipcRenderer.removeListener("mochi-settings:close-request", handler);
+  },
+  /**
    * Hide/show every Mochi window — the same toggle the hideAll accelerator
    * drives. The pet's context menu "Hide" means THIS, not disabling the app:
    * disabling tears the app down through the app manager and takes seconds.

@@ -70,6 +70,13 @@ import type { PetdexInstalled, PetdexPet } from '../petdexImport'
  */
 interface ShellChannels {
   closeSettings?: () => void
+  /**
+   * The native close button was clicked on the Settings window. The shell
+   * intercepts the BrowserWindow `close` and asks the renderer, so the same
+   * Unsaved Changes guard that covers the in-panel Cancel covers the red x;
+   * with no shell there is no native chrome, so the member is simply absent.
+   */
+  onSettingsCloseRequested?: (cb: () => void) => () => void
   // Field names match the shell's own hit test (petWindow.js inRect reads w/h).
   setMenuHitbox?: (rect: { x: number; y: number; w: number; h: number } | null) => void
   menuOpened?: () => void
@@ -160,7 +167,6 @@ interface UnimplementedUpstream {
   sendCaptureRegion?: (region: unknown) => void
   /** In-panel navigation — Settings and Avatars are separate windows here. */
   onNavigate?: (cb: (route: string) => void) => () => void
-  onSettingsCloseRequested?: (cb: () => void) => () => void
   /** A generic IPC relay is on the preload's never-expose list. */
   send?: never
 }

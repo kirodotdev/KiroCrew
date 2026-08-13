@@ -188,3 +188,47 @@ test("never exposes credential getters, tunnel controls, or a generic relay", ()
     assert.strictEqual(api[name], undefined, `pet-preload must not expose ${name}`);
   }
 });
+
+// ── Settings native-close guard (preload side) ──────────────────────────────
+//
+// The shell intercepts the Settings BrowserWindow `close` and asks the
+// renderer; this seam is the renderer's half. The acknowledgement contract is
+// exact: sent AFTER the subscriber returns, never when it throws — the shell's
+// bounded fallback force-closes a renderer that fails to ack, which is the
+// only thing standing between a wedged renderer and an unclosable window.
+
+test("onSettingsCloseRequested subscribes, acks after the callback, unsubscribes", () => {
+  const { api, sent, listeners } = loadPreload();
+  assert.strictEqual(typeof api.onSettingsCloseRequested, "function");
+
+  let fired = 0;
+  const off = api.onSettingsCloseRequested(() => { fired += 1; });
+  assert.strictEqual((listeners["mochi-settings:close-request"] || []).length, 1);
+
+  sent.length = 0;
+  listeners["mochi-settings:close-request"][0]();
+  assert.strictEqual(fired, 1);
+  assert.deepStrictEqual(
+    sent.map((s) => s.channel),
+    ["mochi-settings:close-request-ack"],
+    "the ack must go back after the subscriber runs",
+  );
+
+  off();
+  assert.strictEqual(
+    (listeners["mochi-settings:close-request"] || []).length,
+    0,
+    "must remove its listener",
+  );
+});
+
+test("a throwing close subscriber never acks, so the shell fallback can fire", () => {
+  const { api, sent, listeners } = loadPreload();
+  api.onSettingsCloseRequested(() => {
+    throw new Error("renderer wedged");
+  });
+
+  sent.length = 0;
+  assert.throws(() => listeners["mochi-settings:close-request"][0]());
+  assert.deepStrictEqual(sent, [], "no ack may be sent when the subscriber throws");
+});
