@@ -5303,6 +5303,8 @@ class HistoryConsolidator:
         if isinstance(semantic_items, list):
             written = 0
             deleted = 0
+            skipped = 0
+            refused = 0
             for item in semantic_items[:_MAX_SEMANTIC_PER_CONSOLIDATION]:
                 if not isinstance(item, dict) or "key" not in item:
                     continue
@@ -5311,20 +5313,43 @@ class HistoryConsolidator:
                     if self._vector_store.delete_semantic(item["key"], source):
                         deleted += 1
                     continue
+                if "value" not in item or item["value"] is None:
+                    # Counted and logged here because this path returns before set_semantic, so
+                    # the VALUE_EMPTY reject event never fires for the omission that motivated it.
+                    skipped += 1
+                    logger.warning(
+                        "Semantic consolidation skipped %r: item carries no value", item["key"]
+                    )
+                    continue
                 conf = float(item.get("confidence", 0.5))
                 # Confidence 1.0 means user explicitly stated it — escalate source
                 # so it can overwrite previous user_explicit entries
                 item_source = "user_explicit" if conf >= 1.0 else source
                 err = self._vector_store.set_semantic(
                     key=item["key"],
-                    value=item.get("value"),
+                    value=item["value"],
                     confidence=conf,
                     source=item_source,
                 )
                 if err is None:
                     written += 1
-            if written or deleted:
-                logger.info("Semantic consolidation: %d written, %d deleted", written, deleted)
+                else:
+                    # Counted apart from `skipped`: several reject causes reach here and only
+                    # VALUE_EMPTY is a missing value, so a shared label names the wrong cause.
+                    reject_code, _reason = err
+                    refused += 1
+                    logger.warning(
+                        "Semantic consolidation refused %r: %s", item["key"], reject_code.value
+                    )
+            if written or deleted or skipped or refused:
+                logger.info(
+                    "Semantic consolidation: %d written, %d deleted, %d skipped (no value), "
+                    "%d refused",
+                    written,
+                    deleted,
+                    skipped,
+                    refused,
+                )
 
         # Episodic entries
         episodic_items = result.get("episodic")

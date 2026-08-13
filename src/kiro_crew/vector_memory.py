@@ -20,6 +20,7 @@ import math
 import re
 import struct
 import threading
+from collections import OrderedDict
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
@@ -95,6 +96,8 @@ _FAISS_FILE = "memory.faiss"
 _KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_.]*[a-z0-9]$")
 _MAX_KEY_LEN = 100
 _MAX_VALUE_BYTES = 4096
+# Serialized forms, not truthiness: 0/false/[]/{} are legitimate values.
+_EMPTY_VALUE_JSON = frozenset({"null", '""'})
 
 
 class SemanticRejectCode(str, Enum):
@@ -103,6 +106,7 @@ class SemanticRejectCode(str, Enum):
     RESERVED_PREFIX = "reserved_prefix"
     CONFIDENCE = "low_confidence"
     VALUE_SIZE = "value_size"
+    VALUE_EMPTY = "value_empty"
     INJECTION = "injection_blocked"
     CONFLICT = "conflict_skip"
 
@@ -112,13 +116,24 @@ _AUDITABLE_REJECT_CODES = {
     SemanticRejectCode.CONFIDENCE,
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
+    SemanticRejectCode.VALUE_EMPTY,
 }
 
 _SECURITY_REJECT_CODES = {
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
 }
+# Named explicitly rather than derived as "not a security code": ALLOWLIST and CONFIDENCE
+# predate the dedupe and get_rejection_stats counts them per attempt.
+_AUDIT_ONCE_REJECT_CODES = {
+    SemanticRejectCode.VALUE_EMPTY,
+}
 _MAX_EVENTS = 10_000
+# Bound on the warn-once promotion-refusal set. The project.<proj>.tool key form is
+# derived from arbitrary episodic text, so the key space is unbounded in principle.
+_MAX_PROMOTION_REFUSED = 1_000
+# Same bound, same reason, for the audit-once set in log_reject_event.
+_MAX_AUDITED_REJECTS = 1_000
 _DEFAULT_CONFIDENCE_THRESHOLD = 0.8
 _DEFAULT_DEDUP_THRESHOLD = 0.88
 _DEFAULT_EPISODIC_MAX = 10_000
@@ -532,6 +547,11 @@ class VectorMemoryStore:
         self._faiss_index: object | None = None  # faiss.IndexFlatIP (untyped)
         self._faiss_id_map: list[str] = []
         self._faiss_writes_since_save = 0
+        # Promotion keys already refused: the refusal is deterministic, so warn once per store
+        # per distinct reject cause. Bounded and oldest-first, so an evicted cause may warn
+        # once more rather than the set growing for the process lifetime.
+        self._promotion_refused: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._audited_rejects: OrderedDict[tuple[str, str], None] = OrderedDict()
         # Optional sync embedding function for migration (set by caller)
         self.embed_fn: Callable[[str], list[float] | None] | None = None
         # Optional factory that builds an embed_fn on demand. When set, _try_embed()
@@ -693,6 +713,8 @@ class VectorMemoryStore:
                 f"Confidence {confidence:.2f} below threshold {self._confidence_threshold}",
             )
         vj = value_json if value_json is not None else json.dumps(value)
+        if not vj.strip() or vj.strip() in _EMPTY_VALUE_JSON:
+            return SemanticRejectCode.VALUE_EMPTY, "Value must not be null or empty"
         vj_bytes = len(vj.encode("utf-8"))
         if vj_bytes > _MAX_VALUE_BYTES:
             return (
@@ -713,9 +735,19 @@ class VectorMemoryStore:
         value_json: str | None = None,
     ) -> None:
         """Emit an audit event for a validation rejection."""
-        if code in _AUDITABLE_REJECT_CODES:
-            snippet = (value_json if value_json is not None else str(value))[:200]
-            self._log_event(code.value, "semantic", key, None, snippet, source)
+        if code not in _AUDITABLE_REJECT_CODES:
+            return
+        # Only a refusal that repeats every promotion pass audits once per (key, cause); every
+        # other code records each attempt, which is what get_rejection_stats already counts.
+        if code in _AUDIT_ONCE_REJECT_CODES:
+            audited = (key, code.value)
+            if audited in self._audited_rejects:
+                return
+            self._audited_rejects[audited] = None
+            while len(self._audited_rejects) > _MAX_AUDITED_REJECTS:
+                self._audited_rejects.popitem(last=False)
+        snippet = (value_json if value_json is not None else str(value))[:200]
+        self._log_event(code.value, "semantic", key, None, snippet, source)
 
     # ── Semantic CRUD ──
 
@@ -3282,6 +3314,7 @@ class VectorMemoryStore:
             return 0
 
         promoted = 0
+        skipped = 0
         rows = self._fetch_all_locked(
             "SELECT id, text, embedding FROM episodic_memories "
             "WHERE is_deleted = 0 AND embedding IS NOT NULL "
@@ -3315,12 +3348,33 @@ class VectorMemoryStore:
                 continue
 
             value = self._extract_value_from_text(text)
-            if self.set_semantic(key, value, 0.9, "promotion") is None:
+            reject = self.set_semantic(key, value, 0.9, "promotion")
+            if reject is None:
                 promoted += 1
                 for m in members:
                     self._delete_episodic_row(m["id"])
                 logger.info("Promoted %d episodic → %s: %s", len(members), key, value[:60])
+            else:
+                # A refused cluster keeps its rows and re-clusters identically next pass, so the
+                # refusal repeats forever: count every pass, but warn only the first time per key.
+                skipped += 1
+                reject_code, reject_reason = reject
+                # Keyed on the cause too: _infer_semantic_key returns a constant for every
+                # "user prefers" cluster, so keying on key alone hides refusals of other causes.
+                if (key, reject_code.value) not in self._promotion_refused:
+                    self._promotion_refused[(key, reject_code.value)] = None
+                    while len(self._promotion_refused) > _MAX_PROMOTION_REFUSED:
+                        self._promotion_refused.popitem(last=False)
+                    logger.warning(
+                        "Promotion skipped %s (%s: %s): %d rows retained, retried each pass",
+                        key,
+                        reject_code.value,
+                        reject_reason,
+                        len(members),
+                    )
 
+        if skipped:
+            logger.info("Promotion pass: %d promoted, %d skipped", promoted, skipped)
         return promoted
 
     @staticmethod
@@ -3355,7 +3409,7 @@ class VectorMemoryStore:
             "SELECT event_type, COUNT(*) as count FROM memory_events "
             "WHERE event_type = 'injection_blocked' "
             "OR (memory_type = 'semantic' AND event_type IN "
-            "('allowlist_reject', 'low_confidence', 'conflict_skip')) "
+            "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty')) "
             "GROUP BY event_type"
         )
         return {r["event_type"]: r["count"] for r in rows}

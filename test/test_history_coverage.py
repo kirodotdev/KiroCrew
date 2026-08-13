@@ -36,6 +36,7 @@ from kiro_crew.history import (
     ConversationLog,
     HistoryConsolidator,
 )
+from kiro_crew.vector_memory import SemanticRejectCode
 
 
 def _write(path: Path, text: str) -> None:
@@ -764,13 +765,14 @@ class TestWriteStructuredMemory:
         vs.delete_semantic.assert_called_once_with("stale", "consolidation:sess")
         assert "2 written, 1 deleted" in caplog.text
 
-    def test_semantic_error_is_not_counted(self, caplog) -> None:
+    def test_semantic_reject_is_refused_not_written(self, caplog) -> None:
         vs = MagicMock()
-        vs.set_semantic.return_value = "rejected"
+        vs.set_semantic.return_value = (SemanticRejectCode.ALLOWLIST, "not allowlisted")
         c = _consolidator(vector_store=vs)
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
             c._write_structured_memory({"semantic": [{"key": "a", "value": "b"}]}, "k")
-        assert "Semantic consolidation" not in caplog.text
+        assert "0 written" in caplog.text
+        assert "1 refused" in caplog.text
 
     def test_semantic_is_capped(self) -> None:
         vs = MagicMock()
