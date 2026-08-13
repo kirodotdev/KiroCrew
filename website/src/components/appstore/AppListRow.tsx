@@ -13,7 +13,7 @@ import { ArrowUp, BadgeCheck, Check, Monitor, Power } from 'lucide-react'
 import { Btn } from '../ui'
 import Clickable from '../Clickable'
 import AppIconTile from './AppIconTile'
-import { categoryFor } from './categories'
+import { categoryFor, categoryLabel } from './categories'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
 import { appDisplayName, appDescription } from './appManifest'
 import { needsDesktopApp } from '../../lib/electron'
@@ -47,7 +47,7 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
             </BadgeCheck>
           )}
         </div>
-        <div className="text-[12px] text-muted truncate">{app.author} · {categoryFor(app.tags)} · {sourceLabel(app)}</div>
+        <div className="text-[12px] text-muted truncate" title={`${app.author} · ${categoryLabel(categoryFor(app.tags))} · ${sourceLabel(app)}`}>{app.author} · {categoryLabel(categoryFor(app.tags))} · {sourceLabel(app)}</div>
         <div className="text-[12.5px] text-muted truncate" title={appDescription(app)}>{appDescription(app)}</div>
       </div>
       {/* Actions: stop propagation so nested controls keep their own
