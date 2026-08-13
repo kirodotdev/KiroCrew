@@ -10,5 +10,10 @@
     "gitUrl": "https://github.com/qihang-dai/todo-ledger",
     "repo": "https://github.com/qihang-dai/todo-ledger",
     "branch": "release"
+  },
+  {
+    "name": "agent-dashboard",
+    "gitUrl": "https://github.com/brunokktro/agent-dashboard",
+    "branch": "main"
   }
 ]
