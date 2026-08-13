@@ -4762,6 +4762,7 @@
       "more_actions": "Weitere Aktionen"
     },
     "chatInput": {
+      "drop_to_attach": "Loslassen zum Anhängen",
       "add_files_options": "Dateien & Optionen hinzufügen",
       "agent": "Agent: {{name}}",
       "allow_once": "Einmal erlauben",

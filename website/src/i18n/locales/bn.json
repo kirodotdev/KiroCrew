@@ -4762,6 +4762,7 @@
       "more_actions": "আরও অ্যাকশন"
     },
     "chatInput": {
+      "drop_to_attach": "ছেড়ে সংযুক্ত করুন",
       "add_files_options": "ফাইল ও অপশন যোগ করুন",
       "agent": "এজেন্ট: {{name}}",
       "allow_once": "একবারের জন্য অনুমতি দিন",

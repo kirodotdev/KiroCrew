@@ -4835,6 +4835,7 @@
       "more_actions": "Plus d'actions"
     },
     "chatInput": {
+      "drop_to_attach": "Relâchez pour joindre",
       "add_files_options": "Ajouter des fichiers et des options",
       "agent": "Agent : {{name}}",
       "allow_once": "Autoriser une fois",
