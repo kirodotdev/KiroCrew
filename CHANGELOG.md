@@ -310,6 +310,18 @@ All notable changes to KiroCrew are documented in this file.
   stops resolving; the file itself is untouched and still reachable under its
   canonical key, but the stored reference has to be re-pointed. (#3369)
 
+- **Embedded chat now offers an agent's follow-up choices instead of dropping
+  them.** `ChatEmbed` (the chat surface embedded apps render — Spec Builder's
+  chat column, Ops Mission Control's incident chat) rendered its transcript
+  through `ChatMessageList`, which strips `[OPTIONS: a | b]` markers out of an
+  assistant's prose so the raw syntax is never shown — but the embed never
+  offered those choices anywhere else, leaving nothing to click where the main
+  chat and side panel render a row of pills. `ChatEmbed` now derives the
+  options with `deriveFollowUpOptions` and renders `FollowUpBar`, routed
+  through the same `app-sdk/useComposerDraft` hook the side panel uses, so
+  picking a choice edits the composer (matching every other surface) rather
+  than sending immediately. (#3304)
+
 - **MCP gateway daemons no longer leak when their launcher dies.** A `gatewayd`
   whose launcher exited without signalling it (a torn-down `pytest` run, for
   example) used to stay resident forever — invisible to every sweep, ~27 MB
