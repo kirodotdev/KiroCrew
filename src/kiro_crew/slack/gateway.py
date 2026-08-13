@@ -310,6 +310,25 @@ def _digest_chunk_size() -> int:
 
 SUBAGENT_DIGEST_CHUNK_SIZE = _digest_chunk_size()
 
+
+def _injection_slot_busy(slot: Any) -> bool:
+    """True when *slot* already owns a turn a new injection must wait behind.
+
+    ``slot.running`` alone is not enough. A just-dispatched injection parks in
+    ``bounded_chat_turn``'s off-loop timeout resolution before ``_run_chat``
+    starts, and only the live ``slot.task`` — assigned synchronously at
+    dispatch — records that claim. A slot whose ``running`` is not derived
+    from ``task`` (test doubles, duck-typed slots) reads such a window as
+    idle, so a later digest chunk takes the idle branch: it appends in
+    whichever order the dispatch hops resolve (not FIFO under CPU load) and
+    assigns ``slot.task`` over the earlier chunk's still-pending task instead
+    of awaiting it. Consulting the claim directly keeps chunk delivery FIFO
+    regardless of how ``running`` is implemented or when the hop resolves.
+    """
+    task = slot.task
+    return bool(slot.running) or (task is not None and not task.done())
+
+
 # Whole-callback transient retries for the cron LLM path (session acquire /
 # client creation / context assembly), mirroring the subagent path's budget.
 # In-stream transient errors are retried separately by stream_and_collect.
@@ -5057,8 +5076,9 @@ class GatewayOrchestrator:
                     # is delivered. try/finally so a CancelledError can't leak it.
                     _injection_slot._subagent_deliveries_inflight += 1
                     try:
-                        if _injection_slot.running:
-                            # Slot is busy — wait for current turn to finish,
+                        if _injection_slot_busy(_injection_slot):
+                            # Slot is busy (or an injection is dispatched but
+                            # not yet started) — wait for that task to finish,
                             # then inject. No visible queue card.
                             _current = _injection_slot.task
                             if _current is not None:
@@ -5076,7 +5096,7 @@ class GatewayOrchestrator:
 
                             # Re-check: another injection may have claimed the slot
                             # during the await above.
-                            if _injection_slot.running:
+                            if _injection_slot_busy(_injection_slot):
                                 # Check inline-collected before queuing — if the
                                 # blocking tool already handled this result, don't
                                 # queue it for a later redundant turn.
