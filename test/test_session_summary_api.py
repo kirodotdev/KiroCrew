@@ -6,6 +6,7 @@ tokens, so these assert it serves the cache and nothing more.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -109,7 +110,7 @@ class TestSummaryEndpoint:
         sig = log.session_mtime(hkey)
         log.set_cached_intent_summary(hkey, _payload(), sig)
         log.append(hkey, "user", "a newer turn")
-        move_transcript_past(log, hkey, sig)  # don't rely on the OS tick (#2981)
+        move_transcript_past(log, hkey, sig)  # the OS mtime tick is too coarse to rely on
 
         async with TestClient(TestServer(_make_app(state))) as client:
             body = await (await client.get("/api/chat/slots/s1/summary")).json()
@@ -266,3 +267,35 @@ class TestSummaryAppIsolation:
         async with TestClient(TestServer(self._app_client_app(state, ""))) as client:
             body = await (await client.get("/api/chat/slots/s1/summary")).json()
         assert body["intents"][0]["title"] == "set up auth"
+
+
+class TestSessionSummaryBroadcast:
+    """The push side of the panel's freshness contract.
+
+    The panel deliberately does not poll, so a missed broadcast is not a delayed
+    update — it is no update at all until the user reloads.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ws_envelope_is_typed(self, tmp_path):
+        """Async (per async-test-for-event-loop): _broadcast is unpatched
+        production code whose _send_ws_all path routes through
+        asyncio.ensure_future, so a running loop must exist even though the
+        send itself is stubbed here.
+
+        Without a typed branch this event falls into the generic `notification`
+        envelope, where the client's `case 'session_summary'` never matches and
+        the payload is instead dispatched as a Notification.
+        """
+        state = _make_state(tmp_path)
+        state._ws_clients = [MagicMock()]
+        sent: list[str] = []
+        state._send_ws_all = lambda msg: sent.append(msg)  # type: ignore[method-assign]
+
+        state.push_session_summary("dashboard:chat-7")
+
+        assert len(sent) == 1
+        assert json.loads(sent[0]) == {
+            "type": "session_summary",
+            "data": {"key": "dashboard:chat-7"},
+        }

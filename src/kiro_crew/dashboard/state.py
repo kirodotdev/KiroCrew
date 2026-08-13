@@ -5330,6 +5330,18 @@ class DashboardState:
                         },
                     }
                 )
+            elif msg_type == "session_summary":
+                # Typed envelope, for the same reason as artifact_update above.
+                # Without it this event falls into the generic `notification`
+                # fallback, where two things go wrong: the client's
+                # `case 'session_summary'` never matches (so the panel is never
+                # invalidated and only a reload shows a new summary — defeating
+                # the push-on-change design that lets the panel skip polling),
+                # and the payload is dispatched as a Notification, putting one
+                # entry with no `ts` in the bell feed.
+                ws_msg = json.dumps(
+                    {"type": "session_summary", "data": {"key": note["key"]}}
+                )
             elif msg_type == "chat_message":
                 chat_data: dict[str, Any] = {
                     "slot": note["slot"],

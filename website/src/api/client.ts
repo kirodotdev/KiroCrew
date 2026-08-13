@@ -17,6 +17,7 @@ import type {
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { installApiTransport } from './apiTransport'
+import type { SessionSummary } from '../types/sessionSummary'
 import { queryClient } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
 import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
@@ -1340,6 +1341,14 @@ export const api = {
   // telemetry main switch: the usage rows it reads are always written.
   telemetryContextTrace: (slot: string) =>
     fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot)).then(j),
+  /** Intent summary for the chat summary panel.
+   *
+   *  Read-only: it never triggers generation. Summaries are produced at turn end
+   *  by a background pass, so opening the panel cannot spend tokens and repeated
+   *  opening cannot become a refresh loop. Returns `enabled: false` (not an
+   *  error) when the feature is off, so the panel can explain itself. */
+  sessionSummary: (slot: string) =>
+    fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/summary').then(j) as Promise<SessionSummary>,
   beaconStatus: () => fetch('/api/telemetry/beacon').then(j),
   /** Local metric-collection posture for the Privacy panel's recording switch.
    *  Separate from telemetryStartup(), which parses every shard in the window. */

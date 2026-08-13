@@ -27,6 +27,7 @@ import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
+import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import GitPanel from '../../components/GitPanel'
 import { fmtDateFields } from '../../i18n/format'
@@ -1197,7 +1198,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   onPreviewPathChange?: (path: string | null) => void
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
-  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'files' | 'artifacts' | 'side' | 'workflows' | 'git'
+  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'files' | 'artifacts' | 'side' | 'workflows' | 'git' | 'summary'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
@@ -1363,7 +1364,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="px-3 py-2 shrink-0 flex justify-center">
           <SegmentedControl
             segments={TABS}
-            value={effectiveTab === 'context' || effectiveTab === 'git' ? tab : effectiveTab}
+            value={effectiveTab === 'context' || effectiveTab === 'git' || effectiveTab === 'summary' ? tab : effectiveTab}
             onChange={t => { setTab(t); explicitTab.current = true; dispatch(openActivityToTab(t)) }}
             layoutId="activity-tab"
           />
@@ -1551,6 +1552,10 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           in THIS session" — Logs for the tool calls, this for the context
           that was injected around them. */}
       {effectiveTab === 'context' && <ContextBreakdownTab slot={slot} />}
+
+      {/* Session summary — the goal-level view of this session, so returning to
+          it does not mean re-reading the transcript. */}
+      {effectiveTab === 'summary' && <SessionSummaryTab key={slot} slot={slot} />}
 
       {effectiveTab === 'side' && <SideChat slot={slot} />}
 

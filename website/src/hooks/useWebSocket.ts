@@ -517,6 +517,12 @@ export function useWebSocket() {
         slotActivityBufRef.current.clear()
         dispatch(sseConnected())
         dispatch(fetchSlots()).finally(() => { reconnectingRef.current = false })
+        // A summary regenerated while the socket was down pushed a
+        // `session_summary` event nobody received, and the panel does not poll,
+        // so without this the stale summary persists until the tab remounts.
+        // Invalidate every slot's summary (the key is per-slot and we cannot
+        // know which ones moved); react-query only refetches the observed ones.
+        queryClient.invalidateQueries({ queryKey: ['session-summary'] })
         seedGoalLoops()
         dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
@@ -631,6 +637,20 @@ export function useWebSocket() {
           case 'slot_title':
             dispatch(sseSlotTitle(data as { key: string; title: string }))
             break
+          case 'session_summary': {
+            // A turn finished and the backend regenerated this session's intent
+            // summary. Invalidate so the panel picks it up immediately.
+            //
+            // This event is why the summary panel does not poll: the summary is
+            // deliberately a pull-friendly artifact — a panel on an interval
+            // would reward refreshing, which is the checking loop the feature
+            // exists to remove. Push-on-change gives freshness without it.
+            const key = (data as { key?: string }).key
+            if (key) {
+              queryClient.invalidateQueries({ queryKey: ['session-summary', key] })
+            }
+            break
+          }
           case 'artifact_update': {
             // Live artifact refresh: the backend broadcasts from the artifact
             // mutation funnel (create / content PATCH / revert / relocate /
