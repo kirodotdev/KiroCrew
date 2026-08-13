@@ -494,9 +494,18 @@ describe('INVARIANT — with a diff in hand, a total can never fail the run', ()
     const raising = (gate.match(/totalIsFallback = (?!false)[^\n]*/g) || [])
       .map(s => s.replace(/\s*\}\).*$/, '').trim())
     expect(raising).toEqual(['totalIsFallback = !!scope.fallback'])
-    // ...and exactly one branch of resolveBaseScope may raise it.
-    expect((gate.match(/fallback: true/g) || []).length).toBe(1)
+    // ...and only branches of resolveBaseScope that render NO base may raise it. There
+    // are exactly two such branches, and they are the same class — "there is no diff to
+    // measure", not "the diff says this is fine":
+    //   - no base REF was given, so nothing identifies a base commit;
+    //   - a base ref exists but its tree cannot be BUILT, because the base bundle
+    //     compiles against this branch's node_modules and this branch removed a
+    //     dependency the base still imports.
+    // Both must keep the debt record as the guard; an opt-out (`--no-vs-base` and
+    // friends) must NOT, since it asked for a report rather than losing the check.
+    expect((gate.match(/fallback: true/g) || []).length).toBe(2)
     expect(gate).toMatch(/if \(!baseRef\) \{[\s\S]*?fallback: true/)
+    expect(gate).toMatch(/const missing = [\s\S]*?if \(missing\.length\) \{[\s\S]*?fallback: true/)
     // The default must be the safe one, so a new early return cannot raise it by omission.
     expect(gate).toMatch(/let totalIsFallback = false/)
   })
