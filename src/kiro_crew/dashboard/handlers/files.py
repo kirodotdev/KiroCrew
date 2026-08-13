@@ -1623,7 +1623,7 @@ async def api_file_download(request: web.Request) -> web.Response:
 
     # Read raw bytes via O_NOFOLLOW to atomically reject symlinks (no TOCTOU race).
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW",0))
         with os.fdopen(fd, "rb") as f:
             st = os.fstat(f.fileno())
             if st.st_size > _MAX_UPLOAD_BYTES:
@@ -1720,7 +1720,7 @@ async def api_file_raw(request: web.Request) -> web.Response:
     # Open with O_NOFOLLOW to atomically reject symlinks (no TOCTOU race).
     # Read header + full content through the same fd to avoid re-opening.
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(fd, "rb") as f:
             st = os.fstat(f.fileno())
             if st.st_size > _MAX_UPLOAD_BYTES:
