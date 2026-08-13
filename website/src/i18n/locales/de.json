@@ -7576,6 +7576,7 @@
         "ask_a_side_question_2": "Stelle eine Nebenfrage…",
         "ask_a_side_question_main_agent_keeps_working": "Nebenfrage stellen — der Hauptagent arbeitet weiter",
         "context_from": "Kontext von",
+        "question_too_long": "Frage zu lang — kürze sie auf unter etwa {{max}} Zeichen (deine: {{current}})",
         "queue_cancel_failed": "Diese Frage in der Warteschlange konnte nicht abgebrochen werden",
         "queue_edit_failed": "Diese Frage in der Warteschlange konnte nicht aktualisiert werden",
         "refresh_context": "Kontext aktualisieren",

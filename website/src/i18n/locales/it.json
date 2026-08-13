@@ -7676,6 +7676,7 @@
         "ask_a_side_question_2": "Fai una domanda a parte…",
         "ask_a_side_question_main_agent_keeps_working": "Fai una domanda a parte — l'agente principale continua a lavorare",
         "context_from": "Contesto da",
+        "question_too_long": "Domanda troppo lunga — riducila a meno di circa {{max}} caratteri (la tua: {{current}})",
         "queue_cancel_failed": "Impossibile annullare quella domanda in coda",
         "queue_edit_failed": "Impossibile aggiornare quella domanda in coda",
         "refresh_context": "Aggiorna il contesto",

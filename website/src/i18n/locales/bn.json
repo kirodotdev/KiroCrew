@@ -7576,6 +7576,7 @@
         "ask_a_side_question_2": "একটি সাইড প্রশ্ন করো…",
         "ask_a_side_question_main_agent_keeps_working": "একটি সাইড প্রশ্ন করুন — মূল এজেন্ট কাজ চালিয়ে যাবে",
         "context_from": "কনটেক্সটের উৎস",
+        "question_too_long": "প্রশ্নটি খুব দীর্ঘ — প্রায় {{max}} অক্ষরের মধ্যে ছোট করো (তোমার: {{current}})",
         "queue_cancel_failed": "সেই কিউ করা প্রশ্নটি বাতিল করা যায়নি",
         "queue_edit_failed": "সেই কিউ করা প্রশ্নটি আপডেট করা যায়নি",
         "refresh_context": "কনটেক্সট রিফ্রেশ করুন",

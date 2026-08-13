@@ -14,7 +14,11 @@ import type { SideMessage } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 const MAX_QUESTION_BYTES = 32_768
+// Largest character count guaranteed to fit MAX_QUESTION_BYTES in every script:
+// UTF-8 spends at most 4 bytes per code point (emoji), so this floor is always safe.
+const MAX_QUESTION_CHARS = Math.floor(MAX_QUESTION_BYTES / 4)
 // Max auto-grow height (px) for the side-question input before it scrolls.
 const MAX_INPUT_H = 240
 // How long the transient "queued instead" notice stays up. It describes a moment,
@@ -477,7 +481,13 @@ export default function SideChat({ slot }: { slot: string }) {
     const q = (override ?? draft).trim()
     if (!q || sendMutation.isPending || !slot) return
     if (exceedsByteLimit(q)) {
-      setLocalError(`Question too long (max ${MAX_QUESTION_BYTES.toLocaleString()} bytes)`)
+      // The limit is enforced in UTF-8 bytes (server contract), but a byte count is
+      // not actionable for CJK (3 bytes/char) or emoji (4 bytes/char) input — report
+      // code points against the always-safe character floor instead.
+      setLocalError(i18nT('pages.chat.sideChat.question_too_long', {
+        max: fmtNumber(MAX_QUESTION_CHARS),
+        current: fmtNumber([...q].length),
+      }))
       return
     }
     // While a turn runs, the split button decides: steer injects into it, queue

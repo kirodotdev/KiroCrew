@@ -7476,6 +7476,7 @@
         "ask_a_side_question_2": "사이드 질문하기…",
         "ask_a_side_question_main_agent_keeps_working": "사이드 질문하기 — 메인 에이전트는 계속 작업합니다",
         "context_from": "컨텍스트 출처",
+        "question_too_long": "질문이 너무 깁니다 — 약 {{max}} 글자 이내로 줄여 주세요 (현재: {{current}})",
         "queue_cancel_failed": "대기열에 있는 해당 질문을 취소할 수 없습니다",
         "queue_edit_failed": "대기열에 있는 해당 질문을 수정할 수 없습니다",
         "refresh_context": "컨텍스트 새로 고침",

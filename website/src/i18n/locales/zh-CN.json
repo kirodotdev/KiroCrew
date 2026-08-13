@@ -7476,6 +7476,7 @@
         "ask_a_side_question_2": "问一个旁支问题…",
         "ask_a_side_question_main_agent_keeps_working": "问一个旁支问题 — 主代理继续工作",
         "context_from": "上下文来自",
+        "question_too_long": "问题过长 — 请缩减到约 {{max}} 个字符以内（当前：{{current}}）",
         "queue_cancel_failed": "无法取消排队中的这个问题",
         "queue_edit_failed": "无法更新排队中的这个问题",
         "refresh_context": "刷新上下文",

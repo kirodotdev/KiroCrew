@@ -7676,6 +7676,7 @@
         "ask_a_side_question_2": "Haz una pregunta paralela…",
         "ask_a_side_question_main_agent_keeps_working": "Haz una pregunta paralela — el agente principal sigue trabajando",
         "context_from": "Contexto de",
+        "question_too_long": "Pregunta demasiado larga — redúcela a menos de unos {{max}} caracteres (la tuya: {{current}})",
         "queue_cancel_failed": "No se pudo cancelar esa pregunta en cola",
         "queue_edit_failed": "No se pudo actualizar esa pregunta en cola",
         "refresh_context": "Actualizar el contexto",
