@@ -4665,6 +4665,9 @@
     "commandPalette": {
       "clear_filter": "ফিল্টার মুছুন",
       "close": "বন্ধ করুন",
+      "min_query_chars": "{{scope}} খুঁজতে কমপক্ষে {{min}}টি অক্ষর টাইপ করুন",
+      "no_matches": "কোনো মিল নেই",
+      "no_recent_sessions": "কোনো সাম্প্রতিক সেশন নেই",
       "no_scope": "কোনো {{scope}} নেই",
       "pinned": "পিন করা",
       "providers": {

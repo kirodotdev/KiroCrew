@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   createSessionsProvider,
+  SESSIONS_MIN_QUERY_CHARS,
   type SessionsProviderDeps,
   type SessionSearchResponse,
   type SessionRef,
@@ -72,6 +73,22 @@ describe('createSessionsProvider — sub-threshold queries cost no round trip', 
     const { d, fetchSessions } = deps()
     await createSessionsProvider(d).search('ki')
     expect(fetchSessions).toHaveBeenCalledWith('ki')
+  })
+
+  it('declares minQueryChars equal to the constant the short-circuit enforces (issue #1830)', async () => {
+    // The palette reads `minQueryChars` to render the "keep typing" empty
+    // state. It must be the SAME value the search short-circuit uses, or the
+    // copy and the behavior drift apart. Pin both the declaration and the
+    // boundary behavior to the exported constant.
+    const { d, fetchSessions } = deps()
+    const p = createSessionsProvider(d)
+    expect(p.minQueryChars).toBe(SESSIONS_MIN_QUERY_CHARS)
+    // Boundary: one char below the declared minimum never fetches...
+    await p.search('x'.repeat(SESSIONS_MIN_QUERY_CHARS - 1))
+    expect(fetchSessions).not.toHaveBeenCalled()
+    // ...and exactly the declared minimum does.
+    await p.search('x'.repeat(SESSIONS_MIN_QUERY_CHARS))
+    expect(fetchSessions).toHaveBeenCalledTimes(1)
   })
 })
 

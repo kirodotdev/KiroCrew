@@ -4665,6 +4665,9 @@
     "commandPalette": {
       "clear_filter": "Filter zurücksetzen",
       "close": "Schließen",
+      "min_query_chars": "Geben Sie mindestens {{min}} Zeichen ein, um {{scope}} zu durchsuchen",
+      "no_matches": "Keine Treffer",
+      "no_recent_sessions": "Keine kürzlichen Sitzungen",
       "no_scope": "Keine {{scope}}",
       "pinned": "Angepinnt",
       "providers": {

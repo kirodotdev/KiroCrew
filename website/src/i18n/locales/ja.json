@@ -4592,6 +4592,9 @@
     "commandPalette": {
       "clear_filter": "フィルタをクリア",
       "close": "閉じる",
+      "min_query_chars": "{{scope}}を検索するには{{min}}文字以上入力してください",
+      "no_matches": "マッチしません",
+      "no_recent_sessions": "最近のセッションはありません",
       "no_scope": "{{scope}}なし",
       "pinned": "ピン留め済み",
       "providers": {

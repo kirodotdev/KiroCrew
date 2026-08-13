@@ -4592,6 +4592,9 @@
     "commandPalette": {
       "clear_filter": "清除筛选",
       "close": "关闭",
+      "min_query_chars": "输入至少 {{min}} 个字符以搜索{{scope}}",
+      "no_matches": "无匹配项",
+      "no_recent_sessions": "无最近会话",
       "no_scope": "无{{scope}}",
       "pinned": "已置顶",
       "providers": {

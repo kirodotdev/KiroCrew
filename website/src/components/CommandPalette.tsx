@@ -477,13 +477,35 @@ export default function CommandPalette({
     </div>
   ) : loading ? (
     <div className="px-3 py-6 text-center text-[12px] text-muted">{i18nT('components.commandPalette.searching')}</div>
+  ) : scopeProvider?.minQueryChars != null &&
+    debouncedQuery.trim().length > 0 &&
+    debouncedQuery.trim().length < scopeProvider.minQueryChars ? (
+    // Sub-threshold query on a scoped tab whose provider declares a minimum
+    // (issue #1830): the provider never searched, so "No matches" would be a
+    // lie — say "keep typing" instead. Ordered AFTER isError/loading (a failure
+    // or in-flight fetch keeps its copy) and BEFORE the generic no-matches.
+    // Evaluated against debouncedQuery, NOT the live query: `results` are
+    // produced from debouncedQuery, so the raw query would disagree with the
+    // rendered data inside the debounce window at every threshold crossing
+    // (typing the 2nd char would flash "No matches" against the 1-char empty
+    // result — the exact lie this branch removes).
+    // The All tab never lands here: `scopeProvider` is undefined when
+    // unscoped, and the aggregator's client-side scopes can genuinely answer a
+    // one-character query. An empty query keeps the recents quick-switcher
+    // (the non-empty guard).
+    <div className="px-3 py-6 text-center text-[12px] text-muted">
+      {i18nT('components.commandPalette.min_query_chars', {
+        min: scopeProvider.minQueryChars,
+        scope: scopeProvider.label.toLowerCase(),
+      })}
+    </div>
   ) : (
     <div className="px-3 py-6 text-center text-[12px] text-muted">
       {query.trim()
-        ? 'No matches'
+        ? i18nT('components.commandPalette.no_matches')
         : scopeLabel
           ? i18nT('components.commandPalette.no_scope', { scope: scopeLabel.toLowerCase() })
-          : 'No recent sessions'}
+          : i18nT('components.commandPalette.no_recent_sessions')}
     </div>
   )
 

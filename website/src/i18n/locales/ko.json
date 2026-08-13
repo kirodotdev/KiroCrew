@@ -4592,6 +4592,9 @@
     "commandPalette": {
       "clear_filter": "필터 지우기",
       "close": "닫기",
+      "min_query_chars": "{{scope}}을(를) 검색하려면 {{min}}자 이상 입력하세요",
+      "no_matches": "일치 항목 없음",
+      "no_recent_sessions": "최근 세션 없음",
       "no_scope": "{{scope}} 없음",
       "pinned": "고정됨",
       "providers": {

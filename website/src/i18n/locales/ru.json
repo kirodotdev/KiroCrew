@@ -4811,6 +4811,9 @@
     "commandPalette": {
       "clear_filter": "Очистить фильтр",
       "close": "Закрыть",
+      "min_query_chars": "Введите не менее {{min}} символов для поиска {{scope}}",
+      "no_matches": "Совпадений нет",
+      "no_recent_sessions": "Нет недавних сессий",
       "no_scope": "Нет {{scope}}",
       "pinned": "Закреплённые",
       "providers": {

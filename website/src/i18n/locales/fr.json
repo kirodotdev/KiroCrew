@@ -4738,6 +4738,9 @@
     "commandPalette": {
       "clear_filter": "Effacer le filtre",
       "close": "Fermer",
+      "min_query_chars": "Saisissez au moins {{min}} caractères pour rechercher {{scope}}",
+      "no_matches": "Aucun résultat",
+      "no_recent_sessions": "Aucune session récente",
       "no_scope": "Aucun {{scope}}",
       "pinned": "Épinglés",
       "providers": {

@@ -1179,6 +1179,9 @@
       "copy": "Copy"
     },
     "commandPalette": {
+      "min_query_chars": "Type at least {{min}} characters to search {{scope}}",
+      "no_matches": "No matches",
+      "no_recent_sessions": "No recent sessions",
       "no_scope": "No {{scope}}",
       "providers": {
         "recentsProvider": {
