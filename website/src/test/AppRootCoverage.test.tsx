@@ -297,13 +297,12 @@ describe('App — system metrics segment', () => {
 })
 
 describe('App — Kiro credits modal', () => {
-  const usageWithBonus = (startUrl: string) => ({
+  const usageWithBonus = (startUrl: string, accountType = 'Social') => ({
     usage: {
       credits_used: 8000, credits_plan: 10000, credits_overage: 0,
-      bonus_limit: 2000, bonus_used: 500, bonus_label: 'Welcome credits',
-      bonus_expires_label: 'expires 2026-09-01',
+      bonus_credits: [{ name: 'Welcome credits', used: 500, total: 2000, days_left: 19 }],
       plan: 'KIRO POWER', resets: '2026-09-01', overage_rate: '0.04', cost_usd: 1.5,
-      account_type: 'Social', email: 'builder@example.com', start_url: startUrl,
+      account_type: accountType, email: 'builder@example.com', start_url: startUrl,
     },
   })
 
@@ -313,27 +312,29 @@ describe('App — Kiro credits modal', () => {
     vi.mocked(api.sessionsUsage).mockResolvedValue(usageWithBonus('https://example.awsapps.com/start') as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    fireEvent.click(await screen.findByRole('button', { name: /^Kiro credits:/ }))
+    fireEvent.click(await screen.findByTitle(/Kiro credit usage/))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('Breakdown')).toBeInTheDocument()
-    expect(within(dialog).getByText('Welcome credits')).toBeInTheDocument()
-    expect(within(dialog).getByText('expires 2026-09-01')).toBeInTheDocument()
+    // Plan pool: the progressbar tracks the plan only, not bonus grants.
     expect(within(dialog).getByText('KIRO POWER')).toBeInTheDocument()
-    expect(within(dialog).getByText('Resets 2026-09-01')).toBeInTheDocument()
-    // Bonus present, so the total is pooled and labelled as a total.
-    expect(within(dialog).getByText('8,500')).toBeInTheDocument()
-    expect(within(dialog).getByText('/ 12,000 credits total')).toBeInTheDocument()
-    expect(within(dialog).getByText('$1.50 USD')).toBeInTheDocument()
-    expect(within(dialog).getByText('Signed in with Social login · example.awsapps.com')).toBeInTheDocument()
+    expect(within(dialog).getByText('8,000')).toBeInTheDocument()
+    expect(within(dialog).getByText(/\/\s*10,000\s*credits/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Resets\s*Sep 1/)).toBeInTheDocument()
+    // Bonus pool: its own section with per-grant balance and expiry.
+    expect(within(dialog).getByText('Bonus credits')).toBeInTheDocument()
+    expect(within(dialog).getByText('Welcome credits')).toBeInTheDocument()
+    expect(within(dialog).getByText('Remaining credit balance: 1,500')).toBeInTheDocument()
+    expect(within(dialog).getByText('Days until expiration: 19')).toBeInTheDocument()
+    expect(within(dialog).getByText('$1.50')).toBeInTheDocument()
+    expect(within(dialog).getByText('Signed in with Social login')).toBeInTheDocument()
   })
 
   it('drops the issuer host when the start URL will not parse', async () => {
-    vi.mocked(api.sessionsUsage).mockResolvedValue(usageWithBonus('not-a-url') as never)
+    vi.mocked(api.sessionsUsage).mockResolvedValue(usageWithBonus('not-a-url', 'IamIdentityCenter') as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    fireEvent.click(await screen.findByRole('button', { name: /^Kiro credits:/ }))
+    fireEvent.click(await screen.findByTitle(/Kiro credit usage/))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('Signed in with Social login')).toBeInTheDocument()
+    expect(within(dialog).getByText('Signed in with IAM Identity Center')).toBeInTheDocument()
   })
 })
 

@@ -9,7 +9,7 @@
  * being called (or starts being called with the wrong shape) fails here.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
 import DevFleetPage from '../pages/DevFleetPage'
@@ -738,7 +738,17 @@ describe('DevFleetPage prune failures', () => {
     await waitForRow('wt-a')
     fireEvent.click(screen.getByText('Prune merged'))
     await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument())
-    fireEvent.click(screen.getByLabelText('Select wt-a'))
+    // The dialog is opened by an async handler (pruneShipped awaits the
+    // candidates fetch before committing setPruneSelected + setPruneDialog).
+    // A click dispatched while that commit's work is still pending is lost:
+    // the controlled checkbox's change never reaches React, its DOM state is
+    // reverted on the next commit, and the run fires with the row still
+    // selected. Drain the pending work first, then assert the deselect
+    // actually landed before acting on it.
+    await act(async () => {})
+    const checkbox = screen.getByLabelText('Select wt-a') as HTMLInputElement
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(checkbox).not.toBeChecked())
     fireEvent.click(screen.getByText('Remove selected'))
     await waitFor(() => expect(screen.getByText('Nothing selected')).toBeInTheDocument())
     expect(runCalls).toBe(0)
