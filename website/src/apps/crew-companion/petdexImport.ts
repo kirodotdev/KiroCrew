@@ -100,6 +100,7 @@ export function firstFramePreview(spriteBase64: string): Promise<string> {
  * Build the payload accepted by `gallery:save-sprite-pack` from a PetDex sheet
  * (base64 webp/png). Resolves once the image has loaded and been sliced.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- return consumed by typed gallerySaveSpritePack
 export function buildSpritePackData(spriteBase64: string, meta: PetdexMeta): Promise<any> {
   return new Promise((resolve, reject) => {
     const img = new Image()

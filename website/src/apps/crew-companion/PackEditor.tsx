@@ -562,7 +562,7 @@ export const PackEditor: React.FC<PackEditorProps> = ({ existingPack, onSave, on
       setError(errorText(err) || i18nT('apps.crewCompanion.editor.saveFailed'))
     }
     setSaving(false)
-  }, [canSave, saving, slots, name, author, description, existingPack, onSave])
+  }, [canSave, saving, slots, name, author, description, existingPack, onSave, extras])
 
   // ── Render ─────────────────────────────────────────────────────────────
 
@@ -722,6 +722,7 @@ export const PackEditor: React.FC<PackEditorProps> = ({ existingPack, onSave, on
                 onChange={(e) => renameExtra(x.id, e.target.value)}
                 onClick={(e) => e.stopPropagation()}
                 placeholder="name"
+                aria-label={i18nT('apps.crewCompanion.editor.name')}
                 style={{ width: '100%', boxSizing: 'border-box', marginTop: 4, background: 'var(--cc-input-bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontSize: 10, padding: '2px 4px', textAlign: 'center', outline: 'none' }}
               />
             </div>

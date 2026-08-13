@@ -42,7 +42,7 @@ export default function CrewCompanionPage() {
    * Clear the failure notice on the next success — otherwise a user who retries
    * and succeeds still reads that it had failed.
    */
-  const clearNotice = () => setNotice(null)
+  const clearNotice = useCallback(() => setNotice(null), [])
 
   const loadReminders = useCallback(async () => {
     try {
@@ -86,7 +86,7 @@ export default function CrewCompanionPage() {
       setNotice(i18nT('apps.crewCompanion.reminders.couldnt_save', { error: errText(e) }))
       void loadReminders()
     })
-  }, [loadReminders])
+  }, [loadReminders, clearNotice])
 
   /**
    * Resolves TRUE only when the reminder actually reached the desktop app, so the
@@ -104,13 +104,13 @@ export default function CrewCompanionPage() {
       setNotice(i18nT('apps.crewCompanion.reminders.couldnt_add', { error: errText(e) }))
       return false
     }
-  }, [loadReminders])
+  }, [loadReminders, clearNotice])
 
   const skipReminder = useCallback((id: string) => {
     apiPost(`${writeBase()}/skip`, { id })
       .then(() => { clearNotice(); return loadReminders() })
       .catch((e: unknown) => setNotice(i18nT('apps.crewCompanion.reminders.couldnt_skip', { error: errText(e) })))
-  }, [loadReminders])
+  }, [loadReminders, clearNotice])
 
   const removeReminder = useCallback((id: string) => {
     // Optimistic removal — the row should go now, not on the next poll.
@@ -119,7 +119,7 @@ export default function CrewCompanionPage() {
       setNotice(i18nT('apps.crewCompanion.reminders.couldnt_remove', { error: errText(e) }))
       void loadReminders()
     })
-  }, [loadReminders])
+  }, [loadReminders, clearNotice])
 
   /**
    * Relaunch the desktop pet. The user can Quit it from the avatar menu, after
