@@ -44,6 +44,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from tmpdir_helpers import short_tmp_base
 
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers import files as files_mod
 
 # ``api_file_raw`` and ``api_file_download`` open with ``os.O_NOFOLLOW``, which
@@ -738,37 +739,33 @@ class TestRevealPath:
             assert (await resp.json())["error"] == "not a regular file"
 
     @pytest.mark.asyncio
-    async def test_open_action_on_macos_uses_open(self, tmp_path, mock_sel):
-        f = tmp_path / "doc.pdf"
-        f.write_text("x", encoding="utf-8")
-        with patch("sys.platform", "darwin"), patch("subprocess.Popen") as popen:
-            async with TestClient(TestServer(self._client_app())) as client:
-                resp = await client.post(
-                    "/api/reveal", json={"path": str(f), "action": "open"}
-                )
-                assert resp.status == 200
-        popen.assert_called_once_with(["open", str(f)])
-
-    @pytest.mark.asyncio
-    async def test_open_action_on_linux_uses_xdg_open(self, tmp_path, mock_sel):
+    async def test_open_action_hands_the_file_itself_to_the_launcher(
+        self, tmp_path, mock_sel
+    ):
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
         with patch("sys.platform", "linux"), \
-             patch("shutil.which", return_value="/usr/bin/xdg-open"), \
-             patch("subprocess.Popen") as popen:
+             patch("kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app", return_value=True) as launch:
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.post(
                     "/api/reveal", json={"path": str(f), "action": "open"}
                 )
                 assert resp.status == 200
-        popen.assert_called_once_with(["xdg-open", str(f)])
+                assert await resp.json() == {"ok": True}
+        # A distinct verb: this one deliberately RUNS the file, so it must not be
+        # confused with revealing it.
+        launch.assert_called_once_with(str(f))
 
     @pytest.mark.asyncio
-    async def test_open_action_without_opener_returns_copy_path(self, tmp_path, mock_sel):
+    async def test_open_action_on_windows_keeps_the_clipboard_answer(
+        self, tmp_path, mock_sel
+    ):
+        # Launching a request-supplied path by its file association is an
+        # execution sink, so Windows deliberately has no launcher for this action.
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
-        with patch("sys.platform", "linux"), patch("shutil.which", return_value=None):
-            async with TestClient(TestServer(self._client_app())) as client:
+        async with TestClient(TestServer(self._client_app())) as client:
+            with patch.object(platform_compat, "IS_WINDOWS", True):
                 resp = await client.post(
                     "/api/reveal", json={"path": str(f), "action": "open"}
                 )
@@ -776,39 +773,60 @@ class TestRevealPath:
                 assert await resp.json() == {"ok": True, "copy": str(f)}
 
     @pytest.mark.asyncio
-    async def test_reveal_on_macos_uses_dash_r(self, tmp_path, mock_sel):
+    async def test_reveal_hands_the_file_itself_to_the_helper(
+        self, tmp_path, mock_sel
+    ):
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
-        with patch("sys.platform", "darwin"), patch("subprocess.Popen") as popen:
+        with patch("sys.platform", "darwin"), \
+             patch("kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager", return_value=True) as reveal:
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.post("/api/reveal", json={"path": str(f)})
                 assert resp.status == 200
-        popen.assert_called_once_with(["open", "-R", str(f)])
+        reveal.assert_called_once_with(str(f))
 
     @pytest.mark.asyncio
-    async def test_reveal_on_linux_opens_parent_dir(self, tmp_path, mock_sel):
+    async def test_a_launcher_that_does_not_start_falls_back_to_the_clipboard(
+        self, tmp_path, mock_sel
+    ):
+        # False covers both "no launcher on this host" and "present but refused to
+        # run" — a click in the file viewer must not become a 500 either way.
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
-        with patch("sys.platform", "linux"), \
-             patch("shutil.which", return_value="/usr/bin/xdg-open"), \
-             patch("subprocess.Popen") as popen:
-            async with TestClient(TestServer(self._client_app())) as client:
-                resp = await client.post("/api/reveal", json={"path": str(f)})
-                assert resp.status == 200
-        popen.assert_called_once_with(["xdg-open", str(tmp_path)])
+        for platform, action in (("darwin", "reveal"), ("linux", "reveal"),
+                                 ("win32", "reveal"), ("linux", "open")):
+            with patch("sys.platform", platform), \
+                 patch("kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager", return_value=False), \
+                 patch("kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app", return_value=False):
+                async with TestClient(TestServer(self._client_app())) as client:
+                    resp = await client.post(
+                        "/api/reveal", json={"path": str(f), "action": action}
+                    )
+                    assert resp.status == 200, f"{platform}/{action} should not 500"
+                    assert await resp.json() == {"ok": True, "copy": str(f)}
 
     @pytest.mark.asyncio
-    async def test_reveal_without_opener_returns_copy_path(self, tmp_path, mock_sel):
+    async def test_clipboard_fallback_is_still_audited(self, tmp_path, mock_sel):
+        # The clipboard answer is a GRANTED decision whose host had no file
+        # manager, so it belongs in the SEL log like any other allowed reveal —
+        # an early return here would drop it.
         f = tmp_path / "doc.pdf"
         f.write_text("x", encoding="utf-8")
-        with patch("sys.platform", "linux"), patch("shutil.which", return_value=None):
-            async with TestClient(TestServer(self._client_app())) as client:
-                resp = await client.post("/api/reveal", json={"path": str(f)})
-                assert resp.status == 200
-                assert await resp.json() == {"ok": True, "copy": str(f)}
-
-
-# ── /api/upload and /api/screenshot (native pickers) ──
+        for action in ("reveal", "open"):
+            mock_sel.log_tool_invocation.reset_mock()
+            with patch("sys.platform", "linux"), \
+                 patch("kiro_crew.dashboard.handlers.files.platform_compat.reveal_in_file_manager", return_value=False), \
+                 patch("kiro_crew.dashboard.handlers.files.platform_compat.open_with_default_app", return_value=False):
+                async with TestClient(TestServer(self._client_app())) as client:
+                    resp = await client.post(
+                        "/api/reveal", json={"path": str(f), "action": action}
+                    )
+                    assert resp.status == 200
+                    assert await resp.json() == {"ok": True, "copy": str(f)}
+            mock_sel.log_tool_invocation.assert_called_once_with(
+                session_key="api", source="api", tool_name="reveal_path",
+                outcome="success", resources=str(f), metadata={"action": action},
+            )
 
 
 class _FakeProc:

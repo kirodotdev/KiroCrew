@@ -643,7 +643,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/handlers/core.py::_unusable",
         "dashboard/handlers/core.py::api_stt_install",
         "dashboard/handlers/files.py::_run",
-        "dashboard/handlers/files.py::api_reveal_path",
         "dashboard/handlers/files.py::api_screenshot",
         "dashboard/handlers/files.py::api_upload",
         "dashboard/handlers/knowledge.py::_run_folder_dialog",
@@ -706,12 +705,20 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # `--`. Must NOT be sandboxed: it reads the real checkout's git metadata.
         "platform/update_governance.py::_git",
         "mcp_shared.py::_get_ppid",
+        # File-manager launchers for the dashboard's reveal action. The
+        # command is an absolute literal resolved in this module (never a bare
+        # argv name, so an agent-writable PATH entry cannot supply it), the
+        # spawn gets a PATH pinned to the trusted system directories, and the
+        # only caller-supplied element is the path being revealed — which is
+        # passed as a later argv element, never as the command.
+        "platform_compat.py::open_with_default_app",
         "platform_compat.py::_current_user_sid",
         "platform_compat.py::_posix_process_parent_map",
         "platform_compat.py::find_listening_pids",
         "platform_compat.py::find_python_interpreter",
         "platform_compat.py::kill_pid",
         "platform_compat.py::kill_process_tree",
+        "platform_compat.py::reveal_in_file_manager",
         "platform_compat.py::process_command_line",
         # Same class as process_command_line: a read-only process-attribute query
         # (``ps -o uid=`` / ``/proc/<pid>`` stat) in the platform leaf module,

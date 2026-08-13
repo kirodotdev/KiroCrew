@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('@radix-ui/react-context-menu', async () => await import('./__mocks__/@radix-ui/react-context-menu'))
+vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -54,6 +55,7 @@ vi.mock('../components/MarkdownRenderer', async () => {
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
 import { fileExplorerApi } from '../apps/file-explorer/api'
+import { api } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { STORAGE_KEY } from '../apps/file-explorer/constants'
 import FileExplorerPage from '../apps/file-explorer/FileExplorerPage'
@@ -124,6 +126,12 @@ async function ready() {
 async function openFromTree(name: string) {
   await userEvent.click(treeBox().getByText(name))
   await waitFor(() => expect(viewerName()).toBe(name))
+}
+
+/** Open the viewer's overflow menu and pick a row by its visible label. */
+async function pickFromOverflow(label: string) {
+  await userEvent.click(screen.getByLabelText('More options'))
+  await userEvent.click(await screen.findByText(label))
 }
 
 async function openMenuOn(name: string) {
@@ -301,7 +309,7 @@ describe('FileExplorerPage download', () => {
       renderPage()
       await ready()
       await openFromTree('notes.txt')
-      await userEvent.click(screen.getByLabelText('Download'))
+      await pickFromOverflow('Download')
       expect(cap.names).toEqual(['notes.txt'])
       expect(cap.blobs).toHaveLength(1)
       expect(cap.blobs[0].type).toBe('text/plain;charset=utf-8')
@@ -321,12 +329,118 @@ describe('FileExplorerPage download', () => {
       renderPage()
       await ready()
       await openFromTree('shot.png')
-      await userEvent.click(screen.getByLabelText('Download'))
+      await pickFromOverflow('Download')
       expect(cap.names).toEqual(['shot.png'])
       // atob branch: bytes, not the base64 text, and the backend's mime.
       expect(cap.blobs[0].type).toBe('image/png')
       expect(cap.blobs[0].size).toBe(3)
     } finally { cap.restore() }
+  })
+})
+
+// ─── reveal in the host file manager ────────────────────────────────────────
+
+describe('FileExplorerPage reveal', () => {
+  // `vi.spyOn` survives the file-wide `vi.clearAllMocks()`, which clears calls
+  // but leaves the stub installed — so each spy is restored here rather than
+  // leaking a swallowed `window.alert` into every later test.
+  const spies: { mockRestore(): void }[] = []
+  afterEach(() => { for (const s of spies) s.mockRestore(); spies.length = 0 })
+
+  function spyReveal(result: { ok: boolean; copy?: string } | Error) {
+    const s = vi.spyOn(api, 'revealPath')
+    if (result instanceof Error) s.mockRejectedValue(result)
+    else s.mockResolvedValue(result as never)
+    spies.push(s)
+    return s
+  }
+
+  /** Silence and capture the alert the two failure paths raise. */
+  function captureAlert() {
+    const s = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    spies.push(s)
+    return s
+  }
+
+  it('hands the open file to the host file manager', async () => {
+    const reveal = spyReveal({ ok: true })
+    renderPage()
+    await ready()
+    await openFromTree('notes.txt')
+    await pickFromOverflow('Show in file manager')
+    expect(reveal).toHaveBeenCalledExactlyOnceWith('/home/user/notes.txt')
+  })
+
+  it('explains the clipboard fallback when the host has no desktop', async () => {
+    // `api.revealPath` has already copied the path by the time it answers with
+    // `copy`; without the notice the click would look like it did nothing.
+    spyReveal({ ok: true, copy: '/home/user/notes.txt' })
+    const alerted = captureAlert()
+    renderPage()
+    await ready()
+    await openFromTree('notes.txt')
+    await pickFromOverflow('Show in file manager')
+    await waitFor(() => expect(alerted).toHaveBeenCalledWith('Path copied to clipboard (no desktop available)'))
+  })
+
+  it("surfaces a refusal with the server's own message", async () => {
+    spyReveal(new Error('access denied'))
+    const alerted = captureAlert()
+    renderPage()
+    await ready()
+    await openFromTree('notes.txt')
+    await pickFromOverflow('Show in file manager')
+    await waitFor(() => expect(alerted).toHaveBeenCalledWith('access denied'))
+  })
+
+  /** Publish a gateway platform into the cache the prerequisite gate owns. */
+  function setGatewayPlatform(qc: QueryClient, platform: string) {
+    act(() => { qc.setQueryData(['kiro-prerequisite'], { platform }) })
+  }
+
+  it('names Finder by name when the gateway host is macOS', async () => {
+    const { qc } = renderPage()
+    await ready()
+    setGatewayPlatform(qc, 'darwin')
+    await openFromTree('notes.txt')
+    await userEvent.click(screen.getByLabelText('More options'))
+    expect(await screen.findByText('Open in Finder')).toBeInTheDocument()
+    expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
+  })
+
+  it('names File Explorer by name when the gateway host is Windows', async () => {
+    const { qc } = renderPage()
+    await ready()
+    setGatewayPlatform(qc, 'win32')
+    await openFromTree('notes.txt')
+    await userEvent.click(screen.getByLabelText('More options'))
+    expect(await screen.findByText('Open in File Explorer')).toBeInTheDocument()
+    expect(screen.queryByText('Open in Finder')).not.toBeInTheDocument()
+  })
+
+  it('stays neutral when the gateway platform is withheld or unknown', async () => {
+    // A non-owner dashboard user (and a probe that could not run) gets the
+    // sentinel 'gateway', which must never be read as macOS.
+    const { qc } = renderPage()
+    await ready()
+    setGatewayPlatform(qc, 'gateway')
+    await openFromTree('notes.txt')
+    await userEvent.click(screen.getByLabelText('More options'))
+    expect(await screen.findByText('Show in file manager')).toBeInTheDocument()
+    expect(screen.queryByText('Open in Finder')).not.toBeInTheDocument()
+  })
+
+  it('keeps the action row at two controls, with reveal in the overflow', async () => {
+    // The row caps at two peer buttons, so a third action has to live in the
+    // menu — pin the shape, not just the behaviour.
+    renderPage()
+    await ready()
+    await openFromTree('notes.txt')
+    const row = document.querySelector('.mc-fe-viewer-actions') as HTMLElement
+    expect(row.querySelectorAll('button')).toHaveLength(2)
+    expect(within(row).getByLabelText('Reload')).toBeInTheDocument()
+    expect(within(row).getByLabelText('More options')).toBeInTheDocument()
+    expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
   })
 })
 

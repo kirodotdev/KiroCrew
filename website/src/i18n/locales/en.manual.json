@@ -135,7 +135,12 @@
     },
     "fileExplorer": {
       "fileViewer": {
-        "copy_path_2": "Copy path: {{path}}"
+        "copy_path_2": "Copy path: {{path}}",
+        "more_options": "More options",
+        "open_in_file_explorer": "Open in File Explorer",
+        "open_in_finder": "Open in Finder",
+        "path_copied_to_clipboard_no_desktop_available": "Path copied to clipboard (no desktop available)",
+        "show_in_file_manager": "Show in file manager"
       },
       "searchPanel": {
         "search_failed": "search failed",
