@@ -3,14 +3,15 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
 /* ── api client mock ───────────────────────────────────────────────────────
- * The panel reads and writes only through these two methods, so mocking them
- * keeps every case network-free. The install POST resolves with the same shape
- * as the GET, which is what lets the panel re-render from one answer. */
+ * The panel reads and writes only through these methods, so mocking them keeps
+ * every case network-free. The install POST resolves with the same shape as the
+ * GET, which is what lets the panel re-render from one answer. */
 vi.mock('../../api/client', () => ({
   api: {
     getBrowserInstall: vi.fn(),
     installBrowserCli: vi.fn(),
     installBrowserEngine: vi.fn(),
+    setBrowserToken: vi.fn(),
   },
 }))
 
@@ -22,6 +23,7 @@ type State = {
   cli_path: string | null
   cli_version: string | null
   node_ok: boolean
+  standalone_install?: string
   node_version: string | null
   browser_ok: boolean
   installing: boolean
@@ -35,6 +37,7 @@ function state(overrides: Partial<State> = {}): State {
     cli_path: null,
     cli_version: null,
     node_ok: true,
+    standalone_install: 'curl -fsSLO https://example.invalid/playwright-cli.sh && sh playwright-cli.sh',
     node_version: '22.0.0',
     browser_ok: false,
     installing: false,
@@ -142,6 +145,72 @@ describe('BrowserPanel', () => {
     // gate rejects hardcoded Latin text and DNT rejects respelling Node.js.
     expect(screen.getByRole('link', { name: /Download Node\.js/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Install Playwright CLI/i })).toBeNull()
+  })
+
+  it('offers the no-admin installer, so a locked-down machine is not a dead end', async () => {
+    // "Download Node.js" is the wrong and only answer for the operator this state
+    // most often describes: a corporate machine where Node cannot be installed at
+    // all, or a registry that answers 401. The standalone installer bootstraps its
+    // own Node into the user's home directory, so the panel offers it right here
+    // rather than leaving it discoverable only from the docs.
+    await renderPanel(state({ node_ok: false, node_version: null }))
+    expect(screen.getByText(/no admin rights/i)).toBeTruthy()
+    // BOTH commands, because the gateway need not run on the machine this page is
+    // open on -- guessing the platform from the browser would sometimes be wrong,
+    // and a wrong command is worse than two right ones.
+    // ONE command, composed by the gateway: it knows its own OS, and this page
+    // may be open on a different machine than the one being installed onto.
+    expect(screen.getByText(/playwright-cli\.sh/)).toBeTruthy()
+  })
+
+  it('offers a copy button for the command, which must be exact', async () => {
+    // ~110 characters, wrapped over three lines by break-all, and a transcription
+    // typo produces another opaque curl failure for a user who is already stuck.
+    // The repo pairs every runnable command with a copy button (AboutPanel,
+    // RemoteCrewPanel); this is the same pattern on the same kind of string.
+    await renderPanel(state({ node_ok: false, node_version: null }))
+    expect(screen.getByRole('button', { name: /Copy command/i })).toBeTruthy()
+  })
+
+  it('saves an attach token the operator types, and clears the field after', async () => {
+    // The panel's other user action, and the one this file left untested. The field
+    // is cleared on success rather than left holding a secret in the DOM, so the
+    // clearing is part of the behaviour rather than incidental.
+    const setToken = vi.mocked(api.setBrowserToken)
+    setToken.mockResolvedValue({ ok: true, token: true })
+    await renderPanel(state({ installed: true, node_ok: true }))
+    const field = screen.getByLabelText(/token/i)
+    fireEvent.change(field, { target: { value: 'attach-token-value' } })
+    expect((field as HTMLInputElement).value).toBe('attach-token-value')
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await waitFor(() => expect(setToken).toHaveBeenCalledWith('attach-token-value'))
+    await waitFor(() => expect((field as HTMLInputElement).value).toBe(''))
+  })
+
+  it('says nothing extra when the gateway is too old to offer a command', async () => {
+    // `standalone_install` is optional precisely so an older gateway degrades to
+    // the plain Node warning rather than rendering `undefined` in a <pre>.
+    await renderPanel(state({ node_ok: false, node_version: null, standalone_install: undefined }))
+    expect(screen.getByText(/no Node was found/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Copy command/i })).toBeNull()
+    expect(screen.queryByText(/no admin rights/i)).toBeNull()
+  })
+
+  it('confirms the copy only after the clipboard write resolves', async () => {
+    // The label is a promise that the paste is ready, so it flips AFTER the await
+    // rather than optimistically -- the Clipboard API is unavailable on a
+    // plain-HTTP remote gateway, which is a plausible way to be reading this panel.
+    await renderPanel(state({ node_ok: false, node_version: null }))
+    fireEvent.click(screen.getByRole('button', { name: /Copy command/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Copied/i })).toBeTruthy())
+  })
+
+  it('does not push the installer at someone whose Node is fine', async () => {
+    // The offer is a remedy for a blocked install, not general advice: showing it
+    // when the button works would tell a healthy user to go run a shell script.
+    await renderPanel(state({ node_ok: true, installed: false }))
+    expect(screen.queryByText(/no admin rights/i)).toBeNull()
+    expect(screen.queryByText(/playwright-cli\.sh/)).toBeNull()
   })
 
   it('offers every engine as its own download, not just the one attach needs', async () => {

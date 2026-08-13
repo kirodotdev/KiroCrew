@@ -4058,7 +4058,10 @@
         "engine_download": "Download",
         "engine_needed_for_attach": "needed for attach",
         "node_missing": "Needs Node.js 20 or newer, and no Node was found on this machine.",
-        "node_how": "Install it, then reopen this page. <dl>Download Node.js</dl>"
+        "node_how": "Install it, then reopen this page. <dl>Download Node.js</dl>",
+        "node_no_admin": "On a machine where you cannot install Node — no admin rights, or a registry that needs a login — run the command below on the machine where Kiro Crew is running. The script installs Node and the CLI into your home directory, and tells you how to fix it if your network blocks the download.",
+        "copy_command": "Copy command",
+        "copied": "Copied"
       }
     },
     "systemPage": {},

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -135,9 +136,7 @@ def test_available_is_presence_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert mod.detect()["browser_ok"] is False
 
 
-def test_no_consent_flag_is_consulted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_no_consent_flag_is_consulted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The gate reads PATH and nothing else -- no flag file, no config key.
 
     An empty data home must not make an installed CLI unavailable, which is what
@@ -360,9 +359,7 @@ class TestFailureDetailIsRedactedAtTheSource:
         step = mod._step("npm-install-global", ["npm", "install"], 1.0)
         assert len(step["stderr"]) <= mod._STDERR_CAP
 
-    def test_credential_straddling_truncation_boundary_is_still_redacted(
-        self, monkeypatch, caplog
-    ):
+    def test_credential_straddling_truncation_boundary_is_still_redacted(self, monkeypatch, caplog):
         """A URL credential whose ``@`` anchor sits past the display cap.
 
         Truncating first would split ``://user:pass@host`` so the trailing
@@ -398,9 +395,7 @@ class TestFailureDetailIsRedactedAtTheSource:
         ],
         ids=["authToken", "password", "env-token", "url-creds"],
     )
-    def test_npm_credential_shapes_are_all_redacted(
-        self, monkeypatch, secret_line
-    ):
+    def test_npm_credential_shapes_are_all_redacted(self, monkeypatch, secret_line):
         """Every npm credential shape is caught regardless of position."""
         stderr = f"npm ERR! 404 Not Found\n{secret_line}\nnpm ERR! done"
         monkeypatch.setattr(mod, "_run", lambda argv, timeout: (1, "", stderr))
@@ -474,3 +469,91 @@ class TestCliEnvIsPublic:
         env = mod.cli_env()
 
         assert env["PATH"] == "/nvm/bin:/usr/local/bin"
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "POSIX-only three times over: ntpath.expanduser reads USERPROFILE and ignores "
+        "HOME, so the fake profile is never consulted; shutil.which needs a PATHEXT "
+        "match, which an extension-less wrapper has not; and the exec bit does not "
+        "carry. The Windows layout is ~\\.local\\bin\\playwright-cli.cmd, which the "
+        "same augmented_path entry covers -- untestable here, not unhandled."
+    ),
+)
+def test_the_cli_is_found_where_the_standalone_installer_puts_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`npm install -g` leaves the wrapper beside npm, but `playwright-cli.sh`
+    writes it to `~/.local/bin` -- a directory a systemd/launchd/service-manager
+    gateway does not inherit on $PATH, and one `node_bin_dirs()` never reports
+    because it holds no `node`. Searched over the bare PATH, a SUCCESSFUL
+    standalone install would keep reading as "not installed": the panel would go
+    on offering the command the user just ran, with nothing anywhere reporting an
+    error."""
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    wrapper = local_bin / mod.CLI_BIN
+    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    assert mod.cli_path() == str(wrapper)
+
+
+def test_the_standalone_command_writes_no_fixed_name_into_the_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The operator pastes this into whatever shell is open, so the download
+    destination is a directory the command does not own. A fixed
+    `playwright-cli.sh` in the working directory would be truncated -- their own
+    copy, or an unrelated file that merely shares the name."""
+    monkeypatch.setattr(mod.os, "name", "posix")
+    posix = mod._standalone_install_command()
+    assert "mktemp -d" in posix
+    assert "-fsSLO" not in posix, "-O derives the name from the URL, into the cwd"
+    assert 'sh "$d/playwright-cli.sh"' in posix
+
+    monkeypatch.setattr(mod.os, "name", "nt")
+    windows = mod._standalone_install_command()
+    assert "$env:TEMP" in windows
+    assert "NewGuid" in windows
+    assert "-OutFile $p" in windows
+    assert ".\\playwright-cli.ps1" not in windows
+
+
+def test_detect_offers_the_os_appropriate_standalone_installer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The panel's Node-blocked state used to end at "Download Node.js", which is
+    the one thing the operator it describes often cannot do -- no admin rights, or a
+    registry that needs a login. `detect()` therefore carries the standalone
+    installer command, and composes it HERE because only the gateway knows which OS
+    it runs on: the dashboard may be open on a different machine, and offering two
+    commands to choose between puts that guess on the user.
+
+    It is also the only place it can live. A shell command must not enter the i18n
+    catalogs -- the pseudolocale accents every Latin character, which would corrupt
+    the URL -- and the dashboard's untranslated-literal gate forbids holding it in
+    the component.
+    """
+    monkeypatch.setattr(mod.os, "name", "posix")
+    posix = mod._standalone_install_command()
+    assert "playwright-cli.sh" in posix
+    assert "powershell" not in posix
+    # Download-then-run rather than a pipe into a shell: a machine locked down
+    # enough to need this usually forbids piping the network into `sh`.
+    assert "| sh" not in posix
+    assert "curl -fsSL" in posix
+
+    monkeypatch.setattr(mod.os, "name", "nt")
+    windows = mod._standalone_install_command()
+    assert "playwright-cli.ps1" in windows
+    assert "playwright-cli.sh" not in windows
+
+    # `detect()` is exercised under the REAL platform: with `os.name` patched to
+    # "nt", pathlib refuses to build a WindowsPath on Linux and the call dies
+    # before the payload exists. The Windows branch above is the helper's job.
+    monkeypatch.undo()
+    assert mod.detect()["standalone_install"] == mod._standalone_install_command()

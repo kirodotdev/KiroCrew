@@ -9894,7 +9894,10 @@
         "engine_download": "下载",
         "engine_needed_for_attach": "attach 需要",
         "node_missing": "需要 Node.js 20 或更新版本，而本机没有找到 Node。",
-        "node_how": "安装后重新打开本页面。<dl>下载 Node.js</dl>"
+        "node_how": "安装后重新打开本页面。<dl>下载 Node.js</dl>",
+        "node_no_admin": "在无法安装 Node 的机器上（没有管理员权限，或者注册表需要登录），请在运行 Kiro Crew 的那台机器上执行以下命令。脚本会把 Node 和 CLI 安装到你的主目录，并在网络阻止下载时告诉你如何解决。",
+        "copy_command": "复制命令",
+        "copied": "已复制"
       },
       "channelDisabledPanel": {
         "checking_your_organization_s_channel_policy": "正在检查你所在组织的渠道策略…",

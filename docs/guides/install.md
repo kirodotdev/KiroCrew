@@ -263,6 +263,33 @@ credential and slash-command setup. It also does NOT install a browser: browsing
 is available when `playwright-cli` is on PATH, and you install it separately (see
 [Browser](#browser)).
 
+**Want the Playwright CLI at your own shell?** That is a separate tool from the
+Browser Mode above, and it has its own installer, which bootstraps Node when your
+machine has none and reports enterprise-registry failures (mirror login, proxy,
+blocked browser CDN) as specific remedies rather than a raw npm dump:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/playwright-cli.sh
+less playwright-cli.sh          # read it before you run it
+sh playwright-cli.sh --version 0.1.18
+```
+
+The download-and-read form is listed first on purpose: piping a script into a
+shell is prohibited on many corporate machines, and `raw.githubusercontent.com`
+itself is blocked or rate-limited on some — which is the same audience whose
+network this script exists to cope with. If yours allows it, `curl -fsSL … | sh`
+works as a one-liner; if it does not, take the file from a checkout or a release
+and run it locally. Either way the script reaches only three hosts: the npm
+registry (or the mirror you point it at), the Node mirror when it has to
+bootstrap a toolchain, and the Playwright CDN for the browser binaries — that
+last one only unless you pass `--skip-browsers`, and `--download-host` points it
+at an internal mirror instead.
+
+Windows uses `playwright-cli.ps1` with the same flags in PowerShell spelling.
+`--help` lists all of them; `--dry-run` prints the plan without changing anything.
+Design notes and the exit-code table:
+[browser module spec](../system-specs/modules/browser.md).
+
 **Messaging channels are optional.** The default wizard configures none, and the
 web dashboard is fully functional without any messaging credentials. Connect a
 channel later -- Slack (`kirocrew setup --slack` or

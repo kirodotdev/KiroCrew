@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.env import find_node_tool, node_augmented_path
+from kiro_crew.env import augmented_path, find_node_tool, node_augmented_path
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -103,8 +103,20 @@ def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:
 
 
 def cli_path() -> str | None:
-    """Absolute path to ``playwright-cli``, or ``None`` when it is not present."""
-    return find_node_tool(CLI_BIN)
+    """Absolute path to ``playwright-cli``, or ``None`` when it is not present.
+
+    Searched over :func:`augmented_path` and NOT the bare inherited ``PATH``,
+    because the two installers disagree about where the wrapper goes.
+    ``npm install -g`` drops it beside npm, which :func:`find_node_tool` finds
+    via ``node_bin_dirs``; ``playwright-cli.sh`` / ``.ps1`` deliberately write
+    it to ``~/.local/bin`` instead, so it works without touching the npm prefix.
+    That directory is in ``_EXTRA_PATH_DIRS`` but not in ``node_bin_dirs``, and a
+    gateway started by systemd, launchd or the Windows service manager does not
+    inherit it on ``$PATH``. Without this the standalone install would SUCCEED
+    and the panel would keep reporting the CLI as absent -- the worst shape of
+    failure available here, since nothing errors and the offer never withdraws.
+    """
+    return find_node_tool(CLI_BIN, base_path=augmented_path(os.environ.get("PATH", "")))
 
 
 def _first_version(text: str) -> str | None:
@@ -184,9 +196,7 @@ def browsers_present() -> dict[str, bool]:
     names = _cached_browser_names()
     if names is None:
         return {engine: False for engine in BROWSER_ENGINES}
-    return {
-        engine: any(name.startswith(engine) for name in names) for engine in BROWSER_ENGINES
-    }
+    return {engine: any(name.startswith(engine) for name in names) for engine in BROWSER_ENGINES}
 
 
 def _browser_present() -> bool:
@@ -199,6 +209,55 @@ def _browser_present() -> bool:
     three, because the other two are extras rather than prerequisites.
     """
     return browsers_present().get("chromium", False)
+
+
+_INSTALLER_BASE = "https://raw.githubusercontent.com/kirodotdev/KiroCrew/main"
+
+
+def _standalone_install_command() -> str:
+    """The command that installs the CLI where `npm install -g` cannot.
+
+    `playwright-cli.sh` / `.ps1` bootstrap their own Node into the user's home
+    directory and classify the enterprise failures npm reports as one
+    undifferentiated error, so they are the answer for the two states this
+    module can detect but not fix: no usable Node, and a registry that refuses
+    the request.
+
+    Download-then-run rather than piping into a shell, because a machine locked
+    down enough to need this is usually also one where piping a script from the
+    network into `sh` is forbidden -- and because it is the form that lets the
+    operator read what they are about to run.
+
+    The PowerShell form wraps the download in try/catch and exits on failure.
+    Downloaded into a FRESH TEMPORARY path, never the working directory under a
+    fixed name. The operator pastes this into whatever shell they happen to have
+    open, so the destination is a directory this command does not own: a file
+    already named `playwright-cli.sh` there -- their own copy, mid-edit, or
+    something unrelated -- would be truncated by the download. An unpredictable
+    name also retires the planted-file hazard the chaining below guards against.
+
+    `;` in PowerShell is a statement SEPARATOR, not `&&`: a failed download
+    otherwise falls straight through to the `powershell -File` call and runs
+    whatever is at that path. `-ErrorAction Stop` alone does NOT prevent this;
+    measured on pwsh 7.6, the following statement still runs, because the
+    terminating error ends the pipeline rather than the command. `&&` would be the
+    obvious fix and is unavailable: this command targets Windows PowerShell 5.1,
+    which has no `&&`.
+    """
+    if os.name == "nt":
+        return (
+            '$p = Join-Path $env:TEMP "playwright-cli-$([guid]::NewGuid()).ps1"; '
+            f"try {{ irm {_INSTALLER_BASE}/playwright-cli.ps1 "
+            "-OutFile $p -ErrorAction Stop } "
+            "catch { Write-Error $_; exit 1 }; "
+            "powershell -ExecutionPolicy Bypass -File $p"
+        )
+    # `&&` gives the shell form the same guarantee for free.
+    return (
+        "d=$(mktemp -d) && curl -fsSL "
+        f'{_INSTALLER_BASE}/playwright-cli.sh -o "$d/playwright-cli.sh" '
+        '&& sh "$d/playwright-cli.sh"'
+    )
 
 
 def detect() -> dict[str, Any]:
@@ -229,6 +288,14 @@ def detect() -> dict[str, Any]:
         # Per-engine, so the panel can offer each download rather than
         # implying "browser" means only the one attach needs.
         "browsers": browsers_present(),
+        # What to run when THIS install cannot proceed. Composed here rather than
+        # in the dashboard for three reasons: only the gateway knows which OS it
+        # runs on, so the operator gets one correct command instead of two to
+        # choose between; a shell command is not translatable copy and must not
+        # enter the i18n catalogs, whose pseudolocale accents every Latin
+        # character and would corrupt it; and the frontend's untranslated-literal
+        # gate forbids holding it as a string there.
+        "standalone_install": _standalone_install_command(),
     }
 
 
@@ -347,7 +414,9 @@ def install() -> dict[str, Any]:
         )
         return {"ok": False, "steps": steps}
 
-    steps.append(_step("npm-install-global", [npm, "install", "-g", NPM_SPEC], _NPM_INSTALL_TIMEOUT_S))
+    steps.append(
+        _step("npm-install-global", [npm, "install", "-g", NPM_SPEC], _NPM_INSTALL_TIMEOUT_S)
+    )
     if not steps[-1]["ok"]:
         return {"ok": False, "steps": steps}
 

@@ -194,6 +194,90 @@ exposes an interactive takeover surface to the network.
 | Browser binary | `install-browser`, with `--with-deps` on Linux |
 | Attach | Chromium-family only, since Playwright ships an attach extension for that family alone |
 
+### Standalone enterprise installer
+
+`playwright-cli.sh` (macOS/Linux) and `playwright-cli.ps1` (Windows) install the
+same `@playwright/cli` package as the install flow above, for the case that flow
+cannot handle: a machine where `npm install -g` does not work. They are run by a
+human at a shell, not by the gateway, and nothing in the product invokes them.
+
+They exist because step 2 of the install flow assumes two things an enterprise
+laptop often lacks — a Node toolchain of a recent enough major, and a default
+registry that answers without a login. When either is missing, a bare
+`npm install -g` fails with npm's own output, which does not distinguish "your
+token expired" from "the registry is firewalled" from "this mirror does not carry
+the package", and those three have mutually exclusive remedies. The scripts remove
+both assumptions without introducing a private artifact channel: there is no Kiro
+Crew-hosted Playwright build to keep in sync or to trust.
+
+**Node is bootstrapped, not required.** A Node already on PATH is reused when its
+major is at least the floor the install flow above requires, as is one recorded by
+`ensure-node.sh` in `<data home>/node-bin-dir` — these installers *read* that
+marker but never write it, so the sharing is one-directional: a Node they
+bootstrap stays private to them, and `ensure-node.sh` still downloads its own.
+That is deliberate, because `env.py` hands the marked interpreter to the gateway,
+whose floor is higher again.
+
+A reused Node is only reused if `npm` is actually beside it. On Debian and Ubuntu
+`nodejs` and `npm` are separate packages, so `apt install nodejs` alone leaves a
+perfectly good Node with no npm — and telling that user to install npm would hand
+back the one prerequisite these installers exist to remove. Such a Node is
+abandoned and a private one bootstrapped instead, because the release tarball
+bundles npm. Missing npm in a tree the installer itself unpacked is a different
+thing entirely — a truncated archive — and aborts rather than retrying.
+
+Otherwise the release build for the detected platform is downloaded and its
+SHA-256 checked against that release's `SHASUMS256.txt` **before it is
+executed**; a mismatch, or an artifact the manifest does not list at all, aborts
+the install. Selection is libc-aware because an official tarball is not portable:
+musl hosts (Alpine) get the unofficial-builds variant, and so do pre-2.28-glibc
+hosts (RHEL 7-era) **on x64 only**, which is the only architecture that variant
+is published for. The manifest is fetched over the same channel as the artifact
+and is not itself signed — identical to `ensure-node.sh`, so this is corruption
+detection plus transport trust, not an independent trust root like the signed
+manifest `cli.sh` verifies.
+
+**The install is unprivileged and self-contained**, which is where it diverges
+from the install flow above: `npm install --global` is run with
+`npm_config_prefix` pointed at `<data home>/playwright-cli`, so nothing is written
+outside the user's home and sudo is never involved. The generated entry point is a
+**wrapper script, not a symlink**: npm's own shim starts `#!/usr/bin/env node`,
+which resolves against the *caller's* PATH, so a user whose Node the installer had
+to bootstrap would get `node: not found` from a tool that installed perfectly. The
+wrapper pins the exact interpreter that was verified, and every path interpolated
+into it is escaped, because a generated script treats its inputs as code.
+
+**The public registry is pinned.** An ambient `.npmrc` that redirects the default
+registry at a private mirror makes a *public* package 401 the moment that mirror's
+token expires. `--registry` re-points it for the opposite case (public registry
+firewalled, mirror reachable), and `--isolated-npmrc` ignores the ambient config
+entirely. A registry URL carrying a credential — in userinfo or in a query
+parameter — is redacted everywhere the scripts print it, and the log is created
+owner-only, because npm writes that URL into its own output.
+
+**A credential may not be passed as a flag.** `/proc/<pid>/cmdline` is
+world-readable, so `--registry https://user:token@host/` publishes the token to
+every account on the machine for as long as the install runs, and leaves it in shell
+history besides — neither of which redaction can reach, since redaction covers only
+what the scripts print. The credential travels in the environment instead
+(`KIROCREW_NPM_REGISTRY`, `PLAYWRIGHT_DOWNLOAD_HOST`), where `/proc/<pid>/environ` is
+readable only by its owner, or through `npm login`. The refusal keys on PROVENANCE
+rather than content: the resolved registry value also holds an env-supplied
+credential, and refusing that would break the escape the error message recommends.
+
+**Enterprise failures are classified, not passed through.** npm's output is kept
+at `<prefix>/playwright-cli-install.log` — namespaced because a caller-supplied
+prefix could otherwise make that a generic name the installer truncates — and matched against the failures a corporate network
+actually produces. The browser binary is fetched during the install rather than
+left to first use, for the same reason: it comes from the Playwright CDN and not
+the npm registry, so a network that permits one may block the other, and doing it
+here turns that into exit 16 with a mirror remedy instead of a stall inside the
+user's first browse. `--with-deps` is deliberately not passed — it installs OS
+packages through the system package manager, and this installer never elevates.
+The full exit-code table is in `--help`; the codes that carry a diagnosis are 13
+(registry rejected auth), 14 (registry unreachable), 15 (package or version
+absent) and 16 (browser download blocked).
+
 ### Related
 
 - [web-browse](../../../src/kiro_crew/builtin_skills/web-browse/SKILL.md) for

@@ -124,6 +124,11 @@ export interface BrowserInstallData {
    *  Optional so an older gateway that predates it degrades to "unknown" rather
    *  than rendering every engine as missing. */
   browsers?: Record<string, boolean>
+  /** The OS-appropriate standalone installer command, composed by the gateway
+   *  because only it knows which OS it runs on. Offered when Node blocks the
+   *  in-app install. Optional so an older gateway simply shows nothing extra
+   *  rather than rendering `undefined`. */
+  standalone_install?: string
 }
 
 export interface BrowserViewData {

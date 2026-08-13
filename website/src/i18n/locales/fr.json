@@ -10135,7 +10135,10 @@
         "engine_download": "Télécharger",
         "engine_needed_for_attach": "requis pour attach",
         "node_missing": "Node.js 20 ou plus récent est requis, et aucun Node n'a été trouvé sur cette machine.",
-        "node_how": "Installez-le, puis rouvrez cette page. <dl>Télécharger Node.js</dl>"
+        "node_how": "Installez-le, puis rouvrez cette page. <dl>Télécharger Node.js</dl>",
+        "node_no_admin": "Sur une machine où vous ne pouvez pas installer Node — pas de droits administrateur, ou un registre qui exige une connexion — exécutez la commande ci-dessous sur la machine où Kiro Crew fonctionne. Le script installe Node et la CLI dans votre répertoire personnel et vous explique comment corriger le problème si votre réseau bloque le téléchargement.",
+        "copy_command": "Copier la commande",
+        "copied": "Copié"
       },
       "channelDisabledPanel": {
         "checking_your_organization_s_channel_policy": "Vérification de la politique de canaux de votre organisation…",

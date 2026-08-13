@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
+  Copy,
   Puzzle,
   Download,
   ExternalLink,
@@ -18,6 +19,7 @@ import { Badge, Btn, EmptyState, FormSkeleton, Input } from '../../components/ui
 import ErrorNotice from '../../components/ErrorNotice'
 import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
+import { copyToClipboard } from '../../utils/clipboard'
 
 const INSTALL_KEY = ['browserInstall'] as const
 
@@ -78,6 +80,9 @@ export function BrowserPanel() {
   // Never seeded from the server: the status carries only whether a token exists,
   // so there is nothing to prefill and no way for the value to leak back out.
   const [token, setToken] = useState('')
+  // Latched, not timed out: the label is a confirmation that the paste is
+  // ready, and this panel is not somewhere the user returns to repeatedly.
+  const [installCmdCopied, setInstallCmdCopied] = useState(false)
 
   const tokenMut = useMutation({
     mutationFn: (value: string) => api.setBrowserToken(value),
@@ -123,6 +128,11 @@ export function BrowserPanel() {
   // Node is the one prerequisite an install cannot supply for the operator, so a
   // too-old runtime is reported instead of offering a button that would fail.
   const blockedByNode = !data.node_ok
+  // Bound once so the render, the copy handler and the guard all use the same
+  // narrowed value -- otherwise the handler needs a `?? ''` fallback that the
+  // guard has already made unreachable, which is an untestable branch rather
+  // than a safety net.
+  const installCommand = data.standalone_install
 
   return (
     <SettingsSection title={i18nT('pages.settings.browserPanel.browsing')}>
@@ -360,6 +370,55 @@ export function BrowserPanel() {
                       }}
                     />
                   </div>
+                  {/*
+                    The link above is a dead end for the operator this panel most
+                    needs to help: a locked-down machine where Node cannot be
+                    installed, or a registry that answers 401. `playwright-cli.sh`
+                    exists for exactly that -- it bootstraps its own Node into the
+                    user's home directory and classifies the enterprise failures npm
+                    reports as one undifferentiated error -- so the offer belongs
+                    HERE, at the moment the install is blocked, not only in the docs.
+
+                    The command comes from the GATEWAY, not from this file and not
+                    from the catalogs. Only the gateway knows which OS it runs on, so
+                    the operator gets the one command that applies rather than two to
+                    choose between -- this page may well be open on a different
+                    machine. It also cannot live in either place: the untranslated
+                    literal gate forbids the string here, and the catalogs' pseudo-
+                    locale accents every Latin character, which would corrupt a URL.
+                  */}
+                  {installCommand && (
+                    <div className="text-muted text-left max-w-[340px] mt-1">
+                      {i18nT('pages.settings.browserPanel.node_no_admin')}
+                      <pre className="mt-1.5 mb-1 whitespace-pre-wrap break-all text-[12px] bg-surface-2 rounded px-2 py-1.5">
+                        <code>{installCommand}</code>
+                      </pre>
+                      {/*
+                        A copy button, not hand-selection. This is a ~110-character
+                        string that must be transcribed EXACTLY, wrapped over three
+                        lines by break-all, and a typo in it produces another opaque
+                        curl failure for a user who is already stuck.
+
+                        `copyToClipboard`, not navigator.clipboard directly, and
+                        awaited before the label flips: the Clipboard API is
+                        unavailable on a plain-HTTP remote gateway -- which is a
+                        plausible way to be reading this panel -- and flipping the
+                        label regardless would promise a paste that is not there.
+                        Same reasoning as AboutPanel's gateway command.
+                      */}
+                      <Btn
+                        onClick={async () => {
+                          await copyToClipboard(installCommand)
+                          setInstallCmdCopied(true)
+                        }}
+                      >
+                        <Copy size={13} className="lucide-inline" />{' '}
+                        {installCmdCopied
+                          ? i18nT('pages.settings.browserPanel.copied')
+                          : i18nT('pages.settings.browserPanel.copy_command')}
+                      </Btn>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <Btn

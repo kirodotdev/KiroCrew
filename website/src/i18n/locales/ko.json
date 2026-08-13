@@ -9894,7 +9894,10 @@
         "engine_download": "내려받기",
         "engine_needed_for_attach": "attach에 필요",
         "node_missing": "Node.js 20 이상이 필요하지만 이 컴퓨터에서 Node를 찾을 수 없습니다.",
-        "node_how": "설치한 후 이 페이지를 다시 열어 주세요. <dl>Node.js 다운로드</dl>"
+        "node_how": "설치한 후 이 페이지를 다시 열어 주세요. <dl>Node.js 다운로드</dl>",
+        "node_no_admin": "Node를 설치할 수 없는 컴퓨터(관리자 권한이 없거나 레지스트리에 로그인이 필요한 경우)에서는 Kiro Crew가 실행되는 컴퓨터에서 아래 명령을 실행하세요. 스크립트가 Node와 CLI를 홈 디렉터리에 설치하고, 네트워크가 다운로드를 차단하면 해결 방법을 알려줍니다.",
+        "copy_command": "명령 복사",
+        "copied": "복사됨"
       },
       "channelDisabledPanel": {
         "checking_your_organization_s_channel_policy": "조직의 채널 정책을 확인하는 중…",

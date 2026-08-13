@@ -28,12 +28,17 @@ def run_bounded(
     argv: list[str],
     env: dict[str, str],
     timeout: float = INSTALLER_TIMEOUT,
+    cwd: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``argv`` in its own process group; on timeout kill the whole group.
 
     ``start_new_session`` makes the child a session leader, so its pid is also
     its process-group id and one ``killpg`` reaps every descendant. Re-raises
     ``subprocess.TimeoutExpired`` once the group is gone.
+
+    ``cwd`` matters when the thing under test resolves a RELATIVE path: an
+    installer that bakes one into a generated wrapper can only be caught by
+    running it from a known directory.
     """
     with subprocess.Popen(
         argv,
@@ -41,6 +46,7 @@ def run_bounded(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
+        cwd=cwd,
         start_new_session=True,
     ) as proc:
         try:

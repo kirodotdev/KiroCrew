@@ -9894,7 +9894,10 @@
         "engine_download": "ダウンロード",
         "engine_needed_for_attach": "attach に必要",
         "node_missing": "Node.js 20 以降が必要ですが、このマシンに Node が見つかりません。",
-        "node_how": "インストール後、このページを再度開いてください。<dl>Node.js をダウンロード</dl>"
+        "node_how": "インストール後、このページを再度開いてください。<dl>Node.js をダウンロード</dl>",
+        "node_no_admin": "Node をインストールできないマシン（管理者権限がない、またはレジストリがログインを要求する場合）では、Kiro Crew が動作しているマシンで以下のコマンドを実行してください。スクリプトが Node と CLI をホームディレクトリにインストールし、ネットワークがダウンロードを遮断している場合は対処方法を教えてくれます。",
+        "copy_command": "コマンドをコピー",
+        "copied": "コピーしました"
       },
       "channelDisabledPanel": {
         "checking_your_organization_s_channel_policy": "組織のチャネルポリシーを確認中…",
