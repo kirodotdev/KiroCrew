@@ -795,7 +795,9 @@ describe('ChatPanel streaming footer', () => {
     await renderPanel()
     stream('Building it now <mcwidget title="Half')
     expect(await screen.findByText('Building it now')).toBeInTheDocument()
-    expect(screen.queryByText(/mcwidget/)).not.toBeInTheDocument()
+    // The stream commit is async; wait for React to flush before asserting the
+    // negative, or a slow runner still sees the pre-strip markup and fails.
+    await waitFor(() => expect(screen.queryByText(/mcwidget/)).not.toBeInTheDocument())
   })
 
   it('replaces the streamed text with the committed message', async () => {
