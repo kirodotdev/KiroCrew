@@ -28,8 +28,10 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Concrete publish providers are NOT imported here. In the public edition no
 # provider is registered (the registry stays empty → get_provider() raises
@@ -90,24 +92,53 @@ _STANDALONE_THEME_VARS: dict[str, str] = {
     "--info": "#2563eb",
 }
 
-# CSP for the published standalone widget document (wrap_widget_html), rendered
-# in a null-origin sandboxed iframe. Accepted risk:
-# 'unsafe-eval' is required by the Tailwind Play CDN
-# (cdn.tailwindcss.com), a client-side JIT compiler that calls new Function();
-# 'unsafe-inline' is required because widget bodies are LLM-authored inline
-# <script>/<style> that cannot be nonce/hash-pinned at author time. Residual
-# XSS risk is contained by the sandbox — null origin, default-src 'none',
-# connect-src 'none', form-action 'none', base-uri 'none' — so LLM content
-# cannot reach cookies, storage, the parent DOM, or the network. Removing these
-# tokens would break Tailwind-styled widgets with no material security gain.
+# CSP for the published standalone widget document (wrap_widget_html).
+#
+# 'unsafe-eval' is NOT granted: the vendored Tailwind v4 runtime inlined by
+# wrap_widget_html uses zero eval/Function/WebAssembly, so widget JS gets no
+# dynamic-exec primitive. 'unsafe-inline' stays — widget bodies are LLM-authored
+# inline <script>/<style> that cannot be nonce/hash-pinned at author time, and
+# the runtime itself is inlined. jsdelivr/cdnjs remain for widget-authored
+# Chart.js/D3.
+#
+# Inline script therefore still executes, and what bounds it is carried by the
+# document: this CSP travels in a <meta> tag, so connect-src 'none',
+# form-action 'none' and base-uri 'none' hold wherever the document is served —
+# no fetch/XHR/WebSocket, no form target, no rebased URL. This is not a total
+# egress boundary: script-src deliberately admits jsdelivr/cdnjs, and CSP does
+# not govern top-level navigation. Origin-level isolation (no cookies, no
+# storage, no parent DOM) additionally depends on the destination rendering it
+# in a sandboxed iframe, which the provider owns and Kiro Crew cannot enforce;
+# it is an expectation of the viewer, not a guarantee made here.
 _CSP = (
     "default-src 'none'; "
-    "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com "
+    "script-src 'unsafe-inline' "
     "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
-    "style-src 'unsafe-inline' https://cdn.tailwindcss.com; "
+    "style-src 'unsafe-inline'; "
     "img-src data: blob:; font-src data:; connect-src 'none'; "
     "form-action 'none'; base-uri 'none';"
 )
+
+#: Vendored Tailwind v4 browser runtime, staged into the served static bundle by
+#: the frontend build (``website/vite.config.ts`` emits it from the tracked
+#: ``@tailwindcss/browser`` dependency). ``website/src/lib/vendorPaths.ts`` is
+#: the URL-path source of truth for the dashboard's own consumers; this is the
+#: on-disk copy of the same asset, read at publish time because a published
+#: document is viewed outside the dashboard and cannot resolve its origin.
+_TAILWIND_RUNTIME_FILE = (
+    Path(__file__).resolve().parent / "static" / "dist" / "vendor" / "tailwindcss-browser.js"
+)
+
+#: Matches a raw-text script terminator in any ASCII casing, capturing the tag
+#: name so a substitution can preserve it. HTML tokenization compares
+#: ``</script`` case-insensitively, so a lowercase-only escape lets ``</SCRIPT>``
+#: close an inlined script early; preserving the matched casing keeps the
+#: neutralised text byte-identical to the source once the browser reads ``<\/``
+#: back as ``/``. ``re.ASCII`` bounds the folding to ASCII: Python otherwise
+#: folds U+017F onto ``s`` and U+0131/U+0130 onto ``i``, so ``</ſcript>`` — which
+#: the HTML tokenizer does NOT treat as a terminator — would take a stray
+#: backslash and could corrupt a raw string literal in the bundle.
+_SCRIPT_CLOSE_RE = re.compile(r"</(script)", re.IGNORECASE | re.ASCII)
 _BASE_BODY_CSS = (
     "body { margin: 0; padding: 16px; font-family: -apple-system, "
     "BlinkMacSystemFont, 'Segoe UI', sans-serif; }"
@@ -165,11 +196,46 @@ _WIDGET_BODY_START = "<!--mc:widget-body-->"
 _WIDGET_BODY_END = "<!--/mc:widget-body-->"
 
 
+def _tailwind_runtime_js() -> str:
+    """Source of the vendored Tailwind v4 browser runtime, or ``""`` when the
+    staged frontend bundle is absent (an unbuilt source checkout).
+
+    Read per call rather than cached: the served bundle is restaged at runtime by
+    a frontend rebuild, and a cache populated before the first build would pin
+    the missing state forever. A 260 KB read is negligible beside the upload it
+    precedes.
+
+    Missing asset degrades to an unstyled-utility render, never to the Tailwind
+    Play CDN: that CDN JIT-compiles via ``new Function()`` and would require
+    ``'unsafe-eval'``, which :data:`_CSP` does not grant. A single static CSP
+    cannot grant eval conditionally, so falling back would mean granting it for
+    every published document to serve a case that only arises pre-build.
+    """
+    try:
+        return _TAILWIND_RUNTIME_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "Tailwind runtime %s unavailable (%s); publishing widget without "
+            "utility-class styling",
+            _TAILWIND_RUNTIME_FILE,
+            exc,
+        )
+        return ""
+
+
 def wrap_widget_html(inner_html: str) -> str:
     """Wrap a widget's inner HTML in a self-contained standalone document.
 
     Mirrors the frontend ``buildSrcdoc`` (widgetSrcdoc.ts) for a fixed
-    light-theme render. The publishing provider auto-injects ``<base
+    light-theme render, including its eval-free Tailwind v4 runtime — inlined
+    here rather than linked, because the document is viewed away from the
+    dashboard origin that serves it. Self-contained as a result: the wrapper
+    adds no network fetch of its own, so styling survives CDN churn and works in
+    network-restricted viewers (widget-authored content may still load its own
+    scripts from the allowed CDNs). The accepted cost is the runtime's ~260 KB
+    in every document wrapped with the runtime staged, paid as transfer and
+    parse before first paint instead of as a CDN round trip. The publishing
+    provider auto-injects ``<base
     target="_blank">`` and a same-page anchor interceptor on upload, so we do
     NOT add those here (design §6.1). No height reporter — that's only for the
     dashboard iframe.
@@ -189,13 +255,21 @@ def wrap_widget_html(inner_html: str) -> str:
         f":root{{{theme_css};color-scheme:light}}"
         "body{background:var(--bg);color:var(--text)}"
     )
+    # The runtime is inlined rather than linked: an external viewer cannot reach
+    # the dashboard origin the frontend serves it from, and the provider hosts a
+    # single file with no sibling asset. Inlining is what keeps the document
+    # self-contained AND eval-free. A raw-text terminator in the source would
+    # close this element early, so every casing of `</script` is neutralised
+    # (the current bundle contains none; the escape keeps a dependency bump from
+    # turning that into a silent break).
+    runtime = _SCRIPT_CLOSE_RE.sub(lambda m: "<\\/" + m.group(1), _tailwind_runtime_js())
+    runtime_tag = f"<script>{runtime}</script>" if runtime else ""
     return (
         "<!DOCTYPE html>\n<html><head>"
         '<meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f'<meta http-equiv="Content-Security-Policy" content="{_CSP}">'
-        '<script src="https://cdn.tailwindcss.com"></script>'
-        "<script>tailwind.config={darkMode:'class'}</script>"
+        f"{runtime_tag}"
         f"<style>{style}</style>"
         '</head><body class="light">'
         f"{_WIDGET_BODY_START}{inner_html}{_WIDGET_BODY_END}"
