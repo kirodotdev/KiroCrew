@@ -1413,6 +1413,17 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
     force = request.query.get("force", "").lower() == "true"
+    # The session the slot's turns actually RUN on, which is what has to be
+    # cancelled. `_history_key_for(name)` is wrong for every slot that carries a
+    # `linked_session_key`: a cron-born tab (`cron-<job_id>` → `cron:<job_id>`),
+    # a channel-born tab (`slack:<ts>`) and a workflow-born tab all run their
+    # turns under that key (`chat_runner` resolves it with
+    # `effective_session_key`), while the dashboard-prefixed spelling names a
+    # session that never existed. `SessionManager.stop_turn` then finds nothing
+    # and returns "idle", the handler settles the card as "stopped", and the
+    # turn keeps streaming — so Stop is a silent no-op that reports success,
+    # once per press.
+    session_key = effective_session_key(slot)
 
     # Escalation path: a second stop press while a cooperative cancel is
     # already pending hard-kills. We escalate on ANY second press — not only
@@ -1441,9 +1452,9 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         # Unblock chat runner if it's suspended waiting for tool approval or on
         # a pending ask_question card.
         _unblock_pending_waits(state, slot)
-        await state.sessions.stop_turn(_history_key_for(name), force=True, on_hard=_on_hard_force)
+        await state.sessions.stop_turn(session_key, force=True, on_hard=_on_hard_force)
         sel().log_tool_invocation(
-            session_key=_history_key_for(name),
+            session_key=session_key,
             agent=getattr(slot, "agent", "") or "kirocrew",
             source="dashboard",
             tool_name="dashboard_stop",
@@ -1463,7 +1474,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         else:
             _info = "stop already in progress"
         sel().log_tool_invocation(
-            session_key=_history_key_for(name),
+            session_key=session_key,
             agent=getattr(slot, "agent", "") or "kirocrew",
             source="dashboard",
             tool_name="dashboard_stop",
@@ -1526,7 +1537,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     _unblock_pending_waits(state, slot)
 
     outcome = await state.sessions.stop_turn(
-        _history_key_for(name), force=False, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard
+        session_key, force=False, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard
     )
     # Resolve orphaned card when provider reports no active turn
     if outcome == "idle" and slot._stop_event_id:
@@ -1534,7 +1545,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         slot._stop_state = "idle"
         state.push_slots_update()
     sel().log_tool_invocation(
-        session_key=_history_key_for(name),
+        session_key=session_key,
         agent=getattr(slot, "agent", "") or "kirocrew",
         source="dashboard",
         tool_name="dashboard_stop",
@@ -1880,13 +1891,17 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     if not slot.running:
         return web.json_response({"ok": True, "info": "not running"})
+    # Same reason as `api_chat_slot_stop`: cancel the session the turns RUN on,
+    # not the dashboard-prefixed spelling of the slot key, which names nothing
+    # for a slot carrying a `linked_session_key`.
+    session_key = effective_session_key(slot)
     # Idempotent guard: interrupt already in progress. State alone decides —
     # do NOT also require _stop_event_id: after the early soft_pending claim
     # below, a concurrent request can arrive before the stop card is created
     # (event id still None), and a compound condition would let it through.
     if slot._stop_state != "idle":
         sel().log_tool_invocation(
-            session_key=_history_key_for(name),
+            session_key=session_key,
             agent=getattr(slot, "agent", "") or "kirocrew",
             source="dashboard",
             tool_name="dashboard_interrupt",
@@ -1951,7 +1966,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     _unblock_pending_waits(state, slot)
 
     outcome = await state.sessions.stop_turn(
-        _history_key_for(name),
+        session_key,
         force=False,
         preserve_queue=True,
         on_soft=_on_soft,
@@ -1963,7 +1978,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         slot._stop_state = "idle"
         state.push_slots_update()
     sel().log_tool_invocation(
-        session_key=_history_key_for(name),
+        session_key=session_key,
         agent=getattr(slot, "agent", "") or "kirocrew",
         source="dashboard",
         tool_name="dashboard_interrupt",
