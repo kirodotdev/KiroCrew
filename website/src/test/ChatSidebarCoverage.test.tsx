@@ -573,6 +573,7 @@ describe('ChatSidebar — reveal request (store-driven, issue #912)', () => {
   })
 
   it('clears the sidebar search filter when it hides the target row', async () => {
+    localStorage.setItem('mc-session-pinned-only', '1')
     const { store } = renderSidebar({
       slots: [
         { key: 'k-a', title: 'Alpha', running: false },
@@ -588,6 +589,9 @@ describe('ChatSidebar — reveal request (store-driven, issue #912)', () => {
     // reveal has something to land on.
     await waitFor(() => expect((search as HTMLInputElement).value).toBe(''))
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    // The status-filter clearing must ALSO clear the persisted key — the
+    // sidebar unmounts when the drawer collapses, and remount re-reads it.
+    expect(localStorage.getItem('mc-session-pinned-only')).toBe('0')
   })
 
   it('ignores a request for an unknown session key but still consumes it', async () => {

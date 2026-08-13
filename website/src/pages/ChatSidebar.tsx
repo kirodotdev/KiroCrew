@@ -694,6 +694,8 @@ const SORT_LS_KEY = 'mc-session-sort'
 const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
 
 export const SIDEBAR_MIN = 180
+export const SIDEBAR_MAX = 1400
+const SIDEBAR_LS_KEY = 'mc-sidebar-width'
 /** Reveal-in-sidebar retry budget: ancestor expansion and filter resets land
  *  through mutations and re-renders, so the target row can enter the DOM
  *  several frames after the request is consumed. 20 × 100 ms ≈ 2 s, then the
@@ -703,8 +705,10 @@ const REVEAL_RETRY_MS = 100
 const REVEAL_MAX_ATTEMPTS = 20
 /** How long the reveal confirmation outline holds before fading out. */
 const REVEAL_FLASH_HOLD_MS = 1600
-export const SIDEBAR_MAX = 1400
-const SIDEBAR_LS_KEY = 'mc-sidebar-width'
+/** Must cover the CSS fade on .session-reveal-flash-fade in index.css (.4s):
+ *  the classes are removed at HOLD + FADE + slack, so shortening this below
+ *  the CSS duration snaps the outline off mid-fade. */
+const REVEAL_FLASH_FADE_MS = 500
 
 function ChatSidebar({
   slots, activeSlot, unreadSlots, history, historyHasMore,
@@ -1811,13 +1815,26 @@ function ChatSidebar({
     // Consume immediately: the request must not survive to a later remount.
     dispatch(clearSlotReveal())
     const slot = slots.find(s => s.key === key)
-    if (!slot) return
+    if (!slot) {
+      // Stale key or a session outside this surface's slot list. Not user-visible
+      // (there is nothing to highlight), so leave a trace for bug reports.
+      console.debug('reveal-in-sidebar: no session for key', key)
+      return
+    }
     // A live sidebar search or status filter can exclude the target row from
     // the list entirely (#912 D5) — reveal is an explicit "show me this row",
     // so drop the filters that hide it rather than scrolling to nothing.
     if (!filteredSlots.some(s => s.key === key)) {
       if (slotFilter) setSlotFilter('')
-      if (activeFilters.size > 0) setActiveFilters(new Set())
+      if (activeFilters.size > 0) {
+        // Persisted like toggleFilter: state alone is not enough — the sidebar
+        // unmounts whenever the drawer collapses, and remount re-reads the
+        // stored '1', silently restoring the filter that hides this row.
+        for (const filterDef of SESSION_FILTERS) {
+          if (activeFilters.has(filterDef.key)) safeSetItem(filterDef.storageKey, '0')
+        }
+        setActiveFilters(new Set())
+      }
     }
     if (slot.folder_id) {
       // The folder filter hides whole subtrees in the flat and tree lanes —
@@ -1867,6 +1884,9 @@ function ChatSidebar({
       if (!el) {
         attempt += 1
         if (attempt <= REVEAL_MAX_ATTEMPTS) run.timer = window.setTimeout(tryScroll, REVEAL_RETRY_MS)
+        // Row never appeared (e.g. board lane with no matching column). Not
+        // user-visible, so leave a trace for bug reports instead of vanishing.
+        else console.debug('reveal-in-sidebar: row never rendered for', key)
         return
       }
       const reduce = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -1883,7 +1903,7 @@ function ChatSidebar({
       revealFlashTimersRef.current.forEach(clearTimeout)
       setRevealFlash({ key, fading: false })
       const t1 = window.setTimeout(() => setRevealFlash(f => (f && f.key === key ? { key, fading: true } : f)), REVEAL_FLASH_HOLD_MS)
-      const t2 = window.setTimeout(() => setRevealFlash(f => (f && f.key === key ? null : f)), REVEAL_FLASH_HOLD_MS + 500)
+      const t2 = window.setTimeout(() => setRevealFlash(f => (f && f.key === key ? null : f)), REVEAL_FLASH_HOLD_MS + REVEAL_FLASH_FADE_MS)
       revealFlashTimersRef.current = [t1, t2]
     }
     tryScroll()

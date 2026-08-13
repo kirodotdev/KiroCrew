@@ -6159,13 +6159,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
-                  onReveal={activeSlot ? () => {
+                  onReveal={activeSlot && embedMode !== 'chat' ? () => {
                     // The request rides the store, not a window event: with the
                     // drawer collapsed ChatSidebar is unmounted, so an event
                     // dispatched here (before the mount that setSidebarPinned
                     // schedules commits) had no listener and was dropped —
                     // the store entry survives until the sidebar consumes it
-                    // (#912). Mobile drives its own drawer state.
+                    // (#912). Mobile drives its own drawer state. Embed-chat
+                    // never mounts a sidebar, so the item is not offered there:
+                    // a stored request would outlive the view and fire on
+                    // whichever sidebar mounts next.
                     sidebarAutoHidden.current = null
                     if (isMobile) setMobileSessions(true)
                     else if (!sidebarPinned) setSidebarPinned(true)
