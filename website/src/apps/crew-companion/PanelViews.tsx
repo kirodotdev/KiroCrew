@@ -208,6 +208,7 @@ const Toggle: React.FC<{
 }> = ({ on, onChange, label, hint }) => {
   const skin = useSkin()
   return (
+    // eslint-disable-next-line jsx-a11y/label-has-for -- input IS nested inside this label; nesting provides the association
     <label style={{
       display: 'flex', alignItems: 'flex-start', gap: 9, padding: '9px 10px',
       // No background/radius of its own: a Toggle may sit alone or grouped with
@@ -235,6 +236,7 @@ const Toggle: React.FC<{
         <input
           type="checkbox"
           role="switch"
+          aria-label={label}
           checked={on}
           onChange={(e) => onChange(e.target.checked)}
           style={{
@@ -294,7 +296,8 @@ export const SettingsView: React.FC = () => {
    * `apply` is shared by both paths so they cannot drift in which keys they honour.
    */
   useEffect(() => {
-    const apply = (c: any) => {
+    const apply = (c: Record<string, unknown> | null) => {
+      if (!c) return
       if (typeof c?.breakNudgesEnabled === 'boolean') setBreakOn(c.breakNudgesEnabled)
       if (typeof c?.sessionNotificationsEnabled === 'boolean') setSessionOn(c.sessionNotificationsEnabled)
       if (typeof c?.breakReminderMins === 'number') {
@@ -426,6 +429,7 @@ export class ViewBoundary extends React.Component<
   state = { failed: false }
   static getDerivedStateFromError() { return { failed: true } }
   componentDidCatch(err: unknown) {
+    // eslint-disable-next-line no-console -- error boundary needs to log
     console.error('[panel] view failed to render:', err)
   }
 

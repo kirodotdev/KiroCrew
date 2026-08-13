@@ -76,6 +76,7 @@ const SpriteRendererInner: React.FC<SpriteRendererProps> = ({
 
   const dw = displaySize || frameWidth
   const dh = displaySize || frameHeight
+  // eslint-disable-next-line jsx-a11y/control-has-associated-label -- decorative animation canvas, not interactive
   return <canvas ref={canvasRef} width={frameWidth} height={frameHeight} style={{ width: dw, height: dh, imageRendering: 'pixelated' }} />
 }
 

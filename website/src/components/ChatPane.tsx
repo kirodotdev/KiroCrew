@@ -6,8 +6,7 @@ import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
-import ToolCallLine from '../pages/chat/ToolCallLine'
-import type { ChatMessage } from '../types'
+import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput from './ChatInput'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
@@ -314,12 +313,30 @@ export default function ChatPane({
     // response was lost, leaving this client in conflict with execution order.
     api.reorderQueuedMessages(slotKey, next).catch(() => undefined)
   }, [slotKey, allMessages, queuedMessages])
-  // Split-view panes render tool calls with the full ToolCallLine (purpose / input /
-  // output / live status) instead of the SDK's bare pill. ToolCallLine's slot-aware
-  // selectors read THIS slot's per-slot tool log, so a background pane shows the same
-  // live tool detail as the main chat view. Injected as a render prop so
-  // app-sdk/ChatMessageList stays Redux-free for the embed SDK.
-  const renderTool = useCallback((m: ChatMessage) => <ToolCallLine message={m} running={running} slot={slotKey} />, [slotKey, running])
+  // Split-view panes draw the SAME transcript rows as the single-chat surface,
+  // through the SDK's row registry: the live ToolCallLine (purpose / input /
+  // output / live status), the workflow and sub-agent launch cards, thinking
+  // traces, sent files, auto-nudge turns, recovery injects, workflow
+  // completions. The SDK's built-in registry is store-free by design and so
+  // draws weaker rows — or nothing at all — for most of these; the
+  // store-connected set is supplied here as host entries instead, which is the
+  // registry's intended extension path and keeps app-sdk/ChatMessageList
+  // Redux-free for the embed SDK.
+  //
+  // The tool rows' expanded state is held ABOVE the rows: a row remounts
+  // whenever the message list updates, and would otherwise forget it.
+  const [toolDisclosure, setToolDisclosure] = useState<Record<string, boolean>>({})
+  const setToolDisclosureFor = useCallback((key: string, expanded: boolean) => {
+    setToolDisclosure((prev) => ({ ...prev, [key]: expanded }))
+  }, [])
+  const renderers = useMemo(
+    () => createTranscriptRenderers({
+      slot: slotKey,
+      toolDisclosure,
+      onToolDisclosureChange: setToolDisclosureFor,
+    }),
+    [slotKey, toolDisclosure, setToolDisclosureFor],
+  )
 
   const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus:border-accent'
 
@@ -371,7 +388,7 @@ export default function ChatPane({
           {messages.length === 0 && !running && (
             <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}
-          <ChatMessageList messages={messages} running={running} renderTool={renderTool} hideCardOwnedOAuth={connectionsUiOn} />
+          <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
           <div ref={endRef} />
         </div>
 

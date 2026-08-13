@@ -57,6 +57,7 @@ from kiro_crew.telegram.renderer import (
     _may_exceed_rendered,
     _md_to_telegram_html,
     _rendered_len,
+    _row_cell_count,
     _seal_table_fallback,
     _split_markdown,
     _split_markdown_bounded,
@@ -1169,6 +1170,70 @@ class TestRenderer:
         # A pipe-bearing sentence above a horizontal rule is NOT a table: the
         # separator row has no pipe, so it stays on the ordinary HTML path.
         assert not _has_table("cost | benefit analysis\n---------------------")
+
+    def test_table_detection_requires_matching_cell_counts(self) -> None:
+        # THE bug: a header row glued to leading prose has one cell too many, so
+        # no GFM parser sees a table. Claiming one anyway sends the block down
+        # the rich path, where the server renders it as a single paragraph --
+        # newlines collapsed, every pipe literal. Counting cells is what keeps
+        # that content on the monospace path instead.
+        assert not _has_table("Here you go:| a | b |\n| --- | --- |\n| 1 | 2 |")
+        assert not _has_table("a | b | c\n--- | ---\n1 | 2")  # malformed, 3 vs 2
+        assert _has_table("| a |\n| --- |\n| 1 |")  # single column is still a table
+        assert _has_table("| a\\|b | c |\n| --- | --- |\n| 1 | 2 |")  # escaped pipe
+        # A one-cell separator must not promote the sentence above it to a table.
+        assert not _has_table("just prose\n|---|")
+
+    def test_table_detection_counts_cells_by_escape_parity(self) -> None:
+        # `\|` is cell content, but `\\` is a literal backslash that leaves the
+        # NEXT pipe a real boundary. A fixed-width lookbehind cannot tell those
+        # apart: it reads the second backslash of an even run as an escape, merges
+        # two cells, and can make a malformed header match its delimiter -- which
+        # would route it to the rich path and flatten it.
+        assert _row_cell_count(r"| a\|b | c |") == 2, "escaped pipe stays inside its cell"
+        assert _row_cell_count("| a\\\\ | b |") == 2, "even backslash run does not escape"
+        assert _row_cell_count(r"| a\\\|b | c |") == 2, "odd run after a pair escapes again"
+        # The header below is 3 cells against a 2-cell delimiter once parity is
+        # honoured, so it must NOT be claimed as a table.
+        assert not _has_table("a\\\\ | b | c\n| --- | --- |\n| 1 | 2 |")
+
+    def test_delimiter_cells_follow_the_observed_server_rule(self) -> None:
+        # Every case here was checked against the live API by reading the echoed
+        # `rich_message.blocks`, because a spec reading and the server disagree.
+        # An EMPTY delimiter cell is rejected by the server (`paragraph`), so it
+        # must not take the rich path.
+        assert not _has_table("| a | b |\n| --- | |\n| 1 | 2 |")
+        # A BROKEN dash run is accepted by the server (`table`), so demanding a
+        # contiguous run would degrade a table it renders fine into monospace.
+        assert _has_table("| a | b |\n| - - | --- |\n| 1 | 2 |")
+        # Ordinary spellings, also confirmed as `table`.
+        assert _has_table("| a | b |\n| --- | --- |\n| 1 | 2 |")
+        assert _has_table("| a | b |\n| - | - |\n| 1 | 2 |")
+
+    def test_a_glued_table_is_sealed_verbatim_instead_of_reflowed(self) -> None:
+        # A header row sharing a line with prose has one cell too many, so no GFM
+        # parser sees a table. Sending it as rich would render one paragraph with
+        # every newline collapsed. Whether the extra cell is prose or a delimiter
+        # the author got wrong is NOT decidable from the text, so nothing is
+        # rewritten: the monospace seal reproduces the block as written.
+        glued = "Here is the table you asked for:| a | b |\n| --- | --- |\n| 1 | 2 |"
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(glued)
+            await r._stream_live(force=True)
+            await r._seal_current()
+
+        asyncio.run(_go())
+
+        assert cli.rich_sent == [], "non-conforming pipe markup must not take the rich path"
+        assert not cli.deleted, "the streamed bubble is edited, not replaced"
+        sealed = cli.edits[-1][1]
+        assert "<pre>" in sealed and "</pre>" in sealed, "the pipe block is sealed monospace"
+        for row in ("| a | b |", "| --- | --- |", "| 1 | 2 |"):
+            assert row in sealed, f"{row} must survive verbatim"
 
     def test_a_degraded_table_is_sealed_monospace_not_as_ragged_pipes(self) -> None:
         # When rich is unavailable the table still has to go out, but sealing it

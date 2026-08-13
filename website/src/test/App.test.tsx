@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterAll, describe, it, expect, vi } from 'vitest'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import App, { calculateTopbarSearchLayout } from '../App'
@@ -177,6 +177,19 @@ describe('App routing', () => {
       } as never)
       return api
     }
+
+    afterAll(async () => {
+      // Restore the default fully-onboarded mock so subsequent describe blocks
+      // don't inherit a first-run state that renders the Privacy chapter.
+      const { api } = await import('../api/client')
+      vi.mocked(api.themeBoot).mockResolvedValue({
+        mode: '',
+        color: '',
+        onboarded: true,
+        import_onboarded: true,
+        privacy_acked: true,
+      } as never)
+    })
 
     it('opens after Import setup and gates the Customize chapter', async () => {
       await freshFirstRun()

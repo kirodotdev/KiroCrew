@@ -109,7 +109,7 @@ export function usePlayfulMotion(
       window.removeEventListener('mousemove', onMove)
       reduceMq.removeEventListener('change', onReduceChange)
     }
-  }, [ref, activeRef, enabledRef])
+  }, [ref, activeRef, enabledRef, flipXRef])
 
   return { poke }
 }

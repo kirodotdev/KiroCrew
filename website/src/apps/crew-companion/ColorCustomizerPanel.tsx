@@ -59,7 +59,7 @@ const CS = {
 function PresetCard({ preset, active, svgContent, onClick, onDelete, deleteLabel, i18nT }: {
   preset: CatPreset; active: boolean; svgContent: string
   onClick: () => void; onDelete?: () => void; deleteLabel: string
-  i18nT: (key: any) => string
+  i18nT: (key: string) => string
 }) {
   const previewUri = useMemo(() => {
     const cm = preset.colorMap
@@ -68,7 +68,7 @@ function PresetCard({ preset, active, svgContent, onClick, onDelete, deleteLabel
   }, [preset.colorMap, svgContent])
 
   // Built-in presets store i18n key in name; custom presets store literal name
-  const displayName = preset.builtIn ? i18nT(preset.name as any) : preset.name
+  const displayName = preset.builtIn ? i18nT(preset.name) : preset.name
 
   return (
     <div role="button" tabIndex={0} aria-pressed={active} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }} style={CS.presetCard(active)} onClick={onClick}>
@@ -105,6 +105,7 @@ function ColorEditorCard({ sourceColor, targetColor, bodyPart, svgContent, allCo
       <img src={highlightUri} alt={bodyPart} style={CS.presetThumb} draggable={false} />
       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>{bodyPart}</div>
       <input type="color" value={targetColor} onChange={e => onChange(e.target.value)}
+        aria-label={bodyPart}
         style={{ width: 36, height: 20, border: 'none', padding: 0, cursor: 'pointer', borderRadius: 4 }} />
     </div>
   )
@@ -216,6 +217,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               onChange={e => setSaveNameInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleSaveAsPreset(); if (e.key === 'Escape') setShowSaveForm(false) }}
               placeholder={i18nT('apps.crewCompanion.color.promptName')}
+              aria-label={i18nT('apps.crewCompanion.color.promptName')}
               autoFocus
               style={{
                 padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)',
