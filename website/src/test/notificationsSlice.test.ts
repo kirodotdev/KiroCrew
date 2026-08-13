@@ -25,6 +25,7 @@ vi.mock('../api/client', () => ({
 
 const n1: Notification = { kind: 'cron', title: 'Job done', body: 'output', ts: '1' }
 const n2: Notification = { kind: 'approval', title: 'Approve?', body: 'tool X', ts: '2' }
+const fetched = (items: Notification[], seq = 0) => ({ items, seq })
 
 describe('notificationsSlice', () => {
   describe('reducers', () => {
@@ -53,26 +54,71 @@ describe('notificationsSlice', () => {
 
   describe('extraReducers', () => {
     it('fetchNotifications.fulfilled replaces items', () => {
-      const state = reducer({ items: [n1], clearSeq: 0 }, fetchNotifications.fulfilled({ items: [n2], seq: 0 }, ''))
+      let state = reducer({ items: [n1] }, fetchNotifications.pending('fetch', undefined))
+      state = reducer(state, fetchNotifications.fulfilled(fetched([n2]), 'fetch'))
       expect(state.items).toEqual([n2])
     })
 
-    it('fetchNotifications.fulfilled is dropped when a clear landed mid-flight', () => {
-      // The fetch started at generation 0; a clear bumped it to 1 while the
-      // request was in flight, so this payload predates the clear. Applying it
-      // would resurrect the rows and the bell badge with them.
-      const state = reducer({ items: [], clearSeq: 1 }, fetchNotifications.fulfilled({ items: [n1, n2], seq: 0 }, ''))
-      expect(state.items).toEqual([])
+    it('keeps the newest fetch response when requests overlap', () => {
+      let state = reducer(undefined, addNotification(n1))
+      state = reducer(state, fetchNotifications.pending('older', undefined))
+      state = reducer(state, fetchNotifications.pending('newer', undefined))
+
+      state = reducer(state, fetchNotifications.fulfilled(fetched([n2]), 'newer'))
+      expect(state.items).toEqual([n2])
+
+      state = reducer(state, fetchNotifications.fulfilled(fetched([n1]), 'older'))
+      expect(state.items).toEqual([n2])
     })
 
-    it('a fetch started after the clear still applies', () => {
-      const state = reducer({ items: [], clearSeq: 1 }, fetchNotifications.fulfilled({ items: [n1], seq: 1 }, ''))
-      expect(state.items).toEqual([n1])
+    it('keeps an acknowledgement while its request is unsettled', () => {
+      let state = reducer(undefined, addNotification(n1))
+      state = reducer(state, ackNotification.pending('ack', '1'))
+      state = reducer(state, fetchNotifications.pending('stale', undefined))
+      state = reducer(state, fetchNotifications.fulfilled(fetched([{ ...n1, acked: false }]), 'stale'))
+
+      expect(state.items[0]?.acked).toBe(true)
+      state = reducer(state, ackNotification.fulfilled('1', 'ack', '1'))
+      expect(state.items[0]?.acked).toBe(true)
+    })
+
+    it('does not let a server-sent acknowledgement get overwritten by an earlier fetch', () => {
+      let state = reducer(undefined, addNotification(n1))
+      state = reducer(state, fetchNotifications.pending('stale', undefined))
+      state = reducer(state, ackNotificationByTs('1'))
+      state = reducer(state, fetchNotifications.fulfilled(fetched([{ ...n1, acked: false }]), 'stale'))
+
+      expect(state.items[0]?.acked).toBe(true)
+    })
+
+    it('does not resurrect a deleted notification from an earlier fetch', () => {
+      let state = reducer(undefined, addNotification(n1))
+      state = reducer(state, addNotification(n2))
+      state = reducer(state, fetchNotifications.pending('stale', undefined))
+      state = reducer(state, deleteNotification.fulfilled('1', 'delete', '1'))
+      state = reducer(state, fetchNotifications.fulfilled(fetched([n1, n2]), 'stale'))
+
+      expect(state.items).toEqual([n2])
+    })
+
+    it('does not restore notifications after a clear', () => {
+      let state = reducer(undefined, addNotification(n1))
+      state = reducer(state, fetchNotifications.pending('stale', undefined))
+      state = reducer(state, clearNotifications.fulfilled({ seq: 0 }, 'clear'))
+      state = reducer(state, fetchNotifications.fulfilled(fetched([n1]), 'stale'))
+
+      expect(state.items).toEqual([])
     })
 
     it('clearNotifications.fulfilled empties items', () => {
       const state = reducer({ items: [n1, n2], clearSeq: 0 }, clearNotifications.fulfilled({ seq: 0 }, ''))
       expect(state.items).toEqual([])
+    })
+
+    it('a fetch started after the clear still applies', () => {
+      let state = reducer({ items: [], clearSeq: 1 }, fetchNotifications.pending('after-clear', undefined))
+      state = reducer(state, fetchNotifications.fulfilled(fetched([n1], 1), 'after-clear'))
+      expect(state.items).toEqual([n1])
     })
 
     it('clearNotifications.fulfilled does not re-empty after the WS frame applied the clear', () => {
