@@ -156,7 +156,7 @@ class TestPacingLosesNoFiles:
         fw = FolderWatcher(store, pipe)
         ingested: list[str] = []
 
-        async def _ingest(file_path, source_id, namespace, props, old_ids, root=""):
+        async def _ingest(file_path, source_id, namespace, props, old_ids, root="", **kw):
             ingested.append(file_path)
             return ["i-" + file_path], "done"  # 1 chunk per file
 
@@ -218,7 +218,7 @@ class TestExistingSourcesIngestTheSameFiles:
         fw2 = FolderWatcher(store, pipe)
         seen: list[str] = []
 
-        async def _ingest(file_path, source_id, namespace, props, old_ids, root=""):
+        async def _ingest(file_path, source_id, namespace, props, old_ids, root="", **kw):
             seen.append(file_path)
             return ["i-" + file_path], "done"
 

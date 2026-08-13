@@ -382,7 +382,7 @@ class TestFolderWatcherScanQueryCount:
 
         # First pass records every file so the second pass takes the unchanged
         # (last_seen-only) branch for all of them.
-        async def _ingest(file_path, source_id, namespace, props, old_ids, root: str = ""):
+        async def _ingest(file_path, source_id, namespace, props, old_ids, root: str = "", **kw):
             return ["item-" + Path(file_path).name], "done"
 
         fw._ingest_file = _ingest  # type: ignore[assignment]
@@ -419,7 +419,7 @@ class TestFolderWatcherScanQueryCount:
         pipeline._dedup_enabled = False
         fw = FolderWatcher(store, pipeline)
 
-        async def _ingest(file_path, source_id, namespace, props, old_ids, root: str = ""):
+        async def _ingest(file_path, source_id, namespace, props, old_ids, root: str = "", **kw):
             return ["item-1"], "done"
 
         fw._ingest_file = _ingest  # type: ignore[assignment]

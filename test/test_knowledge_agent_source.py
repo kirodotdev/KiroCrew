@@ -405,7 +405,7 @@ class TestChunkBudget:
         fw = FolderWatcher(kstore, pipe)
         calls: list[str] = []
 
-        async def _ingest(file_path, source_id, namespace, props, old_ids, root: str = ""):
+        async def _ingest(file_path, source_id, namespace, props, old_ids, root: str = "", **kw):
             calls.append(file_path)
             return ["i-" + file_path, "j-" + file_path], "done"  # 2 chunks per file
 
@@ -441,7 +441,7 @@ class TestChunkBudget:
         fw = FolderWatcher(kstore, pipe)
         calls: list[str] = []
 
-        async def _ingest(file_path, source_id, namespace, props, old_ids, root: str = ""):
+        async def _ingest(file_path, source_id, namespace, props, old_ids, root: str = "", **kw):
             calls.append(file_path)
             return ["i"], "done"
 
