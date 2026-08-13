@@ -26,7 +26,9 @@ from kiro_crew.apps.hooks_integration import (
 from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
 from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
-from kiro_crew.browser.setup import migrate_owned_playwright_registration
+from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
+from kiro_crew.browser_cli import token as browser_cli_token
+from kiro_crew.browser_cli import view as browser_cli_view
 from kiro_crew.channel_transcript_migration import migrate_channel_transcripts
 from kiro_crew.config import data_home
 from kiro_crew.config.loader import (
@@ -195,6 +197,26 @@ _DIST_DIR = _STATIC_DIR / "dist"
 # interval keeps the overhead negligible; a turn shorter than one interval never
 # outlasts a sleep timer, so not catching it is harmless.
 _PREVENT_SLEEP_POLL_INTERVAL_SECS = 15.0
+
+
+async def _prune_browser_snapshots_loop() -> None:
+    """Keep the browser snapshot directory bounded for as long as we run.
+
+    `playwright-cli` writes one snapshot YAML per command and prunes nothing, so
+    retention belongs to a long-lived component. It lives here rather than in the
+    agent because the agent has no reason to know the policy, and a per-command
+    prune would race the CLI daemon writing the next file.
+
+    The first pass is delayed so it never competes with boot work for disk, and the
+    interval is coarse because the retention bound is a ceiling, not a deadline.
+    """
+    await asyncio.sleep(60.0)
+    while True:
+        try:
+            await asyncio.to_thread(browser_cli_snapshots.prune)
+        except Exception:
+            logger.debug("browser snapshot prune failed", exc_info=True)
+        await asyncio.sleep(30 * 60.0)
 
 
 async def _should_prevent_sleep(state: DashboardState) -> bool:
@@ -910,19 +932,6 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
     logger.info("Serving React build from %s", dist_dir)
 
 
-def _migrate_playwright_to_proxy() -> None:
-    """Converge KiroCrew's own Playwright MCP registration to one canonical server.
-
-    Delegates to :func:`migrate_owned_playwright_registration`, which rewrites a
-    legacy or slash-keyed browse entry in ``~/.kiro/settings/mcp.json`` to the
-    canonical slash-free alias (``playwright-mcp``) proxy entry and sweeps the
-    KiroCrew-generated agent configs so a duplicate proxy entry collapses onto
-    the one canonical server. This self-heals an existing machine on a plain
-    gateway restart rather than waiting for a full agent rebuild.
-    """
-    migrate_owned_playwright_registration()
-
-
 def _precompute_telemetry(state: "DashboardState") -> None:
     """Pre-compute telemetry data (blocking I/O — call before server starts)."""
     from kiro_crew.dashboard.handlers_system import _get_owner_hash, _get_static_system_info
@@ -1000,15 +1009,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     # here (not the dashboard-only block) so headless --slack-only mode
     # serves it too; it is on _STRICT_INTERNAL_API_PATHS like send-message.
     app.router.add_post("/api/notifications/agent", handlers.api_notification_agent_push)
-    app.router.add_post("/api/browser-event", handlers.api_browser_event)
-    app.router.add_post("/api/browser-auth-retry", handlers.api_browser_auth_retry)
-    app.router.add_post("/api/browser/frame", handlers.api_browser_frame)
-    app.router.add_post("/api/browser/pump-audit", handlers.api_browser_pump_audit)
-    app.router.add_post("/api/browser/command", handlers.api_browser_command)
-    app.router.add_post("/api/browser/command-drain", handlers.api_browser_command_drain)
-    app.router.add_post("/api/browser/command-result", handlers.api_browser_command_result)
-    app.router.add_get("/api/browser/config", handlers.api_browser_config_get)
-    app.router.add_put("/api/browser/config", handlers.api_browser_config_save)
+    app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
+    app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
+    app.router.add_post("/api/browser/install", handlers.api_browser_install_start)
+    app.router.add_post("/api/browser/engine", handlers.api_browser_engine_install)
+    app.router.add_get("/api/browser/view", handlers.api_browser_view_get)
+    app.router.add_post("/api/browser/view/start", handlers.api_browser_view_start)
     # Computer use: the thin ``kirocrew-computer`` stdio shim's only call. Lives
     # HERE (rather than in the dashboard-only block, where the browser-called
     # config pair sits) so the headless ``--slack-only`` server exposes it too —
@@ -1685,6 +1691,31 @@ def _dispatch_owner_dm(state: DashboardState, text: str) -> None:
     task = loop.create_task(_dm_owner(state, text))
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+
+def _register_browser_view_cleanup(app: web.Application) -> None:
+    """Stop the CLI dashboard process when the gateway shuts down.
+
+    `playwright-cli show` is spawned in its OWN session (``start_new_session``) so
+    a browsing view outlives the request that started it. That same detachment
+    means an ordinary restart would leave it running while the new gateway loses
+    its pid, and the next view request starts a SECOND process tree. Stopping it
+    on cleanup makes a restart idempotent.
+
+    Registered BEFORE ``runner.setup()`` freezes the app's signal lists --
+    appending later raises ``RuntimeError: Cannot modify frozen list``, which is
+    exactly what a first attempt at this hook did.
+
+    Best-effort: a failure to reap a supervised child must never block shutdown.
+    """
+
+    async def _browser_view_shutdown(app_: web.Application) -> None:
+        try:
+            await asyncio.to_thread(browser_cli_view.stop)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("browser view stop failed during shutdown", exc_info=True)
+
+    app.on_cleanup.append(_browser_view_shutdown)
 
 
 def _register_instances_hooks(app: web.Application, state: DashboardState, port: int) -> None:
@@ -2516,25 +2547,6 @@ async def start_dashboard(
 
     app.on_startup.append(_hooks_startup)
 
-    async def _ensure_playwright(app_: web.Application) -> None:
-        """Migrate any existing Playwright MCP config to the proxy (background task).
-
-        The OSS build ships no bundled Playwright MCP installer, so there is no
-        unconditional install step — we only migrate pre-existing mcp.json entries.
-        """
-
-        async def _bg_migrate() -> None:
-            try:
-                await asyncio.to_thread(_migrate_playwright_to_proxy)
-            except Exception as exc:
-                logger.debug("Playwright proxy migration skipped: %s", exc)
-
-        task = asyncio.create_task(_bg_migrate())
-        app_.setdefault("_bg_tasks", set()).add(task)
-        task.add_done_callback(lambda t: app_.get("_bg_tasks", set()).discard(t))
-
-    app.on_startup.append(_ensure_playwright)
-
     async def _hooks_shutdown(app_: web.Application) -> None:
         await on_gateway_shutdown()
         # Cancel the app dev-mode watcher started in _hooks_startup so an
@@ -2826,6 +2838,7 @@ async def start_dashboard(
     # ``runner.setup()`` freezes the app's signal lists. See
     # ``_register_instances_hooks`` for why ordering matters.
     _register_instances_hooks(app, state, port)
+    _register_browser_view_cleanup(app)
 
     # Unix-socket cleanup hook — registered before runner.setup freezes the
     # signal lists; the path itself only becomes known after the site starts
@@ -3030,6 +3043,25 @@ async def start_dashboard(
     _reaper = asyncio.create_task(handlers.reap_orphaned_terminals(app))
     _reaper.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
     state._terminal_reaper = _reaper  # prevent GC
+
+    # Point every `playwright-cli` invocation at the service-owned snapshot
+    # directory, and keep that directory bounded.
+    #
+    # The variable goes on the GATEWAY's own environment because the agent runs the
+    # CLI as a shell command in a descendant process: an env var is the only channel
+    # that reaches an invocation the gateway never constructs. An invocation that
+    # misses it writes into whatever directory the agent happened to be in, where
+    # the pruner does not look and files accumulate without bound. The CLI accepts
+    # this only as an env var, since `--config` is rejected on the follow-up
+    # commands that make up most of a session.
+    os.environ.update(browser_cli_snapshots.cli_env_overrides())
+    # The optional attach token rides the same channel for the same reason: the
+    # agent runs the CLI as a shell command, so only an inherited environment
+    # reaches it. Absent by default, in which case this adds nothing.
+    os.environ.update(browser_cli_token.cli_env_overrides())
+    _snap_pruner = asyncio.create_task(_prune_browser_snapshots_loop())
+    _snap_pruner.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
+    state._browser_snapshot_pruner = _snap_pruner  # prevent GC
 
     # Start terminal title poller (pushes live foreground-command / cwd titles)
     _title_poller = asyncio.create_task(handlers.poll_terminal_titles(app))

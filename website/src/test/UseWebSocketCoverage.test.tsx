@@ -883,7 +883,33 @@ describe('useWebSocket frame router', () => {
     }
   })
 
-  it('re-broadcasts cron history and the two live mirror frames', () => {
+  it('re-broadcasts tool_call so the Browser panel can open on a browse', () => {
+    // ChatPage listens for this to auto-open the panel when a shell call turns out
+    // to be `playwright-cli`. Without the re-broadcast the listener is live code
+    // that can never fire, which is exactly how the previous frame-based trigger
+    // broke when its producer was removed.
+    const { ws } = mount()
+    const seen: unknown[] = []
+    const onTool = (e: Event) => { seen.push((e as CustomEvent).detail) }
+    window.addEventListener('kirocrew-tool-call', onTool)
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'tool_call',
+          data: {
+            slot: ACTIVE, tool: 'execute_bash', kind: 'tool', purpose: 'open a page',
+            input_preview: 'playwright-cli open https://example.com', is_shell: true,
+          },
+        })
+      })
+      expect(seen).toHaveLength(1)
+      expect((seen[0] as { input_preview: string }).input_preview).toContain('playwright-cli')
+    } finally {
+      window.removeEventListener('kirocrew-tool-call', onTool)
+    }
+  })
+
+  it('re-broadcasts cron history and the computer-use mirror frame', () => {
     const { ws } = mount()
     const seen: string[] = []
     const push = (name: string) => () => { seen.push(name) }
@@ -896,10 +922,13 @@ describe('useWebSocket frame router', () => {
     try {
       act(() => {
         ws.simulateMessage({ type: 'cron_history', data: { job: 'j1' } })
+        // No producer sends browser frames: the Browser panel frames the
+        // Playwright CLI's own dashboard, so a frame arriving here would be a
+        // message from a component that no longer exists.
         ws.simulateMessage({ type: 'browser_frame', data: { image: 'x' } })
         ws.simulateMessage({ type: 'computer_use_frame', data: { image: 'y' } })
       })
-      expect(seen).toEqual(['cron', 'browser', 'computer'])
+      expect(seen).toEqual(['cron', 'computer'])
     } finally {
       window.removeEventListener('cron_history', onCron)
       window.removeEventListener('kirocrew-browser-frame', onBrowser)

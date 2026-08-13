@@ -210,7 +210,6 @@ def _neutralise_outside_process_work(monkeypatch) -> dict[str, Any]:
         "register_builtin_apps": MagicMock(),
         # Rewrites the operator's REAL ~/.kiro/settings/mcp.json — the one step
         # here whose target is outside KIROCREW_HOME.
-        "_migrate_playwright_to_proxy": MagicMock(),
         "cleanup_migrated_builtin": MagicMock(),
         "on_gateway_startup": AsyncMock(),
         "on_gateway_shutdown": AsyncMock(),
@@ -478,31 +477,6 @@ class TestStartDashboardWiring:
         ):
             assert any(getattr(mw, "_is_token_auth", False) for mw in runner.app.middlewares)
             assert url in runner.app["allowed_origins"]
-
-    @pytest.mark.asyncio
-    async def test_the_playwright_migration_never_touches_the_real_settings(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        """The migration is scheduled as a background task, so it must be awaited.
-
-        It rewrites ``~/.kiro/settings/mcp.json`` — the operator's real file,
-        outside ``KIROCREW_HOME`` — so this test's value is proving the stub is
-        what ran. Without the stub the suite would silently edit the developer's
-        machine.
-        """
-        runner, _state, spies = await _start_dashboard(tmp_path, monkeypatch)
-        try:
-            # The migration runs in a task created during startup; yield until
-            # the loop has drained it.
-            for _ in range(50):
-                if spies["_migrate_playwright_to_proxy"].called:
-                    break
-                await asyncio.sleep(0)
-        finally:
-            await runner.cleanup()
-            await _cancel_stray_tasks()
-
-        assert spies["_migrate_playwright_to_proxy"].called
 
     @pytest.mark.asyncio
     async def test_cleanup_stops_the_tunnel_it_never_started(

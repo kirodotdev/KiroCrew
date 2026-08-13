@@ -710,6 +710,35 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
  *  equal value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
 
+/**
+ * Whether a shell command preview is the START of a browse.
+ *
+ * Matches the INVOCATION, not a mention: `playwright-cli` has to be the first
+ * word of a command, so `grep playwright-cli .` and `echo playwright-cli` are
+ * not browses while `cd /tmp && playwright-cli open …` is. Exported so the
+ * distinction is unit-tested rather than asserted in a comment -- a regex that
+ * merely required leading WHITESPACE matched every mention.
+ */
+export function isBrowseCommand(preview: string | undefined | null): boolean {
+  if (!preview) return false
+  // A real shell preview is the tool INPUT, which is JSON:
+  // `{"command":"playwright-cli open https://x"}`. Testing the raw string never
+  // matched, because `playwright-cli` sits behind a quote rather than at a
+  // command boundary -- so the panel never opened. Pull the command field out
+  // first, mirroring the backend's own `_extract_bash_command`, and fall back to
+  // the raw text for a preview that is already a bare command.
+  let cmd = preview
+  try {
+    const parsed: unknown = JSON.parse(preview)
+    if (parsed && typeof parsed === 'object' && typeof (parsed as { command?: unknown }).command === 'string') {
+      cmd = (parsed as { command: string }).command
+    }
+  } catch {
+    // Not JSON: use the preview verbatim.
+  }
+  return /(^|[;&|(]\s*)playwright-cli(\s|$)/.test(cmd)
+}
+
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
   const moveSlotToFolder = useMoveSlotToFolder()
@@ -4399,30 +4428,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setSessionPreviewPending(slot, norm)      // heuristic offer: card only, no open, no load
     }
   }, [messages, activeSlot, dispatch])
-  // Auto-open the Browser panel when the agent starts browsing — the live
-  // Playwright mirror streams as `kirocrew-browser-frame` events. Open/focus the
-  // tab only at the START of a stream (new session_key, or after a >90s gap),
-  // NOT on every frame, so it can't steal focus from a tab the user switched to
-  // mid-browse.
-  const browseFrameOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
+  // Auto-open the Browser panel when the agent starts browsing. The signal is the
+  // agent's own shell call: browsing is `playwright-cli` commands, so a shell
+  // tool_call whose preview invokes it is the start of a browse. Open/focus the tab
+  // only at the START (new slot, or after a >90s gap), NOT on every command, so it
+  // cannot steal focus from a tab the user switched to mid-browse.
+  const browseOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
   useEffect(() => {
-    const onFrame = (e: Event) => {
-      const key = (e as CustomEvent<{ session_key?: string }>).detail?.session_key ?? null
-      const now = Date.now()
-      // Only auto-open the Browser tab when the browsing session IS the one on
-      // screen (the active slot). A background session's frames must not open —
-      // or, with the panel's own session gate, display in — another session's
-      // panel.
+    const onTool = (e: Event) => {
+      const d = (e as CustomEvent<{ slot?: string; is_shell?: boolean; input_preview?: string }>).detail
+      if (!d?.is_shell) return
+      if (!isBrowseCommand(d.input_preview)) return
+      const key = d.slot ?? null
+      // Only auto-open when the browsing session IS the one on screen. A background
+      // session's commands must not open another session's panel.
       if (!key || key !== activeSlotRef.current) return
-      const prev = browseFrameOpenedRef.current
+      const now = Date.now()
+      const prev = browseOpenedRef.current
       if (prev.key !== key || now - prev.ts > 90_000) {
         dispatch(openActivityPanel())
         tabsCtlRef.current.openView('browser')
       }
-      browseFrameOpenedRef.current = { key, ts: now }
+      browseOpenedRef.current = { key, ts: now }
     }
-    window.addEventListener('kirocrew-browser-frame', onFrame)
-    return () => window.removeEventListener('kirocrew-browser-frame', onFrame)
+    window.addEventListener('kirocrew-tool-call', onTool)
+    return () => window.removeEventListener('kirocrew-tool-call', onTool)
   }, [dispatch])
   // Reachability: declare open chat slots to the Electron main process so the
   // agent command channel polls for them (see listPanelIds) even before the Browser

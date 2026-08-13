@@ -198,8 +198,8 @@ flipping one flag.
 ## The 10-tool contract
 
 Server `kirocrew-computer` (slash-free: kiro-cli splits an agent `@server`
-reference on `/`). All tools prefixed `computer_` so they can never collide with
-the playwright server's `browser_*`.
+reference on `/`). All tools prefixed `computer_` so the GUI plane is
+namespace-distinct from every other server's tools.
 
 | Tool | Required | Optional | Class |
 |---|---|---|---|
@@ -1081,10 +1081,10 @@ parameter capped it — a Slack window measured **~437KB base64 ≈ 109K tokens*
 one call.
 
 Files land in `os.path.join(tempfile.gettempdir(), "kirocrew-computer-shots")`
-(the exact idiom `mcp_playwright_proxy.py` uses and which its test pins by source
-text), created `mode=0o700`, each file passed through
-`platform_compat.restrict_to_owner`, ring-trimmed to `SCREENSHOT_KEEP = 200`.
-Only the **path** is ever relayed; the bytes never enter a result.
+(the idiom its test pins by source text), created `mode=0o700`, each file passed
+through `platform_compat.restrict_to_owner`, ring-trimmed to
+`SCREENSHOT_KEEP = 200`. Only the **path** is ever relayed; the bytes never enter
+a result.
 
 ---
 
@@ -1615,10 +1615,10 @@ unexplained session reset reads as a crash. Pinned by
   `screencapture` typed into a Bash tool are `commands`-scope items, never
   re-parsed into GUI sub-effects, and the **web terminal PTY**
   (`dashboard/handlers/terminal.py`) contains no deny-floor or governance call at
-  all — it is an operator-only, ungoverned plane today. Playwright's
-  `browser_take_screenshot` is a second pixel channel needing its own `mcp` deny.
-  None of these are covered by any `computer_use.*` scope, and the spec says so
-  rather than implying coverage.
+  all — it is an operator-only, ungoverned plane today. `playwright-cli screenshot`
+  is a second pixel channel and lands on this same plane: it is a shell command,
+  so an `mcp`-scope deny cannot reach it. None of these are covered by any
+  `computer_use.*` scope, and the spec says so rather than implying coverage.
 
 ---
 

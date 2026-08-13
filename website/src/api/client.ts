@@ -89,6 +89,49 @@ export interface InstallStreamResult {
 }
 
 
+/**
+ * The Playwright CLI browser view, as reported by `GET /api/browser/view` and
+ * returned again by `POST /api/browser/view/start`.
+ *
+ * The CLI serves its own dashboard over loopback HTTP (`show --port`), which
+ * already carries the session grid, live screencast, tab bar and full remote
+ * mouse/keyboard input — so the dashboard's Browser panel frames that URL rather
+ * than assembling a picture from pushed screenshot frames.
+ *
+ * Three states, and the UI must be able to tell them apart:
+ *   • `running`     — `url` and `port` are set; frame it.
+ *   • `stopped`     — installed but no view server up; a start is worth offering.
+ *   • `unavailable` — it cannot run here at all (CLI not installed, unsupported
+ *                     host). `reason` says why, in words meant for a human.
+ *
+ * `reason` is server-authored prose, so it is rendered VERBATIM and never
+ * translated: inventing a catalog key for it would either drop the detail or
+ * assert a cause the server did not report. A null `reason` is the caller's cue
+ * to fall back to its own generic (translated) copy.
+ */
+export interface BrowserInstallData {
+  installed: boolean
+  cli_path: string | null
+  cli_version: string | null
+  node_ok: boolean
+  node_version: string | null
+  browser_ok: boolean
+  installing: boolean
+  last_error: string | null
+  token: boolean
+  /** Per-engine download state, keyed by engine name (chromium/firefox/webkit).
+   *  Optional so an older gateway that predates it degrades to "unknown" rather
+   *  than rendering every engine as missing. */
+  browsers?: Record<string, boolean>
+}
+
+export interface BrowserViewData {
+  status: 'running' | 'stopped' | 'unavailable'
+  url: string | null
+  port: number | null
+  reason: string | null
+}
+
 /** ADVISORY macOS permission rows. Never a gate — macOS attributes a TCC grant
  * to the responsible parent process, so `missing` can coexist with a working
  * capture, and `unknown` means the probe could not be run. */
@@ -2369,9 +2412,14 @@ export const api = {
     del(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}`).then(j),
   editArtifactComment: (slug: string, commentId: string, body: { text: string }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}`, body).then(j),
-  browserAuthRetry: () => post('/api/browser-auth-retry', {}).then(j),
-  getBrowserConfig: () => get('/api/browser/config').then(j) as Promise<{enabled: boolean; engine: string; engines: string[]; extension_mode: boolean; token: boolean; installed: boolean}>,
-  saveBrowserConfig: (body: {enabled: boolean; engine: string; extension_mode: boolean; token: string}) => put('/api/browser/config', body).then(j) as Promise<{ok: boolean; mcp_status?: string; enabled?: boolean; engine?: string; install?: {ok: boolean; step: string; detail: string; engine: string}}>,
+  // Playwright CLI browser view. GET reports; POST /start is idempotent and
+  // returns the SAME shape, so a start needs no follow-up read.
+  getBrowserInstall: () => get('/api/browser/install').then(j) as Promise<BrowserInstallData>,
+  setBrowserToken: (token: string) => put('/api/browser/token', { token }).then(j) as Promise<{ok: boolean; token: boolean}>,
+  installBrowserCli: () => post('/api/browser/install', {}).then(j) as Promise<BrowserInstallData>,
+  installBrowserEngine: (engine: string) => post('/api/browser/engine', { engine }).then(j) as Promise<BrowserInstallData>,
+  getBrowserView: () => get('/api/browser/view').then(j) as Promise<BrowserViewData>,
+  startBrowserView: () => post('/api/browser/view/start', {}).then(j) as Promise<BrowserViewData>,
   // Computer use (desktop automation). The PUT returns the refreshed snapshot so
   // the panel re-renders from server truth rather than its optimistic guess.
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,

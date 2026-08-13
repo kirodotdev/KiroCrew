@@ -48,7 +48,6 @@ from kiro_crew.agent_files import (
     REQUIRED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
-from kiro_crew.browser.setup import converge_playwright_servers
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -58,6 +57,7 @@ from kiro_crew.config.paths import (
     kiro_agents_dir,
 )
 from kiro_crew.env import augmented_path
+from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
 from kiro_crew.mcp_provenance import without_marker
 from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
 from kiro_crew.platform import current_context
@@ -2506,15 +2506,13 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # their stale @refs are normalized too. See mcp_server_alias.
     _normalize_mcp_server_keys(config)
 
-    # Converge every Playwright-proxy entry onto the single canonical
-    # ``playwright-mcp`` server, keyed by resolved launch target. Runs on EVERY
-    # rebuild (not just gateway boot) so a slash-free legacy proxy key —
-    # e.g. ``playwright-proxy-mcp`` re-injected from ~/.kiro/crew/mcp.json by the
-    # merges above — cannot survive to spawn a second backend. Slash-free legacy
-    # keys are invisible to _normalize_mcp_server_keys (which only rewrites
-    # slash-containing keys), so this launch-target-keyed pass closes the
-    # duplicate for them.
-    converge_playwright_servers(config)
+    # Drop any server whose argv invokes the deleted mcp-playwright-proxy
+    # subcommand.  Runs on EVERY rebuild because the entry can be
+    # re-injected from ~/.kiro/crew/mcp.json by the merges above.  The
+    # first-run marker-guarded purge (clean_stale_managed_mcp) covers the
+    # GLOBAL ~/.kiro/settings/mcp.json, which is a different file and a
+    # different ownership boundary; this covers the assembled agent config.
+    purge_deleted_proxy_from_config(config)
 
     # Sync shared (user-installed) servers to tools/allowedTools.
     # These are explicitly installed by the user via `aim mcp install` or

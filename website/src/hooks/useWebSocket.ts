@@ -893,6 +893,10 @@ export function useWebSocket() {
             break
           }
           case 'tool_call':
+            // Re-broadcast BEFORE the store dispatches: ChatPage opens the Browser
+            // panel from this event, and a reducer that throws on a malformed
+            // payload must not also cost the panel its only signal.
+            window.dispatchEvent(new CustomEvent('kirocrew-tool-call', { detail: data }))
             dispatch(sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; input_preview: string; is_shell?: boolean }, auto: (data as Record<string, unknown>).auto === true, tool_call_id: (data as Record<string, unknown>).tool_call_id as string | undefined, is_update: (data as Record<string, unknown>).is_update === true, is_shell: (data as Record<string, unknown>).is_shell === true }))
             if (data.slot) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'tool', text: sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || data.tool), toolName: sanitizeLlmOutput(data.tool), ts: Date.now() }))
@@ -1298,12 +1302,6 @@ export function useWebSocket() {
             queryClient.invalidateQueries({ queryKey: ['pull-request-checks', delta.url] })
             break
           }
-          case 'browser_frame':
-            // Live mirror frame (a screenshot the agent took, forwarded by the
-            // MCP proxy). Routed via a window event so the Browser panel
-            // (WebPreviewPanel via useBrowserFrame) can render without a Redux slice.
-            window.dispatchEvent(new CustomEvent('kirocrew-browser-frame', { detail: data }))
-            break
           case 'computer_use_frame':
             // Computer-use PiP frame — the downscaled JPEG the agent's own
             // computer_get_state call already captured, relayed by the gateway

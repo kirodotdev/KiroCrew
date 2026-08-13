@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import re
+import shlex
 import stat as stat_module
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,6 +41,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.autonudge import get_instance
+from kiro_crew.browser_cli import install as browser_cli_install
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     data_home,
@@ -1319,12 +1323,34 @@ def _mask_quoted_separators(text: str) -> tuple[str, dict[str, str]]:
     tracking single/double quote state and swap any ``| & ; \\n`` that is quoted
     for a unique placeholder, restoring it inside each segment before matching.
     Returns ``(masked_text, restore_map)``.
+
+    Quote tracking MUST honor backslash escapes, because getting this wrong is a
+    segmentation bypass rather than a cosmetic error. ``type 'foo'\\'; cmd``
+    closes its quote at the second ``'``, so the ``\\'`` that follows is a literal
+    apostrophe OUTSIDE quotes and the ``;`` is a real separator the shell acts
+    on. Reading that ``\\'`` as an opening quote instead makes the rest of the
+    line look quoted, the ``;`` gets masked, the whole line reads as one segment,
+    and an appended command rides in behind whatever the first segment was
+    allowed to do.
+
+    A backslash escapes the next character everywhere EXCEPT inside single
+    quotes, where the shell treats it literally — the same rule
+    :func:`_unquoted_shell_hazard` applies, and for the same reason.
     """
     out: list[str] = []
     restore: dict[str, str] = {}
     quote: str | None = None
+    escaped = False
     n = 0
     for ch in text:
+        if escaped:
+            escaped = False
+            out.append(ch)
+            continue
+        if ch == "\\" and quote != "'":
+            escaped = True
+            out.append(ch)
+            continue
         if quote:
             if ch == quote:
                 quote = None
@@ -1727,15 +1753,17 @@ def _safe_native_crew_debug_title(title: str) -> str:
     return safe
 
 
-def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
-    """Return the matched pattern if tool_title matches any trusted pattern.
+def _split_command_segments(tool_title: str) -> tuple[str, list[str]] | None:
+    """Split a shell tool title into its unquoted command segments.
 
-    For piped/chained commands, splits into segments and checks each
-    independently — ALL segments must match for the command to be trusted.
-    Returns comma-joined matched patterns for audit provenance.
+    Returns ``(normalized_title, segments)``. Returns ``None`` — which every
+    caller MUST treat as "deny" — when the command contains substitution
+    (``$(...)``, backticks, process substitution), because no amount of
+    per-segment matching can reach inside a sub-command.
 
-    Deny-by-default for commands containing command substitution ($(...),
-    backticks, process substitution) — fnmatch cannot reach sub-commands.
+    Extracted so that every command-keyed approval path shares ONE splitter:
+    a second, independently written shell splitter is exactly how a bypass
+    gets introduced (quoted separators, masked redirects, backgrounding).
     """
     normalized = _normalize_tool_name(tool_title)
     if _CMD_SUBSTITUTION_RE.search(normalized):
@@ -1769,6 +1797,23 @@ def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
             if ph in restored:
                 restored = restored.replace(ph, ch)
         segments.append(restored)
+    return normalized, segments
+
+
+def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
+    """Return the matched pattern if tool_title matches any trusted pattern.
+
+    For piped/chained commands, splits into segments and checks each
+    independently — ALL segments must match for the command to be trusted.
+    Returns comma-joined matched patterns for audit provenance.
+
+    Deny-by-default for commands containing command substitution ($(...),
+    backticks, process substitution) — fnmatch cannot reach sub-commands.
+    """
+    split = _split_command_segments(tool_title)
+    if split is None:
+        return None
+    normalized, segments = split
     if len(segments) > 1:
         matched_patterns = []
         for seg in segments:
@@ -1785,6 +1830,435 @@ def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
         if _tool_matches(pattern, tool_title) or _tool_matches(pattern, normalized):
             return pattern
     return None
+
+
+_BROWSER_CLI_BIN = "playwright-cli"
+
+# Verbs whose entire effect stays INSIDE the browser page/session. These are
+# auto-approved when the Playwright CLI is installed (presence-as-consent), so
+# that ordinary browsing does not prompt on every step.
+#
+# This is an ALLOWLIST, not a denylist, so a verb added by a future CLI release
+# is denied until it is reviewed and listed — fail-closed, not fail-open.
+_BROWSER_CLI_PAGE_VERBS = frozenset(
+    {
+        # Core / lifecycle. `close` is deliberately absent -- see the
+        # exclusion note below. `detach` stays: it releases the session
+        # without taking the operator's window with it.
+        "open", "attach", "detach", "goto", "resize",
+        # Interaction
+        "type", "click", "dblclick", "fill", "drag", "drop", "hover",
+        "select", "check", "uncheck",
+        # Reading the page
+        "snapshot", "find", "generate-locator", "highlight",
+        # Dialogs
+        "dialog-accept", "dialog-dismiss",
+        # Navigation
+        "go-back", "go-forward", "reload",
+        # Keyboard / mouse
+        "press", "keydown", "keyup",
+        "mousemove", "mousedown", "mouseup", "mousewheel",
+        # Capture (writes only into the service's own output dir)
+        "screenshot", "pdf",
+        # Tabs. `tab-close` is absent for the same reason as `close`.
+        "tab-list", "tab-new", "tab-select",
+        # Read-only request metadata: route-list prints the mock table
+        # (pattern strings, no URLs) and config-print prints the session's
+        # launch configuration.
+        "route-list",
+        # DevTools / diagnostics
+        "console", "tracing-start", "tracing-stop",
+        "video-stop", "video-chapter", "video-show-actions",
+        "video-hide-actions",
+        "show", "pause-at", "resume", "step-over",
+        # Session management. The listing only; `close-all` / `kill-all`
+        # are absent -- they are the widest-blast-radius verbs the CLI has.
+        "list",
+    }
+)
+
+# Auto-approvable ONLY in their bare form, because a positional argument turns
+# them into an arbitrary-local-path WRITE. Bare, both write inside the output
+# dir that ``browser_cli.snapshots`` points the CLI at.
+_BROWSER_CLI_BARE_ONLY_VERBS = frozenset({"video-start"})
+
+# Deliberately absent from every set above, so they keep interactive approval:
+#   eval / run-code      — run attacker-authored code in an authenticated page;
+#                          with fetch() that is a complete exfiltration path.
+#   upload               — sends an arbitrary LOCAL file to the current page.
+#   state-load           — reads an arbitrary local path and injects the cookies
+#                          it finds into the live session.
+#   install / install-browser — mutate the machine; installation is the
+#                          dashboard's job (Settings > Browser), not the agent's.
+#   cookie-list / cookie-get, localstorage-list / -get,
+#   sessionstorage-list / -get  — RETURN the session credential itself. These
+#                          were auto-approved in a first version on the reasoning
+#                          that their effect stays "inside the page"; that
+#                          conflates blast radius with sensitivity. The effect of
+#                          a read is the VALUE it prints into the agent's
+#                          context, and for these verbs that value is the login.
+#   requests / network   — print the URL of every request. A URL can BE the
+#                          credential: a presigned S3 URL or a magic-link carries
+#                          the secret in the path or query string, so listing
+#                          URLs prints a credential into context the same way
+#                          cookie-list does.
+#   request / request-headers / request-body, response-headers / response-body
+#                        — print a request's headers verbatim, i.e. its
+#                          Authorization and Cookie values.
+#   close / tab-close / close-all / kill-all
+#                        — `attach` points the CLI at the operator's OWN browser,
+#                          holding their live logins and their open tabs, so these
+#                          take that window (or every session at once) down and
+#                          unsaved work with it. Nothing recovers it. The agent
+#                          prompt already says never to close an attached browser,
+#                          but prose the model is asked to honor is advice, not a
+#                          control, and the gate cannot see whether a session is
+#                          attached or CLI-owned — so it fails closed. `detach`
+#                          stays approved: it releases the session and leaves the
+#                          window alone, which is what cleanup actually needs.
+#   config-print         — prints the session's launch configuration, and the
+#                          documented way to constrain this browser is a proxy
+#                          set through `launchOptions.proxy.server`, whose value
+#                          carries the proxy credential. So the verb that reads
+#                          "harmless settings dump" prints a secret on exactly
+#                          the setup this design recommends.
+#   state-save           — serialises the WHOLE storage state, cookies included,
+#                          to a file the agent can then read with its own file
+#                          tools. Bare-form no longer helps: the file is the
+#                          credential.
+#   delete-data          — with `attach`, the CLI operates the operator's REAL
+#                          logged-in browser. `delete-data` destroys session
+#                          state (cookies, storage, cache) nothing recovers —
+#                          equivalent to the user clicking "Clear all site data"
+#                          on every origin the browser knows.
+#   cookie-set / cookie-delete / cookie-clear,
+#   localstorage-set / localstorage-delete / localstorage-clear,
+#   sessionstorage-set / sessionstorage-delete / sessionstorage-clear
+#                        — `attach` means the operator's REAL browser. The -set
+#                          verbs are session fixation (inject a controlled
+#                          credential the attacker can reuse); the -delete and
+#                          -clear verbs destroy operator login state nothing
+#                          recovers. Both directions reach outside "inside the
+#                          page" once the page IS the operator's live session.
+#   route / unroute / network-state-set
+#                        — a route intercepts requests and returns forged
+#                          responses. The agent reads the page (via `snapshot`),
+#                          so a route lets an injected agent control what the
+#                          NEXT read returns — fabricating confirmation of an
+#                          action that never happened or hiding an error the
+#                          operator should see. `unroute` removes a route the
+#                          operator set intentionally. `network-state-set`
+#                          toggles offline mode, severing the page from its
+#                          server — a denial-of-service on the operator's
+#                          browsing.
+# A prompt-injected agent must not be able to convert "browsing is allowed"
+# into arbitrary code execution, arbitrary local reads, or arbitrary writes.
+# Auto-approval must never become a local-machine primitive: the effect of a
+# read is the VALUE it prints into the agent's context, and that value
+# determines whether the verb is safe — not whether the verb's blast radius
+# stays "inside the page".
+
+
+# Flags that carry no local-filesystem path and no code. An ALLOWLIST for the
+# same fail-closed reason as the verb list. It is load-bearing rather than
+# cosmetic: the CLI takes an output path as `--filename=<name>`, so a path can
+# arrive as a FLAG and not only as a positional argument. Skipping unrecognized
+# flags on the way to the verb would therefore auto-approve an arbitrary local
+# WRITE. Anything not listed here falls through to interactive approval --
+# notably:
+#   --filename  MEASURED: the value is resolved against the CLI invocation's
+#               CWD, *not* against PLAYWRIGHT_MCP_OUTPUT_DIR (that variable only
+#               governs auto-generated names). So even a bare
+#               `--filename=README.md` overwrites a file in the user's repo, and
+#               there is no "safe" spelling of it to allow. The un-named form
+#               (`playwright-cli screenshot`) IS auto-approved and writes into
+#               the service's own directory, printing the path -- so the capture
+#               loop keeps working without this flag.
+#   --profile / --config  name a local path to READ.
+_BROWSER_CLI_SAFE_FLAGS = frozenset(
+    {
+        # MEASURED against the installed CLI: `-s=`, `--s=` and `--session=`
+        # are all accepted and all name the same session. Only `-s` was listed,
+        # so the named-session form this repo's own prompt.md tells the agent to
+        # use (`--s=chrome`) fell through to interactive approval on EVERY
+        # command after `attach` -- the documented primary workflow.
+        "-s", "--s", "--session",
+        "--json", "--raw", "--help", "--version",
+        "--headed", "--browser", "--persistent",
+        "--extension", "--cdp", "--endpoint",
+        "--domain", "--hide",
+        # Shape-only capture options: they change the image, not its location.
+        "--type", "--full-page", "--hires",
+    }
+)
+
+
+_BROWSER_CLI_SESSION_FLAGS = frozenset({"-s", "--s", "--session"})
+# A leading URI scheme, e.g. `https:`, `file:`, `view-source:`.
+_URI_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):")
+
+
+# Names that reach the local machine without naming an address. Refusing
+# loopback ADDRESSES is not sufficient on its own: `localhost` and anything under
+# the reserved `.localhost` suffix (RFC 6761) resolve to loopback by name.
+_LOOPBACK_HOST_NAMES = frozenset({"localhost"})
+
+# The longest a DNS name may be, per RFC 1035.
+_MAX_DNS_NAME_LEN = 253
+
+# A host this gate is willing to treat as a DNS name. The decisive rule is that
+# the FINAL label starts with an ASCII letter, which is what separates a real
+# name from an address a browser will decode: every alternate spelling of an IPv4
+# address ends in a numeric or ``0x`` label -- decimal (`2852039166`), hex
+# (`0xa9fea9fe`), octal-dotted (`0251.0376.0251.0376`), the dotted mixtures, and
+# short forms like `127.1`. One rule refuses them all without enumerating the
+# encodings. A host that matches nothing here (a percent-encoded authority, a
+# non-ASCII IDN label) is not classified and so falls through to interactive
+# approval, which is the correct direction to fail.
+_DNS_HOST_RE = re.compile(r"(?:[^\s./\\:@\[\]]+\.)*[^\W\d_][^\s./\\:@\[\]]*", re.ASCII)
+
+
+def _is_remote_navigable_host(host: str) -> bool:
+    """Whether http(s) navigation to *host* may be auto-approved.
+
+    Refused, so that navigation there costs one interactive approval:
+
+    * **Every local control plane.** Kiro Crew's own dashboard is served over
+      loopback, and the approval mode, trust settings and YOLO switch all live on
+      it -- so an auto-approved ``goto`` plus auto-approved clicks would let the
+      agent widen its own ceiling with no human in the loop. The rule is the
+      whole loopback range and the loopback names rather than one port number:
+      the dashboard's port is only known at runtime (a pod gets its own), and
+      "never auto-drive a local admin UI" covers the dashboard, pods, and
+      anything else the operator happens to run on the host under one rule.
+      ``0.0.0.0`` / ``::`` are refused with it, because a listener bound to the
+      unspecified address is reachable that way too.
+    * **Link-local**, where cloud instance metadata and its credentials live: a
+      ``goto`` followed by an auto-approved ``snapshot`` would print an instance
+      role's credentials into the agent's context.
+    * **Private** (RFC 1918: 10/8, 172.16/12, 192.168/16), **CGNAT/shared**
+      (100.64/10), and **all other non-globally-routable addresses** including
+      multicast, reserved/future-use, documentation, and benchmarking ranges.
+      A ``goto http://10.0.0.5/admin`` followed by an auto-approved ``snapshot``
+      prints internal infrastructure responses into the agent's context -- the
+      same SSRF vector as link-local, aimed at internal services rather than
+      the metadata endpoint.
+
+    Ranges are tested by ``ipaddress``' own ``is_global`` property (True only
+    for globally-routable addresses), applied to both the address itself and
+    any embedded IPv4 (``ipv4_mapped``, ``sixtofour``). ``is_global`` subsumes
+    loopback, link-local, unspecified, private, CGNAT/shared, multicast,
+    reserved, documentation, and benchmarking ranges in one predicate, without
+    hand-rolled CIDRs.
+
+    DNS names are NOT resolved. Resolving inside the approval predicate is a
+    blocking network call on the hot path AND a DNS-rebinding TOCTOU: a name can
+    answer a public address at approval time then resolve to a private one when
+    the browser re-resolves milliseconds later. The residual risk (a public name
+    pointing at a private address) is accepted; browser-side network policy is
+    the correct mitigation layer for that class.
+
+    Ordinary public http(s) browsing is unaffected and stays auto-approved.
+    """
+    lowered = host.lower().rstrip(".")
+    if not lowered:
+        return False
+    if lowered in _LOOPBACK_HOST_NAMES or lowered.endswith(".localhost"):
+        return False
+    try:
+        addr: Any = ipaddress.ip_address(lowered)
+    except ValueError:
+        # Not an address literal, so it can only be a name -- and only when it
+        # actually looks like one. See `_DNS_HOST_RE`.
+        if len(lowered) > _MAX_DNS_NAME_LEN:
+            return False
+        return _DNS_HOST_RE.fullmatch(lowered) is not None
+    candidates = [addr]
+    for embedding in ("ipv4_mapped", "sixtofour"):
+        embedded = getattr(addr, embedding, None)
+        if embedded is not None:
+            candidates.append(embedded)
+    return all(c.is_global for c in candidates)
+
+
+def _is_safe_browser_cli_argument(arg: str) -> bool:
+    """Whether a page verb's positional argument is safe to auto-approve.
+
+    A positional that is not URI-shaped is ordinary page input -- an element ref,
+    a key name, literal text -- and passes. A URI-shaped one passes only as plain
+    http(s) to a host :func:`_is_remote_navigable_host` accepts; every other
+    shape falls through to interactive approval, because a non-http scheme is not
+    "a page action" at all:
+
+    * ``file:`` reads local disk into the page, and the next ``snapshot`` prints
+      it into the agent's context -- an arbitrary local file read.
+    * ``data:`` and ``javascript:`` inject script into the page.
+    * ``view-source:`` does both.
+
+    So the rule matches the one used for flags: recognized shape or refuse.
+    """
+    m = _URI_SCHEME_RE.match(arg)
+    if m is None:
+        return True  # not URI-shaped: an element ref, a key name, literal text
+    if m.group(1).lower() not in ("http", "https"):
+        return False
+    # Refuse before parsing anything a browser and `urlsplit` read DIFFERENTLY.
+    # `urlsplit` follows RFC 3986; a browser follows the WHATWG URL spec, and
+    # where they disagree the browser's answer is the one that gets navigated:
+    #
+    #   * a backslash is a path separator in a special scheme, so
+    #     `http://<target>\@innocuous/` ends its authority at the backslash and
+    #     navigates to <target> -- while `urlsplit` reads everything before the
+    #     last `@` as userinfo and reports `innocuous` as the host, which is the
+    #     value this guard would have checked.
+    #   * tab, CR and LF are STRIPPED from a URL before parsing, so they can be
+    #     inserted mid-host to break up a literal the guard would recognize.
+    #
+    # There is no safe spelling of either inside an http(s) URL a page actually
+    # needs, so an argument carrying one costs an approval prompt rather than
+    # being reconciled between two parsers.
+    if "\\" in arg or any(ch in arg for ch in ("\t", "\n", "\r")):
+        return False
+    try:
+        host = urllib.parse.urlsplit(arg).hostname
+    except ValueError:
+        return False  # unparseable authority -- cannot reason about it
+    if not host:
+        return False
+    return _is_remote_navigable_host(host)
+
+
+# A plain session label: no separators, no traversal, no leading dash.
+_SESSION_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def _unquoted_shell_hazard(text: str) -> str | None:
+    """Name the first shell construct in *text* the CLI never sees, or ``None``.
+
+    Load-bearing for approval, not cosmetic: every construct here is performed by
+    the SHELL before the command runs, so the verb and flag allowlists cannot see
+    it. They inspect the tokens they are handed; the shell decides what those
+    tokens become.
+
+    * **Redirection.** An otherwise-approved ``playwright-cli snapshot`` with
+      ``> somefile`` appended CREATES OR TRUNCATES that file. The segment splitter
+      does not cut on ``>``, so ``>`` and the path arrive as ordinary positionals
+      and the whole thing reads as "snapshot with two extra arguments".
+    * **Expansion.** ``open "${PATH:+file:///etc/passwd}"`` is not URI-shaped when
+      the guard sees it, so it passes as ordinary page input — and the shell then
+      expands it into a ``file://`` URL, making the next ``snapshot`` an arbitrary
+      local file read. ``$VAR`` and backticks are the same mechanism, and so is
+      brace expansion: ``{file:///etc/passwd,}`` expands to that URL with no
+      variable and no substitution involved. A leading ``~`` expands to a home
+      directory the same way.
+
+    Globbing (``*``, ``?``, ``[]``) is deliberately NOT treated as a hazard, and
+    the asymmetry is the point: brace and tilde expansion ALWAYS rewrite the
+    token, while an unmatched glob is left literal by the shell — and refusing
+    ``?`` would deny every URL carrying a query string, which is most of them.
+    A glob that does match names a local file, and no auto-approved verb takes a
+    local path as a positional.
+
+    One quote-aware walker serves all of it, because a second shell parser is how
+    a bypass gets introduced. Quote rules are the shell's own: single quotes make
+    everything literal, so ``type 'price is $5'`` and ``click "div > span"`` are
+    legitimate arguments and stay approved; a backslash escapes the next
+    character everywhere except inside single quotes.
+    """
+    quote: str | None = None
+    escaped = False
+    at_word_start = True
+    for ch in text:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            continue
+        # Double quotes suppress word splitting and globbing but NOT parameter or
+        # command substitution, so `$` and a backtick stay dangerous inside them.
+        if ch in ("$", "`"):
+            return "expansion"
+        if ch in ("{", "}"):
+            return "brace-expansion"
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            continue
+        if ch in "><":
+            return "redirection"
+        if ch == "~" and at_word_start:
+            return "tilde-expansion"
+        at_word_start = ch.isspace()
+    return None
+
+
+def _is_browser_cli_command(tool_title: str) -> bool:
+    """True when EVERY segment of a shell command is an auto-approvable
+    ``playwright-cli`` page-scoped verb.
+
+    Matched against the REAL command recovered from ``tool_input`` — never the
+    model-authored title, which an injected agent controls and could forge.
+    Reuses :func:`_split_command_segments`, so command substitution and quoted
+    separators are handled by the one hardened splitter.
+    """
+    split = _split_command_segments(tool_title)
+    if split is None:
+        return False
+    _, segments = split
+    if not segments:
+        return False
+    for seg in segments:
+        # BEFORE tokenizing: redirection and expansion are the shell's work, not
+        # the CLI's, so no amount of verb checking can make them safe.
+        if _unquoted_shell_hazard(seg) is not None:
+            return False
+        try:
+            tokens = shlex.split(seg)
+        except ValueError:
+            return False  # unbalanced quotes — cannot reason about it
+        if len(tokens) < 2 or tokens[0] != _BROWSER_CLI_BIN:
+            return False
+        # Separate flags from positionals. Every flag must be recognized as
+        # path-free and code-free; an UNKNOWN flag denies the whole command
+        # rather than being skipped over on the way to the verb.
+        positionals: list[str] = []
+        for tok in tokens[1:]:
+            if tok.startswith("-"):
+                name, _, value = tok.partition("=")
+                if name not in _BROWSER_CLI_SAFE_FLAGS:
+                    return False
+                # A session name becomes a directory under the CLI's own data
+                # dir, so a traversal-shaped value writes outside it. Restrict it
+                # to a plain label. This also closes the same hole on the
+                # pre-existing `-s`, which never validated its value.
+                if name in _BROWSER_CLI_SESSION_FLAGS and not _SESSION_NAME_RE.fullmatch(value):
+                    return False
+            else:
+                positionals.append(tok)
+        if not positionals:
+            return False
+        verb = positionals[0]
+        if verb in _BROWSER_CLI_PAGE_VERBS:
+            # Positionals carry the navigation target, so they are validated
+            # like flags are -- see `_is_safe_browser_cli_argument`.
+            if not all(_is_safe_browser_cli_argument(a) for a in positionals[1:]):
+                return False
+            continue
+        # Bare only: MEASURED, an output name is resolved against the CLI's CWD,
+        # so any argument here is an arbitrary local write. Bare, both write into
+        # the service's own directory.
+        if verb in _BROWSER_CLI_BARE_ONLY_VERBS and len(positionals) == 1:
+            continue
+        return False
+    return True
 
 
 def _extract_base_command(tool_title: str) -> str:
@@ -5031,6 +5505,75 @@ async def _run_chat(
                             metadata={"reason": "trusted_pattern", "pattern": matched},
                         )
                         continue
+                # Browser CLI: auto-approve page-scoped `playwright-cli` verbs so
+                # that browsing does not prompt on every step. Placed AFTER the
+                # user's own trusted patterns (a user grant still wins and is
+                # logged as such) and, like that branch, keyed on the REAL command
+                # from tool_input — never event.title, which the model authors.
+                # Consent is the install itself: the binary is only on PATH
+                # because the user (or this dashboard, at their click) put it
+                # there. Verbs that escape the page — arbitrary code, arbitrary
+                # local reads/writes, installers — are excluded by allowlist and
+                # still prompt.
+                # `is_shell` is REQUIRED, not belt-and-braces:
+                # `_extract_bash_command` reads the `command` field out of ANY
+                # tool_input JSON and falls back to the raw input, so without this
+                # gate a non-shell tool that happens to carry a `command` field
+                # (cron_add, which can schedule a shell command) would be
+                # auto-approved here — turning "browsing is allowed" into
+                # "creating a durable scheduled job is allowed".
+                _bc_cmd = (
+                    _extract_bash_command(event.tool_input)
+                    if (event.is_shell and event.tool_input)
+                    else ""
+                )
+                _bc_ok = False
+                if _bc_cmd and _is_browser_cli_command(f"Running: {_bc_cmd}"):
+                    # Presence IS the consent signal, so verify it rather than
+                    # assuming it: with no binary on PATH the user never opted in,
+                    # and a `playwright-cli` call is anomalous enough to prompt.
+                    # In a thread: `available()` -> `cli_path()` ->
+                    # `find_node_tool` -> `node_bin_dirs()`, which globs and stats
+                    # every version-manager root (mise alone contributes ~18 dirs
+                    # on a developer box). The repo already treats that call as
+                    # must-not-run-on-the-loop -- see the BLOCKING note on
+                    # `dev_fleet/server.py`'s own use of it. On the loop it stalls
+                    # every other dashboard request and the heartbeat.
+                    _bc_ok = await asyncio.to_thread(browser_cli_install.available)
+                if _bc_ok:
+                    try:
+                        validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
+                    except ValueError as e:
+                        await client.reject_tool(event.request_id)
+                        _safe = _redact_display_text(event.title)
+                        slot.append("tool", f"🚫 {_safe} (invalid: {e})", "msg msg-tool")
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            agent=slot.agent or "kirocrew",
+                            source="dashboard",
+                            tool_name=_safe,
+                            tool_kind=event.tool_kind,
+                            outcome="rejected",
+                            request_id=event.request_id,
+                            metadata={"reason": "invalid_tool_name", "pattern": "browser_cli"},
+                        )
+                        continue
+                    await client.approve_tool(event.request_id)
+                    _tool_title = _broadcast_auto_tool(state, slot, event)
+                    _tool_title, _ = redact_exfiltration_urls(_tool_title)
+                    _tool_title, _ = redact_credentials(_tool_title)
+                    slot.append("tool", f"🔧 {_tool_title}", "msg msg-tool")
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        agent=slot.agent or "kirocrew",
+                        source="dashboard",
+                        tool_name=_tool_title,
+                        tool_kind=event.tool_kind,
+                        outcome="auto_approved",
+                        request_id=event.request_id,
+                        metadata={"reason": "browser_cli"},
+                    )
+                    continue
                 # Trust-reads: auto-approve read-only bash commands
                 # Detect bash tools by tool_input content (title is human-readable)
                 cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""

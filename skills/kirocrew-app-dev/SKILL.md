@@ -53,7 +53,7 @@ my-app/
     }
   ],
   "permissions": {
-    "mcpTools": ["browser_navigate", "local_knowledge_search"],
+    "mcpTools": ["local_knowledge_search", "send_message"],
     "network": true
   },
   "ui": {

@@ -105,6 +105,18 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Browser CLI install failures",
+        "browser_cli/install.py",
+        "The stderr of a failed `npm install -g @playwright/cli` / browser download, "
+        "which reaches TWO surfaces: a `logger.warning` line (durable, and pasted "
+        "into bug reports via `kirocrew logs`) and the Settings > Browser error card. "
+        "npm quotes the command's own environment back on failure, so the text can "
+        "carry a registry `_authToken`, an inline-credential proxy URL, or a "
+        "`*_TOKEN=` echo -- shapes the shared credential family does NOT match, so "
+        "this sink adds its own npm patterns on top of the shared two-pass and "
+        "redacts at the source rather than at either boundary.",
+    ),
+    (
         "Session intent summaries",
         "session_summary.py",
         "Intent-summary payloads persisted to the `.intents` sidecar and served by "
@@ -861,7 +873,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # stale entries too.
         "mcp_tools/apps.py",
         "mcp_tools/artifacts.py",
-        "mcp_tools/browse.py",
         "mcp_tools/control.py",
         "mcp_tools/knowledge.py",
         "mcp_tools/messaging.py",
@@ -919,7 +930,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Redaction of a LOG line or a diagnostic URL/token, not agent output on
         # its way to a user. These match the (deliberately broad) redactor regex
         # in the drift guard but are not egress paths.
-        "browser/setup.py",
         "cli_doctor.py",
         "cloud/connect.py",
         "cloud/login.py",

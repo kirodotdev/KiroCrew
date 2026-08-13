@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import zlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,18 @@ from kiro_crew.vector_memory import (
     _lesson_slug,
     _split_stored,
 )
+
+
+def _discriminating_embed(text: str) -> list[float]:
+    """A one-hot embedding that differs per text, deterministically.
+
+    `hash()` is randomized per process, so on roughly 1 in 384 interpreter starts
+    two distinct strings land on the same slot, embed identically, and semantic
+    dedup deletes a row for reasons that have nothing to do with the matcher under
+    test. `adler32` is stable across processes, so the discrimination these tests
+    depend on is a property of the fixture rather than of the hash seed.
+    """
+    return [1.0 if i == zlib.adler32(text.encode()) % 384 else 0.0 for i in range(384)]
 
 
 class _FakeBgSession:
@@ -718,7 +731,7 @@ class TestWriteLessonAttachesNegativeToStoredRule:
         would pass or fail without telling us anything about lower() vs casefold()."""
         store = self._store(tmp_path)
         try:
-            store.embed_fn = lambda t: [1.0 if i == hash(t) % 384 else 0.0 for i in range(384)]
+            store.embed_fn = _discriminating_embed
             assert store.write_lesson("Ma\u00dfe", "tool") is True
             store.write_lesson("Masse", "tool", "Do not confuse with volume")
 
@@ -737,7 +750,7 @@ class TestWriteLessonAttachesNegativeToStoredRule:
         Discriminating embed_fn for the same reason as the test above."""
         store = self._store(tmp_path)
         try:
-            store.embed_fn = lambda t: [1.0 if i == hash(t) % 384 else 0.0 for i in range(384)]
+            store.embed_fn = _discriminating_embed
             assert store.write_lesson("Stra\u00dfe", "tool") is True
             store.write_lesson("STRASSE", "tool", "Do not misspell")
 

@@ -1115,12 +1115,6 @@
       "open_a_chat_page_to_move_this_terminal_there": "Open a chat page to move this terminal there",
       "terminal": "Terminal"
     },
-    "browserAuthPrompt": {
-      "auth_gate": "Auth gate: {{gateType}}",
-      "retry": "Retry",
-      "retrying": "Retrying...",
-      "unknown": "unknown"
-    },
     "chatInput": {
       "agent": "Agent: {{name}}",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
@@ -1912,7 +1906,8 @@
       "expand_preview_hide_nav_sessions": "Expand (hide nav and sessions)",
       "responsive_desktop": "Responsive (desktop)",
       "can_t_preview_this_dashboard_here": "Can't preview this dashboard here",
-      "this_url_is_the_dashboard_s_own_server_which_ref": "This URL is the dashboard's own server, which refuses to be embedded. Enter a dev server URL instead."
+      "this_url_is_the_dashboard_s_own_server_which_ref": "This URL is the dashboard's own server, which refuses to be embedded. Enter a dev server URL instead.",
+      "more_actions": "More actions"
     },
     "welcomeView": {
       "autopilot": "Autopilot",
@@ -3539,12 +3534,6 @@
         "where_to_find_the_bot_token": "Where to find the bot token",
         "where_to_find_the_credential": "Where to find the {{label}}"
       },
-      "browserPanel": {
-        "cannot_reach_gateway_is_it_running": "Cannot reach gateway. Is it running?",
-        "confirm": "Confirm",
-        "save": "Save",
-        "saving": "Saving..."
-      },
       "channelsPanel": {
         "checking": "Checking…",
         "connected": "Connected",
@@ -4000,6 +3989,25 @@
         "support": "Support",
         "blurb": "Something not working? Send us a diagnostics report — logs are scrubbed of secrets first.",
         "report_a_problem": "Report a Problem"
+      },
+      "browserPanel": {
+        "attach_title": "Use your own logged-in browser",
+        "token_stored": "saved",
+        "browser_missing": "no browser yet",
+        "install_steps_intro": "Installing runs three steps.",
+        "step_npm": "Install @playwright/cli globally with npm.",
+        "step_browser": "Download the browser it drives.",
+        "step_skills": "Register its skills so the agent knows the commands.",
+        "engines_title": "Browsers on this machine",
+        "engines_explains": "Each engine is a separate download. Chromium is the one attach mode needs; add Firefox or WebKit to check a page in them.",
+        "engine_chromium": "Chromium",
+        "engine_firefox": "Firefox",
+        "engine_webkit": "WebKit",
+        "engine_downloaded": "Downloaded",
+        "engine_download": "Download",
+        "engine_needed_for_attach": "needed for attach",
+        "node_missing": "Needs Node.js 20 or newer, and no Node was found on this machine.",
+        "node_how": "Install it, then reopen this page. <dl>Download Node.js</dl>"
       }
     },
     "systemPage": {},
@@ -4063,7 +4071,7 @@
         "label": "About"
       },
       "browser": {
-        "description": "Playwright browser mode, extension token, and auth configuration",
+        "description": "Install the Playwright CLI and manage attach access",
         "label": "Browser"
       },
       "channels": {

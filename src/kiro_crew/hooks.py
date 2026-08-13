@@ -162,8 +162,6 @@ class TransformHook:
 
 
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = [
-    "kirocrew browse *",
-    "*kirocrew browse *",
 ]
 
 

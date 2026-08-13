@@ -259,11 +259,9 @@ in place of `kirocrew`.
 The wizard installs the agent config, then walks through the workspace
 directory, timezone, dashboard URL, and (on macOS) the desktop app. It does NOT
 configure any messaging channel: pass `--slack` to opt into the guided Slack
-credential and slash-command setup. It also does NOT install `@playwright/mcp`
-or register the browser proxy: Browser Mode is a durable toggle you turn on later
-in **Settings → Browser**, and enabling it there is what downloads
-`@playwright/mcp` plus the selected engine's browser binary and registers the
-compression proxy.
+credential and slash-command setup. It also does NOT install a browser: browsing
+is available when `playwright-cli` is on PATH, and you install it separately (see
+[Browser](#browser)).
 
 **Messaging channels are optional.** The default wizard configures none, and the
 web dashboard is fully functional without any messaging credentials. Connect a
@@ -290,6 +288,31 @@ The two combine: `kirocrew setup --agent-only --clean` rebuilds the agent config
 from scratch and touches nothing else. That is the fix for a broken or stale MCP
 configuration, because without `--clean` the existing file is used as the base
 so all user customizations survive.
+
+## Browser
+
+Browsing is optional and installed separately. The agent drives a browser by
+running `playwright-cli` commands, so it needs Node.js 20 or newer:
+
+```bash
+npm install -g @playwright/cli@latest
+playwright-cli install-browser              # add --with-deps on Linux
+playwright-cli install --skills agents --global
+```
+
+The dashboard's **Browser** panel embeds the CLI's own dashboard over loopback,
+which shows the live session and lets you take over with real mouse and keyboard.
+That is how you complete a CAPTCHA or a 2FA prompt, and how you log in once so a
+session can be captured with `playwright-cli state-save`.
+
+**Installing the CLI is what grants browsing.** There is no separate toggle,
+because the CLI has no capability gating and a binary on `PATH` is reachable from
+any shell command the agent runs, so no subset of browsing could be granted or
+withheld. Read that in both directions: uninstalling `playwright-cli` (or never
+installing it) is the way to withhold the capability, and if you installed it for
+your own unrelated work then the capability is armed on this host without a
+separate opt-in. It matters most for `playwright-cli attach --extension`, which
+drives your own running Chrome with the sessions you are already logged into.
 
 ## Configuration
 

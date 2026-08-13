@@ -33,9 +33,10 @@ groups, none of which is the finding's agent-influenced-spawn vector:
 * Internal process management (read our own ppid; enumerate/kill our own
   managed/orphaned processes) and system-metrics probes (fixed sysctl/ps/etc).
 * Trusted-side gateway/MCP-backend spawns (``mcp_gateway`` — MCP backends sit
-  on the trusted side of the sandbox boundary by design) and the Playwright
-  proxy the finding explicitly excludes (inherits the already-sandboxed
-  kiro-cli parent).
+  on the trusted side of the sandbox boundary by design) and the Playwright CLI
+  toolchain spawns in ``browser_cli`` (fixed argv, operator-triggered install;
+  the agent's own browser commands are shell tool calls gated by the approval
+  path, not spawns we make).
 * Operator-configured state sync (``sync/*`` — git/s3/rsync/litestream
   push/pull against an operator-set remote) and app-registry package install
   of an operator-installed package.
@@ -541,18 +542,26 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # save (off the event loop) or the `kirocrew browse setup` CLI. Fixed
         # argv of trusted node-toolchain tools resolved via find_node_tool
         # (npm/npx/node) plus the ``playwright install <engine>`` subcommand,
-        # where ``engine`` is validated against the fixed BROWSER_ENGINES
-        # allowlist before it can reach argv — never free agent input. Mirrors
-        # cli.py::_ensure_node / env.py::_run below, which shell the same
-        # node/ensure-node toolchain and are benign for the same reason.
-        # ``_npx_cache_playwright_roots`` runs the fixed ``npm config get cache``.
-        # ``_chromium_needs_cups_symbol`` runs ``nm -D <binary>`` on a Playwright-
-        # managed Chromium binary to probe symbol binding — fixed argv, no agent
-        # input, read-only inspection of a local file.
-        "browser/setup.py::_chromium_needs_cups_symbol",
-        "browser/setup.py::_npx_cache_playwright_roots",
-        "browser/setup.py::_resolve_playwright_core_cli",
-        "browser/setup.py::_run",
+        # ``browser_cli`` spawns the Playwright CLI toolchain on fixed argv that
+        # the AGENT never contributes to, which is what makes them benign here:
+        #   * ``install.py::_run`` runs the three install steps
+        #     (``npm install -g @playwright/cli@latest``,
+        #     ``playwright-cli install-browser``, ``playwright-cli install
+        #     --skills agents --global``). Every token is a constant in our code
+        #     and the only trigger is the operator pressing Install in Settings.
+        #     Sandboxing it would be wrong, not merely unnecessary: the install
+        #     needs the real npm registry and writes the global prefix.
+        #   * ``view.py::_spawn`` runs ``playwright-cli show --port <n>`` where
+        #     the port comes from our own bind probe, and the host is the
+        #     hardcoded loopback constant.
+        # ``view.py::stop`` spawns nothing: it reaps its own child's process
+        # group rather than issuing a global ``show --kill``, which would take
+        # an operator's independent session down with ours.
+        # The agent's OWN browser commands are not spawned by us at all -- it
+        # runs them as ordinary shell tool calls, which the approval path gates
+        # (see chat_runner._is_browser_cli_command).
+        "browser_cli/install.py::_run",
+        "browser_cli/view.py::_spawn",
         "cli.py::_consolidate_cmd",
         "cli.py::_ensure_node",
         "cli.py::_node_ok",
@@ -697,7 +706,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
-        "mcp_playwright_proxy.py::run_proxy",
         # Read-only `git config` / `git ls-remote --get-url` resolving which
         # remote the update would fetch from, for the `updates.source` pin. Fixed
         # list-argv (no shell=True), no agent input: the branch lands mid-key

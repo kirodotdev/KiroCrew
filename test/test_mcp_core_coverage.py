@@ -150,23 +150,6 @@ class TestSearchSnapshot:
         assert "Found 3 matches" in out
 
 
-class TestBrowseTools:
-    def test_browse_outline_tool_returns_compressed_outline(self):
-        result = _call_tool(
-            "browse_outline", {"snapshot": '- button "Go" [ref=e1]', "max_lines": 10}
-        )
-        assert "Page outline (1 elements)" in result
-        assert "[ref=e1]" in result
-
-    def test_browse_search_tool_returns_matches(self):
-        result = _call_tool("browse_search", {"snapshot": "alpha\nbeta", "query": "beta"})
-        assert "Found 1 matches" in result
-
-    def test_browse_search_tool_reports_missing_query(self):
-        result = _call_tool("browse_search", {"snapshot": "alpha"})
-        assert result == "Error: query is required"
-
-
 # ── loopback HTTP verb helpers ────────────────────────────────────────────
 
 

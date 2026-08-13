@@ -73,7 +73,7 @@ agent loads only the one it needs.
 | [themes.md](themes.md) | The theme tier model and the CSS variable contract. |
 | [md-notebook.md](md-notebook.md) | The inline markdown viewer and editor. |
 | [side.md](side.md) | The chat side panel. |
-| [browser.md](browser.md) | Website browsing through Playwright MCP. |
+| [browser.md](browser.md) | Website browsing through the `playwright-cli` shell commands. |
 
 ## Built-in apps
 

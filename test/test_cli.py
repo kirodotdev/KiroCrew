@@ -3842,7 +3842,6 @@ class TestSetupChannelGating:
             monkeypatch.setattr(cs, name, lambda *a, **k: None)
         monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
         monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
-        monkeypatch.setattr(cs, "browser_mode_enabled", lambda: False)
         # Conductor-skill step catches Exception and continues.
         monkeypatch.setattr(
             cs, "KiroCrewConfig", MagicMock(load=MagicMock(side_effect=RuntimeError("no config")))

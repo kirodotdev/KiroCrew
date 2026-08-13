@@ -435,14 +435,17 @@ Descriptors carry no per-caller state and are rebuilt per call, not cached: some
 quote a live value (the concurrent sub-agent cap), and a cache would pin the
 first reading for the life of the server process.
 
-External servers a user may install (a Playwright proxy under the canonical
-`playwright-mcp` alias, a Slack server, anything else) are ordinary user-added
-servers: they live in one of the scope files and are merged into the agent config
-at render time. They are not managed, so a `mcp_server_alias` normalization pass
-rewrites slash-containing keys to kiro-safe aliases and
-`browser.setup.converge_playwright_servers()` folds every Playwright-proxy entry onto the one
-canonical key, keyed by resolved launch target, so a legacy slash-free key
-re-injected from `~/.kiro/crew/mcp.json` cannot spawn a second backend.
+External servers a user may install (a Slack server, anything else) are ordinary
+user-added servers: they live in one of the scope files and are merged into the
+agent config at render time. They are not managed, so a `mcp_server_alias`
+normalization pass rewrites slash-containing keys to kiro-safe aliases: kiro-cli
+splits an agent `@server` reference on `/`, so a slash-containing key is
+mis-parsed as `@server/tool` and exposes none of the server's tools.
+
+**Browsing is deliberately not an MCP server.** The agent drives a browser by
+running `playwright-cli` commands on its ordinary shell path, so no tool schemas
+are re-sent per request and the accessibility tree stays on disk instead of
+entering the model context. See [browser](../system-specs/modules/browser.md).
 
 ### The one deliberate exception
 

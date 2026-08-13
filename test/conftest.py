@@ -7,7 +7,7 @@ import os
 import pathlib
 import shutil
 import socket
-import sys
+import warnings
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -742,33 +742,53 @@ def _ensure_event_loop():
 
 @pytest.fixture(autouse=True)
 def _restore_default_child_watcher():
-    """Restore the always-active ThreadedChildWatcher after every test (Python 3.10).
+    """Restore a FRESH ThreadedChildWatcher after every test.
 
     Some tests install a real, non-default asyncio child watcher via the
     gateway's ``_install_child_watcher()`` -- notably
     ``test_cli.py::test_real_subprocess_works_after_install_on_linux``, which on
     Linux installs a ``PidfdChildWatcher`` and runs ``asyncio.run``. On exit,
     ``asyncio.run`` detaches the watcher's loop, leaving a loop-less watcher in
-    the global policy. On Python 3.10 that watcher's ``is_active()`` is then
-    False, so the NEXT subprocess-spawning test scheduled on the same
-    pytest-xdist worker (``test_taskrunner::TestGitCoord``, the code_reviewer git
-    routes) fails with "asyncio.get_child_watcher() is not activated, subprocess
-    support is not available". Whether the leak bites depends purely on xdist
-    sharding, so adding or removing unrelated tests can flip a green run red with
-    no production-code change. Resetting to ``ThreadedChildWatcher`` (whose
-    ``is_active()`` is always True) after each test removes the cross-test
-    coupling. No-op on 3.12+, where child watchers were removed and the event
-    loop reaps children directly.
+    the global policy. Two distinct failures follow from that leak, and which
+    one bites depends purely on xdist sharding, so adding or removing unrelated
+    tests can flip a green run red with no production-code change:
+
+    * On 3.10 the leaked watcher's ``is_active()`` is False, so the NEXT
+      subprocess-spawning test fails with "asyncio.get_child_watcher() is not
+      activated, subprocess support is not available".
+    * On 3.12 the leaked watcher is still ATTACHED to callbacks bound to a loop
+      that later closes. ``set_event_loop`` calls ``watcher.attach_loop()``,
+      which reaps already-exited children and fires their callbacks -- against
+      the closed loop -- raising ``RuntimeError: Event loop is closed``. Since
+      pytest-asyncio calls ``set_event_loop`` when setting up every test that
+      needs a loop, ONE leaked watcher fails every later test in that worker.
+
+    The condition is therefore derived from whether the watcher API EXISTS, not
+    from a version number: child watchers were only DEPRECATED in 3.12 and are
+    removed in 3.14. A previous ``sys.version_info >= (3, 12): return`` guard
+    skipped this cleanup on exactly the version where the second failure mode
+    lives, which is what turned one leaked watcher into thousands of cascading
+    failures in a full parallel run.
     """
     yield
-    if sys.version_info >= (3, 12):
-        return
+    get_watcher = getattr(asyncio, "get_child_watcher", None)
+    set_watcher = getattr(asyncio, "set_child_watcher", None)
     threaded = getattr(asyncio, "ThreadedChildWatcher", None)
-    if threaded is None:  # non-Unix (no child watchers) -- nothing to restore
+    if not (get_watcher and set_watcher and threaded):
+        # 3.14+, or a platform with no child watchers at all -- nothing to do.
         return
     try:
-        if not isinstance(asyncio.get_child_watcher(), threaded):
-            asyncio.set_child_watcher(threaded())
+        with warnings.catch_warnings():
+            # 3.12 deprecates these; the call is still the only way to clear the
+            # leak on 3.12, so silence the warning rather than skip the fix.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            current = get_watcher()
+            # Install a FRESH watcher when the current one is the wrong type OR
+            # is still holding pid->callback entries: those callbacks are bound
+            # to a loop that may already be closed, and matching on type alone
+            # would leave them in place.
+            if not isinstance(current, threaded) or getattr(current, "_callbacks", None):
+                set_watcher(threaded())
     except Exception:  # noqa: BLE001 -- isolation cleanup must never fail a test
         # Test-isolation cleanup must never fail a test; worst case is the
         # pre-existing leak, which the next test's loop setup also tolerates.

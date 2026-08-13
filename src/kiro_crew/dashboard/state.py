@@ -2479,6 +2479,9 @@ class DashboardState:
         self._refine_error: str = ""
         self._terminal_sessions: dict[str, Any] = {}  # PTY sessions for CLI panel
         self._terminal_reaper: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._browser_snapshot_pruner: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._browser_install_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._browser_install_error: str | None = None
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
         # Background reconciler that surfaces channel-originated sessions
         # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.

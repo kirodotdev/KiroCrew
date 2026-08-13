@@ -40,7 +40,6 @@ from typing import NoReturn
 
 from kiro_crew import __version__, platform_compat
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
-from kiro_crew.browser.cli import run_browse
 from kiro_crew.config import KiroCrewConfig, config_dir, ensure_data_home
 from kiro_crew.config.loader import (
     DASHBOARD_PORT,
@@ -1810,30 +1809,6 @@ Examples:
     for _bname in _BUILTIN_NAMES:
         sub.add_parser(f"mcp-{_bname}", help=argparse.SUPPRESS)
 
-    # mcp-playwright-proxy (MCP proxy — compresses accessibility tree responses)
-    proxy_parser = sub.add_parser("mcp-playwright-proxy", help=argparse.SUPPRESS)
-    proxy_parser.add_argument("proxy_args", nargs=argparse.REMAINDER)
-
-    # browse — auth management for Playwright MCP browsing
-    browse_parser = sub.add_parser(
-        "browse",
-        help="Setup for Playwright MCP browsing",
-        epilog="""
-Examples:
-  kirocrew browse setup                        # Install Playwright + browsers
-  kirocrew browse auth health                  # Check auth status
-""",
-        formatter_class=_fmt,
-    )
-    browse_parser.add_argument(
-        "browse_args",
-        nargs=argparse.REMAINDER,
-        help="browse sub-command and its arguments",
-    )
-
-    # computer — computer-use (desktop automation) diagnostics. READ-ONLY: there
-    # is deliberately no CLI verb that reads a window's contents or drives an
-    # app, because those are LLM-facing capabilities and the MCP-first rule puts
     # them in the ``kirocrew-computer`` MCP server instead.
     computer_parser = sub.add_parser(
         "computer",
@@ -2086,12 +2061,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     )
     cfg_sub.add_parser("edit", help="Open config in $EDITOR")
 
-    if len(sys.argv) > 1 and sys.argv[1] == "mcp-playwright-proxy":
-        from kiro_crew.mcp_playwright_proxy import run_proxy
-
-        run_proxy(sys.argv[2:])
-        return
-
     args = parser.parse_args()
 
     # Direct agent-bearing CLI commands do not construct the long-lived
@@ -2294,8 +2263,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         _mod = importlib.import_module(f"kiro_crew.apps.builtins.{args.command[4:]}.mcp_server")
         _mod.run_mcp_server()
-    elif args.command == "browse":
-        run_browse(getattr(args, "browse_args", []))
     elif args.command == "computer":
         # Deferred import: ``computer_use.cli`` reaches the driver seam, and the
         # macOS driver loads native frameworks on first use. Keeping it out of
