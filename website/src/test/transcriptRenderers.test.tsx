@@ -206,8 +206,14 @@ describe('drift guard against the single-chat row chain', () => {
   // with a content guard (a tool row needs its 🔧 prefix), and what drift
   // breaks is coverage, not the guard.
   //
-  // Retire this guard when ChatPage consumes these entries directly and there
-  // is only one row set left to keep in sync.
+  // This guard is PERMANENT. Converging the two row sets by moving ChatPage
+  // onto this registry was considered and rejected (#3332, closed not-planned):
+  // the single-chat surface has no problem to fix, so migrating it is risk
+  // without payoff. The asymmetry is what makes the guard sufficient — ChatPage
+  // owns the policy, so drift can only ever degrade a DOWNSTREAM surface, never
+  // that one. If a row both sides draw ever diverges in component or props,
+  // strengthen this into a static comparison of what each side passes rather
+  // than migrating.
   const chatPageSrc = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
 
   const rolesInChatPage = [...new Set(

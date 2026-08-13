@@ -49,18 +49,21 @@ export interface TranscriptRendererOptions {
   toolDisclosure?: Record<string, boolean>
   onToolDisclosureChange?: (key: string, expanded: boolean) => void
   /** Whether an MCP app may be revealed in the panel, and how. Unwired from a
-   *  pane for the same reason as `onFileOpen` — tracked in #3332. */
+   *  pane for the same reason as `onFileOpen` — the dock is `activeSlot`-keyed
+   *  while pane focus is not, tracked in #3300. */
   appInPanel?: boolean
   onOpenApp?: (toolCallId: string) => void
   /** Id of the auto-nudge loop this surface can open, plus the opener. The
    *  match rule stays here so a host never re-implements it. Unwired from a
-   *  pane until its composer can reach the popover — tracked in #3332. */
+   *  pane because a pane's composer cannot reach the auto-nudge popover yet;
+   *  wire it when that popover becomes reachable per pane. */
   activeNudgeLoopId?: string | null
   onOpenNudgeLoop?: () => void
   /** Turn-recovery state for the error row's Continue button. Omitted → the
    *  row renders without one, which is correct for a surface that cannot
    *  continue a turn. A pane cannot supply these until `selectContinuable` /
-   *  `selectTurnInterrupted` are slot-aware — tracked in #3332. */
+   *  `selectTurnInterrupted` become slot-aware — both read the active slot
+   *  today, so a pane cannot ask whether ITS turn was interrupted. */
   continuable?: boolean
   interrupted?: boolean
   continuing?: boolean
