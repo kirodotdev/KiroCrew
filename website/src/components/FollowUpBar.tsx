@@ -6,7 +6,7 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 
 interface FollowUpBarProps {
   options: string[]
-  picked: Set<string>
+  picked: ReadonlySet<string>
   onSelect: (option: string, event: React.MouseEvent) => void
   /** Double-click sends with this option's text directly (bypasses setInput race). */
   onSend?: (text?: string) => void
@@ -68,7 +68,7 @@ function sendSegmentClassName(isPicked: boolean) {
   }`
 }
 
-function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: Set<string>, hasOnSend: boolean) {
+function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: ReadonlySet<string>, hasOnSend: boolean) {
   if (isPicked) {
     return hasOnSend
       ? i18nT('components.followUpBar.click_to_remove_from_input_double_click_to_send')
@@ -84,7 +84,7 @@ function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: Se
 interface ChipProps {
   option: string
   isPicked: boolean
-  picked: Set<string>
+  picked: ReadonlySet<string>
   quickSend: boolean | undefined
   onSelect: (option: string, event: React.MouseEvent) => void
   onSend?: (text?: string) => void

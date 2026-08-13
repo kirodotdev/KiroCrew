@@ -31,6 +31,11 @@ const PARAGRAPH_BREAK = '\n\n'
 export function mergeIntoDraft(draft: string | null | undefined, prompt: string): string {
   const existing = draft ?? ''
   if (!existing.trim()) return prompt
+  // Nothing to append. Without this the draft grows a trailing paragraph break the
+  // user did not type — harmless at the two hand-off call sites, which always carry
+  // prose, but the composer merges whatever the server hands back and an edited
+  // queue entry can be emptied to nothing.
+  if (!prompt.trim()) return existing
   return existing.replace(/\s+$/, '') + PARAGRAPH_BREAK + prompt
 }
 

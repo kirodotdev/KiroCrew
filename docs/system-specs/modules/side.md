@@ -282,6 +282,43 @@ for the shared `BusySendButton`; queued entries render as `QueueStack` cards who
 cancel and edit wait for the server's own frame before changing what the user
 sees.
 
+The composer's DRAFT behaviour is not owned here. It comes from the chat SDK's
+`app-sdk/useComposerDraft`, which this surface was the first consumer of, and
+which owns four invariants this file must not re-derive:
+
+- A follow-up pick edits the draft, and the picked set is read back OFF the draft
+  rather than stored beside it. The draft is what gets submitted, so it is the
+  only source that cannot disagree with what the user sends.
+- Text the server hands back (a cancelled queue entry, a rejected submit, a
+  failed edit) is APPENDED to the draft, never substituted for it — via the
+  host's single `utils/chatDrafts.mergeIntoDraft`, which `chatSlice`'s own
+  release path already uses.
+- An Enter that commits an IME candidate is not a submit. This surface's own
+  handler predated the shared hook and lacked the guard, so a Chinese/Japanese/
+  Korean candidate confirmed with Enter submitted the partial text with nothing
+  left to recover.
+- The submit size limit (`MAX_QUESTION_BYTES`) is measured in UTF-8 bytes, not
+  code units. The hook only reports whether the limit is exceeded; this file
+  still owns the refusal and its wording.
+
+The hook is uncontrolled here (it holds the draft), but it also accepts a
+caller-owned draft via `draft` + `onDraftChange`, and its `submitOnEnter` /
+`isComposing` are generic over the element -- the shape the remaining consumers
+need, so migrating them does not change its signature. It is deliberately NOT
+exported from `app-sdk/index.ts`: that barrel is re-exported through the vendor
+stub to third-party apps, and the contract should not be frozen for them until
+the main composer -- with configurable send keys and per-slot persisted drafts --
+has exercised it. In-tree surfaces import it from `app-sdk/useComposerDraft`
+by name.
+
+`website/src/test/useComposerDraft.test.tsx` holds the behavioural tests, two of
+them rendered inside `StrictMode` (a toggle has to remember what it wrote, so
+the write must happen outside the state updater -- an impure updater loses the
+memo on the second pass and eats the user's punctuation).
+`website/src/test/SideChat.imeEnter.test.tsx` drives this file's real textarea,
+because the IME defect was in the WIRING and a hook test cannot see it. A
+source-level guard fails if this file re-grows a local copy of any of them.
+
 ### `chatSlice.ts` — Side State
 
 - `slotSide: Record<string, SideState>` on ChatState, each with `messages` and

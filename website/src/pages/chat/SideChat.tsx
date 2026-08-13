@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Send, MessageSquare, RotateCcw } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../../api/client'
@@ -8,6 +8,7 @@ import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
+import { useComposerDraft } from '../../app-sdk/useComposerDraft'
 import BusySendButton, { useBusySendMode } from '../../components/BusySendButton'
 import type { SideMessage } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
@@ -44,36 +45,11 @@ type SideSubmit = { q: string; steer: boolean; optimistic: boolean; slot: string
 const STEER_RAW_PREFIX = 'steer:'
 const MAX_SUBMITTED_RAW = 50
 
-function mergeDraft(prev: string, released: string): string {
-  if (!prev.trim()) return released
-  if (!released.trim()) return prev
-  return [prev.trimEnd(), released].join('\n\n')
-}
-
 function relativeTime(iso: string): string | null {  const diff = Date.now() - new Date(iso).getTime()
   if (diff < 30 * 60_000) return null
   if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)}m`
   if (diff < 24 * 3600_000) return `${Math.floor(diff / 3600_000)}h`
   return `${Math.floor(diff / (24 * 3600_000))}d`
-}
-
-/** Options forming the `, `-joined tail of `text`, in the order they appear.
- *
- *  Longest match wins so an option that contains another plus the separator (`foo, bar` next to
- *  `bar`) peels as itself. An option already peeled is not peeled twice: the tail belongs to the
- *  picks, and an earlier occurrence is the user's own text. */
-function pickedFromDraft(text: string, options: readonly string[]): string[] {
-  const picked: string[] = []
-  let rest = text
-  for (;;) {
-    const hit = options
-      .filter(o => o && !picked.includes(o) && (rest === o || rest.endsWith(`, ${o}`)))
-      .sort((a, b) => b.length - a.length)[0]
-    if (!hit) break
-    picked.unshift(hit)
-    rest = rest === hit ? '' : rest.slice(0, rest.length - hit.length - 2)
-  }
-  return picked
 }
 
 export default function SideChat({ slot }: { slot: string }) {
@@ -82,7 +58,6 @@ export default function SideChat({ slot }: { slot: string }) {
   const parentTurnCount = useAppSelector(s =>
     s.chat.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
   )
-  const [draft, setDraft] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
   // Transient, non-error feedback (e.g. a steer the server had to demote to a
   // queue entry). Kept apart from localError so it renders as a notice, not red.
@@ -95,7 +70,6 @@ export default function SideChat({ slot }: { slot: string }) {
     return () => clearTimeout(t)
   }, [localNotice])
   const scrollRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isNearBottomRef = useRef(true)
 
   const messages = reduxSide?.messages ?? []
@@ -106,6 +80,41 @@ export default function SideChat({ slot }: { slot: string }) {
   // the same signal the thinking indicator uses, so the composer's affordance and
   // what the server will actually do can't disagree.
   const isBusy = isPending || (reduxSide?.streaming ?? false)
+
+  const lastIdx = messages.length - 1
+  const lastMsg = messages[lastIdx]
+  const isStreaming = reduxSide?.streaming ?? false
+  const isStreamingLast = lastMsg?.role === 'assistant' && isStreaming
+
+  /** The side buffer carries only `user` / `assistant` plus an `is_error` flag, so the
+   *  roles the shared transcript understands are derived here rather than stored. The last
+   *  assistant message becomes `streaming` while the turn runs, which is what drives the
+   *  cursor and holds the footer back until the answer settles. */
+  const transcript = useMemo<ChatMessage[]>(
+    () => messages.map((m, i) => {
+      const streaming = i === lastIdx && isStreamingLast
+      const role = m.role === 'user' ? 'user' : m.is_error ? 'error' : streaming ? 'streaming' : 'assistant'
+      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts }
+    }),
+    [messages, lastIdx, isStreamingLast]
+  )
+
+  /** Derived from the same helper the main chat uses, so "options only after the answer
+   *  settles" and "a later user message clears them" behave identically. */
+  const { followUpOptions } = useMemo(
+    () => deriveFollowUpOptions(transcript, isStreaming),
+    [transcript, isStreaming]
+  )
+
+  /** The composer's draft behaviour, owned by the chat SDK rather than by this file: what a
+   *  follow-up pick does to the text, where a handed-back submit goes, when Enter is a send
+   *  and when it is an IME committing a candidate, and how tall the box may grow. Derived
+   *  here from `followUpOptions`, so the hook has to be called after that. */
+  const composer = useComposerDraft({ followUpOptions, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H })
+  const {
+    draft, setDraft, textareaRef, composition,
+    picked: pickedOptions, toggleOption, mergeIntoDraft, exceedsByteLimit, submitOnEnter,
+  } = composer
 
   // Drain any text a cancel released, from EITHER convergence path. Merged, not
   // replaced: the released text has no other home once the server let it go, and
@@ -138,11 +147,11 @@ export default function SideChat({ slot }: { slot: string }) {
     const key = [slot, releasedText].join('\u0000')
     if (mergedRelease.current === key) return
     mergedRelease.current = key
-    setDraft(prev => mergeDraft(prev, releasedText))
+    mergeIntoDraft(releasedText)
     // Report WHAT was drained, so a cancel that appended after this render keeps
     // its text instead of being cleared along with it.
     dispatch(sideReleaseConsumed({ slot, consumed: releasedText }))
-  }, [releasedText, slot, dispatch])
+  }, [releasedText, slot, dispatch, mergeIntoDraft])
 
   // A requeued steer's card arrives from the socket with its content REDACTED, and the
   // reducer's cancel path releases the card's own content — it cannot reach the raw-text
@@ -268,7 +277,7 @@ export default function SideChat({ slot }: { slot: string }) {
       if (vars.optimistic) dispatch(sideOptimisticRollback(vars.slot))
       // Nothing was accepted, so hand the text back — merged, not chosen: the
       // user may have started a new draft while the request was in flight.
-      setDraft(prev => mergeDraft(prev, vars.q))
+      mergeIntoDraft(vars.q)
     },
   })
 
@@ -371,7 +380,7 @@ export default function SideChat({ slot }: { slot: string }) {
       // this text has nowhere else to live: a 404 means the entry drained and its card is
       // gone, and a surviving card still shows the pre-edit content. Merge, never assign —
       // the composer may hold a question the user has since started typing.
-      setDraft(prev => mergeDraft(prev, vars.content))
+      mergeIntoDraft(vars.content)
     },
     onSettled: (_d, _e, vars) => { markQueuePending(vars.queueId, false) },
   })
@@ -454,18 +463,12 @@ export default function SideChat({ slot }: { slot: string }) {
     }
     window.addEventListener('side-seed', onSeed)
     return () => window.removeEventListener('side-seed', onSeed)
-  }, [])
+    // `setDraft` and `textareaRef` come from the SDK hook now, so their stability is
+    // no longer something the linter can see for itself — declared rather than assumed.
+  }, [setDraft, textareaRef])
 
-  // Auto-grow the input so a seeded multi-line quote (or a long typed question)
-  // is fully visible instead of being clipped to the 2-row default. Grows with
-  // content up to MAX_INPUT_H, then scrolls. The `min-h-[52px]` class floors it
-  // at ~2 rows so an empty box keeps its original size.
-  useLayoutEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_H)}px`
-  }, [draft])
+  // Auto-grow of the input is the SDK hook's job — the `min-h-[52px]` class below
+  // still floors an empty box at ~2 rows, so this surface keeps its own resting size.
 
   /** `override` carries the text a follow-up chip's send arrow supplies; without it the draft
    *  is the source of truth. Every call site wraps this in an arrow, so a click event can never
@@ -473,7 +476,7 @@ export default function SideChat({ slot }: { slot: string }) {
   const send = useCallback((override?: string) => {
     const q = (override ?? draft).trim()
     if (!q || sendMutation.isPending || !slot) return
-    if (new Blob([q]).size > MAX_QUESTION_BYTES) {
+    if (exceedsByteLimit(q)) {
       setLocalError(`Question too long (max ${MAX_QUESTION_BYTES.toLocaleString()} bytes)`)
       return
     }
@@ -484,88 +487,12 @@ export default function SideChat({ slot }: { slot: string }) {
     // so the server frame places both.
     const steer = isBusy && busySendMode === 'steer'
     sendMutation.mutate({ q, steer, optimistic: !isBusy, slot, override: override != null })
-  }, [draft, slot, sendMutation, isBusy, busySendMode])
+  }, [draft, slot, sendMutation, isBusy, busySendMode, exceedsByteLimit])
 
-  const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      void send()
-    }
-  }, [send])
-
-  const lastIdx = messages.length - 1
-  const lastMsg = messages[lastIdx]
-  const isStreaming = reduxSide?.streaming ?? false
-  const isStreamingLast = lastMsg?.role === 'assistant' && isStreaming
-
-  /** The side buffer carries only `user` / `assistant` plus an `is_error` flag, so the
-   *  roles the shared transcript understands are derived here rather than stored. The last
-   *  assistant message becomes `streaming` while the turn runs, which is what drives the
-   *  cursor and holds the footer back until the answer settles. */
-  const transcript = useMemo<ChatMessage[]>(
-    () => messages.map((m, i) => {
-      const streaming = i === lastIdx && isStreamingLast
-      const role = m.role === 'user' ? 'user' : m.is_error ? 'error' : streaming ? 'streaming' : 'assistant'
-      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts }
-    }),
-    [messages, lastIdx, isStreamingLast]
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => submitOnEnter(e, () => { void send() }),
+    [submitOnEnter, send],
   )
-
-  /** Derived from the same helper the main chat uses, so "options only after the answer
-   *  settles" and "a later user message clears them" behave identically. */
-  const { followUpOptions } = useMemo(
-    () => deriveFollowUpOptions(transcript, isStreaming),
-    [transcript, isStreaming]
-  )
-  const pickedOptions = useMemo(
-    () => new Set(pickedFromDraft(draft, followUpOptions)),
-    [draft, followUpOptions],
-  )
-  // The exact text a toggle wrote, with the base it was built from, so removing the block can put
-  // punctuation back verbatim. Only trusted while the draft still equals `produced`.
-  const lastJoinRef = useRef<{ produced: string; base: string } | null>(null)
-
-  /** Picking edits the DRAFT rather than sending, matching the main chat: the text in the
-   *  composer is what gets submitted, so a choice stays amendable.
-   *
-   *  The draft is the only record of what is picked, so the picked block is read back off it and
-   *  rewritten whole. Editing the text is therefore not a case to defend against: it simply
-   *  changes what the tail is, and an option the user has since woven into their own sentence
-   *  stops being highlighted because it is no longer a block this can remove. */
-  const toggleOption = useCallback((option: string) => {
-    setDraft(prev => {
-      const current = pickedFromDraft(prev, followUpOptions)
-      const block = current.join(', ')
-      const memo = lastJoinRef.current
-      let base: string
-      if (block && memo && memo.produced === prev) {
-        // Untouched since this wrote it, so the base is known exactly rather than inferred.
-        base = memo.base
-      } else if (block) {
-        // `pickedFromDraft` only reports a tail, so the block is at the end by construction.
-        base = prev.slice(0, prev.length - block.length)
-        if (base.endsWith(', ')) base = base.slice(0, -2)
-      } else {
-        base = prev
-      }
-      const next = current.includes(option)
-        ? current.filter(o => o !== option)
-        : [...current, option]
-      const newBlock = next.join(', ')
-      if (!newBlock) {
-        lastJoinRef.current = null
-        return base
-      }
-      const tail = base.trimEnd()
-      // A draft mid-sentence may already end with the separator; a second one would be submitted
-      // verbatim. Appending just the space still lands on the `, ` shape the block is read back by.
-      const produced = !tail
-        ? newBlock
-        : tail.endsWith(',') ? `${tail} ${newBlock}` : `${tail}, ${newBlock}`
-      lastJoinRef.current = { produced, base }
-      return produced
-    })
-  }, [followUpOptions])
 
   const sendErr = sendMutation.error
   const displayError = sendErr
@@ -660,6 +587,7 @@ export default function SideChat({ slot }: { slot: string }) {
       <div className="border-t border-border p-2 flex items-end gap-2 shrink-0">
         <textarea
           ref={textareaRef}
+          {...composition}
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
