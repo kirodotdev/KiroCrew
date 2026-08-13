@@ -5250,6 +5250,135 @@ class TestRunChatToolCallUpdate:
         assert "ls /tmp" in tool_msgs[0]["meta"]["input"]
 
     @pytest.mark.asyncio
+    async def test_refinement_carries_purpose_when_it_has_one(self, tmp_path, monkeypatch):
+        """The update frame must carry the purpose so the live status line keeps
+        showing the agent's own reason for the call."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_UPDATE,
+            LLMEvent,
+        )
+
+        events = [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Terminal",
+                tool_kind="execute",
+                tool_purpose="List the temp dir",
+                tool_call_id="tc-p1",
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                title="ls /tmp",
+                tool_kind="execute",
+                tool_purpose="List the temp dir",
+                tool_input='{"command":"ls /tmp"}',
+                tool_call_id="tc-p1",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        ws_calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+        (update,) = [p for k, p in ws_calls if k == "tool_call" and p.get("is_update")]
+        assert update["purpose"] == "List the temp dir"
+
+    @pytest.mark.asyncio
+    async def test_purposeless_refinement_omits_the_key(self, tmp_path, monkeypatch):
+        """A refinement with no purpose omits the key entirely rather than
+        sending an empty string: consumers merge field-by-field and read an
+        absent ``purpose`` as "keep what the initial tool_call supplied", so an
+        empty value would replace a good purpose with the raw command."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_UPDATE,
+            LLMEvent,
+        )
+
+        events = [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Terminal",
+                tool_kind="execute",
+                tool_purpose="List the temp dir",
+                tool_call_id="tc-p2",
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                title="ls /tmp",
+                tool_kind="execute",
+                tool_input='{"command":"ls /tmp"}',
+                tool_call_id="tc-p2",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        ws_calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+        (update,) = [p for k, p in ws_calls if k == "tool_call" and p.get("is_update")]
+        assert "purpose" not in update
+
+    @pytest.mark.asyncio
+    async def test_refinement_persists_a_recovered_purpose(self, tmp_path, monkeypatch):
+        """A refinement's purpose must reach the PERSISTED meta, not just the live
+        status: when the initial tool_call streamed an empty rawInput, _tool_meta
+        wrote an empty purpose, and the reloaded transcript reads meta.purpose —
+        so a live-only patch loses it on the next reload."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_UPDATE,
+            LLMEvent,
+        )
+
+        events = [
+            # Streaming backend: no purpose and no input on the initial frame.
+            LLMEvent(
+                kind=EVENT_TOOL_CALL, title="Terminal", tool_kind="execute", tool_call_id="tc-p3"
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                title="ls /tmp",
+                tool_kind="execute",
+                tool_purpose="List the temp dir",
+                tool_input='{"command":"ls /tmp"}',
+                tool_call_id="tc-p3",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        (tool_msg,) = [m for m in slot.messages if m.get("role") == "tool"]
+        assert tool_msg["meta"]["purpose"] == "List the temp dir"
+        # And the same patch goes out live so an open tab does not wait for a reload.
+        ws_calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+        (msg_update,) = [p for k, p in ws_calls if k == "chat_message_update"]
+        assert msg_update["meta"]["purpose"] == "List the temp dir"
+
+    @pytest.mark.asyncio
     async def test_refinement_broadcasts_chat_message_update(self, tmp_path, monkeypatch):
         """The handler broadcasts a chat_message_update WS event so the
         frontend can patch the persisted tile in place without a reload."""

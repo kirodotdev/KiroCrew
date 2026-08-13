@@ -4932,6 +4932,11 @@ async def _run_chat(
                         _kind_upd, _ = redact_exfiltration_urls(event.tool_kind)
                         _kind_upd, _ = redact_credentials(_kind_upd)
                     _input_upd = _redact_tool_field(event.tool_input) if event.tool_input else ""
+                    _purpose_upd = (
+                        _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE)
+                        if event.tool_purpose
+                        else ""
+                    )
                     # Snapshot file BEFORE the write tool actually executes.
                     # Initial tool_call had empty rawInput so no snapshot was
                     # taken there; this is the first event with the file path.
@@ -4961,6 +4966,12 @@ async def _run_chat(
                             # capability signal as the initial tool_call.
                             "is_shell": event.is_shell,
                             "is_update": True,
+                            # Omitted rather than sent empty: consumers merge a
+                            # refinement field-by-field and read an absent
+                            # `purpose` as "keep what the initial tool_call
+                            # supplied", so an empty value would blank a good
+                            # purpose (the session list's running-status line).
+                            **({"purpose": _purpose_upd} if _purpose_upd else {}),
                         },
                     )
                     # Update the audit log so the SEL trail captures the
@@ -4984,6 +4995,13 @@ async def _run_chat(
                     _meta_patch: dict[str, str] = {}
                     if _input_upd:
                         _meta_patch["input"] = _input_upd
+                    # A refinement is the only event carrying the purpose when the
+                    # initial tool_call streamed an empty rawInput, so the patch has
+                    # to reach the PERSISTED meta too: _tool_meta() wrote "" there,
+                    # and the reloaded transcript reads meta.purpose (ToolCallLine),
+                    # so a live-only fix would lose the purpose on the next reload.
+                    if _purpose_upd:
+                        _meta_patch["purpose"] = _purpose_upd
                     _patched = False
                     _patched_content: str | None = None
                     for m in reversed(slot.messages):

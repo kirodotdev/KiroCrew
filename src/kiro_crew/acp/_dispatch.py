@@ -969,6 +969,14 @@ def _build_tool_refinement_event(
     title_source = select_tool_title(title, raw_input)
     title_str = _redact(title_source) if title_source else ""
     kind_str = _redact(kind) if isinstance(kind, str) and kind else ""
+    # The refinement's rawInput is the COMPLETE params object, so it carries the
+    # reserved purpose argument too. Read it here or the purpose is lost on every
+    # backend whose initial tool_call streams an empty rawInput — and consumers
+    # that treat an empty purpose as "fall back to the raw title" (the session
+    # list's running-status line) would replace a good purpose with a command.
+    purpose = extract_tool_purpose(raw_input)
+    if purpose:
+        purpose = _redact(purpose)
     # Refresh the cached shell signal only when this refinement carries a kind
     # (kind is optional on updates); a kind-less refinement must not clobber a
     # True cached by the initial tool_call. Mirrors AcpClient exactly.
@@ -982,6 +990,7 @@ def _build_tool_refinement_event(
         kind=EVENT_TOOL_CALL_UPDATE,
         title=title_str,
         tool_kind=kind_str,
+        tool_purpose=purpose,
         tool_input=input_str,
         tool_call_id=tool_use_id,
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,

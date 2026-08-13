@@ -5232,6 +5232,16 @@ class AcpClient:
         if isinstance(kind, str) and kind:
             kind_str, _ = redact_exfiltration_urls(kind)
             kind_str, _ = redact_credentials(kind_str)
+        # The refinement's rawInput is the COMPLETE params object, so it carries
+        # the reserved purpose argument too. Read it here or the purpose is lost
+        # whenever the initial tool_call streamed an empty rawInput — and
+        # consumers that treat an empty purpose as "fall back to the raw title"
+        # (the session list's running-status line) would replace a good purpose
+        # with a command. Mirrors `_dispatch._build_tool_refinement_event`.
+        purpose = extract_tool_purpose(raw_input)
+        if purpose:
+            purpose, _ = redact_exfiltration_urls(purpose)
+            purpose, _ = redact_credentials(purpose)
         # Refresh the cached shell signal only when this refinement carries a
         # kind. A refinement that omits kind must NOT clobber a True cached by
         # the initial tool_call notification (kind is optional on updates).
@@ -5243,6 +5253,7 @@ class AcpClient:
             kind=EVENT_TOOL_CALL_UPDATE,
             title=title_str,
             tool_kind=kind_str,
+            tool_purpose=purpose,
             tool_input=input_str,
             tool_call_id=tool_use_id,
             raw_tool_params=raw_input if isinstance(raw_input, dict) else None,

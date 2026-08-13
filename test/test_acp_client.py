@@ -6734,6 +6734,60 @@ class TestExtractToolCallRefinement:
         assert event is not None
         assert event.tool_kind == "search"
 
+    def test_carries_the_purpose_from_raw_input(self):
+        # The refinement's rawInput is the complete params object, so it holds
+        # the reserved purpose argument. Dropping it loses the purpose whenever
+        # the initial tool_call streamed an empty rawInput, and makes consumers
+        # that fall back on an empty purpose paint the raw command instead.
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-8",
+                "title": "ls /tmp",
+                "kind": "execute",
+                "rawInput": {"command": "ls /tmp", "__tool_use_purpose": "List the temp dir"},
+            }
+        )
+        event = client._extract_tool_call_refinement(msg)
+        assert event is not None
+        assert event.tool_purpose == "List the temp dir"
+
+    def test_kindless_refinement_without_purpose_reports_empty(self):
+        # Consumers read an empty purpose as "keep what the initial tool_call
+        # supplied", so a refinement carrying no params must not invent one.
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-9",
+                "title": "ls /tmp",
+            }
+        )
+        event = client._extract_tool_call_refinement(msg)
+        assert event is not None
+        assert event.tool_purpose == ""
+
+    def test_purpose_is_redacted(self):
+        # Asserts the value is POPULATED as well as scrubbed — an empty purpose
+        # would satisfy a bare "no credential in it" check on its own.
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-10",
+                "rawInput": {
+                    "command": "aws s3 ls",
+                    "__tool_use_purpose": "Use AKIAIOSFODNN7EXAMPLE to list buckets",
+                },
+            }
+        )
+        event = client._extract_tool_call_refinement(msg)
+        assert event is not None
+        assert event.tool_purpose.startswith("Use ")
+        assert event.tool_purpose.endswith("to list buckets")
+        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_purpose
+
 
 class TestCaptureAvailableModels:
     """Capturing the backend-advertised model list from session responses."""

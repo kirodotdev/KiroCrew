@@ -900,7 +900,40 @@ export function useWebSocket() {
             window.dispatchEvent(new CustomEvent('kirocrew-tool-call', { detail: data }))
             dispatch(sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; input_preview: string; is_shell?: boolean }, auto: (data as Record<string, unknown>).auto === true, tool_call_id: (data as Record<string, unknown>).tool_call_id as string | undefined, is_update: (data as Record<string, unknown>).is_update === true, is_shell: (data as Record<string, unknown>).is_shell === true }))
             if (data.slot) {
-              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'tool', text: sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || data.tool), toolName: sanitizeLlmOutput(data.tool), ts: Date.now() }))
+              // A refinement (`is_update`) carries only the fields it refines,
+              // so merge it into the live status the way sseToolActivity merges
+              // the tool-log entry: an update that omits `purpose` must not
+              // replace the purpose the initial tool_call supplied with the raw
+              // command, and one that omits `tool` must not blank the title.
+              // Without this the session-list row of a running session flips
+              // from the agent's purpose to the literal command mid-call.
+              // Merging is gated on the tool_call_id matching, so when several
+              // tools run in parallel a refinement of one cannot inherit a
+              // sibling's purpose.
+              //
+              // `text` holds the PURPOSE ALONE and stays empty when the agent
+              // supplied none — the fallback to the tool title belongs to
+              // toolStatusLabel, which owns the label rule. Storing the title
+              // in `text` instead would make the two indistinguishable here,
+              // and a purpose-less call would then pin the initial stub title
+              // ("Terminal") for the whole call instead of advancing to the
+              // refined command.
+              const tcid = (data as Record<string, unknown>).tool_call_id as string | undefined
+              const isUpdate = (data as Record<string, unknown>).is_update === true
+              const purpose = sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || '')
+              const toolName = sanitizeLlmOutput(data.tool || '')
+              const prev = store.getState().chat.slotStatusDetail[data.slot]
+              const mergeInto = isUpdate && tcid && prev?.kind === 'tool' && prev.toolCallId === tcid
+                ? prev
+                : undefined
+              dispatch(setSlotStatusDetail({
+                slot: data.slot,
+                kind: 'tool',
+                text: purpose || mergeInto?.text || '',
+                toolName: toolName || mergeInto?.toolName || '',
+                ...(tcid ? { toolCallId: tcid } : {}),
+                ts: Date.now(),
+              }))
             }
             // Note: do NOT dispatch sseChatMessage here. The backend persists the
             // tool message via slot.append and broadcasts it as 'chat_message'.

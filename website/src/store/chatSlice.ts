@@ -487,7 +487,7 @@ interface ChatState {
   slotRunning: boolean
   slotStopping: boolean
   slotState: SlotState
-  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string }>
+  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
   slotHasMore: boolean
   slotOldestIndex: number
   loadingOlder: boolean
@@ -2029,7 +2029,12 @@ const chatSlice = createSlice({
       state.stopPressedAt[safeKey(action.payload.slotId)] = action.payload.ts
     },
     setSlotState(state, action: PayloadAction<SlotState>) { state.slotState = action.payload },
-    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string }>) {
+    /** Replace a slot's live status line wholesale. A `tool` phase may carry the
+     *  `toolCallId` it describes so a later refinement of the SAME call can be
+     *  merged into it (see the `tool_call` case in useWebSocket) without a
+     *  refinement of one call inheriting a sibling's purpose when tools run in
+     *  parallel. */
+    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>) {
       const { slot, ...detail } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
