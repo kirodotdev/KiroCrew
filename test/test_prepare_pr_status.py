@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 from types import ModuleType
 
@@ -304,12 +305,12 @@ def test_no_reference_at_all_is_reported_with_the_opt_out_named() -> None:
     module = _load_script()
     reason = module.closing_link_reason("A pure refactor with no tracked issue.", [])
     assert reason is not None
-    assert "no issue closed" in reason
+    assert "no linked issue" in reason
 
 
 def test_explicit_opt_out_silences_the_notice() -> None:
     module = _load_script()
-    body = "A pure refactor.\n\nno issue closed: no ticket exists for this cleanup."
+    body = "A pure refactor.\n\nno linked issue: no ticket exists for this cleanup."
     assert module.closing_link_reason(body, []) is None
 
 
@@ -320,11 +321,36 @@ def test_opt_out_must_be_a_trailer_not_a_mention() -> None:
     including a body that only explains what the phrase is for.
     """
     module = _load_script()
-    prose = "The gate accepts a `no issue closed: <why>` line as an opt-out."
+    prose = "The gate accepts a `no linked issue: <why>` line as an opt-out."
     assert module.closing_link_reason(prose, []) is not None
-    indented = "  no issue closed: buried in an instruction block"
+    indented = "  no linked issue: buried in an instruction block"
     assert module.closing_link_reason(indented, []) is not None
-    assert module.closing_link_reason("no issue closed but I forgot the colon", []) is not None
+    assert module.closing_link_reason("no linked issue but I forgot the colon", []) is not None
+
+
+def test_opt_out_phrasing_carries_no_closing_keyword() -> None:
+    """The opt-out line itself must never read as a close-on-merge trigger.
+
+    GitHub closes an issue on merge when the body matches
+    ``(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s*:?\\s+#<n>``. The retired
+    phrasing ``no issue closed: <why>`` put the keyword ``closed`` directly
+    before the colon, so a ``<why>`` opening with an issue number
+    (``no issue closed: #1234 tracks the follow-up``) produced
+    ``closed: #1234`` — auto-closing the very issue the line disclaims.
+    Lock in both properties: the canonical phrasing matches the opt-out
+    regex, and no closing keyword survives anywhere in it.
+    """
+    module = _load_script()
+    canonical = "no linked issue: kept open deliberately"
+    assert module._NO_ISSUE_RE.search(canonical) is not None
+    # Extract the literal prefix the regex anchors on and scan it (plus the
+    # full canonical line) for every GitHub closing-keyword inflection.
+    closing_kw = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b", re.IGNORECASE)
+    assert closing_kw.search(canonical) is None
+    assert closing_kw.search(module._NO_ISSUE_RE.pattern) is None
+    # The concrete failure mode: an issue number at the start of the <why>
+    # must not form a closing trailer with the phrasing's final word.
+    assert module._CLOSING_KW_RE.search("no linked issue: #1234 tracks the follow-up") is None
 
 
 def test_shipped_body_template_does_not_read_as_a_declaration() -> None:

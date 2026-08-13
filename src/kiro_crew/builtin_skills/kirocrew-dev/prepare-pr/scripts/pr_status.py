@@ -71,7 +71,12 @@ _BARE_REF_RE = re.compile(r"(?<![\w/])#\d+\b")
 # check — including the instruction block of our own body template, which would
 # make an author who copies the template and skips that section look like they
 # declared something. A declaration is a trailer, not a mention.
-_NO_ISSUE_RE = re.compile(r"^no issue closed[ \t]*:", re.IGNORECASE | re.MULTILINE)
+# The phrasing deliberately contains no GitHub closing keyword
+# (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved): a keyword
+# directly before the colon would turn a '#<n>' at the start of the <why> into
+# '<keyword>: #<n>', which GitHub parses as a close-on-merge trigger — the
+# opt-out would then auto-close the very issue it explains not closing.
+_NO_ISSUE_RE = re.compile(r"^no linked issue[ \t]*:", re.IGNORECASE | re.MULTILINE)
 
 
 def closing_link_reason(body, closing_refs):
@@ -101,10 +106,10 @@ def closing_link_reason(body, closing_refs):
     if _BARE_REF_RE.search(body):
         return (
             "body references an issue with no closing keyword - use "
-            "'Fixes #<n>' so it closes on merge, or state 'no issue closed: <why>'"
+            "'Fixes #<n>' so it closes on merge, or state 'no linked issue: <why>'"
         )
     return (
-        "no issue link - add 'Fixes #<n>', or state 'no issue closed: <why>' "
+        "no issue link - add 'Fixes #<n>', or state 'no linked issue: <why>' "
         "to record that the omission is deliberate"
     )
 
