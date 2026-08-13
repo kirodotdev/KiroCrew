@@ -50,7 +50,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: E402, F401
     _get_memory,
     _get_skills,
     _is_restricted_session,
-    _resolve_aim_skill_path,
+    _resolve_package_skill_path,
 )
 
 # ── Agents (extracted to handlers/agents.py) ──

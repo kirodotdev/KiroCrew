@@ -4,6 +4,22 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **The skill browser no longer serves a different skill than the one you asked
+  for.** Three `package/` lookups compared a bare leaf name and returned the
+  first hit, so a request for `package/<name>` could answer with a file under
+  `<root>/<Pkg>/<name>`, or with whichever of two identically named files the
+  filesystem happened to yield. Exact keys now decide first, leaf matching
+  survives only where it is unambiguous, and a real collision resolves to
+  nothing — a 404, with the competing candidates logged — because the
+  `package/<path>` key cannot express which of the two files was meant. Every
+  lookup that previously resolved correctly still resolves to the same file.
+  **Edition maintainers:** roots the core already keys itself (`~/.kiro/skills`,
+  the data home, configured extra paths) are no longer *also* enumerated under
+  `package/`, which previously presented an editable skill as a read-only
+  package one. A stored reference to one of those duplicate `package/` keys
+  stops resolving; the file itself is untouched and still reachable under its
+  canonical key, but the stored reference has to be re-pointed. (#3369)
+
 - **MCP gateway daemons no longer leak when their launcher dies.** A `gatewayd`
   whose launcher exited without signalling it (a torn-down `pytest` run, for
   example) used to stay resident forever — invisible to every sweep, ~27 MB
