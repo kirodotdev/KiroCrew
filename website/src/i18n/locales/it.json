@@ -7535,6 +7535,7 @@
         "steered": "Indirizzato",
         "switch_to_raw_markdown_view": "Passa alla vista del Markdown grezzo",
         "switch_to_rendered_view": "Passa alla vista formattata",
+        "turn_model": "modello: {{model}}",
         "turn_took": "Il turno ha richiesto {{elapsed}}",
         "turn_took_cost": "Il turno ha richiesto {{elapsed}} ({{cost}} di costo API)",
         "turn_took_credits": "Il turno ha richiesto {{elapsed}} e ha consumato {{credits}} crediti",

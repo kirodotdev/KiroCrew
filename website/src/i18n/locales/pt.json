@@ -7535,6 +7535,7 @@
         "steered": "Direcionado",
         "switch_to_raw_markdown_view": "Alternar para a visualização em Markdown bruto",
         "switch_to_rendered_view": "Alternar para a visualização renderizada",
+        "turn_model": "modelo: {{model}}",
         "turn_took": "O turno levou {{elapsed}}",
         "turn_took_cost": "O turno levou {{elapsed}} ({{cost}} de custo de API)",
         "turn_took_credits": "O turno levou {{elapsed}} e consumiu {{credits}} créditos",

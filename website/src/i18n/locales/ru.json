@@ -7634,6 +7634,7 @@
         "steered": "Скорректировано",
         "switch_to_raw_markdown_view": "Переключиться на исходный markdown",
         "switch_to_rendered_view": "Переключиться на отрисованный вид",
+        "turn_model": "модель: {{model}}",
         "turn_took": "Ход занял {{elapsed}}",
         "turn_took_cost": "Ход занял {{elapsed}} (стоимость API: {{cost}})",
         "turn_took_credits": "Ход занял {{elapsed}} и израсходовал {{credits}} кредитов",

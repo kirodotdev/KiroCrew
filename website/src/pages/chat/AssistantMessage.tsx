@@ -22,7 +22,15 @@ import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
  *  completed turn (chat_runner._attach_turn_stats). Parity with the end-of-turn
  *  line kiro-cli prints natively: elapsed wall clock + credits (kiro) or
  *  API cost (claude_code). Zero fields are omitted by the backend. */
-export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number }
+export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string }
+
+/** Trim a served model id to a compact footer label: drop region/vendor
+ *  routing prefixes ("global.anthropic.claude-opus-4-8[1m]" → "claude-opus-4-8[1m]").
+ *  The full untrimmed id stays available in the footer tooltip, so this only
+ *  affects the inline label. Unknown shapes pass through unchanged. */
+export function fmtTurnModel(id: string): string {
+  return id.replace(/^(?:(?:us|eu|apac|global)\.)?(?:anthropic|amazon|openai|bedrock)\./, '')
+}
 
 /** "8.4s" under 10s, "42s" under a minute, "2m 34s" beyond. */
 export function fmtTurnElapsed(ms: number): string {
@@ -192,10 +200,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     const cost = hasCost
       ? fmtCurrency(turnStats.cost_usd!, 'USD', { maximumFractionDigits: 4, minimumFractionDigits: 4 })
       : ''
-    if (hasCredits && hasCost) return i18nT('pages.chat.assistantMessage.turn_took_credits_cost', { elapsed, credits, cost })
-    if (hasCredits) return i18nT('pages.chat.assistantMessage.turn_took_credits', { elapsed, credits })
-    if (hasCost) return i18nT('pages.chat.assistantMessage.turn_took_cost', { elapsed, cost })
-    return i18nT('pages.chat.assistantMessage.turn_took', { elapsed })
+    const base = hasCredits && hasCost ? i18nT('pages.chat.assistantMessage.turn_took_credits_cost', { elapsed, credits, cost })
+      : hasCredits ? i18nT('pages.chat.assistantMessage.turn_took_credits', { elapsed, credits })
+      : hasCost ? i18nT('pages.chat.assistantMessage.turn_took_cost', { elapsed, cost })
+      : i18nT('pages.chat.assistantMessage.turn_took', { elapsed })
+    // The tooltip carries the FULL untrimmed model id (the inline label is
+    // shortened by fmtTurnModel), so the profile/region routing detail stays
+    // one hover away instead of widening the footer line.
+    return turnStats.model ? `${base} · ${i18nT('pages.chat.assistantMessage.turn_model', { model: turnStats.model })}` : base
   })()
 
   return <div data-role="assistant" className="group/msg">
@@ -235,6 +247,9 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             ? `${fmtCredits(credits)} credits`
             : cost > 0 ? `$${cost.toFixed(cost < 0.01 ? 4 : 2)}` : ''
           return <>
+            {/* Model leads (what served), then cost (what it took), then time.
+                Trimmed for width; the untrimmed id is in the footer tooltip. */}
+            {turnStats.model && <span className="font-mono" data-testid="turn-model">{fmtTurnModel(turnStats.model)} ·</span>}
             {billed && <span>{billed} ·</span>}
             <Clock size={11} aria-hidden="true" />
             <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>

@@ -5172,6 +5172,7 @@
         "speak": "Speak",
         "speak_message": "Speak message",
         "steered": "Steered",
+        "turn_model": "model: {{model}}",
         "turn_took": "Turn took {{elapsed}}",
         "turn_took_cost": "Turn took {{elapsed}} ({{cost}} API cost)",
         "turn_took_credits": "Turn took {{elapsed}} and used {{credits}} credits",

@@ -7535,6 +7535,7 @@
         "steered": "Réorienté",
         "switch_to_raw_markdown_view": "Passer à la vue Markdown brut",
         "switch_to_rendered_view": "Passer à la vue rendue",
+        "turn_model": "modèle : {{model}}",
         "turn_took": "Le tour a pris {{elapsed}}",
         "turn_took_cost": "Le tour a pris {{elapsed}} ({{cost}} de coût API)",
         "turn_took_credits": "Le tour a pris {{elapsed}} et consommé {{credits}} crédits",

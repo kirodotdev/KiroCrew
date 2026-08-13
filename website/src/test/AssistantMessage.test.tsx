@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import AssistantMessage, { fmtTurnElapsed, fmtCredits } from '../pages/chat/AssistantMessage'
+import AssistantMessage, { fmtTurnElapsed, fmtCredits, fmtTurnModel } from '../pages/chat/AssistantMessage'
 import { parseOptions } from '../app-sdk/protocol'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
@@ -453,6 +453,24 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(stats).not.toHaveTextContent('$')
   })
 
+  it('leads with the served model when the backend resolved one', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, model: 'claude-sonnet-4.6' }} />)
+    const text = screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()
+    expect(text).toMatch(/^claude-sonnet-4\.6 ·\s*2\.50 credits ·\s*1m 24s$/)
+  })
+
+  it('trims routing prefixes from the inline model label but keeps the full id in the tooltip', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 8_400, credits: 1.2, model: 'global.anthropic.claude-opus-4-8[1m]' }} />)
+    expect(screen.getByTestId('turn-model')).toHaveTextContent('claude-opus-4-8[1m]')
+    expect(screen.getByTestId('turn-model')).not.toHaveTextContent('global.anthropic')
+    expect(screen.getByTestId('turn-stats').title).toContain('global.anthropic.claude-opus-4-8[1m]')
+  })
+
+  it('omits the model chip when the backend did not resolve one', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 42_000, credits: 1.0 }} />)
+    expect(screen.queryByTestId('turn-model')).not.toBeInTheDocument()
+  })
+
   // The tooltip is four whole-sentence catalog keys, one per combination of the
   // two optional clauses. Nothing else asserts the `title`, so without these a
   // wrong key or a dropped clause would render silently and every visible-text
@@ -499,6 +517,14 @@ describe('turn stats footer (elapsed time + credits)', () => {
   it('fmtCredits trims to 2 decimals under 10, 1 above', () => {
     expect(fmtCredits(0.25)).toBe('0.25')
     expect(fmtCredits(12.53)).toBe('12.5')
+  })
+
+  it('fmtTurnModel drops region/vendor routing prefixes and keeps unknown shapes intact', () => {
+    expect(fmtTurnModel('global.anthropic.claude-opus-4-8[1m]')).toBe('claude-opus-4-8[1m]')
+    expect(fmtTurnModel('us.anthropic.claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
+    expect(fmtTurnModel('anthropic.claude-haiku-4-5')).toBe('claude-haiku-4-5')
+    expect(fmtTurnModel('claude-sonnet-4.6')).toBe('claude-sonnet-4.6')
+    expect(fmtTurnModel('gpt-5.6-luna')).toBe('gpt-5.6-luna')
   })
 })
 

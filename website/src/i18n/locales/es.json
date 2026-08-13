@@ -7535,6 +7535,7 @@
         "steered": "Redirigido",
         "switch_to_raw_markdown_view": "Cambiar a la vista de Markdown sin formato",
         "switch_to_rendered_view": "Cambiar a la vista renderizada",
+        "turn_model": "modelo: {{model}}",
         "turn_took": "El turno tardó {{elapsed}}",
         "turn_took_cost": "El turno tardó {{elapsed}} ({{cost}} de coste de API)",
         "turn_took_credits": "El turno tardó {{elapsed}} y consumió {{credits}} créditos",

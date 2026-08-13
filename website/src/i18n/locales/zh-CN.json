@@ -7337,6 +7337,7 @@
         "steered": "已引导",
         "switch_to_raw_markdown_view": "切换到原始 Markdown 视图",
         "switch_to_rendered_view": "切换到渲染视图",
+        "turn_model": "模型：{{model}}",
         "turn_took": "本轮次耗时 {{elapsed}}",
         "turn_took_cost": "本轮次耗时 {{elapsed}}（API 成本 {{cost}}）",
         "turn_took_credits": "本轮次耗时 {{elapsed}}，消耗 {{credits}} 额度",

@@ -69,6 +69,21 @@ class TestAttachTurnStats:
         _attach_turn_stats(slot, 1000, 0.123456789, 0.0)
         assert slot.messages[-1]["meta"]["turn_stats"]["credits"] == 0.1235
 
+    def test_model_included_when_resolved(self):
+        # The served model id (read_effective_model at EVENT_COMPLETE) rides
+        # along so the footer can disclose what an "auto" session ran on.
+        slot = _make_slot_with_assistant_message()
+        _attach_turn_stats(slot, 3000, 1.0, 0.0, model="claude-sonnet-4.6")
+        stats = slot.messages[-1]["meta"]["turn_stats"]
+        assert stats["model"] == "claude-sonnet-4.6"
+
+    def test_model_omitted_when_unresolved(self):
+        # An unresolved auto turn yields "" — the key must be absent, not
+        # empty, so the frontend renders nothing rather than a blank chip.
+        slot = _make_slot_with_assistant_message()
+        _attach_turn_stats(slot, 3000, 1.0, 0.0, model="")
+        assert "model" not in slot.messages[-1]["meta"]["turn_stats"]
+
     def test_error_only_turn_does_not_overwrite_previous_turn(self):
         # Regression (Codex HIGH): turn 1 completes with an assistant message
         # and stats; turn 2 fails producing only an error message. Without the

@@ -7436,6 +7436,7 @@
         "steered": "Gesteuert",
         "switch_to_raw_markdown_view": "Zur Roh-Markdown-Ansicht wechseln",
         "switch_to_rendered_view": "Zur gerenderten Ansicht wechseln",
+        "turn_model": "Modell: {{model}}",
         "turn_took": "Zug dauerte {{elapsed}}",
         "turn_took_cost": "Zug dauerte {{elapsed}} ({{cost}} API-Kosten)",
         "turn_took_credits": "Zug dauerte {{elapsed}} und verbrauchte {{credits}} Credits",

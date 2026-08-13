@@ -7337,6 +7337,7 @@
         "steered": "ステアリング済み",
         "switch_to_raw_markdown_view": "生 Markdown ビューに切り替え",
         "switch_to_rendered_view": "レンダリング済みビューに切り替え",
+        "turn_model": "モデル: {{model}}",
         "turn_took": "ターンに {{elapsed}} かかりました",
         "turn_took_cost": "ターンに {{elapsed}} かかりました({{cost}} の API コスト)",
         "turn_took_credits": "ターンに {{elapsed}} かかり {{credits}} クレジットを使用しました",

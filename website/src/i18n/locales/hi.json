@@ -7436,6 +7436,7 @@
         "steered": "निर्देशित",
         "switch_to_raw_markdown_view": "रॉ markdown व्यू पर स्विच करें",
         "switch_to_rendered_view": "रेंडर किए गए व्यू पर स्विच करें",
+        "turn_model": "मॉडल: {{model}}",
         "turn_took": "टर्न में {{elapsed}} लगे",
         "turn_took_cost": "टर्न में {{elapsed}} लगे ({{cost}} API लागत)",
         "turn_took_credits": "टर्न में {{elapsed}} लगे और {{credits}} क्रेडिट खर्च हुए",
