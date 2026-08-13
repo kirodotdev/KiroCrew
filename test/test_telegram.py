@@ -60,6 +60,8 @@ from kiro_crew.telegram.renderer import (
     _seal_table_fallback,
     _split_markdown,
     _split_markdown_bounded,
+    _split_markdown_table_aware,
+    _split_table_rows,
     _split_text,
     _strip_steering,
     build_inline_keyboard,
@@ -1882,6 +1884,267 @@ class TestRenderer:
             return len(cli.sent) - n
 
         assert asyncio.run(_go()) == 0
+
+
+# ── renderer.py: table-aware splitting + rich budget selection ──────────────
+
+
+class TestTableAwareSplitting:
+    def _renderer(self, cli: FakeClient) -> TelegramRenderer:
+        return TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+    def _table(self, rows: int, fill: str = "x", width: int = 80) -> str:
+        head = "| id | data |\n| --- | --- |\n"
+        return head + "".join(f"| {i:05d} | {fill * width} |\n" for i in range(rows))
+
+    def test_a_table_that_fits_one_rich_message_is_never_split(self) -> None:
+        # THE fix for the half-rich/half-pipes defect: a table that overflows
+        # the HTML budget used to be cut row-wise, stranding header-less body
+        # rows on the literal-pipe path. Sized against the rich budget it is
+        # one segment, one sendRichMessage, one rendered table.
+        cli = FakeClient()
+        r = self._renderer(cli)
+        table = self._table(120)
+        assert r._limit() < len(table) <= r._rich_limit(), (
+            "precondition: overflows the HTML budget, fits the rich budget"
+        )
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(table)
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        assert len(cli.rich_sent) == 1, "one logical table -> one rich message"
+        md = cli.rich_sent[0][0]
+        assert "| 00000 |" in md and "| 00119 |" in md, "no row lost"
+        assert _has_table(md)
+
+    def test_a_table_over_the_rich_budget_splits_into_table_detected_chunks(self) -> None:
+        # When even the rich budget overflows, cuts land at row boundaries and
+        # every continuation repeats the header + separator, so EVERY chunk is
+        # table-detected and renders rich -- never a ragged pipe-text tail.
+        cli = FakeClient()
+        r = self._renderer(cli)
+        table = self._table(300, fill="y", width=120)
+        assert len(table) > r._rich_limit(), "precondition: overflows the rich budget"
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(table)
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        assert len(cli.rich_sent) >= 2, "an over-rich-budget table needs several rich sends"
+        for md, _, _ in cli.rich_sent:
+            assert _has_table(md), "every chunk carries the header, so it seals rich"
+            assert len(md) <= r._rich_limit()
+        joined = "\n".join(md for md, _, _ in cli.rich_sent)
+        for i in (0, 150, 299):
+            assert f"| {i:05d} |" in joined, "no row lost across the chunks"
+
+    def test_an_oversize_table_degrades_uniformly_when_rich_is_unavailable(self) -> None:
+        # A segment sized against the rich budget can be several HTML messages
+        # long. When the rich send fails it must be re-split and shipped whole
+        # -- truncation would silently drop rows -- and header repetition keeps
+        # every chunk on the <pre> path, so degradation is uniform.
+        cli = FakeClient()
+        cli.rich_fails = True
+        r = self._renderer(cli)
+        table = self._table(120, fill="k", width=90)
+        assert r._limit() < len(table) <= r._rich_limit()
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(table)
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        assert cli.rich_sent == []
+        bodies = [e[1] for e in cli.edits if "<pre>" in e[1]]
+        bodies += [s[0] for s in cli.sent if "<pre>" in s[0]]
+        assert len(bodies) >= 2, "the oversize segment ships as several HTML messages"
+        joined = "\n".join(bodies)
+        for i in (0, 60, 119):
+            assert f"| {i:05d} |" in joined, "no row lost to truncation"
+        for b in bodies:
+            assert len(b) <= TELEGRAM_MAX_TEXT, "each chunk respects the hard cap"
+
+    def test_split_table_rows_repeats_the_header_on_every_chunk(self) -> None:
+        rows = ["| a | b |", "| --- | --- |"] + [f"| {i} | {'z' * 50} |" for i in range(40)]
+        chunks = _split_table_rows(rows, 600)
+        assert len(chunks) > 1
+        for c in chunks:
+            assert c.startswith("| a | b |\n| --- | --- |\n")
+            assert _has_table(c)
+            assert len(c) <= 600
+        body = "\n".join(chunks)
+        for i in range(40):
+            assert body.count(f"| {i} | ") == 1, "each row appears exactly once"
+
+    def test_split_table_rows_cannot_cut_inside_a_single_oversize_row(self) -> None:
+        # There is no sub-row boundary that keeps the table valid, so the row
+        # splitter returns it oversize; the degraded ladder is what bounds it.
+        rows = ["| a |", "| --- |", "| " + "w" * 900 + " |"]
+        chunks = _split_table_rows(rows, 400)
+        assert len(chunks) == 1
+        assert _has_table(chunks[0])
+
+    def test_a_single_monster_row_is_cut_inside_rather_than_truncated(self) -> None:
+        # A row bigger than one message has no valid row-boundary cut. The
+        # degraded ladder must cut INSIDE it (losing table framing for that row
+        # only) rather than shipping an oversize chunk the client backstop
+        # would truncate -- the tail of the row has to reach the user.
+        cli = FakeClient()
+        cli.rich_fails = True
+        r = self._renderer(cli)
+        marker_head, marker_tail = "ROWSTART", "ROWEND"
+        row = f"| {marker_head} {'v' * 6000} {marker_tail} |"
+        table = f"| a |\n| --- |\n{row}\n"
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(table)
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        bodies = [t for _, t, _ in cli.edits] + [t for t, _ in cli.sent]
+        joined = "".join(bodies)
+        assert marker_head in joined and marker_tail in joined, "both row ends survive"
+        assert joined.count("v" * 100) * 100 >= 5900, "the row body ships whole"
+        for b in bodies:
+            assert len(b) <= TELEGRAM_MAX_TEXT, "no chunk relies on backstop truncation"
+
+    def test_table_aware_split_budgets_prose_against_the_html_cap(self) -> None:
+        # Prose around a table seals through the HTML path, so it must keep the
+        # rendered budget even while the table beside it rides the rich budget.
+        prose = ("lorem ipsum dolor sit amet " * 90).strip()
+        table = "| a | b |\n| --- | --- |\n" + "\n".join(
+            f"| {i} | {'q' * 100} |" for i in range(40)
+        )
+        chunks = _split_markdown_table_aware(prose + "\n\n" + table, 1000, len(table) + 10)
+        table_chunks = [c for c in chunks if _has_table(c)]
+        assert len(table_chunks) == 1, "the table run stays atomic"
+        assert table_chunks[0] == table
+        prose_chunks = [c for c in chunks if not _has_table(c)]
+        assert prose_chunks, "the prose still ships"
+        assert all(len(_md_to_telegram_html(c)) <= 1000 for c in prose_chunks)
+
+    def test_table_aware_split_falls_back_to_the_bounded_splitter_for_fences(self) -> None:
+        # Fence-bearing text keeps the fence-aware splitter: deciding where a
+        # fence ends means growing a second CommonMark parser, and a pipe
+        # pattern inside a fence is not a table anyway.
+        text = "```\n| a | b |\n| --- | --- |\n" + "x\n" * 500 + "```"
+        assert _split_markdown_table_aware(text, 800, 32000) == _split_markdown_bounded(text, 800)
+
+    def test_non_table_content_splits_exactly_as_before(self) -> None:
+        # Regression guard for the shared sizing path: replies without a table
+        # must take the identical bounded split they always did, sealing each
+        # chunk to the same HTML the bounded splitter implies. Markup makes the
+        # sealed HTML distinguishable from plaintext live-stream frames.
+        text = "para **one**. " * 150 + "\n\n" + "para _two_! " * 250
+        assert not _has_table(text)
+        cli = FakeClient()
+        r = self._renderer(cli)
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(text)
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        assert cli.rich_sent == [], "no table -> the rich path is never touched"
+        # The seal strips the segment before rendering (pre-existing behavior),
+        # so normalize both sides the same way for the comparison.
+        expected = [
+            _md_to_telegram_html(c.strip())
+            for c in _split_markdown_bounded(text, r._rendered_limit())
+        ]
+        assert len(expected) > 1, "precondition: long enough to actually rotate"
+        finals = [t for _, t, _ in cli.edits if "<b>" in t or "<i>" in t]
+        finals += [t for t, _ in cli.sent if "<b>" in t or "<i>" in t]
+        assert sorted(finals) == sorted(expected), "sealed bodies match the bounded split"
+
+    def test_an_escape_heavy_degraded_table_is_never_truncated(self) -> None:
+        # html.escape inflation inside <pre> is multiplicative, so a degraded
+        # split that budgets SOURCE chars ships oversize chunks the client
+        # backstop truncates -- silent row loss. The re-split must measure the
+        # RENDERED form: every shipped chunk fits the cap and every row lands.
+        cli = FakeClient()
+        cli.rich_fails = True
+        r = self._renderer(cli)
+        table = self._table(100, fill="<&>", width=25)
+        assert r._limit() < len(table) <= r._rich_limit()
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(table)
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        bodies = [t for _, t, _ in cli.edits if "<pre>" in t]
+        bodies += [t for t, _ in cli.sent if "<pre>" in t]
+        assert len(bodies) >= 2
+        for b in bodies:
+            assert len(b) <= r._rendered_limit(), "every RENDERED chunk fits the cap"
+        joined = "\n".join(bodies)
+        for i in range(100):
+            assert f"| {i:05d} |" in joined, "no row lost to escape inflation"
+
+    def test_a_row_streamed_after_an_over_budget_rotation_stays_its_own_row(self) -> None:
+        # The block splitter joins lines without the buffer's trailing newline.
+        # The retained tail keeps streaming, so dropping it would glue the next
+        # streamed row onto the previous one and corrupt the table mid-stream.
+        cli = FakeClient()
+        r = self._renderer(cli)
+        table = self._table(300, fill="y", width=120)
+        assert len(table) > r._rich_limit()
+        assert table.endswith("\n")
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(table)
+            await r.on_text_chunk("| 99999 | sentinel |\n")
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        lines = [ln for md, _, _ in cli.rich_sent for ln in md.split("\n")]
+        assert "| 99999 | sentinel |" in lines, "the streamed row survives as its own line"
+        assert not any("||" in ln.replace("| |", "") for ln in lines), "no glued rows"
+
+    def test_a_partial_row_at_rotation_time_is_not_stranded_as_prose(self) -> None:
+        # GFM rows need no outer pipe, so a row whose first pipe has not
+        # streamed yet reads as prose to the block parser. A rotation firing at
+        # that instant must keep the unterminated line with the streaming tail;
+        # emitting it as a prose chunk strands it -- and the rows after it --
+        # outside the table.
+        cli = FakeClient()
+        r = self._renderer(cli)
+        head = "id | data\n--- | ---\n"
+        rows = "".join(f"{i:05d} | {'y' * 120}\n" for i in range(300))
+        assert len(head + rows) > r._rich_limit()
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            # First delivery ends mid-row, BEFORE the row's first pipe.
+            await r.on_text_chunk(head + rows + "99999")
+            await r.on_text_chunk(" | sentinel\n")
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        assert len(cli.rich_sent) >= 2
+        lines = [ln for md, _, _ in cli.rich_sent for ln in md.split("\n")]
+        assert "99999 | sentinel" in lines, "the partial row finishes inside the table"
+        for md, _, _ in cli.rich_sent:
+            assert _has_table(md), "every chunk stays table-detected"
 
 
 # ── renderer.py: interactive approval decider ───────────────────────────────
