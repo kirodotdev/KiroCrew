@@ -2700,7 +2700,8 @@
       "unknown_error": "unknown error",
       "upload_failed_check_file_type_and_size_max_50_mb": "Upload failed — check file type and size (max 50 MB)",
       "upload_failed_error": "Upload failed: {{error}}",
-      "worktree_creation_returned_no_path": "Worktree creation returned no path"
+      "worktree_creation_returned_no_path": "Worktree creation returned no path",
+      "loading_earlier_messages": "Loading earlier messages…"
     },
     "chatSidebar": {
       "default_agent": "Default agent: {{name}}",

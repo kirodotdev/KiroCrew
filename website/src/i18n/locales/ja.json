@@ -7790,7 +7790,8 @@
       "upload_failed_check_file_type_and_size_max_50_mb": "アップロードに失敗しました — ファイル形式とサイズを確認してください (最大 50 MB)",
       "upload_failed_error": "アップロードに失敗しました: {{error}}",
       "what_can_i_do_for_you": "何をお手伝いしましょうか？",
-      "worktree_creation_returned_no_path": "ワークツリーの作成結果にパスがありません"
+      "worktree_creation_returned_no_path": "ワークツリーの作成結果にパスがありません",
+      "loading_earlier_messages": "以前のメッセージを読み込み中…"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

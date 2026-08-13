@@ -6461,6 +6461,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <div className="h-16" />
               {/* Top sentinel: drives upward window expansion via virtualizer's IO. */}
               <div ref={virt.topSentinelRef} aria-hidden style={{ height: 1 }} />
+              {/* top-16 matches the h-16 header spacer above, so the pinned spinner
+                  clears the overlay header instead of sitting under it.
+                  overflow-anchor:none so appearing/vanishing here cannot become the
+                  browser's scroll anchor and jump the list mid-fetch. */}
+              {loadingOlder && (
+                <div className="sticky top-16 z-[1] flex justify-center py-2" data-testid="older-messages-loading" role="status" aria-label={i18nT('pages.chatPage.loading_earlier_messages')} style={{ overflowAnchor: 'none', background: 'var(--bg)' }}>
+                  <Loader size={16} className="animate-spin text-muted" />
+                </div>
+              )}
               {/* Top spacer — reserves the height of all items above the mounted
                   window so the scrollbar stays accurate while only the window
                   renders real DOM (keeps fast scroll cheap — O(window) nodes).

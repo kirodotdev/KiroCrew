@@ -7781,7 +7781,8 @@
       "unknown_error": "[ùñķñøẁñ èŕŕøŕ ············]",
       "upload_failed_check_file_type_and_size_max_50_mb": "[Ùþĺøàð ƒàìĺèð — çĥèçķ ƒìĺè ţýþè àñð şìžè (ɱàẋ 50 ṀƁ) ··················]",
       "upload_failed_error": "[Ùþĺøàð ƒàìĺèð: {{error}} ··············]",
-      "worktree_creation_returned_no_path": "[Ẁøŕķţŕèè çŕèàţìøñ ŕèţùŕñèð ñø þàţĥ ·················]"
+      "worktree_creation_returned_no_path": "[Ẁøŕķţŕèè çŕèàţìøñ ŕèţùŕñèð ñø þàţĥ ·················]",
+      "loading_earlier_messages": "[Ĺøàðìñğ èàŕĺìèŕ ɱèşşàğèş… ··················]"
     },
     "chatSidebar": {
       "add_column_after_this_one": "[Àðð çøĺùɱñ àƒţèŕ ţĥìş øñè ··················]",

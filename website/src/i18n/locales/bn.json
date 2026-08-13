@@ -7894,7 +7894,8 @@
       "upload_failed_check_file_type_and_size_max_50_mb": "আপলোড ব্যর্থ — ফাইলের ধরন ও আকার দেখে নাও (সর্বোচ্চ 50 MB)",
       "upload_failed_error": "আপলোড ব্যর্থ: {{error}}",
       "what_can_i_do_for_you": "আপনার জন্য কী করতে পারি?",
-      "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি"
+      "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি",
+      "loading_earlier_messages": "পূর্ববর্তী বার্তা লোড হচ্ছে…"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",

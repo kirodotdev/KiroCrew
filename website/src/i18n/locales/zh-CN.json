@@ -7790,7 +7790,8 @@
       "upload_failed_check_file_type_and_size_max_50_mb": "上传失败 — 检查文件类型和大小（最大 50 MB）",
       "upload_failed_error": "上传失败：{{error}}",
       "what_can_i_do_for_you": "我能帮你做什么？",
-      "worktree_creation_returned_no_path": "创建工作树未返回路径"
+      "worktree_creation_returned_no_path": "创建工作树未返回路径",
+      "loading_earlier_messages": "正在加载较早的消息…"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
