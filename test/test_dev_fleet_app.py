@@ -914,6 +914,69 @@ async def test_fleet_includes_build_pending():
     assert data["build_pending"] is True
 
 
+# --- provision_run_id exposed in fleet response (reattach after reload) ---
+def _fleet_patches(stack, worktrees):
+    """Patch the fleet-build collaborators shared by the provision-id tests."""
+    stack.enter_context(patch.object(
+        mod, "_discover_worktrees", new_callable=AsyncMock, return_value=worktrees))
+    stack.enter_context(patch.object(mod, "_git_info", new_callable=AsyncMock, return_value={
+        "branch": "b", "head": "abc1234", "dirty": False,
+        "ahead": 0, "behind": 0, "last_updated_at": None,
+    }))
+    stack.enter_context(patch.object(
+        mod, "_pr_status_cached", new_callable=AsyncMock, return_value=None))
+    stack.enter_context(patch.object(
+        mod, "_git_ahead", new_callable=AsyncMock, return_value=0))
+    stack.enter_context(patch.object(
+        mod, "_context_cached", new_callable=AsyncMock,
+        return_value={"issues": [], "tickets": [], "summary": None}))
+    stack.enter_context(patch.object(mod, "_load_cfg", return_value=None))
+    stack.enter_context(patch.object(mod, "_build_pending", return_value=False))
+    stack.enter_context(patch.object(mod, "_POD_IMPORTED", False))
+
+
+@pytest.mark.asyncio
+async def test_fleet_exposes_provision_run_id_for_running_and_failed_runs():
+    wts = [
+        {"path": "/fake/wt-running", "head": "abc1234", "branch": "f/run", "is_main": False},
+        {"path": "/fake/wt-failed", "head": "abc1234", "branch": "f/fail", "is_main": False},
+    ]
+    with patch.dict(mod._PROVISION_INFLIGHT, {
+        "wt-running": "rid-running", "wt-failed": "rid-failed",
+    }, clear=True), patch.dict(mod._RUNS, {
+        "rid-running": {"status": "running", "exit_code": None, "output": []},
+        "rid-failed": {"status": "done", "exit_code": 1, "output": []},
+    }, clear=True):
+        with ExitStack() as stack:
+            _fleet_patches(stack, wts)
+            data = await mod._build_fleet()
+    by_name = {w["name"]: w for w in data["worktrees"]}
+    assert by_name["wt-running"]["provision_run_id"] == "rid-running"
+    assert by_name["wt-failed"]["provision_run_id"] == "rid-failed"
+
+
+@pytest.mark.asyncio
+async def test_fleet_omits_provision_run_id_for_successful_and_evicted_runs():
+    wts = [
+        {"path": "/fake/wt-ok", "head": "abc1234", "branch": "f/ok", "is_main": False},
+        {"path": "/fake/wt-gone", "head": "abc1234", "branch": "f/gone", "is_main": False},
+        {"path": "/fake/main", "head": "abc1234", "branch": "main", "is_main": True},
+    ]
+    with patch.dict(mod._PROVISION_INFLIGHT, {
+        # Success: nothing to reattach — the fleet row shows the built state.
+        "wt-ok": "rid-ok",
+        # Evicted from the bounded run registry: output is unfetchable.
+        "wt-gone": "rid-gone",
+    }, clear=True), patch.dict(mod._RUNS, {
+        "rid-ok": {"status": "done", "exit_code": 0, "output": []},
+    }, clear=True):
+        with ExitStack() as stack:
+            _fleet_patches(stack, wts)
+            data = await mod._build_fleet()
+    for w in data["worktrees"]:
+        assert w["provision_run_id"] is None, w["name"]
+
+
 # --- SEL audit on mutations (Codex R17) ---
 def _fake_sel_capture(events):
     class _FakeSel:

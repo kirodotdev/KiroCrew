@@ -427,6 +427,7 @@ interface Worktree {
   issues?: IssueRef[]; tickets?: TicketRef[]; summary?: string | null
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; is_staged?: boolean; legacy?: boolean
   path?: string
+  provision_run_id?: string | null
 }
 interface FleetData { worktrees: Worktree[]; error?: string; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
@@ -616,6 +617,10 @@ export default function DevFleetPage() {
   const [syncRun, setSyncRun] = useState<SyncRun | null>(null)
   const [syncLogOpen, setSyncLogOpen] = useState(false)
   const syncAttachedRef = useRef(false)
+  // Provision run ids already being tracked (started locally or reattached),
+  // so the fleet-driven reattach below never starts a second poll loop for a
+  // run this session is already polling.
+  const provAttachedRef = useRef<Set<string>>(new Set())
   // Poll-loop lifecycle: loops exit when the component unmounts or a run is
   // explicitly dismissed — otherwise navigation would leak up-to-900-request
   // closures, and dismissing the stepper would be undone by the next tick.
@@ -682,6 +687,45 @@ export default function DevFleetPage() {
       })
       .catch(() => { /* run endpoint unreachable — nothing to reattach */ })
   }, [fleet?.sync_run_id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ─── Provision reattach on page load ─── */
+  // The fleet payload carries a provision_run_id per worktree while a
+  // provision is running or after it failed (mirrors sync_run_id). On mount,
+  // rehydrate the stepper/log for each: a running run resumes polling, a
+  // failed run restores the persisted failure state with the log expanded.
+  useEffect(() => {
+    for (const w of fleet?.worktrees || []) {
+      const rid = w.provision_run_id
+      if (!rid || provAttachedRef.current.has(rid)) continue
+      provAttachedRef.current.add(rid)
+      const name = w.name
+      api.get<{ status?: string; output?: string[]; exit_code?: number; started?: number }>('/run?id=' + rid)
+        .then((run) => {
+          if (!run) {
+            // Nothing usable came back — allow a later fleet refetch to retry.
+            provAttachedRef.current.delete(rid)
+            return
+          }
+          const t0 = run.started ? run.started * 1000 : Date.now()
+          const lines = run.output || []
+          if (run.status === 'running') {
+            setProv((p) => ({ ...p, [name]: { status: 'running', lines, startedAt: t0 } }))
+            void pollProvisionRun(name, rid, t0, lines)
+          } else if (run.exit_code !== 0) {
+            // Only unsuccessful runs are exposed by the backend, but guard
+            // anyway: a successful run has nothing to reattach.
+            setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines, startedAt: t0, exit: run.exit_code ?? null } }))
+            setProvLogOpen((o) => ({ ...o, [name]: true }))
+          }
+        })
+        .catch(() => {
+          // Transient failure (gateway restart mid-request, network blip):
+          // un-dedupe so the next fleet refetch can attempt the reattach
+          // again instead of permanently orphaning the run id.
+          provAttachedRef.current.delete(rid)
+        })
+    }
+  }, [fleet?.worktrees]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ─── Tick for elapsed counter ─── */
   const [, setTick] = useState(0)
@@ -807,9 +851,12 @@ export default function DevFleetPage() {
   // Poll a single provision run to completion, accumulating the server's
   // sliding 60-line output window into a full client-side buffer
   // (mergeLogWindow) so the "full log" panel keeps early output. Shared by a
-  // fresh provision and by reattaching to an already-in-flight run.
-  async function pollProvisionRun(name: string, rid: string, startedAt: number) {
-    let acc: string[] = []
+  // fresh provision and by reattaching to an already-in-flight run; a
+  // reattach passes the lines it already fetched as `seed` so fast output
+  // between that fetch and the first poll can only produce a visible gap
+  // marker, never a silently dropped prefix.
+  async function pollProvisionRun(name: string, rid: string, startedAt: number, seed: string[] = []) {
+    let acc: string[] = seed.slice()
     for (let i = 0; i < 900; i++) {
       await sleep(2000)
       if (!pollAliveRef.current) return
@@ -875,6 +922,10 @@ export default function DevFleetPage() {
         setProvLogOpen((o) => ({ ...o, [name]: true }))
         return
       }
+      // A poll loop for this run may already exist (the fleet-driven reattach
+      // effect attaches to in-flight runs); never start a second one.
+      if (provAttachedRef.current.has(r.run_id)) return
+      provAttachedRef.current.add(r.run_id)
       await pollProvisionRun(name, r.run_id, startedAt)
     } catch (e: unknown) {
       const msg = (e as Error)?.message || String(e)

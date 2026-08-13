@@ -1857,11 +1857,37 @@ async def _serving_install_reason(worktrees: "list[dict]") -> str | None:
     return reason
 
 
+async def _provision_reattach_ids() -> dict[str, str]:
+    """Provision run ids the UI can reattach to after a page reload.
+
+    A run id is exposed while the run is still executing, or when it finished
+    unsuccessfully (the failed stepper + log must survive a reload). A failed
+    id persists until a newer provision for the same checkout overwrites it,
+    the run is evicted from the bounded registry, or the gateway restarts —
+    the UI dismiss is client-side only, so a reload after dismissing re-shows
+    the failure. Successful runs are omitted: the refreshed fleet row already
+    reports the built state, so there is nothing to reattach to. Run ids
+    evicted from the bounded run registry are omitted too — the UI could not
+    fetch their output anyway.
+    """
+    inflight = dict(_PROVISION_INFLIGHT)
+    out: dict[str, str] = {}
+    async with _RUNS_LOCK:
+        for name, rid in inflight.items():
+            run = _RUNS.get(rid)
+            if not run:
+                continue
+            if run.get("status") == "running" or run.get("exit_code") not in (None, 0):
+                out[name] = rid
+    return out
+
+
 async def _build_fleet() -> dict:
     live_path = await _live_worktree_path()
     staged_path = _staged_target()
     worktrees = await _discover_worktrees()
     cfg = _load_cfg()
+    prov_rids = await _provision_reattach_ids()
     legacy_prefixes = tuple(
         f"{r.split('/')[-1].lower()}-wt-" for r in (_FALLBACK_REPOS or [])
     )
@@ -1948,6 +1974,10 @@ async def _build_fleet() -> dict:
             "legacy": bool(legacy_prefixes) and not is_main
             and name.lower().startswith(legacy_prefixes),
             "last_updated_at": g["last_updated_at"],
+            # Active or failed provision run for this checkout, so the page
+            # can reattach the stepper/log after a reload (mirrors
+            # sync_run_id below). None when there is nothing to reattach.
+            "provision_run_id": prov_rids.get(name),
         })
     return {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

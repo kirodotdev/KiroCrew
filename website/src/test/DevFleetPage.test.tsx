@@ -273,6 +273,103 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(runCalls).toBeGreaterThan(0), { timeout: 3000 })
   })
 
+  it('reattaches to a running provision on page load via provision_run_id', async () => {
+    const FLEET_WITH_PROV = {
+      ...FLEET,
+      worktrees: FLEET.worktrees.map((w) =>
+        w.name === 'unprov' ? { ...w, provision_run_id: 'run-prov-live' } : w),
+    }
+    let runCalls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_PROV), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/run?id=run-prov-live')) {
+        runCalls++
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'running', output: ['[provision] creating venv \u2026'], started: Date.now() / 1000 - 30,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    // The reattach fetches the run and rehydrates the running stepper
+    await waitFor(() => expect(runCalls).toBeGreaterThan(0), { timeout: 3000 })
+    await waitFor(() => expect(screen.getByText('Provisioning')).toBeInTheDocument(), { timeout: 3000 })
+  })
+
+  it('reattaches to a failed provision on page load restoring the persisted failure', async () => {
+    const FLEET_WITH_FAILED = {
+      ...FLEET,
+      worktrees: FLEET.worktrees.map((w) =>
+        w.name === 'unprov' ? { ...w, provision_run_id: 'run-prov-dead' } : w),
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_FAILED), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/run?id=run-prov-dead')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'done', exit_code: 1, output: ['npm ERR! build failed'], started: Date.now() / 1000 - 300,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    // Failed run persists across the reload: red label + log auto-expanded.
+    // The last log line renders twice (inline strip + expanded <pre> panel).
+    await waitFor(() => expect(screen.getByText('Provision failed (exit 1)')).toBeInTheDocument(), { timeout: 3000 })
+    expect(screen.getAllByText('npm ERR! build failed').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('reattached polling keeps the fetched log prefix and marks a scrolled gap', async () => {
+    // Regression: the reattach effect fetches the run once, then hands off to
+    // the poll loop. If the loop starts from an EMPTY accumulator, output that
+    // scrolled between the fetch and the first poll silently replaces the
+    // fetched prefix. Seeding the accumulator means a zero-overlap window can
+    // only produce the visible LOG_GAP_MARKER, never a dropped prefix.
+    const FLEET_WITH_PROV = {
+      ...FLEET,
+      worktrees: FLEET.worktrees.map((w) =>
+        w.name === 'unprov' ? { ...w, provision_run_id: 'run-prov-scroll' } : w),
+    }
+    let runCalls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_PROV), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/run?id=run-prov-scroll')) {
+        runCalls++
+        // Reattach fetch: still running, early output visible.
+        if (runCalls === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            status: 'running', output: ['early-line-A', 'early-line-B'], started: Date.now() / 1000 - 30,
+          }), { status: 200 }))
+        }
+        // First poll tick: run failed and the tail window scrolled entirely
+        // past the fetched prefix (zero overlap).
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'done', exit_code: 1, output: ['late-line-Z'], started: Date.now() / 1000 - 30,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    // Both the row strip and the completion toast carry the failure label.
+    await waitFor(() => expect(screen.getAllByText('Provision failed (exit 1)').length).toBeGreaterThan(0), { timeout: 6000 })
+    // The expanded <pre> must retain the fetched prefix, mark the gap, and
+    // append the new tail — in that order.
+    const pre = document.querySelector('pre') as HTMLPreElement
+    expect(pre).not.toBeNull()
+    expect(pre.textContent).toContain('early-line-A')
+    expect(pre.textContent).toContain(LOG_GAP_MARKER)
+    expect(pre.textContent).toContain('late-line-Z')
+    expect(pre.textContent!.indexOf('early-line-A')).toBeLessThan(pre.textContent!.indexOf('late-line-Z'))
+  })
+
   it('renders sort dropdown with all 4 options', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
       const u = typeof url === 'string' ? url : (url as Request).url
