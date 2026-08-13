@@ -1408,6 +1408,51 @@ async def _fetch_external_registry_index(
             await asyncio.to_thread(shutil.rmtree, tmp_root, ignore_errors=True)
 
 
+def _apply_configured_branch(entries: list[dict[str, Any]], reg, *, warn: bool = False) -> None:
+    """Force the operator-configured registry branch onto same-repo entries.
+
+    The registry index is cloned and parsed from exactly ``reg.branch``, so a
+    same-repo entry declaring a different branch describes a state that does
+    not exist on the ref the operator asked for (e.g. a pre-merge entry
+    declaring ``main``); honouring it makes install clone a ref where the
+    app's subdirectory is missing. The declared value is index-controlled
+    (untrusted) content, while ``reg.branch`` already passed the branch regex
+    gate before the fetch, so the override also narrows what a registry index
+    can make the installer clone.
+
+    A cross-repo entry — one whose effective clone URL differs from the
+    configured registry repo — keeps its declaration: its branch names a ref
+    in ANOTHER repository, about which ``reg.branch`` carries no information.
+    The comparison is byte-identical string equality, matching the
+    owner-designated carve-out semantics (no normalization, no host-level
+    matching). A cross-repo entry with no usable declared branch still
+    inherits ``reg.branch`` (an explicit JSON ``null`` counts as absent, so
+    ``None`` can never flow to the clone coordinates).
+
+    Runs at fetch finalisation AND on every cache read that feeds a branch
+    consumer, so a cache written before the registry's branch config changed
+    (or by a version that honoured per-app declarations) cannot keep an
+    overridden branch alive until the next refresh. ``warn`` is set only on
+    the fetch path so a divergent declaration is logged once per refresh
+    rather than on every lookup.
+    """
+    for entry in entries:
+        declared_branch = entry.get("branch")
+        if _entry_git_url(entry) == reg.repo:
+            if warn and declared_branch is not None and declared_branch != reg.branch:
+                logger.warning(
+                    "External registry %s entry %r declares branch %r; using the "
+                    "configured registry branch %r",
+                    reg.name or reg.repo,
+                    entry.get("name"),
+                    declared_branch,
+                    reg.branch,
+                )
+            entry["branch"] = reg.branch
+        elif not declared_branch:
+            entry["branch"] = reg.branch
+
+
 async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None:
     """Fetch a registry's index, normalize entries, and write the cache.
 
@@ -1464,12 +1509,15 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
             continue
         valid_entries.append(entry)
     entries = valid_entries
-    # Ensure each entry has gitUrl/repo/branch set (for install_from_registry)
+    # Ensure each entry has gitUrl/repo set (for install_from_registry), then
+    # apply the operator-configured branch policy (see _apply_configured_branch:
+    # same-repo entries get reg.branch forced with a divergence warning;
+    # cross-repo entries keep their declaration).
     for entry in entries:
         entry.setdefault("gitUrl", reg.repo)
         entry.setdefault("repo", reg.repo)
-        entry.setdefault("branch", reg.branch)
         entry["_registry"] = name
+    _apply_configured_branch(entries, reg, warn=True)
     await asyncio.to_thread(_write_external_registry_cache, name, entries)
     return entries
 
@@ -1499,6 +1547,9 @@ async def _load_external_registries() -> list[dict[str, Any]]:
         if cached is not None:
             for entry in cached:
                 entry["_registry"] = name
+            # Repair caches written before a branch-config change (or by a
+            # version that honoured per-app declarations) — see helper.
+            _apply_configured_branch(cached, reg)
             return cached
 
         # Fetch from repo (writes the cache on success).
@@ -1515,6 +1566,7 @@ async def _load_external_registries() -> list[dict[str, Any]]:
         if stale is not None:
             for entry in stale:
                 entry["_registry"] = name
+            _apply_configured_branch(stale, reg)
             return stale
         logger.warning("Failed to load external registry %s from %s", name, reg.repo)
         return []
@@ -1775,6 +1827,8 @@ def get_registry_app(name: str) -> dict[str, Any] | None:
         if cached:
             for entry in cached:
                 if entry.get("name") == name:
+                    # Repair a stale cache's branch before install reads it.
+                    _apply_configured_branch([entry], reg)
                     # Old cache files may predate persisted origin tags. Restore
                     # the authoritative discriminator at the lookup boundary so
                     # privacy gates never mistake a custom source for official.
@@ -1804,6 +1858,7 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
+                _apply_configured_branch([entry], reg)
                 candidates.append(entry)
     return candidates
 
@@ -1869,6 +1924,7 @@ def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
             cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
             for entry in cached or []:
                 if isinstance(entry, dict) and entry.get("repo") == repo:
+                    _apply_configured_branch([entry], reg)
                     return entry
     except Exception:  # fail open: branch resolution must never break blob serving
         logger.debug("_external_registry_app_by_repo: read failed", exc_info=True)
