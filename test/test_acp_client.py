@@ -9764,3 +9764,73 @@ def _record(sink):
         return 1
 
     return _send_request
+
+
+class TestMiseNodeInstallsDir:
+    """ACP node resolution must honour mise's real data root (#1605).
+
+    ``_mise_node_installs_dir`` used to hardcode ``~/.local/share/mise``,
+    silently missing installs whenever ``MISE_DATA_DIR`` or ``XDG_DATA_HOME``
+    relocated the data dir — while ``env.mise_data_dir`` already resolved the
+    same root correctly for the build toolchain. These pin the consolidated
+    behaviour for the helper and both of its consumers' entry points.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+    def test_default_layout_is_unchanged(self, tmp_path, monkeypatch):
+        from kiro_crew.acp import client as client_mod
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        assert (
+            client_mod._mise_node_installs_dir()
+            == tmp_path / ".local" / "share" / "mise" / "installs" / "node"
+        )
+
+    def test_mise_data_dir_env_is_honoured(self, tmp_path, monkeypatch):
+        from kiro_crew.acp import client as client_mod
+
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "custom-mise"))
+        assert (
+            client_mod._mise_node_installs_dir()
+            == tmp_path / "custom-mise" / "installs" / "node"
+        )
+
+    def test_xdg_data_home_is_honoured(self, tmp_path, monkeypatch):
+        from kiro_crew.acp import client as client_mod
+
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+        assert (
+            client_mod._mise_node_installs_dir()
+            == tmp_path / "xdg" / "mise" / "installs" / "node"
+        )
+
+    @_POSIX_EXEC_PATHS_ONLY
+    def test_resolve_node_for_script_under_custom_mise_data_dir(self, tmp_path, monkeypatch):
+        from kiro_crew.acp import client as client_mod
+
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "custom-mise"))
+        version_dir = tmp_path / "custom-mise" / "installs" / "node" / "22.1.0"
+        node_bin = version_dir / "bin" / "node"
+        node_bin.parent.mkdir(parents=True)
+        node_bin.write_text("#!/bin/sh\nexit 0\n")
+        node_bin.chmod(0o755)
+        script = version_dir / "lib" / "node_modules" / "some-tool" / "cli.js"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/usr/bin/env node\n")
+
+        assert client_mod._resolve_node_for_script(str(script)) == str(node_bin)
+
+    @_POSIX_EXEC_PATHS_ONLY
+    def test_resolve_node_for_script_outside_mise_returns_none(self, tmp_path, monkeypatch):
+        from kiro_crew.acp import client as client_mod
+
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "custom-mise"))
+        script = tmp_path / "elsewhere" / "cli.js"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/usr/bin/env node\n")
+
+        assert client_mod._resolve_node_for_script(str(script)) is None

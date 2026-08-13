@@ -331,7 +331,7 @@ def _install_child_watcher() -> None:
     for tens of seconds.  PidfdChildWatcher uses a single epoll fd (no extra
     threads) and is immune to this.  On macOS (no pidfd syscall) we install
     SafeChildWatcher instead -- a single SIGCHLD handler, also free of the
-    thread-per-child storm (the _node_version_manager_bins lru_cache only
+    thread-per-child storm (the node_all_bin_dirs lru_cache only
     shrank the surface; the reaper storm itself remained on the default
     watcher).
 

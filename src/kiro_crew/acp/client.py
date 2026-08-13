@@ -104,7 +104,7 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
 )
-from kiro_crew.env import augmented_path, resolve_krb5_ccname
+from kiro_crew.env import augmented_path, mise_data_dir, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
@@ -322,16 +322,25 @@ def _mise_which(tool: str) -> str | None:
 
 
 def _mise_node_installs_dir() -> Path:
-    """Canonical path to mise's Node installs directory."""
-    return Path.home() / ".local" / "share" / "mise" / "installs" / "node"
+    """Canonical path to mise's Node installs directory.
+
+    The data root comes from :func:`kiro_crew.env.mise_data_dir` so that
+    ``MISE_DATA_DIR`` and ``XDG_DATA_HOME`` are honoured — the previous
+    hardcoded ``~/.local/share/mise`` silently missed installs on any host
+    with a relocated mise data dir, while the env helper already resolved the
+    same root correctly for the build toolchain.
+    """
+    return Path(mise_data_dir(str(Path.home()))) / "installs" / "node"
 
 
 def _resolve_node_for_script(script_path: str) -> str | None:
     """Derive the correct node binary for a script installed under mise.
 
-    If *script_path* lives under ``~/.local/share/mise/installs/node/<ver>/``,
-    return the co-located ``bin/node``.  This avoids reliance on shim
-    resolution which requires mise global config and a cooperative cwd.
+    If *script_path* lives under mise's Node installs dir (see
+    :func:`_mise_node_installs_dir` — honours ``MISE_DATA_DIR`` /
+    ``XDG_DATA_HOME``), return the co-located ``bin/node``.  This avoids
+    reliance on shim resolution which requires mise global config and a
+    cooperative cwd.
 
     Resolves both $HOME and the script path to real paths to handle
     symlinked home directories (e.g. /home/user -> /local/home/user).
