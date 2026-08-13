@@ -186,6 +186,39 @@ jobs:
           python3 scripts/check_brand_name.py --test
           python3 scripts/check_brand_name.py
 
+  harness-parity:
+    name: Harness Parity Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check harness identity tests on the lines this change adds
+        # Kiro Crew drives one first-class harness (kiro-cli) and adapts the
+        # others. The defect class is a call site that spells "this is kiro" as
+        # the ABSENCE of another harness: correct with two backends, and then it
+        # hands the third a capability or a sandbox waiver nobody granted it.
+        # It fails toward the permissive answer, so nothing else goes red.
+        #
+        # Diff-scoped for the same reason as the brand gate above: the tree
+        # carries pre-existing negative tests in the dormant claude seam, and
+        # converting them is a separate change with its own review. Added lines
+        # are complete for regression, and the whole-tree count is still printed
+        # as a non-failing report. Invariants:
+        # docs/system-specs/modules/harness-parity.md
+        env:
+          # `base.sha` for the same reason as the brand gate: the merge ref this
+          # run checks out was computed against that exact commit.
+          HARNESS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          HARNESS_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$HARNESS_BASE_REF" 'the harness-parity gate')" || exit 1
+          export HARNESS_BASE_REF
+          # Self-test first: it plants one probe per rule, so a regex typo that
+          # silently disables a rule fails here instead of shipping green.
+          python3 scripts/check_harness_parity.py --test
+          python3 scripts/check_harness_parity.py
+
   docs-lint:
     name: Docs Lint
     runs-on: ubuntu-latest

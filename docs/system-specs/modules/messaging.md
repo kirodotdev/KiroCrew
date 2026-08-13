@@ -219,8 +219,9 @@ the text stream at the exact fold point.
 
 Two preconditions gate the steer, and both matter:
 
-- `provider.supports_steer` (kiro-cli only; the dormant Claude backend seam has
-  no `_session/steer`). When false the message falls through to the queue path.
+- `provider.supports_steer` — membership in `ACP_BACKENDS_STEER`, since the
+  dormant Claude backend seam has no `_session/steer`. When false the message
+  falls through to the queue path.
 - `provider.has_active_turn()`, **not** `sessions.is_busy()`. `is_busy` stays
   true through post-turn bookkeeping (success record, turn persist, threshold
   notice, SEL audit, all await points), so it alone cannot distinguish a live

@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_KNOWN,
+    ACP_BACKENDS_SESSION_SHARING,
     EVENT_COMPACTION_STATUS,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
@@ -378,12 +379,15 @@ class AcpProvider(LLMProvider):
     def is_session_sharing_eligible(self) -> bool:
         """True when this provider can host multiplexed subagent sessions.
 
-        Session sharing requires the kiro-cli backend (which supports N
-        concurrent sessions per process via AcpRuntime demux). The Claude
-        Code backend uses AcpClient (one process per session) and is never
-        eligible, so subagents fall back to the legacy per-process path.
+        Session sharing requires a backend whose single process serves N
+        concurrent sessions via AcpRuntime demux, so it is granted by membership
+        in ``ACP_BACKENDS_SESSION_SHARING`` (harness-parity H6) rather than by
+        ``not is_claude_backend``. The Claude Code backend uses AcpClient (one
+        process per session) and is not a member, so subagents fall back to the
+        legacy per-process path — and neither does any harness added later,
+        until someone adds it deliberately.
         """
-        return not self.is_claude_backend
+        return self._client.backend in ACP_BACKENDS_SESSION_SHARING
 
     async def _start_kiro_runtime(self) -> None:
         """Spawn an AcpRuntime + session; time the kiro cold-start split.

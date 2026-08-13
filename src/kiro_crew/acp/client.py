@@ -45,6 +45,8 @@ from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOra
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKENDS_INTERNAL_SANDBOX,
+    ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -2518,11 +2520,16 @@ class AcpClient:
         # OS-level sandbox: wrap the command to hide sensitive paths.
         # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
+        # is_kiro_cli is membership in ACP_BACKENDS_INTERNAL_SANDBOX
+        # (harness-parity H7), not "not claude": the flag makes wrap_argv SKIP
+        # Crew's seatbelt on macOS in favour of the harness's own internal
+        # sandbox, so a harness without one must never be granted it by the
+        # absence of another harness.
         argv, self._sandbox_cleanup = wrap_argv(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
-            is_kiro_cli=not self._is_claude,
+            is_kiro_cli=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -4501,9 +4508,12 @@ class AcpClient:
 
     @property
     def supports_steer(self) -> bool:
-        """True when the backend supports mid-turn steer (kiro-cli only;
-        claude-agent-acp has no ``_session/steer``)."""
-        return not self._is_claude
+        """True when the backend implements ``_session/steer`` (mid-turn steer).
+
+        Membership in ``ACP_BACKENDS_STEER`` (harness-parity H6), so a harness
+        added later does not inherit the extension from ``not _is_claude``.
+        """
+        return self.backend in ACP_BACKENDS_STEER
 
     async def wait_turn_done(self, timeout: float) -> str:
         """Wait for the current prompt to finish. Returns stop_reason or raises TimeoutError."""

@@ -54,6 +54,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     METHOD_MCP_OAUTH_REQUEST,
@@ -774,15 +775,17 @@ class AcpRuntime:
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
         # is_kiro_cli drives a macOS-only delegation: when kiro's internal
         # sandbox is enabled, wrap_argv skips its own seatbelt because the two
-        # cannot nest (kernel EPERM). KAS is a Node process with no such
-        # internal sandbox, so claiming otherwise would hand isolation to a
-        # layer that never starts and leave it unconfined. KAS has no nesting
-        # constraint either, so it takes Crew's seatbelt directly.
+        # cannot nest (kernel EPERM). Granted by membership in
+        # ACP_BACKENDS_INTERNAL_SANDBOX (harness-parity H7), never as "not KAS":
+        # this test fails OPEN, so a harness that inherited a negative test would
+        # have Crew's seatbelt skipped in favour of an internal sandbox that never
+        # starts. KAS is a Node process with no internal sandbox, so it takes
+        # Crew's seatbelt directly, and so does every harness added later.
         argv, self._sandbox_cleanup = wrap_argv(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
-            is_kiro_cli=self._acp_backend != ACP_BACKEND_KAS,
+            is_kiro_cli=self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).

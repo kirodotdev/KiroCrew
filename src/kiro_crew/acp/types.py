@@ -118,6 +118,31 @@ ACP_BACKENDS_KNOWN = frozenset(
 # at startup with a reason instead of on the operator's first message.
 ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO})
 
+# ── Capability membership (harness-parity H6, H7) ──
+# Every capability a backend may claim is an OPT-IN set here, never a negation at
+# the call site. ``not is_claude_backend`` reads correctly with two backends and
+# then silently hands the capability to the third, so a harness that has never
+# demonstrated the capability inherits it — and the operator who never opted into
+# that harness is the one who finds out. Adding a member is a deliberate edit
+# with evidence; inheriting a default is not a decision. See
+# docs/system-specs/modules/harness-parity.md.
+
+# Backends whose single process can host N concurrent ACP sessions (AcpRuntime
+# demux), which is what subagent session sharing requires. claude-agent-acp runs
+# through AcpClient (one process per session) and is not a member.
+ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends implementing the ``_session/steer`` extension (mid-turn steer).
+ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
+# inside Kiro Crew's seatbelt (kernel EPERM) — so ``sandbox.wrap_argv`` skips
+# Crew's own layer for them. This is the one membership test that fails OPEN:
+# claiming it for a harness with no internal sandbox hands isolation to a layer
+# that never starts and leaves the agent process unconfined. Only kiro-cli
+# qualifies; a Node or Python harness does not, however it is spawned.
+ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
+
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
 # things, so every producer must agree on it: resume compatibility

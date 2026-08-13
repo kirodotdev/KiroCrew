@@ -174,6 +174,10 @@ on `PATH`, and run `kiro-cli login`. `kirocrew doctor` reports its status.
   leaks an orphaned `kiro-cli`.
 - **Alternate ACP backend (`is_claude_backend` True)** → legacy `AcpClient.ensure_ready()`.
 
-`AcpProvider.is_session_sharing_eligible` returns `not is_claude_backend`; it is
-what `SessionManager.is_session_sharing_eligible()` consults to decide whether a
-parent session can host multiplexed subagent sessions.
+`AcpProvider.is_session_sharing_eligible` is membership in
+`ACP_BACKENDS_SESSION_SHARING` (harness-parity H6), not `not is_claude_backend`:
+a capability granted by the absence of one backend is inherited by every backend
+added later. It is what `SessionManager.is_session_sharing_eligible()` consults
+to decide whether a parent session can host multiplexed subagent sessions. The
+invariants governing what an added harness may and may not change are in
+[harness-parity.md](harness-parity.md).

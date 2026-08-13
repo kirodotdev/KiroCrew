@@ -9,6 +9,8 @@
     "mypy src/kiro_crew/",
     "python3 scripts/check_brand_name.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && BRAND_BASE_REF=\"$BASE\" python3 scripts/check_brand_name.py",
+    "python3 scripts/check_harness_parity.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && HARNESS_BASE_REF=\"$BASE\" python3 scripts/check_harness_parity.py",
     "python3 scripts/docs_lint.py --test",
     "./scripts/docs-lint.sh",
     "python3 scripts/verify_vendor_manifest.py",

@@ -14,6 +14,7 @@ agent loads only the one it needs.
 |---|---|
 | [acp-client.md](acp-client.md) | The ACP JSON-RPC client that drives `kiro-cli`: transport, framing, timeouts, and the backend seam. |
 | [providers.md](providers.md) | The `LLMProvider` interface and the KiroACP-only provider surface. |
+| [harness-parity.md](harness-parity.md) | The invariants keeping the Kiro harness first-class while other harnesses are adapted, and the test pinning each. |
 | [session.md](session.md) | Sessions, slots, session keys, the warm pool, and PID tracking. |
 | [history.md](history.md) | Conversation persistence, JSONL rotation, and transcript search. |
 | [session-summary.md](session-summary.md) | Intent-level session summaries: the sidecar cache, extraction, and the turn-end pass. |

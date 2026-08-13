@@ -323,11 +323,15 @@ describe('CI supplies a base commit on both paths', () => {
   // tests above would still pass.
   const ci = readFileSync(resolve(process.cwd(), '../.github/workflows/ci.yml'), 'utf-8')
   // Any `*_BASE_REF` wiring, not just the i18n ones: `brand-lint` passes
-  // `BRAND_BASE_REF` through the same resolver and needs the same guarantees.
+  // `BRAND_BASE_REF` and `harness-parity` passes `HARNESS_BASE_REF` through the
+  // same resolver and both need the same guarantees.
   const wirings = ci.match(/^\s*[A-Z0-9_]*BASE_REF: \$\{\{.*$/gm) || []
 
   it('wires every diff-scoped gate step', () => {
-    expect(wirings).toHaveLength(4)
+    // A count, not a set: the point is that a gate ADDED to ci.yml cannot skip
+    // this file's `base.sha` assertion below by going unnoticed. Bump it when a
+    // diff-scoped gate lands, and check the new wiring is in the loop.
+    expect(wirings).toHaveLength(5)
   })
 
   it('diffs a PR against the commit its merge ref was built on, not the branch tip', () => {
