@@ -637,6 +637,7 @@ make this tool possible:
 <a href="https://github.com/aravance" title="Alex Avance"><img src="https://github.com/aravance.png?size=64" width="64" height="64" alt="Alex Avance" /></a>
 <a href="https://github.com/architect4dj" title="architect4dj"><img src="https://github.com/architect4dj.png?size=64" width="64" height="64" alt="architect4dj" /></a>
 <a href="https://github.com/arjunsoota" title="Arjun Soota"><img src="https://github.com/arjunsoota.png?size=64" width="64" height="64" alt="Arjun Soota" /></a>
+<a href="https://github.com/arimorgan" title="Ariana Morgan"><img src="https://github.com/arimorgan.png?size=64" width="64" height="64" alt="Ariana Morgan" /></a>
 <a href="https://github.com/arpan98" title="Arpan Banerjee"><img src="https://github.com/arpan98.png?size=64" width="64" height="64" alt="Arpan Banerjee" /></a>
 <a href="https://github.com/arvindsrinathus-tech" title="arvindsrinathus-tech"><img src="https://github.com/arvindsrinathus-tech.png?size=64" width="64" height="64" alt="arvindsrinathus-tech" /></a>
 <a href="https://github.com/AryPathania" title="Ary Pathania"><img src="https://github.com/AryPathania.png?size=64" width="64" height="64" alt="Ary Pathania" /></a>
