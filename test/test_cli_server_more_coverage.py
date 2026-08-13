@@ -488,16 +488,53 @@ class TestLogsCmdSystemd:
 class TestLogsCmdOtherSources:
     """launchd stdout file, plain log file, and the "nothing to tail" refusal."""
 
-    def test_launchd_stdout_log_is_tailed(
-        self, monkeypatch, tmp_path, sel_rec, fake_execvp
-    ) -> None:
+    @pytest.fixture
+    def launchd(self, monkeypatch, tmp_path):
+        """An installed launchd agent: a plist on disk and a non-empty stdout log.
+
+        Both paths are patched even when a test only cares about one of them,
+        because the real ones are consulted otherwise and a CI runner has
+        neither.
+        """
+        plist = tmp_path / "crew.plist"
+        plist.write_text("<plist/>\n", encoding="utf-8", newline="\n")
         stdout_log = tmp_path / "launchd-gateway.log"
         stdout_log.write_text("x\n", encoding="utf-8", newline="\n")
         monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.LAUNCHD)
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", plist)
         monkeypatch.setattr(svc_macos, "STDOUT_LOG", stdout_log)
+        return types.SimpleNamespace(plist=plist, stdout_log=stdout_log)
+
+    def test_launchd_stdout_log_is_tailed(self, sel_rec, fake_execvp, launchd) -> None:
         with pytest.raises(_ExecCalled) as exc:
             cli_server._logs_cmd(argparse.Namespace(follow=True, lines=8))
-        assert exc.value.argv == ["tail", "-n", "8", "-f", str(stdout_log)]
+        assert exc.value.argv == ["tail", "-n", "8", "-f", str(launchd.stdout_log)]
+
+    def test_launchd_without_an_installed_plist_falls_through(
+        self, monkeypatch, tmp_path, sel_rec, fake_execvp, launchd
+    ) -> None:
+        """A foreground gateway on macOS reaches the config-dir log, not the agent's."""
+        launchd.plist.unlink()
+        fallback = tmp_path / "fallback" / "gateway.log"
+        fallback.parent.mkdir()
+        fallback.write_text("real\n", encoding="utf-8", newline="\n")
+        monkeypatch.setattr(cli_server, "config_dir", lambda: fallback.parent)
+        with pytest.raises(_ExecCalled) as exc:
+            cli_server._logs_cmd(argparse.Namespace(follow=False, lines=4))
+        assert exc.value.argv == ["tail", "-n", "4", str(fallback)]
+
+    def test_launchd_with_an_empty_stdout_log_falls_through(
+        self, monkeypatch, tmp_path, sel_rec, fake_execvp, launchd
+    ) -> None:
+        """A 0-byte agent log satisfies exists(), so size is what gates the branch."""
+        launchd.stdout_log.write_text("", encoding="utf-8", newline="\n")
+        fallback = tmp_path / "fallback" / "gateway.log"
+        fallback.parent.mkdir()
+        fallback.write_text("real\n", encoding="utf-8", newline="\n")
+        monkeypatch.setattr(cli_server, "config_dir", lambda: fallback.parent)
+        with pytest.raises(_ExecCalled) as exc:
+            cli_server._logs_cmd(argparse.Namespace(follow=False, lines=4))
+        assert exc.value.argv == ["tail", "-n", "4", str(fallback)]
 
     def test_no_log_source_at_all_exits_with_guidance(
         self, monkeypatch, tmp_path, sel_rec, capsys

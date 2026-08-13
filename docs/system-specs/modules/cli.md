@@ -760,7 +760,11 @@ source is most appropriate:
 1. systemd journal if the system service is installed on Linux. Tries
    unprivileged `journalctl` first; falls back to `sudo journalctl`
    only if the unprivileged probe returns no rows.
-2. launchd stdout file if a plist exists on macOS
+2. launchd stdout file if a plist exists on macOS and that file is
+   non-empty. Both conditions matter: the platform probe reports launchd
+   on any macOS host, and an install that never started the agent leaves
+   a 0-byte log behind, so either check alone would capture the command
+   and tail nothing.
 3. `~/.kiro/crew/gateway.log` for foreground gateways
 
 Uses `os.execvp` so signals (Ctrl+C) propagate naturally to the

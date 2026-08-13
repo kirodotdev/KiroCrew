@@ -1661,7 +1661,21 @@ def _logs_cmd(args: argparse.Namespace) -> None:
             sudo_cmd.append("-f")
         os.execvp("sudo", sudo_cmd)
 
-    if plat == Platform.LAUNCHD and svc_macos.STDOUT_LOG.exists():
+    # Both guards mirror checks the systemd arm above already makes on its own
+    # branch. current_platform() returns LAUNCHD for any macOS host whether or
+    # not the agent is installed, so without PLIST_PATH this arm captures `logs`
+    # even when the gateway runs in the foreground; and a 0-byte STDOUT_LOG from
+    # an install that never started the agent still satisfies exists().
+    #
+    # Either miss is silent and total: this arm os.execvp()s, so there is no
+    # fall-through to the config_dir() log below and `kirocrew logs` exits 0
+    # having printed nothing.
+    if (
+        plat == Platform.LAUNCHD
+        and svc_macos.PLIST_PATH.exists()
+        and svc_macos.STDOUT_LOG.exists()
+        and svc_macos.STDOUT_LOG.stat().st_size > 0
+    ):
         cmd = ["tail", "-n", str(lines)]
         if follow:
             cmd.append("-f")
