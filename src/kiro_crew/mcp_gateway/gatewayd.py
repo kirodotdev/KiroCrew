@@ -75,6 +75,7 @@ from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.peer_resolve import resolve_peer_identity
+from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.platform_compat import get_process_start_id as _get_process_start_id
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import SecurityEventLog
@@ -412,6 +413,7 @@ async def run_gatewayd(
     # a dangling socket that confuses the next startup probe.
     server: Optional[transport.TransportServer] = None
     sweeper: Optional[asyncio.Task[None]] = None
+    socket_liveness: Optional[asyncio.Task[None]] = None
     diagnostic: Optional[asyncio.Task[None]] = None
     heartbeat: Optional[asyncio.Task[None]] = None
     flush_sweeper: Optional[asyncio.Task[None]] = None
@@ -459,6 +461,22 @@ async def run_gatewayd(
             _idle_sweeper(pool, idle_timeout_secs, sweep_interval, stop_event),
             name="mcp-gateway-idle-sweeper",
         )
+
+        # Socket-liveness self-exit: the daemon is its own session/group
+        # leader, so a launcher that dies without signalling it (pytest
+        # teardown is the common case) leaves it resident forever — and the
+        # tracked-PID and orphan sweeps both exclude gateway entrypoints by
+        # design. The one unreachability signal observable from inside is the
+        # listening socket path this daemon created: once it is gone, no stub
+        # can ever connect again. Armed HERE, only after ``transport.serve``
+        # bound the endpoint — before bind, an absent path is a startup race,
+        # not unreachability. POSIX-only: a Windows named pipe has no
+        # directory entry to observe.
+        if not IS_WINDOWS:
+            socket_liveness = asyncio.create_task(
+                _socket_liveness_sweeper(socket_path, sweep_interval, stop_event),
+                name="mcp-gateway-socket-liveness",
+            )
 
         # Zombie diagnostic: probes
         # ``server.is_serving()`` every 30 s and dumps a post-mortem JSONL on
@@ -652,6 +670,11 @@ async def run_gatewayd(
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await sweeper
 
+        if socket_liveness is not None:
+            socket_liveness.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await socket_liveness
+
         if diagnostic is not None:
             diagnostic.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -735,6 +758,75 @@ async def _idle_sweeper(
                     logger.debug("idle sweep evicted %d backends", evicted)
             except Exception:  # pragma: no cover — defensive
                 logger.exception("idle sweep failed; continuing")
+    except asyncio.CancelledError:
+        pass
+
+
+#: Consecutive missing-socket observations required before the daemon
+#: self-exits. A single stat is not trusted: a transient tmpfs/NFS hiccup
+#: must not kill a healthy daemon, so only an uninterrupted run of misses
+#: counts as proof of unreachability.
+_SOCKET_LIVENESS_MISSES = 3
+
+
+async def _socket_liveness_sweeper(
+    socket_path: Path,
+    interval: float,
+    stop_event: asyncio.Event,
+) -> None:
+    """Self-exit when the daemon's own listening socket path disappears.
+
+    The daemon is spawned with ``start_new_session=True``, making it a
+    session and process-group leader: when its launcher dies without
+    signalling it, no ``killpg`` from the launcher's tree can reach it and it
+    stays resident forever. The one unreachability signal observable from
+    inside is the listening socket path this daemon created at bind — once
+    that path is gone, no stub can ever connect again, so the process is
+    provably useless regardless of who launched it. Exiting through
+    ``stop_event`` takes exactly the graceful drain path SIGTERM takes:
+    in-flight work drains and every pooled backend is shut down.
+
+    Fail-closed rules:
+
+    * The caller arms this task only AFTER a successful bind — before that,
+      an absent path is a startup race, not unreachability.
+    * Only ``FileNotFoundError`` (ENOENT) counts as a miss. Any other stat
+      failure (EACCES, EIO, …) is inconclusive: it neither counts toward
+      exit nor resets an in-progress miss streak.
+    * :data:`_SOCKET_LIVENESS_MISSES` CONSECUTIVE misses are required; a
+      successful stat resets the streak.
+    * POSIX-only — a Windows named pipe has no directory entry to observe,
+      so the caller never creates this task there.
+    """
+    misses = 0
+    try:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                break  # stop_event fired — exit cleanly
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await asyncio.to_thread(os.stat, socket_path)
+                misses = 0
+            except FileNotFoundError:
+                misses += 1
+                if misses >= _SOCKET_LIVENESS_MISSES:
+                    logger.warning(
+                        "gatewayd socket %s missing for %d consecutive checks — "
+                        "no stub can reach this daemon again; initiating "
+                        "graceful self-shutdown",
+                        socket_path,
+                        misses,
+                    )
+                    stop_event.set()
+                    break
+            except OSError:
+                logger.debug(
+                    "socket liveness probe inconclusive for %s",
+                    socket_path,
+                    exc_info=True,
+                )
     except asyncio.CancelledError:
         pass
 
@@ -3195,7 +3287,10 @@ def _build_argparser() -> argparse.ArgumentParser:
         dest="idle_timeout_secs",
         type=int,
         default=300,
-        help="Seconds an unattached backend is kept before the idle sweeper drains it.",
+        help="Seconds an unattached POOLED BACKEND is kept before the idle "
+        "sweeper evicts it. Bounds pool-entry lifetime only, never the "
+        "daemon's own — the daemon exits on SIGTERM/SIGINT or when its own "
+        "socket path disappears.",
     )
     p.add_argument(
         "--prewarm-count",
