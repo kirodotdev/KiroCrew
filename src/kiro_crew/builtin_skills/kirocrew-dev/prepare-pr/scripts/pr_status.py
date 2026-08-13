@@ -58,9 +58,17 @@ DEFAULT_READINESS_CONTEXT = "PR Readiness"
 # A host closes an issue on merge ONLY for these verbs. "Related: #n", "Part of
 # #n" and a bare "#n" render as links and close nothing, which is how finished
 # work merges while its issue stays open forever.
+_CLOSING_KEYWORD_PATTERN = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 _CLOSING_KW_RE = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#\d+",
+    rf"\b{_CLOSING_KEYWORD_PATTERN}\s*:?\s+#\d+",
     re.IGNORECASE,
+)
+# A resolved closure without a matching line-anchored trailer may come from
+# prose or a manual link, so every host-resolved issue number needs human
+# confirmation unless it appears in one of these explicit trailers.
+_CLOSING_TRAILER_RE = re.compile(
+    rf"^{_CLOSING_KEYWORD_PATTERN}\s*:?\s+#(?P<number>\d+)\b",
+    re.IGNORECASE | re.MULTILINE,
 )
 # Any issue-ish reference at all, used to tell "forgot the verb" from
 # "genuinely closes nothing".
@@ -78,9 +86,171 @@ _BARE_REF_RE = re.compile(r"(?<![\w/])#\d+\b")
 # opt-out would then auto-close the very issue it explains not closing.
 _NO_ISSUE_RE = re.compile(r"^no linked issue[ \t]*:", re.IGNORECASE | re.MULTILINE)
 
+# Issue-link classification must see the same Markdown surface GitHub treats as
+# prose. Mask ignored contexts character-for-character so MULTILINE anchors and
+# word boundaries keep their source positions. Fences allow up to three leading
+# spaces; a backtick fence's info string cannot itself contain a backtick.
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+
+
+def _fence_opening(line):
+    match = _FENCE_OPEN_RE.match(line)
+    if not match:
+        return None
+    fence = match.group("fence")
+    if fence[0] == "`" and "`" in match.group("info"):
+        return None
+    return fence[0], len(fence)
+
+
+def _is_closing_fence(line, fence_char, opening_length):
+    candidate = line[:-1] if line.endswith("\r") else line
+    indent = 0
+    while indent < len(candidate) and candidate[indent] == " ":
+        indent += 1
+    if indent > 3:
+        return False
+    end = indent
+    while end < len(candidate) and candidate[end] == fence_char:
+        end += 1
+    return end - indent >= opening_length and not candidate[end:].strip(" \t")
+
+
+def _mask_html_comments(line, in_comment):
+    masked = list(line)
+    cursor = 0
+    if in_comment:
+        comment_end = line.find("-->")
+        if comment_end < 0:
+            return " " * len(line), True
+        cursor = comment_end + 3
+        masked[:cursor] = " " * cursor
+
+    while True:
+        comment_start = line.find("<!--", cursor)
+        if comment_start < 0:
+            return "".join(masked), False
+        comment_end = line.find("-->", comment_start + 4)
+        if comment_end < 0:
+            masked[comment_start:] = " " * (len(line) - comment_start)
+            return "".join(masked), True
+        cursor = comment_end + 3
+        masked[comment_start:cursor] = " " * (cursor - comment_start)
+
+
+def _mask_inline_code(text):
+    runs = []
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("`", cursor)
+        if start < 0:
+            break
+        end = start + 1
+        while end < len(text) and text[end] == "`":
+            end += 1
+        runs.append((start, end))
+        cursor = end
+
+    next_equal: list[int | None] = [None] * len(runs)
+    next_by_length: dict[int, int] = {}
+    for index in range(len(runs) - 1, -1, -1):
+        run_length = runs[index][1] - runs[index][0]
+        next_equal[index] = next_by_length.get(run_length)
+        next_by_length[run_length] = index
+
+    masked = list(text)
+    index = 0
+    while index < len(runs):
+        closing_index = next_equal[index]
+        if closing_index is None:
+            index += 1
+            continue
+        start = runs[index][0]
+        end = runs[closing_index][1]
+        for offset in range(start, end):
+            if masked[offset] not in "\r\n":
+                masked[offset] = " "
+        index = closing_index + 1
+    return "".join(masked)
+
+
+def _visible_markdown_prose(body):
+    """Mask fenced/code-span/comment examples while preserving line offsets."""
+    body = body or ""
+    visible_lines = []
+    fence_char = None
+    fence_length = 0
+    in_comment = False
+
+    for line in body.split("\n"):
+        if fence_char is not None:
+            if _is_closing_fence(line, fence_char, fence_length):
+                fence_char = None
+                fence_length = 0
+            visible_lines.append(" " * len(line))
+            continue
+
+        # A real fence opener wins over comment-looking text in its info
+        # string. While inside a comment, masking happens first so a fence-like
+        # example cannot alter fence state.
+        opening = None if in_comment else _fence_opening(line)
+        if opening is not None:
+            fence_char, fence_length = opening
+            visible_lines.append(" " * len(line))
+            continue
+
+        masked_line, in_comment = _mask_html_comments(line, in_comment)
+        opening = None if in_comment else _fence_opening(masked_line)
+        if opening is not None:
+            fence_char, fence_length = opening
+            visible_lines.append(" " * len(line))
+            continue
+        visible_lines.append(masked_line)
+
+    return _mask_inline_code("\n".join(visible_lines))
+
+
+# GitHub exposes ``Issue.number`` as a positive GraphQL Int. Normalize the
+# host value and trailer text without converting untrusted digit strings to a
+# Python int: Python 3.10 accepts arbitrarily long strings while 3.11+ raises,
+# and readiness must behave identically on every supported interpreter.
+_GITHUB_ISSUE_NUMBER_MAX = 2_147_483_647
+_GITHUB_ISSUE_NUMBER_MAX_TEXT = "2147483647"
+
+
+def _normalize_issue_number(value):
+    """Return canonical decimal text for a GitHub issue number, else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if not 0 < value <= _GITHUB_ISSUE_NUMBER_MAX:
+            return None
+        return str(value)
+    if (
+        not isinstance(value, str)
+        or not value
+        or not value.isascii()
+        or not value.isdigit()
+        or len(value) > len(_GITHUB_ISSUE_NUMBER_MAX_TEXT)
+    ):
+        return None
+    normalized = value.lstrip("0")
+    if not normalized:
+        return None
+    if (
+        len(normalized) == len(_GITHUB_ISSUE_NUMBER_MAX_TEXT)
+        and normalized > _GITHUB_ISSUE_NUMBER_MAX_TEXT
+    ):
+        return None
+    return normalized
+
+
+def _issue_number_sort_key(number):
+    return (len(number), number)
+
 
 def closing_link_reason(body, closing_refs):
-    """Return an advisory reason when no issue will close, else None.
+    """Return an advisory issue-link reason, else None.
 
     ADVISORY ONLY — the caller prints this, it never changes the exit code. An
     issue-less PR is legitimate, and a green PR should not be held on
@@ -88,22 +258,94 @@ def closing_link_reason(body, closing_refs):
 
     ``closing_refs`` is the host's OWN resolution of the body (the
     ``closingIssuesReferences`` field), so it is the truth about what will
-    actually close. The body regexes only classify *why* it resolved to
-    nothing, which is what makes the message actionable.
+    actually close. The body regexes classify whether every resolved issue has
+    an explicit trailer or whether any closure needs human confirmation.
     """
-    if closing_refs:
-        return None
     body = body or ""
-    if _NO_ISSUE_RE.search(body):
+    visible_body = _visible_markdown_prose(body)
+    if closing_refs:
+        trailer_numbers = set()
+        trailers_well_formed = True
+        for match in _CLOSING_TRAILER_RE.finditer(visible_body):
+            number = _normalize_issue_number(match.group("number"))
+            if number is None:
+                trailers_well_formed = False
+            else:
+                trailer_numbers.add(number)
+        resolved_numbers = []
+        refs_well_formed = True
+        for ref in closing_refs:
+            try:
+                value = ref["number"]
+            except (KeyError, TypeError):
+                refs_well_formed = False
+                continue
+            number = _normalize_issue_number(value)
+            if number is None:
+                refs_well_formed = False
+            else:
+                resolved_numbers.append(number)
+        unique_resolved_numbers = set(resolved_numbers)
+        duplicate_numbers = {
+            number
+            for number in unique_resolved_numbers
+            if resolved_numbers.count(number) > 1
+        }
+        missing_numbers = unique_resolved_numbers - trailer_numbers
+        if (
+            refs_well_formed
+            and trailers_well_formed
+            and not missing_numbers
+            and not duplicate_numbers
+        ):
+            return None
+        if duplicate_numbers:
+            return (
+                "host resolved the same issue number in multiple repositories "
+                "or duplicate references: "
+                + ", ".join(
+                    "#{}".format(number)
+                    for number in sorted(duplicate_numbers, key=_issue_number_sort_key)
+                )
+                + " (number-only trailer matching is ambiguous; confirm every "
+                "closure is intentional)"
+            )
+        if not trailers_well_formed:
+            return (
+                "body has a malformed explicit closing trailer "
+                "(confirm every closure is intentional; use one valid "
+                "'Fixes #<n>' trailer per issue)"
+            )
+        if not refs_well_formed:
+            return (
+                "host returned a malformed closing issue reference "
+                "(confirm every closure is intentional)"
+            )
+        missing_text = (
+            " matching "
+            + ", ".join(
+                "#{}".format(number)
+                for number in sorted(missing_numbers, key=_issue_number_sort_key)
+            )
+            if missing_numbers
+            else " matching every host-resolved closure"
+        )
+        return (
+            "host will close an issue but the body has no explicit closing trailer"
+            + missing_text
+            + " (confirm every closure is intentional; add one 'Fixes #<n>' "
+            "trailer per issue)"
+        )
+    if _NO_ISSUE_RE.search(visible_body):
         return None
-    if _CLOSING_KW_RE.search(body):
-        # Verb is present but the host resolved nothing: wrong repo prefix, a
-        # code fence, or an issue that is already closed/nonexistent.
+    if _CLOSING_KW_RE.search(visible_body):
+        # A visible verb is present but the host resolved nothing: the number,
+        # repository target, or issue state does not form a live closure.
         return (
             "body has a closing keyword but the host resolved no issue "
-            "(check the number and that it is not inside a code fence)"
+            "(check the number, repository, and issue state)"
         )
-    if _BARE_REF_RE.search(body):
+    if _BARE_REF_RE.search(visible_body):
         return (
             "body references an issue with no closing keyword - use "
             "'Fixes #<n>' so it closes on merge, or state 'no linked issue: <why>'"
