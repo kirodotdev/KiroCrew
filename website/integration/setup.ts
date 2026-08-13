@@ -3,6 +3,29 @@ import '@testing-library/jest-dom'
 import { server } from './mocks/server'
 import { initI18n, i18next } from '../src/i18n'
 
+// --- happy-dom teardown AbortError guard -------------------------------------
+// happy-dom navigates a live `<iframe src>` by scheduling an async fetch task on
+// DOM insertion. When a fork worker tears the window down between files, vitest's
+// teardownWindow calls AsyncTaskManager.abortAll(), which rejects any still
+// in-flight iframe/sub-resource Fetch with `DOMException [AbortError]`. The test
+// that mounted the iframe has already finished, so nothing awaits that rejection:
+// it surfaces as a run-level unhandled rejection and fails the whole shard with
+// zero failing tests — a teardown-timing race whose exposure shifts with worker
+// and file count. The blob-iframe path is closed by stubbing createObjectURL
+// (below), but a direct `<iframe src="http://host/...">` (e.g. InstancesViewport,
+// InstanceTabBar) still schedules a real fetch task. Swallow ONLY happy-dom's
+// teardown abort — every other unhandled rejection still propagates and fails
+// the run as it should.
+process.on('unhandledRejection', (reason) => {
+  const isTeardownAbort =
+    reason instanceof Error &&
+    reason.name === 'AbortError' &&
+    typeof reason.stack === 'string' &&
+    reason.stack.includes('onAsyncTaskManagerAbort')
+  if (isTeardownAbort) return  // orphaned iframe fetch aborted during window teardown
+  throw reason  // re-raise anything else so the run still fails on a real leak
+})
+
 // lottie-web registers a module-scoped `setInterval(checkReady, 100)` purely by
 // being IMPORTED (`readyStateCheckInterval` in the prebuilt player bundles). That
 // interval belongs to no AnimationItem, so neither `anim.destroy()` nor RTL
@@ -456,12 +479,21 @@ if (typeof (globalThis as unknown as { WebGL2RenderingContext?: unknown }).WebGL
 // revokes it on unmount. Without these stubs the iframe body throws
 // "URL.createObjectURL is not a function" — an uncaught commit-phase error that
 // only surfaces under some orderings (e.g. --coverage sharding on the fleet).
-if (typeof URL.createObjectURL !== 'function') {
-  URL.createObjectURL = (() => 'blob:mock') as typeof URL.createObjectURL
-}
-if (typeof URL.revokeObjectURL !== 'function') {
-  URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL
-}
+//
+// Override UNCONDITIONALLY, not just when the function is absent: happy-dom
+// (unlike jsdom) DOES implement createObjectURL and returns a real
+// `blob:nodedata:<uuid>` URL backed by its internal Blob store. When that URL is
+// set as an `<iframe src>`, happy-dom schedules an async fetch task to load the
+// blob page. That task is still in-flight when a fork worker tears the window
+// down between files: vitest's teardownWindow calls AsyncTaskManager.abortAll(),
+// which rejects the pending Fetch with `DOMException [AbortError]`. Nothing
+// awaits that rejection (the test that mounted the iframe already finished), so
+// it lands as a run-level unhandled rejection and fails the whole shard with
+// zero failing tests — a teardown-timing race whose exposure shifts with worker
+// and file count. Returning a static, non-blob string means happy-dom never
+// creates a loadable blob page, so no iframe fetch task is ever scheduled.
+URL.createObjectURL = (() => 'blob:mock') as typeof URL.createObjectURL
+URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL
 
 // Start MSW server before all tests
 beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }))
