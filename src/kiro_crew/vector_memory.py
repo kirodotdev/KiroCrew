@@ -30,6 +30,13 @@ from uuid import uuid4
 
 from snowballstemmer import stemmer as _snowball_stemmer
 
+# Scheduling classes for the shared embedding queue. This module stays decoupled
+# from the embedding BACKEND (it takes an injected ``embed_fn``); these are three
+# int constants, imported rather than duplicated so the two cannot drift. Safe
+# direction: ``embeddings`` reaches the store only through a Protocol, so it does
+# not import this module and there is no cycle.
+from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE, PRIORITY_NORMAL
+
 try:
     import pysqlite3 as sqlite3
 
@@ -999,7 +1006,9 @@ class VectorMemoryStore:
         # Query-aware filtering: hybrid vector + keyword scoring
         if query_text:
             query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
-            query_embedding = self._try_embed(query_text) if self.embed_fn else None
+            query_embedding = (
+                self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
+            )
 
             # Context assembly runs on executor threads (subagent context builds,
             # run_in_embed_pool) concurrent with writers on worker threads, and
@@ -1029,7 +1038,11 @@ class VectorMemoryStore:
                 vec_score = 0.0
                 if query_embedding is not None:
                     entry_text = f"{r['key']} {r['value_json']}"
-                    entry_emb = self._try_embed(entry_text)
+                    # BULK: this is an unbounded per-row loop over the whole
+                    # semantic table, recomputed on every call because non-lesson
+                    # rows never persist a vector. It must never outrank the
+                    # interactive query embed that started this same request.
+                    entry_emb = self._try_embed(entry_text, PRIORITY_BULK)
                     if entry_emb:
                         vec_score = max(0.0, self._cosine_sim(query_embedding, entry_emb))
 
@@ -1750,7 +1763,7 @@ class VectorMemoryStore:
         relevant-but-old memory is admitted rather than ordered out by recency.
         """
         if query_embedding is None and query_text and self.embed_fn is not None:
-            query_embedding = self._try_embed(query_text)
+            query_embedding = self._try_embed(query_text, PRIORITY_INTERACTIVE)
         results = self.search_episodic(
             query_embedding=query_embedding,
             query_text=query_text,
@@ -2145,7 +2158,7 @@ class VectorMemoryStore:
                     # Sampling after it returns would tag an old blob with the new
                     # generation and the flush check would wave it through.
                     backfill_generation = self._space_generation
-                    existing_emb = self._try_embed(existing_val)
+                    existing_emb = self._try_embed(existing_val, PRIORITY_BULK)
                     if existing_emb:
                         blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
                         pending_backfills.append(
@@ -2369,7 +2382,7 @@ class VectorMemoryStore:
         that matches nothing degrades to plain recency.
         """
         query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
-        query_emb = self._try_embed(query_text) if self.embed_fn else None
+        query_emb = self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
         similarity = self._stored_similarity_scorer(query_emb)
         scored: list[tuple[float, tuple[dict, str]]] = []
         for entry in entries:
@@ -2470,7 +2483,7 @@ class VectorMemoryStore:
             return ("pref.general", match.group(1).strip())
         return None
 
-    def _try_embed(self, text: str) -> list[float] | None:
+    def _try_embed(self, text: str, priority: int = PRIORITY_NORMAL) -> list[float] | None:
         """Embed text using embed_fn if available.
 
         If embed_fn is None but embed_fn_factory is set, attempt to lazily
@@ -2527,7 +2540,12 @@ class VectorMemoryStore:
         if self.embed_fn is not None:
             try:
                 generation_before = self._space_generation
-                result = self.embed_fn(text)
+                # Only forward to an embed_fn that advertises the kwarg. A custom
+                # or legacy embed_fn keeps its single-argument contract.
+                if getattr(self.embed_fn, "accepts_priority", False):
+                    result = self.embed_fn(text, priority=priority)  # type: ignore[call-arg]
+                else:
+                    result = self.embed_fn(text)
                 if self._space_generation != generation_before:
                     # A model swap landed while this text was in flight. The
                     # vector belongs to the previous space; committing it would
@@ -2792,7 +2810,7 @@ class VectorMemoryStore:
             # spin, and this loop can run for minutes on a large corpus.
             progress(0, total)
         for row in rows:
-            vec = self._try_embed(row["text"])
+            vec = self._try_embed(row["text"], PRIORITY_BULK)
             if not vec:
                 if progress is not None:
                     progress(embedded, total)
@@ -2873,7 +2891,7 @@ class VectorMemoryStore:
             except (ValueError, TypeError):
                 logger.debug("Skipping lesson %s with unparseable value", row["key"])
                 continue
-            vec = self._try_embed(text)
+            vec = self._try_embed(text, PRIORITY_BULK)
             if not vec:
                 continue
             # Stored un-normalized to match write_lesson(): _cosine_sim()

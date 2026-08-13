@@ -50,6 +50,7 @@ from typing import Callable, NamedTuple, Protocol
 
 from kiro_crew.config.loader import config_path
 from kiro_crew.config.paths import config_dir
+from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,28 @@ _LLM_LOAD_RETRY_SECS = 300.0  # re-attempt a failed model load after this long
 # exit. Bounded so an unload never wedges a shutdown; the thread is a daemon, so
 # a straggler cannot hold the interpreter open either.
 _INFER_STOP_TIMEOUT_SECS = 30.0
+# llama.cpp sizes its compute pools from the HOST CPU COUNT when the caller does
+# not pass them: n_threads = cpu//2 and n_threads_batch = cpu (see the vendored
+# llama.py). Embedding is prompt processing, so it runs on the BATCH pool — on a
+# 16-core host EVERY embed, even an 8-character one, fanned out across all 16
+# cores and measured ~4.5 cores sustained inside the gateway. A 0.6B model over
+# short text does not need that, and oversubscribing the box makes the pool both
+# suffer and cause contention. Pinned low here, overridable via
+# memory.embedding_threads.
+_DEFAULT_EMBED_THREADS = 4
+# Only log an embed's queue wait at INFO once it is long enough for a waiting
+# caller to notice; below this it stays DEBUG so ordinary memory writes do not
+# emit a line each.
+_EMBED_WAIT_LOG_MS = 250.0
+# Scheduling classes for the shared inference queue. The whole process shares ONE
+# model on ONE thread, so a bulk corpus sweep and a user's query compete for the
+# same single slot: without ordering, a short interactive embed waits behind
+# however much background work happens to be queued. Lower value wins.
+PRIORITY_INTERACTIVE = 0  # a human is blocked on this (prompt build, search box)
+PRIORITY_NORMAL = 1  # bounded explicit write (one lesson, one preference)
+PRIORITY_BULK = 2  # corpus loops: backfill, migration, ingestion, consolidation
+# Shutdown outranks everything so close() is not stuck behind a queued sweep.
+_PRIORITY_SENTINEL = -1
 
 # ── Download constants ──
 
@@ -382,6 +405,86 @@ def _read_memory_config() -> dict:
     except Exception:
         logger.debug("Could not read the memory config section", exc_info=True)
     return {}
+
+
+def _embed_threads() -> int:
+    """Thread count for llama.cpp's embedding compute pools.
+
+    Read from the RAW ``memory`` config section for the same reason the rest of
+    this module does: the download thread and the backend factory must not pull
+    in the full config dataclass import graph. Clamped to ``[1, cpu_count]`` so a
+    typo cannot hand llama.cpp a zero, a negative, or a count far above the
+    machine's cores.
+    """
+    raw = _read_memory_config().get("embedding_threads")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raw = _DEFAULT_EMBED_THREADS
+    return max(1, min(raw, os.cpu_count() or _DEFAULT_EMBED_THREADS))
+
+
+def _chars_bucket(chars: int) -> str:
+    """Low-cardinality size band for the inference metric.
+
+    Bucketed rather than raw so the metric can separate a short interactive query
+    from a bulk consolidation block without an unbounded attribute domain.
+    """
+    for bound in (128, 512, 2000, 6000):
+        if chars <= bound:
+            return f"<={bound}"
+    return ">6000"
+
+
+def _emit_embed_timing(
+    t0: float,
+    t_started: float,
+    texts: "list[str]",
+    *,
+    priority: int = PRIORITY_NORMAL,
+    failed: bool = False,
+) -> None:
+    """Report queue wait and model time separately for one embed call.
+
+    The split is the point. ``infer_ms`` is the model's own cost. ``wait_ms`` is
+    this call blocked on the queue while ANOTHER caller's embed ran, because the
+    whole process is serialized onto one model on one inference thread. A short
+    interactive embed reporting a large ``wait_ms`` is therefore not slow, it is
+    queued behind bulk background work — and that is a different defect with a
+    different fix than slow inference.
+    """
+    now = time.monotonic()
+    # Clamped: monotonic makes a negative value impossible on the real path, but a
+    # negative sample is silently REJECTED by the recorder (losing the datapoint)
+    # and logs a warning, so a clock edge case must not cost us the measurement.
+    wait_ms = max(0.0, (t_started - t0) * 1000.0)
+    infer_ms = max(0.0, (now - t_started) * 1000.0)
+    chars = sum(len(t) for t in texts)
+    # BULK stays at DEBUG however long it waited. Being preempted is the DESIGNED
+    # outcome for a corpus sweep, not news, and a migration preempted row-by-row
+    # would otherwise emit thousands of INFO lines and bury the interactive ones
+    # this log exists to surface.
+    reportable = wait_ms >= _EMBED_WAIT_LOG_MS and priority != PRIORITY_BULK
+    level = logging.INFO if reportable else logging.DEBUG
+    logger.log(
+        level,
+        "Embed timing: wait=%.0fms infer=%.0fms n=%d chars=%d prio=%d%s",
+        wait_ms,
+        infer_ms,
+        len(texts),
+        chars,
+        priority,
+        " FAILED" if failed else "",
+    )
+    try:
+        recorder = get_recorder()
+        recorder.histogram("kirocrew.embed.queue_wait", wait_ms, unit="ms")
+        recorder.histogram(
+            "kirocrew.embed.inference",
+            infer_ms,
+            unit="ms",
+            attrs={"chars_bucket": _chars_bucket(chars)},
+        )
+    except Exception:
+        logger.debug("Embed timing metric emission failed", exc_info=True)
 
 
 class CustomModelSpec(NamedTuple):
@@ -880,12 +983,18 @@ class EmbeddingBackend(abc.ABC):
         """True when the backend can produce vectors right now (model loaded)."""
 
     @abc.abstractmethod
-    def embed(self, text: str) -> "list[float] | None":
-        """Embed a single text. Returns None on any failure."""
+    def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> "list[float] | None":
+        """Embed one text, or None when unavailable.
+
+        *priority* orders competing callers on the shared model (``PRIORITY_*``).
+        Implementations that do not queue may ignore it.
+        """
 
     @abc.abstractmethod
-    def embed_batch(self, texts: "list[str]") -> "list[list[float]] | None":
-        """Embed multiple texts. Returns None on any failure."""
+    def embed_batch(
+        self, texts: "list[str]", *, priority: int = PRIORITY_NORMAL
+    ) -> "list[list[float]] | None":
+        """Embed several texts, or None when unavailable. See :meth:`embed`."""
 
     @abc.abstractmethod
     def close(self) -> None:
@@ -898,7 +1007,7 @@ class EmbeddingBackend(abc.ABC):
 class _InferJob:
     """One ``create_embedding`` call handed to the embedder's worker thread."""
 
-    __slots__ = ("llm", "texts", "result", "error", "done")
+    __slots__ = ("llm", "texts", "result", "error", "done", "started")
 
     def __init__(self, llm: object, texts: "list[str]") -> None:
         self.llm = llm
@@ -906,6 +1015,9 @@ class _InferJob:
         self.result: object | None = None
         self.error: BaseException | None = None
         self.done = threading.Event()
+        # Set by the worker once it actually begins inference, so the caller can
+        # separate time spent QUEUED from time spent in the model.
+        self.started: float = 0.0
 
 
 class LlamaCppEmbedder(EmbeddingBackend):
@@ -953,9 +1065,28 @@ class LlamaCppEmbedder(EmbeddingBackend):
         self._lock = threading.Lock()  # serializes inference (Llama is not thread-safe)
         self._load_lock = threading.Lock()  # guards loader-thread spawn state
         self._load_thread: threading.Thread | None = None
-        # Single owned inference thread + its job queue (see the class docstring).
-        self._jobs: "queue.SimpleQueue[_InferJob | None]" = queue.SimpleQueue()
+        # Single owned inference thread + its PRIORITY job queue (see the class
+        # docstring). Items are ``(priority, seq, job)``. ``seq`` is a strictly
+        # increasing tiebreaker, which makes the ordering stable — equal
+        # priorities stay FIFO — and also means the heap never has to compare two
+        # _InferJob objects, which are not orderable.
+        self._jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]" = queue.PriorityQueue()
+        self._seq = 0
+        self._seq_lock = threading.Lock()
+        # Guards the DISPATCH state — (_infer_thread, _jobs) selection, worker
+        # spawn, and the enqueue — as one atomic step. Deliberately NOT _lock:
+        # the worker holds _lock across inference, so enqueueing under it would
+        # block every submitter behind the in-flight embed and put at most one
+        # job in the queue, which is exactly the condition that made priority
+        # meaningless before. Held only for a heap push, never across inference,
+        # a join, or a model load.
+        self._dispatch_lock = threading.Lock()
         self._infer_thread: threading.Thread | None = None
+
+    def _next_seq(self) -> int:
+        with self._seq_lock:
+            self._seq += 1
+            return self._seq
 
     @property
     def model_path(self) -> Path:
@@ -1044,6 +1175,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
             return
         try:
             started = time.monotonic()
+            threads = _embed_threads()
             llm = llama_cls(
                 model_path=str(self._model_path),
                 embedding=True,
@@ -1051,6 +1183,12 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 n_ctx=_N_CTX,
                 n_batch=_N_CTX,
                 n_ubatch=_N_CTX,
+                # Both pools are pinned. Embedding is prompt processing, so the
+                # BATCH pool is the one that actually runs, but leaving the
+                # generation pool at llama.cpp's cpu//2 default would still size
+                # a second oversubscribed pool on this thread.
+                n_threads=threads,
+                n_threads_batch=threads,
                 verbose=False,
             )
             # Validate the model's REAL output width against the configured dim
@@ -1138,7 +1276,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
             logger.debug("Could not probe embedding dim", exc_info=True)
             return None
 
-    def _infer_loop(self, jobs: "queue.SimpleQueue[_InferJob | None]") -> None:
+    def _infer_loop(self, jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]") -> None:
         """Worker body: run queued ``create_embedding`` calls, one at a time.
 
         ``jobs`` is passed in rather than read from ``self`` so this worker is
@@ -1150,55 +1288,120 @@ class LlamaCppEmbedder(EmbeddingBackend):
         waiting on ``job.done``. ``None`` is the shutdown sentinel from
         :meth:`close`; exiting the thread is what releases llama.cpp's compute
         pool.
+
+        This worker — NOT the caller — holds ``_lock`` across inference. That is
+        what lets the queue's priority mean anything: while the caller held it,
+        every other caller blocked *before* it could enqueue, so at most one job
+        was ever queued and there was nothing to order. Serialization is
+        unchanged, because a single owner thread running under ``_lock`` is
+        strictly no more concurrent than a single caller holding it was.
         """
         while True:
-            job = jobs.get()
+            _prio, _seq, job = jobs.get()
             if job is None:
+                # close() has already dropped the model. Anything queued behind
+                # the sentinel would otherwise wait on job.done forever, since
+                # no worker will serve this queue again — fail them explicitly.
+                self._drain_orphans(jobs)
                 return
             try:
-                job.result = job.llm.create_embedding(job.texts)  # type: ignore[attr-defined]
+                with self._lock:
+                    job.started = time.monotonic()
+                    job.result = job.llm.create_embedding(job.texts)  # type: ignore[attr-defined]
             except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
                 job.error = exc
             finally:
                 job.done.set()
 
-    def _create_embedding(self, llm: object, texts: "list[str]") -> object:
-        """Run one ``create_embedding`` on the owned thread; re-raise its error.
+    @staticmethod
+    def _drain_orphans(
+        jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]",
+    ) -> None:
+        """Fail every job left on a retired queue so no caller waits forever."""
+        while True:
+            try:
+                _prio, _seq, job = jobs.get_nowait()
+            except queue.Empty:
+                return
+            if job is None:
+                continue
+            job.error = RuntimeError("embedding backend closed before this job ran")
+            job.done.set()
 
-        Caller must hold ``_lock``, which keeps at most one job in flight.
-        The wait is unbounded, matching the previous inline call — a wedged
-        native inference blocked the caller then too.
+    def _submit_infer(
+        self, llm: object, texts: "list[str]", priority: int = PRIORITY_NORMAL
+    ) -> "_InferJob":
+        """Queue one inference for the owned thread and wait for the job to finish.
+
+        Returns the completed job rather than its result, so the caller can read
+        ``job.started`` and tell queue wait apart from model time. Errors are
+        left ON the job; :meth:`_create_embedding` is the raising wrapper.
+
+        The caller does NOT hold ``_lock`` — the worker takes it around the
+        actual inference — so several callers can have work queued at once and
+        *priority* decides who the single model serves next. The wait is
+        unbounded, matching the previous inline call: a wedged native inference
+        blocked the caller then too.
         """
-        thread = self._infer_thread
-        if thread is None or not thread.is_alive():
-            # New worker, new queue. A straggler left behind by a timed-out
-            # close() join keeps draining its OWN queue, so it can neither
-            # consume this worker's jobs nor eat this worker's future sentinel.
-            self._jobs = queue.SimpleQueue()
-            thread = threading.Thread(
-                target=self._infer_loop, args=(self._jobs,), name="kc-embed-infer", daemon=True
-            )
-            self._infer_thread = thread
-            thread.start()
-        jobs = self._jobs
         job = _InferJob(llm, texts)
-        jobs.put(job)
+        with self._dispatch_lock:
+            # Retirement check, worker selection/spawn and the enqueue are ONE
+            # atomic step. Split, they lose two ways: two callers racing an
+            # absent worker each spawn one and orphan the loser's thread, and a
+            # close() landing between the worker check and the enqueue puts the
+            # job on a queue no worker will ever serve, so job.done is never set
+            # and the caller blocks forever on an unbounded wait.
+            if self._closed or not self._serving or llm is not self._llm:
+                # The backend was retired or swapped while this call was in
+                # flight. Fail the job here rather than queueing it into a space
+                # nothing will drain; embed_batch turns this into None, which is
+                # the ABC's documented "no embedding available".
+                job.error = RuntimeError("embedding backend retired before this job was queued")
+                job.done.set()
+                return job
+            thread = self._infer_thread
+            if thread is None or not thread.is_alive():
+                # New worker, new queue. A straggler left behind by a timed-out
+                # close() join keeps draining its OWN queue, so it can neither
+                # consume this worker's jobs nor eat this worker's future sentinel.
+                self._jobs = queue.PriorityQueue()
+                thread = threading.Thread(
+                    target=self._infer_loop,
+                    args=(self._jobs,),
+                    name="kc-embed-infer",
+                    daemon=True,
+                )
+                self._infer_thread = thread
+                thread.start()
+            self._jobs.put((priority, self._next_seq(), job))
+        # Wait OUTSIDE the lock: the wait is unbounded, and holding the dispatch
+        # lock across it would serialize every submitter behind this one job.
         job.done.wait()
+        return job
+
+    def _create_embedding(
+        self, llm: object, texts: "list[str]", priority: int = PRIORITY_NORMAL
+    ) -> object:
+        """Run one ``create_embedding`` on the owned thread; re-raise its error."""
+        job = self._submit_infer(llm, texts, priority)
         if job.error is not None:
             raise job.error
         return job.result
 
-    def embed(self, text: str) -> list[float] | None:
+    def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
         """Embed a single text. Returns None on any failure."""
-        result = self.embed_batch([text])
+        result = self.embed_batch([text], priority=priority)
         return result[0] if result else None
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]] | None:
+    def embed_batch(
+        self, texts: list[str], *, priority: int = PRIORITY_NORMAL
+    ) -> list[list[float]] | None:
         """Embed multiple texts. Returns None on any failure (incl. model not loaded yet).
 
         Never blocks on the model load: when the model isn't in memory yet this
-        kicks a background load and returns ``None`` immediately. Inference on a
-        loaded model is serialized behind ``_lock`` (tens of ms per short text).
+        kicks a background load and returns ``None`` immediately. Inference is
+        serialized onto one owned thread; *priority* decides the order that
+        single model serves competing callers (see ``PRIORITY_*``).
         """
         if not texts or not any(t.strip() for t in texts):
             return None
@@ -1216,13 +1419,26 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 logger.debug("Truncating embed input %d -> %d chars", len(t), _MAX_EMBED_CHARS)
                 t = t[:_MAX_EMBED_CHARS]
             clipped.append(t)
-        with self._lock:
-            try:
-                resp = self._create_embedding(llm, clipped)
-                vectors = [item["embedding"] for item in resp["data"]]  # type: ignore[index]
-            except Exception:
-                logger.debug("In-process embed failed", exc_info=True)
-                return None
+        _t0 = time.monotonic()
+        job = self._submit_infer(llm, clipped, priority)
+        # started==0 means the worker never reached inference (drained orphan).
+        _started = job.started or time.monotonic()
+        if job.error is not None:
+            if not isinstance(job.error, Exception):
+                # BaseException (KeyboardInterrupt/SystemExit) is relayed to the
+                # caller verbatim, as it was when the call ran inline.
+                _emit_embed_timing(_t0, _started, clipped, priority=priority, failed=True)
+                raise job.error
+            logger.debug("In-process embed failed", exc_info=job.error)
+            _emit_embed_timing(_t0, _started, clipped, priority=priority, failed=True)
+            return None
+        try:
+            vectors = [item["embedding"] for item in job.result["data"]]  # type: ignore[index]
+        except Exception:
+            logger.debug("In-process embed failed", exc_info=True)
+            _emit_embed_timing(_t0, _started, clipped, priority=priority, failed=True)
+            return None
+        _emit_embed_timing(_t0, _started, clipped, priority=priority)
         if len(vectors) != len(clipped) or not vectors or not vectors[0]:
             logger.warning(
                 "Unexpected embedding response (got %d vectors for %d texts)",
@@ -1281,15 +1497,25 @@ class LlamaCppEmbedder(EmbeddingBackend):
             self._llm = None
             self._load_failed_at = 0.0
             self._load_thread = None
-            thread, self._infer_thread = self._infer_thread, None
-            if thread is not None and thread.is_alive():
-                # Holding _lock means no job can be queued behind this sentinel.
-                # If the join times out, the straggler stays parked on THIS
-                # queue, which the next worker will not share (see
-                # _create_embedding), so the sentinel it eventually consumes is
-                # still its own.
-                self._jobs.put(None)
-                thread.join(_INFER_STOP_TIMEOUT_SECS)
+            # Same lock the submitters use, so a retirement can never interleave
+            # with a dispatch: a caller either enqueues onto a live worker before
+            # this runs, or sees the retired state and fails fast.
+            with self._dispatch_lock:
+                thread, self._infer_thread = self._infer_thread, None
+                # Retire the queue at the same time as the thread, so a late caller
+                # cannot enqueue onto a queue that is shutting down.
+                jobs, self._jobs = self._jobs, queue.PriorityQueue()
+                if thread is not None and thread.is_alive():
+                    # The sentinel outranks queued work, so a large sweep already
+                    # in the queue cannot delay shutdown. The worker fails
+                    # anything still queued on its way out (_drain_orphans)
+                    # rather than leaving a caller waiting on job.done.
+                    jobs.put((_PRIORITY_SENTINEL, self._next_seq(), None))
+        # Join OUTSIDE _lock. The WORKER now holds _lock around inference, so
+        # joining while holding it would deadlock against a job that was dequeued
+        # just before the sentinel until the timeout expired.
+        if thread is not None and thread.is_alive():
+            thread.join(_INFER_STOP_TIMEOUT_SECS)
 
 
 _shared_embedder: EmbeddingBackend | None = None
@@ -1770,6 +1996,13 @@ def make_sync_embed_fn() -> Callable[[str], "list[float] | None"]:
     ``None`` until the model is resident.
     """
 
+    # Priority travels OUT OF BAND rather than as a cached argument: adding it to
+    # the lru_cache key would re-embed the same text once per priority, losing the
+    # reuse that currently lets episodic recall ride on the lessons embed of the
+    # identical query. Thread-local is safe because embed() blocks on the calling
+    # thread — the hand-off to kc-embed-infer happens inside it.
+    _call_priority = threading.local()
+
     @functools.lru_cache(maxsize=_EMBED_CACHE_MAX)
     def _cached_embed(text: str, model_id: str) -> tuple[float, ...]:
         del model_id  # cache-key only — routes stale entries away after a backend swap
@@ -1782,15 +2015,24 @@ def make_sync_embed_fn() -> Callable[[str], "list[float] | None"]:
                 info.currsize,
                 info.maxsize,
             )
-        vec = get_shared_embedder().embed(text)
+        vec = get_shared_embedder().embed(
+            text, priority=getattr(_call_priority, "value", PRIORITY_NORMAL)
+        )
         if vec is None:
             raise _EmbedFailed
         return tuple(vec)
 
-    def _embed(text: str) -> list[float] | None:
+    def _embed(text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
+        _call_priority.value = priority
         try:
             return list(_cached_embed(text, get_shared_embedder().model_id))
         except _EmbedFailed:
             return None
+        finally:
+            _call_priority.value = PRIORITY_NORMAL
 
+    # Explicit capability flag rather than a TypeError probe: a TypeError raised
+    # from INSIDE a custom embed_fn must not be misread as "does not take a
+    # priority", which would silently downgrade every call to the default.
+    _embed.accepts_priority = True  # type: ignore[attr-defined]
     return _embed
