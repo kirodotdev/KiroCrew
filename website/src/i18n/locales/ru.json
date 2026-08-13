@@ -5000,6 +5000,11 @@
       "close_panel": "Закрыть панель",
       "resize_panel": "Изменить размер панели"
     },
+    "diagramLightbox": {
+      "close": "Закрыть",
+      "diagram_viewer": "Просмотр диаграммы",
+      "enlarge_diagram": "Увеличить диаграмму"
+    },
     "dialog": {
       "close": "Закрыть"
     },

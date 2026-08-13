@@ -4775,6 +4775,11 @@
       "close_panel": "パネルを閉じる",
       "resize_panel": "パネルのサイズを変更"
     },
+    "diagramLightbox": {
+      "close": "閉じる",
+      "diagram_viewer": "図ビューア",
+      "enlarge_diagram": "図を拡大"
+    },
     "dialog": {
       "close": "閉じる"
     },

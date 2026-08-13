@@ -4850,6 +4850,11 @@
       "close_panel": "पैनल बंद करें",
       "resize_panel": "पैनल का आकार बदलें"
     },
+    "diagramLightbox": {
+      "close": "बंद करें",
+      "diagram_viewer": "आरेख व्यूअर",
+      "enlarge_diagram": "आरेख बड़ा करें"
+    },
     "dialog": {
       "close": "बंद करें"
     },

@@ -3618,6 +3618,11 @@
       "close_panel": "Close panel",
       "resize_panel": "Resize panel"
     },
+    "diagramLightbox": {
+      "close": "Close",
+      "diagram_viewer": "Diagram viewer",
+      "enlarge_diagram": "Enlarge diagram"
+    },
     "dialog": {
       "close": "Close"
     },

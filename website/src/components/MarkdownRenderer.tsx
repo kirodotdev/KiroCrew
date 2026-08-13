@@ -1,6 +1,6 @@
 import React, { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
-import { Paperclip, X, Download, Plus, Minus, Search, Folder } from 'lucide-react'
+import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -331,6 +331,7 @@ function initMermaid(mermaid: MermaidApi): void {
 
 import { CodeBlock } from './CodeBlock'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
+import DiagramLightbox from './DiagramLightbox'
 
 /** Forward the `data-sourcepos` attribute from rehypeSourcepos onto the
  *  rendered element. Used in every MD_COMPONENTS override; returns an
@@ -345,6 +346,11 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const id = useId().replace(/:/g, '_')
   const renderedRef = useRef('')
+  // Rendered SVG markup, kept for the enlarge viewer. Empty until a successful
+  // render and reset on failure, so the enlarge affordance only ever exists
+  // for (and targets) the diagram currently on screen.
+  const [svg, setSvg] = useState('')
+  const [enlarged, setEnlarged] = useState(false)
 
   useEffect(() => {
     if (!ref.current || renderedRef.current === code) return
@@ -360,6 +366,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
       range.selectNodeContents(ref.current)
       range.deleteContents()
       ref.current.appendChild(range.createContextualFragment(svg))
+      setSvg(svg)
     }).catch(() => {
       if (!ref.current) return
       const pre = document.createElement('pre')
@@ -367,10 +374,37 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
       pre.textContent = code
       ref.current.textContent = ''
       ref.current.appendChild(pre)
+      setSvg('')
+      setEnlarged(false)
     })
   }, [code, id])
 
-  return <div ref={ref} className="my-3 flex justify-center overflow-x-auto min-h-[60px]" />
+  return (
+    <div className="relative group my-3">
+      {/* Pointer convenience: clicking the rendered diagram opens the viewer.
+          Keyboard and AT users reach the same viewer through the real button
+          below — the same pairing the image lightbox uses (clickable <img>,
+          focusable controls elsewhere). */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events */}
+      <figure
+        className={`m-0 ${svg ? 'cursor-zoom-in' : ''}`}
+        onClick={svg ? () => setEnlarged(true) : undefined}
+      >
+        <div ref={ref} className="flex justify-center overflow-x-auto min-h-[60px]" />
+      </figure>
+      {svg && (
+        <button
+          aria-label={i18nT('components.diagramLightbox.enlarge_diagram')}
+          title={i18nT('components.diagramLightbox.enlarge_diagram')}
+          className="absolute top-1.5 right-1.5 p-1.5 rounded-md bg-bg-elevated/90 border border-border text-muted hover:text-text opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer"
+          onClick={() => setEnlarged(true)}
+        >
+          <Maximize2 className="lucide-inline" aria-hidden="true" />
+        </button>
+      )}
+      {enlarged && svg && <DiagramLightbox svg={svg} onClose={() => setEnlarged(false)} />}
+    </div>
+  )
 })
 
 /** Generate a URL-safe slug from heading children (handles nested elements) */

@@ -4850,6 +4850,11 @@
       "close_panel": "প্যানেল বন্ধ করুন",
       "resize_panel": "প্যানেলের আকার বদলান"
     },
+    "diagramLightbox": {
+      "close": "বন্ধ করুন",
+      "diagram_viewer": "ডায়াগ্রাম ভিউয়ার",
+      "enlarge_diagram": "ডায়াগ্রাম বড় করুন"
+    },
     "dialog": {
       "close": "বন্ধ করুন"
     },

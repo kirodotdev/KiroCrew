@@ -4775,6 +4775,11 @@
       "close_panel": "关闭面板",
       "resize_panel": "调整面板大小"
     },
+    "diagramLightbox": {
+      "close": "关闭",
+      "diagram_viewer": "图表查看器",
+      "enlarge_diagram": "放大图表"
+    },
     "dialog": {
       "close": "关闭"
     },

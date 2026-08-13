@@ -4850,6 +4850,11 @@
       "close_panel": "Panel schließen",
       "resize_panel": "Größe des Panels ändern"
     },
+    "diagramLightbox": {
+      "close": "Schließen",
+      "diagram_viewer": "Diagrammansicht",
+      "enlarge_diagram": "Diagramm vergrößern"
+    },
     "dialog": {
       "close": "Schließen"
     },

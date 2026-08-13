@@ -4925,6 +4925,11 @@
       "close_panel": "Fechar painel",
       "resize_panel": "Redimensionar painel"
     },
+    "diagramLightbox": {
+      "close": "Fechar",
+      "diagram_viewer": "Visualizador de diagramas",
+      "enlarge_diagram": "Ampliar diagrama"
+    },
     "dialog": {
       "close": "Fechar"
     },

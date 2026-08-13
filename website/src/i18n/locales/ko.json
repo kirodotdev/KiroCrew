@@ -4775,6 +4775,11 @@
       "close_panel": "패널 닫기",
       "resize_panel": "패널 크기 조절"
     },
+    "diagramLightbox": {
+      "close": "닫기",
+      "diagram_viewer": "다이어그램 뷰어",
+      "enlarge_diagram": "다이어그램 확대"
+    },
     "dialog": {
       "close": "닫기"
     },
