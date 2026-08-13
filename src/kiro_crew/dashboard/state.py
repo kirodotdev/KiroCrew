@@ -132,6 +132,10 @@ NATIVE_SUBAGENT_DONE_TRUNC_MARKER = "…(earlier output truncated)\n"
 NATIVE_SUBAGENT_TERMINAL_KEEP = 50
 NATIVE_SUBAGENT_TERMINAL_TTL_SECS = 3600.0
 
+# Slot-list broadcast coalescing window. The sub-agent slots debouncer in
+# slack/gateway.py hardcodes the same value independently; the two are not shared.
+_SLOTS_BROADCAST_INTERVAL_S: float = 0.2
+
 
 def native_subagent_output_tail(chunks: list[str], limit: int = NATIVE_SUBAGENT_OUTPUT_TAIL) -> str:
     """Join only the trailing ``limit`` characters of native-card output."""
@@ -2210,6 +2214,15 @@ class DashboardState:
     _slots_push_suspend: int = 0
     _slots_push_pending: bool = False
     restoring_open_slots: bool = False
+    # push_slots_update() coalescing state, on that same read path. The lock
+    # defaults to None rather than to a shared Lock(): a None lock means "no
+    # coalescing", so a __new__-built state broadcasts straight through instead
+    # of every instance in the process contending on one class-level mutex.
+    # __init__ installs the real per-instance lock.
+    _slots_broadcast_lock: "threading.Lock | None" = None
+    _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
+    _slots_broadcast_loop: "asyncio.AbstractEventLoop | None" = None
+    _slots_broadcast_last: float = 0.0
     # Keys the last open-tab restore could not read (not keys it proved absent).
     # _persist_open_slots folds these back into the snapshot so a transient read
     # failure cannot erase the reopen seed. The class-level baseline is an
@@ -2350,6 +2363,9 @@ class DashboardState:
         # Depth + pending flag for suspend_slots_push(); see that method.
         self._slots_push_suspend = 0
         self._slots_push_pending = False
+        # Time-based coalescing state for push_slots_update(). Guarded by a
+        # threading.Lock because callers are not all on the event loop.
+        self._slots_broadcast_lock = threading.Lock()
         # True while the startup open-tab restore is in flight. Suppresses the
         # open_slots.json snapshot so a periodic flush cannot overwrite the file
         # being restored from with a half-populated slot set — see
@@ -5055,16 +5071,99 @@ class DashboardState:
                 self.push_slots_update()
 
     def push_slots_update(self) -> None:
-        """Push slots, keeping provider status confined to owner websockets."""
-        from kiro_crew.dashboard.handlers.source_providers import (
-            gitlab_hosts_generation,
-        )
+        """Push slots, keeping provider status confined to owner websockets.
 
+        Coalesces on a leading plus trailing edge: the first call after an idle
+        period broadcasts immediately, further calls inside the window are
+        absorbed, and one trailing broadcast carries the final state. A single
+        chat turn fires several of these and each one re-serializes every slot,
+        so an uncoalesced burst redraws the whole sidebar once per mutation for
+        what the user sees as one change. The trailing flush re-serializes at
+        delivery time, so a coalesced frame is never a stale frame.
+        """
         if self._slots_push_suspend:
             # Inside suspend_slots_push(); remember that a push is owed and let the
             # outermost block emit a single coalesced broadcast on exit.
             self._slots_push_pending = True
             return
+
+        now = time.monotonic()
+        broadcast_now = False
+        lock = self._slots_broadcast_lock
+        if lock is None:
+            # Partially-constructed state (built via __new__): no coalescing.
+            self._do_slots_broadcast()
+            return
+
+        with lock:
+            if self._slots_broadcast_loop is None:
+                self._slots_broadcast_loop = self._running_loop()
+
+            elapsed = now - self._slots_broadcast_last
+            if elapsed >= _SLOTS_BROADCAST_INTERVAL_S:
+                self._slots_broadcast_last = now
+                if self._slots_broadcast_timer is not None:
+                    self._slots_broadcast_timer.cancel()
+                    self._slots_broadcast_timer = None
+                broadcast_now = True
+            elif self._slots_broadcast_timer is None:
+                # Scheduling onto the captured loop is preferred over broadcasting
+                # from a foreign thread; a closed loop falls back to an immediate send.
+                loop = self._slots_broadcast_loop
+                remaining = _SLOTS_BROADCAST_INTERVAL_S - elapsed
+                try:
+                    if loop is None:
+                        self._slots_broadcast_last = now
+                        broadcast_now = True
+                    elif loop is self._running_loop():
+                        self._slots_broadcast_timer = loop.call_later(
+                            remaining, self._trailing_slots_flush
+                        )
+                    else:
+                        loop.call_soon_threadsafe(self._schedule_trailing_flush, remaining)
+                except RuntimeError:
+                    self._slots_broadcast_last = now
+                    broadcast_now = True
+
+        # serialize_slots() and _broadcast() are the expensive half; running them
+        # outside the lock stops a cross-thread caller from blocking behind them.
+        if broadcast_now:
+            self._do_slots_broadcast()
+
+    @staticmethod
+    def _running_loop() -> asyncio.AbstractEventLoop | None:
+        """Return the running loop, or None when called off the event loop."""
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
+    def _schedule_trailing_flush(self, delay: float) -> None:
+        """Arm the trailing flush. Must run ON the event loop."""
+        lock = self._slots_broadcast_lock
+        if lock is None:
+            return
+        with lock:
+            if self._slots_broadcast_timer is not None:
+                return
+            self._slots_broadcast_timer = asyncio.get_running_loop().call_later(
+                delay, self._trailing_slots_flush
+            )
+
+    def _trailing_slots_flush(self) -> None:
+        """Trailing-edge callback: broadcast whatever the state is now."""
+        lock = self._slots_broadcast_lock
+        if lock is not None:
+            with lock:
+                self._slots_broadcast_timer = None
+                self._slots_broadcast_last = time.monotonic()
+        self._do_slots_broadcast()
+
+    def _do_slots_broadcast(self) -> None:
+        """Serialize and broadcast the slot list. Bypasses coalescing."""
+        from kiro_crew.dashboard.handlers.source_providers import (
+            gitlab_hosts_generation,
+        )
 
         yolo_active = self.is_yolo_active()  # expire first if needed
         slots_data = self.serialize_slots()
