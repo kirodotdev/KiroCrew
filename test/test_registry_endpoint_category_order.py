@@ -68,3 +68,40 @@ class TestCategoryOrderOnTheRegistryEndpoint:
         _, body = await _call()
         assert [a["name"] for a in body["apps"]] == ["demo"]
         assert body["serverPlatform"] == {"os": "linux", "arch": "x86_64"}
+
+
+@pytest.mark.asyncio
+class TestEditorialSectionsOnTheRegistryEndpoint:
+    async def test_the_published_sections_are_included(self, monkeypatch):
+        section = {"type": "spotlight", "appRefs": ["demo"], "title": "Picks"}
+        monkeypatch.setattr(routes, "load_sections", lambda: [section])
+        status, body = await _call()
+        assert status == 200
+        assert body["editorialSections"] == [section]
+
+    async def test_no_sections_is_still_a_list(self, monkeypatch):
+        monkeypatch.setattr(routes, "load_sections", lambda: [])
+        _, body = await _call()
+        assert body["editorialSections"] == []
+
+    async def test_a_raising_loader_costs_the_layout_not_the_store(self, monkeypatch):
+        def boom():
+            raise RuntimeError("editorial exploded")
+
+        monkeypatch.setattr(routes, "load_sections", boom)
+        status, body = await _call()
+        assert status == 200, "presentation must never take down the store"
+        assert body["editorialSections"] == []
+        assert body["apps"], "the apps must still be served"
+
+    async def test_one_failing_reader_does_not_take_the_other(self, monkeypatch):
+        # The two projections are independent: a broken layout must not cost the
+        # rail its published order, and vice versa.
+        def boom():
+            raise RuntimeError("sections exploded")
+
+        monkeypatch.setattr(routes, "load_sections", boom)
+        monkeypatch.setattr(routes, "load_category_order", lambda: ["other"])
+        _, body = await _call()
+        assert body["categoryOrder"] == ["other"]
+        assert body["editorialSections"] == []

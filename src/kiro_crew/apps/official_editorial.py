@@ -43,6 +43,7 @@ from kiro_crew.apps.official_catalog import (
     MAX_BYTES,
     OFFICIAL_CATALOG_BASE,
     SUPPORTED_SCHEMA_VERSION,
+    _resolve_ref,
     fetch_document,
 )
 from kiro_crew.config.loader import config_dir
@@ -60,6 +61,10 @@ FAILURE_TTL = 60
 #: The schema's own ceiling. A document above it is malformed, not merely large,
 #: and the cap is applied here so a bad document cannot make the rail unbounded.
 MAX_CATEGORIES = 30
+#: Same reasoning for the layout: `sections` is capped at 40 by the schema and
+#: `appRefs` at 20 per section, so a document cannot make Discover unbounded.
+MAX_SECTIONS = 40
+MAX_APP_REFS = 20
 
 _FAILED_KEY = "_fetchFailedAt"
 
@@ -121,6 +126,124 @@ def _coerce_order(value: Any) -> int | None:
     return value if type(value) is int else None
 
 
+def _load_document(fetcher: Any = None) -> dict[str, Any] | None:
+    """Fetch-or-cache the editorial document, applying the schema gate.
+
+    One loader for both readers: `load_category_order` and `load_sections` are
+    two projections of ONE document, and letting each fetch separately would
+    double the network cost and let the rail be ordered by one revision while the
+    spotlights come from another.
+    """
+    doc = _read_cache()
+    if doc is not None and _FAILED_KEY in doc:
+        # A recent fetch failed. Answer from the default WITHOUT another attempt --
+        # the point of remembering the failure is not paying its timeout again.
+        return None
+    if doc is None:
+        doc = (fetcher or _download)()
+        if doc is None:
+            _write_failure()
+        else:
+            _write_cache(doc)
+    if doc is None:
+        return None
+
+    version = doc.get("schemaVersion")
+    # `type(...) is int` rather than `==` or `isinstance`: `1.0 == 1` and
+    # `True == 1` both hold in Python and `bool` subclasses `int`, so either
+    # looser test accepts a document whose version is not an integer and acts on
+    # a contract it cannot name.
+    if type(version) is not int or version != SUPPORTED_SCHEMA_VERSION:
+        logger.warning(
+            "editorial document declares schemaVersion %r, expected %r; ignoring it",
+            version,
+            SUPPORTED_SCHEMA_VERSION,
+        )
+        return None
+    return doc
+
+
+def _artwork(raw: Any) -> dict[str, str] | None:
+    """Project a section's artwork onto browser-loadable URLs, or None.
+
+    `_resolve_ref` is the registry module's guard, reused rather than reimplemented:
+    it accepts exactly what the publisher is allowed to emit, so a ref carrying
+    `javascript:` or `data:` -- neither of which has a slash after the colon, and
+    so both of which pass a naive `"://" in ref` test -- is dropped instead of
+    being concatenated onto the catalog base and handed to an `<img>`.
+
+    The light variant is load-bearing: artwork that resolves only in dark is
+    dropped entirely, because a section rendering nothing on the default
+    appearance is worse than one rendering without art.
+    """
+    if not isinstance(raw, dict):
+        return None
+    light = _resolve_ref(raw.get("ref"))
+    if not light:
+        return None
+    out = {"url": light}
+    if dark := _resolve_ref(raw.get("refDark")):
+        out["urlDark"] = dark
+    alt = raw.get("alt")
+    if isinstance(alt, str) and alt.strip():
+        out["alt"] = alt.strip()[:200]
+    return out
+
+
+def _spotlight(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Project one spotlight section, or None when it carries nothing usable.
+
+    `appRefs` is a list even for one app, so this reads the same either way. A
+    reference the client cannot resolve is dropped by the CALLER, which owns the
+    app list; a spotlight left with no resolvable app is dropped whole rather
+    than rendered as an empty hero.
+    """
+    refs = raw.get("appRefs")
+    if not isinstance(refs, list):
+        return None
+    names = [r.strip() for r in refs if isinstance(r, str) and r.strip()]
+    if not names:
+        return None
+
+    out: dict[str, Any] = {"type": "spotlight", "appRefs": names[:MAX_APP_REFS]}
+    for key, limit in (("title", 60), ("blurb", 200)):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()[:limit]
+    if art := _artwork(raw.get("artwork")):
+        out["artwork"] = art
+    return out
+
+
+def load_sections(fetcher: Any = None) -> list[dict[str, Any]]:
+    """Return the published spotlight sections, or ``[]`` for none.
+
+    Only `spotlight` is projected today. An unknown `type` is SKIPPED rather than
+    refused -- that is the document's own stated contract, and it is what lets a
+    curator publish a new shape before every client can render it. `rail` and
+    `banner` are known types with no surface yet; skipping them is the same
+    mechanism, not a special case.
+
+    Empty is always a safe answer: Discover falls back to picking featured apps
+    out of the registry, which is what it did before this module existed.
+    """
+    doc = _load_document(fetcher)
+    if doc is None:
+        return []
+
+    raw = doc.get("sections")
+    if not isinstance(raw, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for item in raw[:MAX_SECTIONS]:
+        if not isinstance(item, dict) or item.get("type") != "spotlight":
+            continue
+        if projected := _spotlight(item):
+            out.append(projected)
+    return out
+
+
 def load_category_order(fetcher: Any = None) -> list[str]:
     """Return published category ids in rail order, or ``[]`` to use the default.
 
@@ -130,29 +253,8 @@ def load_category_order(fetcher: Any = None) -> list[str]:
 
     *fetcher* is injected by tests.
     """
-    doc = _read_cache()
-    if doc is not None and _FAILED_KEY in doc:
-        # A recent fetch failed. Answer from the default WITHOUT another attempt.
-        return []
+    doc = _load_document(fetcher)
     if doc is None:
-        doc = (fetcher or _download)()
-        if doc is None:
-            _write_failure()
-        else:
-            _write_cache(doc)
-    if doc is None:
-        return []
-
-    version = doc.get("schemaVersion")
-    # Identical gate to the registry's, for the identical reason: `1.0 == 1` and
-    # `True == 1` both hold, so a looser test accepts a version field that is not
-    # an integer and acts on a contract it cannot name.
-    if type(version) is not int or version != SUPPORTED_SCHEMA_VERSION:
-        logger.warning(
-            "editorial document declares schemaVersion %r, expected %r; ignoring it",
-            version,
-            SUPPORTED_SCHEMA_VERSION,
-        )
         return []
 
     raw = doc.get("categories")
@@ -183,4 +285,4 @@ def load_category_order(fetcher: Any = None) -> list[str]:
     return out
 
 
-__all__ = ["load_category_order", "MAX_BYTES", "OFFICIAL_EDITORIAL_URL"]
+__all__ = ["load_category_order", "load_sections", "MAX_BYTES", "OFFICIAL_EDITORIAL_URL"]

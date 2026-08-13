@@ -71,7 +71,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
-from kiro_crew.apps.official_editorial import load_category_order
+from kiro_crew.apps.official_editorial import load_category_order, load_sections
 from kiro_crew.apps.registry import (
     _git_url_host,
     get_registry_app_by_repo,
@@ -1438,21 +1438,27 @@ async def handle_open_app(request: web.Request) -> web.Response:
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     apps = await list_registry()
-    # Published rail order rides along on the response the store already makes,
-    # rather than a second endpoint the page would have to wait on separately.
-    # Off the event loop: the first call after a cache expiry does network I/O.
-    # A failure degrades to the client's built-in order, so it must never 500 the
-    # store -- the same contract the catalog annotation above already keeps.
+    # Published rail order and layout ride along on the response the store already
+    # makes, rather than endpoints the page would have to wait on separately. Off
+    # the event loop: the first call after a cache expiry does network I/O. Both
+    # are presentation, so a failure degrades to the client's own defaults and
+    # must never 500 the store -- the same contract the catalog annotation keeps.
     try:
         category_order = await asyncio.to_thread(load_category_order)
     except Exception:  # noqa: BLE001 - presentation is never worth a failed store
         logger.warning("ignoring the editorial category order", exc_info=True)
         category_order = []
+    try:
+        sections = await asyncio.to_thread(load_sections)
+    except Exception:  # noqa: BLE001 - same contract as the order above
+        logger.warning("ignoring the editorial sections", exc_info=True)
+        sections = []
     return web.json_response(
         {
             "apps": apps,
             "serverPlatform": get_server_platform(),
             "categoryOrder": category_order,
+            "editorialSections": sections,
         }
     )
 

@@ -26,6 +26,7 @@ import SimpleSelect from '../components/SimpleSelect'
 import { recordEvent } from '../rum'
 import SegmentedControl from '../components/SegmentedControl'
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
+import type { EditorialArtwork } from '../components/appstore/useEditorialArt'
 import FeatureCard from '../components/appstore/FeatureCard'
 import CategoryRail, { type SourceRow } from '../components/appstore/CategoryRail'
 import AppListRow from '../components/appstore/AppListRow'
@@ -65,6 +66,14 @@ function initialTab(): Tab {
  * deterministically — apps shipping hero art first, then verified publishers,
  * then name.
  */
+/** One published spotlight, as it arrives from the registry endpoint. */
+type EditorialSection = {
+  appRefs: string[]
+  title?: string
+  blurb?: string
+  artwork?: EditorialArtwork
+}
+
 export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
   const rank = (f: RegistryApp['featured']) => (typeof f === 'number' ? f : 1e9)
   // "Not external" via the server-computed field, falling back to the
@@ -113,6 +122,7 @@ export default function AppsPage() {
   const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
     apps: RegistryApp[]
     categoryOrder: string[]
+    editorialSections: EditorialSection[]
   }>({
     queryKey: ['registry'],
     // api.listRegistry() types `apps` as unknown[]; the backend payload matches
@@ -130,9 +140,34 @@ export default function AppsPage() {
       const publishedOrder = Array.isArray(res.categoryOrder)
         ? res.categoryOrder.filter((id): id is string => typeof id === 'string')
         : []
+      // Published layout gets the same treatment as the order: the server
+      // already screened each artwork URL, but the SHAPE arrives over HTTP like
+      // any other payload, so a malformed section is dropped here rather than
+      // reaching a component that would throw mid-render.
+      const publishedSections: EditorialSection[] = Array.isArray(res.editorialSections)
+        ? res.editorialSections.flatMap((raw: unknown) => {
+            if (!raw || typeof raw !== 'object') return []
+            const s = raw as Record<string, unknown>
+            const refs = Array.isArray(s.appRefs)
+              ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n)
+              : []
+            if (!refs.length) return []
+            const art = s.artwork
+            const artwork = art && typeof art === 'object' && typeof (art as EditorialArtwork).url === 'string'
+              ? (art as EditorialArtwork)
+              : undefined
+            return [{
+              appRefs: refs,
+              title: typeof s.title === 'string' ? s.title : undefined,
+              blurb: typeof s.blurb === 'string' ? s.blurb : undefined,
+              artwork,
+            }]
+          })
+        : []
       return {
         apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp),
         categoryOrder: publishedOrder,
+        editorialSections: publishedSections,
       }
     },
     staleTime: 5 * 60_000, // cache for 5min to avoid re-fetching on tab switch
@@ -201,6 +236,27 @@ export default function AppsPage() {
 
   const featured = useMemo(() => pickFeatured(browseApps), [browseApps])
   const [spotlight, ...secondary] = featured
+
+  /**
+   * Editorial spotlights, resolved against the apps this client can actually
+   * show. A reference that resolves to nothing is dropped, and a section left
+   * with no resolvable app is dropped whole rather than rendered as an empty
+   * hero — the registry is the source of truth for what exists, so editorial can
+   * never conjure an app by naming one.
+   *
+   * Empty means "fall back to `pickFeatured`", which is what Discover did before
+   * the editorial document had a layout. That is also today's live state:
+   * `sections` is published empty, so this ships as a no-op.
+   */
+  const editorialSpotlights = useMemo(() => {
+    const byName = new Map(browseApps.map(a => [a.name, a]))
+    return (registryData?.editorialSections || []).flatMap(section => {
+      const resolved = section.appRefs.map(n => byName.get(n)).filter((a): a is RegistryApp => !!a)
+      if (!resolved.length) return []
+      const [hero, ...rest] = resolved
+      return [{ ...section, hero, rest }]
+    })
+  }, [registryData, browseApps])
 
   // The published rail order decides the sequence of the categories it names;
   // anything it omits keeps its canonical position. An absent or unusable
@@ -624,7 +680,26 @@ export default function AppsPage() {
             />
           ) : (
             <>
-              {showEditorial && spotlight && (
+              {/* A published layout replaces the derived one entirely: mixing a
+                  curator's spotlights with `featured`-flag picks would show the
+                  same app twice and give the curator no way to say "only these". */}
+              {showEditorial && editorialSpotlights.length > 0 ? (
+                editorialSpotlights.map(section => (
+                  <FeaturedSpotlight
+                    key={`${section.hero.name}:${section.title || ''}`}
+                    app={section.hero}
+                    apps={section.rest}
+                    title={section.title}
+                    blurb={section.blurb}
+                    artwork={section.artwork}
+                    busy={actionLoading === `${section.hero.name}:enable`}
+                    onOpen={e => openDetail(section.hero.name, e)}
+                    onGet={() => getApp(section.hero.name)}
+                    onEnable={() => enableApp(section.hero.name)}
+                    onOpenApp={(name, e) => openDetail(name, e)}
+                  />
+                ))
+              ) : showEditorial && spotlight && (
                 <>
                   <FeaturedSpotlight
                     app={spotlight}
