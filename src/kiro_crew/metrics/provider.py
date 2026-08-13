@@ -197,6 +197,13 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.db.query.duration": _FAST_BUCKETS_MS,
     "kirocrew.mcp.backend.acquire.duration": _FAST_BUCKETS_MS,
     "kirocrew.skill.lazy_load.duration": _FAST_BUCKETS_MS,
+    # Per-section first-turn context assembly. The spread within ONE build is
+    # the widest of any instrument here: trivial string appends land under a
+    # millisecond while a section that performs a query embedding reaches
+    # several seconds. _FAST_BUCKETS_MS spans 0.5ms..60s, so the sub-ms sections
+    # keep resolution and a slow embed stays below the top bound instead of
+    # collapsing into +Inf.
+    "kirocrew.context.section.duration": _FAST_BUCKETS_MS,
     # Telegram Bot API round-trips: typically 50-500ms, but a 429 retry_after
     # wait or a transport timeout reaches seconds -- _FAST_BUCKETS_MS spans
     # 0.5ms..60s, which covers both without flooring the tail percentiles.
