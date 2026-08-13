@@ -808,11 +808,31 @@ class AcpRuntime:
         env = scrub_agent_denied_env(env)
 
         env["PATH"] = augmented_path(env.get("PATH", ""))
-        # Resolve KRB5CCNAME off-loop: it lstat/stats /tmp/krb5cc_<uid>, and a
-        # blocking syscall on the event loop stalls every other task. Guarded:
-        # the sandbox temp file is live, so a cancellation here must not
-        # orphan it.
-        await self._to_thread_guarding_sandbox(resolve_krb5_ccname, env)
+
+        def _resolve_env_off_loop() -> None:
+            # KRB5CCNAME resolution lstat/stats /tmp/krb5cc_<uid>, and the
+            # CLI's own KIRO_API_KEY is settled here too: re-injected from the
+            # data home's .env for the kiro-cli backend (post-scrub Docker),
+            # actively stripped for a foreign backend, which must never
+            # receive it (see config.loader.inject/strip_kiro_cli_api_key) —
+            # a file read either way. Both are blocking syscalls that must not
+            # run on the loop, bundled into ONE thread hop. Guarded: the
+            # sandbox temp file is live, so a cancellation here must not
+            # orphan it.
+            resolve_krb5_ccname(env)
+            # Deferred import: this module keeps config.loader off its import
+            # graph (matches acp.client's in-file convention).
+            from kiro_crew.config.loader import (
+                inject_kiro_cli_api_key,
+                strip_kiro_cli_api_key,
+            )
+
+            if self._acp_backend != ACP_BACKEND_KAS:
+                inject_kiro_cli_api_key(env)
+            else:
+                strip_kiro_cli_api_key(env)
+
+        await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.

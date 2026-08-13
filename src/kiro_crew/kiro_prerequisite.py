@@ -53,6 +53,7 @@ from kiro_crew import platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
 from kiro_crew.config.paths import config_dir
 from kiro_crew.kiro_cli import (
     find_kiro_cli_candidates,
@@ -253,7 +254,11 @@ _PROBE_ENV_KEYS = frozenset(
 # the credential is accepted, so a stale or mistyped key reads as signed in. That
 # is the same answer an ACP session acts on, which is the point — but it means
 # presence of this variable must never become a shortcut that skips the probe.
-_IDENTITY_PROBE_ENV_KEYS = frozenset({"KIRO_API_KEY"})
+#
+# In a post-scrub Docker container the variable lives only in the data home's
+# .env (the entrypoint removed it from the environ), so the identity probe also
+# falls back to reading it from that file — see _audited_identity_probe.
+_IDENTITY_PROBE_ENV_KEYS = frozenset({CRED_KIRO_API_KEY})
 
 # Proxy configuration, forwarded to the ``whoami`` identity probe only.
 #
@@ -2144,11 +2149,24 @@ class KiroPrerequisiteService:
             caller="gateway-status",
             critical=True,
         )
+        base_env = _identity_probe_env(self._environ, self._probe_environment)
+        if not base_env.get(CRED_KIRO_API_KEY):
+            # Post-scrub Docker: the entrypoint moved the CLI's own credential
+            # from the process environ into the data home's .env (mode 600), so
+            # the environ allowlist above found nothing. Read it back from the
+            # file — otherwise an API-key container reads as "Not logged in"
+            # while ACP sessions (which get the same re-injection at spawn)
+            # authenticate fine. Off-loop: file read.
+            fallback_key = await asyncio.to_thread(
+                read_env_file_credential, CRED_KIRO_API_KEY, self._data_home / ".env"
+            )
+            if fallback_key:
+                base_env[CRED_KIRO_API_KEY] = fallback_key
         try:
             result = await self._run_auth_command(
                 executable,
                 ["whoami"],
-                base_env=_identity_probe_env(self._environ, self._probe_environment),
+                base_env=base_env,
                 # The identity budget, not the shared probe ceiling: ``whoami``
                 # may refresh an OIDC token against an organization IdP (see
                 # _IDENTITY_PROBE_TIMEOUT_SECS). By the time this runs, the same

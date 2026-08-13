@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import functools
 import glob
 import json
 import logging
@@ -555,7 +556,7 @@ def _resolve_ssh_auth_sock(env: dict[str, str]) -> None:
             return
 
 
-def _resolve_spawn_env(env: dict[str, str]) -> dict[str, str]:
+def _resolve_spawn_env(env: dict[str, str], *, kiro_api_key: bool = False) -> dict[str, str]:
     """Repair stale credential pointers in *env* before an agent spawn.
 
     Bundles :func:`_resolve_ssh_auth_sock` (glob + stat over ``/tmp``) and
@@ -565,9 +566,27 @@ def _resolve_spawn_env(env: dict[str, str]) -> dict[str, str]:
     they must never run on the event loop — call this via
     ``asyncio.to_thread``. Mutates *env* in place and returns it for
     convenience.
+
+    With ``kiro_api_key=True`` (the kiro-cli backend), also re-injects the
+    CLI's own model credential from the data home's ``.env`` when the Docker
+    entrypoint scrubbed it out of the parent environ — the child authenticates
+    from its environment, so without this an API-key container loses model
+    auth. With ``kiro_api_key=False`` (a foreign backend) the credential is
+    actively STRIPPED instead: it is kiro-cli's alone, and the deny scrub
+    deliberately exempts it, so an inherited copy would otherwise ride into a
+    foreign agent process. The file read is IO, which is why both branches
+    ride this same off-loop hop.
     """
     _resolve_ssh_auth_sock(env)
     resolve_krb5_ccname(env)
+    # Deferred import: this module keeps config.loader off its import graph
+    # (in-file convention; see the _prompt_timeout lazy-import note).
+    from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
+
+    if kiro_api_key:
+        inject_kiro_cli_api_key(env)
+    else:
+        strip_kiro_cli_api_key(env)
     return env
 
 
@@ -2577,11 +2596,16 @@ class AcpClient:
         # kernel keyring, the default on some Linux distros, is invisible to
         # this child, so Kerberos-gated MCP servers fail without it). Covers
         # the session agent and all ACP-provider subagents, which spawn through
-        # this same path. Both resolvers glob/stat under /tmp, whose entry
-        # count is unbounded, so they run off-loop in ONE thread hop. Guarded:
-        # the sandbox temp file is live, so a cancellation here must not
-        # orphan it.
-        env = await self._to_thread_guarding_sandbox(_resolve_spawn_env, env)
+        # this same path. The same hop settles the CLI's own KIRO_API_KEY:
+        # re-injected from .env for the kiro-cli backend (post-scrub Docker),
+        # actively stripped for a foreign backend, which must never receive it
+        # (see config.loader.inject/strip_kiro_cli_api_key). All of this
+        # glob/stat/reads under /tmp and the data home, so it runs off-loop in
+        # ONE thread hop. Guarded: the sandbox temp file is live, so a
+        # cancellation here must not orphan it.
+        env = await self._to_thread_guarding_sandbox(
+            functools.partial(_resolve_spawn_env, kiro_api_key=not self._is_claude), env
+        )
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.

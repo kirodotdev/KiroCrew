@@ -968,7 +968,12 @@ full inherited environment. The one deliberate *credential* exception is Kiro CL
 OWN model credential (`KIRO_API_KEY`, `_IDENTITY_PROBE_ENV_KEYS`), forwarded to the
 `whoami` identity probe only: the CLI reports an API-key session as signed in only
 when it can see that variable, so filtering it out reports a host that ACP
-authenticates on as signed out. The exposure delta is that one probe's argv — the
+authenticates on as signed out. In a post-scrub Docker container the variable
+lives only in the data home's `.env` (the entrypoint scrubs every
+`_CREDENTIAL_KEYS` entry — this one included — out of the gateway's
+`/proc/<pid>/environ`), so the identity probe and the kiro-cli spawn paths read
+it back from that file for exactly the one child that owns it; every other
+scrubbed credential stays in-process. The exposure delta is that one probe's argv — the
 credential reaches the same resolved binary the same probe already executes, in the
 same standard sandbox posture, against the same real home. The `--version` probe,
 which is the first execution of a candidate that has not yet answered anything,

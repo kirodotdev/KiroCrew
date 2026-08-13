@@ -276,7 +276,7 @@ class TestSpawnCancellationSandboxCleanup:
                 raise asyncio.CancelledError()
             return argv
 
-        def _env(env):
+        def _env(env, **_kwargs):
             raise asyncio.CancelledError()
 
         with (
