@@ -22,6 +22,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
     _get_mcp_lock,
     _is_valid_mcp_name,
+    _offload_config_write,
     _set_kirocrew_entry,
 )
 from kiro_crew.mcp_providers.base import ProviderRegistry, ProviderUnavailableError
@@ -330,7 +331,9 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
             return web.json_response({"error": "name already in use"}, status=409)
         if existing is None:
             # Fresh install: always written disabled (consent default).
-            _set_kirocrew_entry(name, enabled=enable_now, spec=spec)
+            # The store write can apply a Windows owner-only DACL via icacls —
+            # a blocking subprocess kept off the event loop.
+            await _offload_config_write(_set_kirocrew_entry, name, enabled=enable_now, spec=spec)
         else:
             # Identical spec already present — a reinstall is a pure no-op:
             # the user's env values AND enabled/disabled state survive.

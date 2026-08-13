@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from collections.abc import Collection
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.agent import _atomic_json_write, kiro_agents_dir_path, rebuild_agent_config
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _resolve_stub_servers
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
@@ -1249,10 +1251,51 @@ def _load_json_or_empty(path: Path) -> dict[str, Any]:
         return {}
 
 
+async def _offload_config_write(fn, /, *args, **kwargs):
+    """Run a store-writing helper in a worker thread, surviving cancellation.
+
+    A worker thread cannot be cancelled: shielding the await and re-awaiting
+    the future on ``CancelledError`` guarantees the write runs to completion
+    before the cancellation propagates.  Without this, a cancelled request
+    task would release the MCP lock (or begin teardown) while the thread is
+    still mutating the store, letting a concurrent purge interleave with the
+    stale write.  Same pattern as the dangling-uninstall sweep below.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(None, partial(fn, *args, **kwargs))
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        await future
+        raise
+
+
 def _atomic_write(path: Path, data: dict) -> None:
-    """Atomic JSON write; reuses the agent helper."""
+    """Atomic JSON write; secret-aware for the store owned by Kiro Crew.
+
+    That store is secret-bearing by construction (``env`` values and remote
+    ``headers`` carry credentials), so it is published through
+    :func:`kiro_crew.atomic_write.atomic_write` with ``restrict_to_owner=True``
+    — the owner-only lockdown lands on the temp file BEFORE any payload byte,
+    so the credential never exists in a file readable under the parent
+    directory's inherited permissions.  The writer's default fail-closed
+    policy is kept deliberately: a store this surface cannot protect is not
+    written, and the caller's request fails visibly rather than publishing a
+    credential another OS user could read.  On Windows the lockdown shells
+    out to ``icacls``, so async callers must hand the whole write to a worker
+    thread rather than call this on the event loop.  Other paths (the shared
+    global file, agent files) keep the mode-preserving helper — their
+    lifecycles are owned by other tools.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_json_write(path, data)
+    if path == _kirocrew_mcp_json():
+        atomic_write(
+            path,
+            (json.dumps(data, indent=2) + "\n").encode("utf-8"),
+            restrict_to_owner=True,
+        )
+    else:
+        _atomic_json_write(path, data)
 
 
 def _find_server_spec_anywhere(name: str) -> dict | None:
@@ -1733,7 +1776,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                     # Config removal is the LAST mutation (package-then-config
                     # ordering); _purge_server_config strips every scope + agent
                     # file idempotently.
-                    outcome["actions"].update(_purge_server_config(name))
+                    outcome["actions"].update(await _offload_config_write(_purge_server_config, name))
                     purged_names.add(name)
                     # Companion package removal already ran in Phase 1 (before the
                     # lock); merge its recorded result here.
@@ -1774,7 +1817,8 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                 # Apply MC first — flipping MC green needs the entry to exist or
                 # the disabled override removed.  Flipping MC gray writes
                 # disabled:true, preserving config for later re-enable.
-                outcome["actions"]["kirocrew"] = _set_kirocrew_entry(
+                outcome["actions"]["kirocrew"] = await _offload_config_write(
+                    _set_kirocrew_entry,
                     name,
                     enabled=desired_mc,
                     spec=preserved_spec,
@@ -1786,14 +1830,16 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                 # spec, and the CC add would get "missing_spec" even though
                 # the user clearly intended it to move over.
                 resolved_spec = _find_server_spec_anywhere(name)
-                outcome["actions"]["kiroGlobal"] = _set_scope_entry(
+                outcome["actions"]["kiroGlobal"] = await _offload_config_write(
+                    _set_scope_entry,
                     _GLOBAL_MCP_JSON,
                     name,
                     enabled=desired_kiro,
                     spec=resolved_spec,
                 )
                 for scope in extra_scopes:
-                    outcome["actions"][f"{scope.id}Global"] = _set_scope_entry(
+                    outcome["actions"][f"{scope.id}Global"] = await _offload_config_write(
+                        _set_scope_entry,
                         scope.global_json,
                         name,
                         enabled=desired_extra[scope.id],
@@ -1826,7 +1872,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                             resources=f"{name}:{','.join(rejected)[:128]}",
                         )
                     if sanitized:
-                        changed_tools = _set_tool_overrides(name, sanitized)
+                        changed_tools = await _offload_config_write(_set_tool_overrides, name, sanitized)
                         if changed_tools:
                             outcome["actions"]["tools"] = changed_tools
 

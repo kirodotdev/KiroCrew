@@ -85,20 +85,30 @@ function specSummary(spec: McpCustomSpec): string {
 }
 
 /** Textarea placeholder showing the shape of an `mcpServers` config block.
- *  A CODE SAMPLE, not prose — do not translate. Every token is a protocol key
- *  (`mcpServers`, `command`, `args`, `env`), an executable name (`npx`), a
- *  package specifier, or an env-var name, and the whole thing must stay valid
- *  JSON the user can paste back. `my-server` is an illustrative server id, in
- *  the same class: the user replaces it with their own. */
-const PLACEHOLDER = `{
-  "mcpServers": {
-    "my-server": {
-      "command": "npx",
-      "args": ["-y", "@example/mcp-server"],
-      "env": { "API_KEY": "" }
-    }
-  }
-}`
+ *  A CODE SAMPLE, not prose — never translated, so it is built from data
+ *  rather than written as display text. Every token is a protocol key
+ *  (`mcpServers`, `command`, `args`, `env`, `url`, `headers`), an executable
+ *  name (`npx`), a package specifier, an env-var name, or an HTTP header
+ *  name, and the rendered JSON must stay valid for the user to paste back.
+ *  `my-server` / `my-remote` are illustrative server ids, in the same class:
+ *  the user replaces them with their own. */
+const PLACEHOLDER = JSON.stringify(
+  {
+    mcpServers: {
+      'my-server': {
+        command: 'npx',
+        args: ['-y', '@example/mcp-server'],
+        env: { API_KEY: '' },
+      },
+      'my-remote': {
+        url: 'https://example.com/mcp',
+        headers: { Authorization: 'Bearer ' },
+      },
+    },
+  },
+  null,
+  2,
+)
 
 export default function McpCustomServerModal({ open, onClose, editName }: Props) {
   const queryClient = useQueryClient()
@@ -201,7 +211,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
             {i18nT('components.mcpCustomServerModal.paste_an')} <code>{i18nT('components.mcpCustomServerModal.mcpservers')}</code> {i18nT('components.mcpCustomServerModal.block_from_a_readme_a')}{' '}
             <code>{'{name: spec}'}</code> {i18nT('components.mcpCustomServerModal.map_or_a_single_spec_specs_take')}{' '}
             <code>{i18nT('components.mcpCustomServerModal.command')}</code>/<code>{i18nT('components.mcpCustomServerModal.args')}</code>/<code>{i18nT('components.mcpCustomServerModal.env')}</code> {i18nT('components.mcpCustomServerModal.stdio_or')}{' '}
-            <code>{i18nT('components.mcpCustomServerModal.url')}</code> {i18nT('components.mcpCustomServerModal.remote')}
+            <code>{i18nT('components.mcpCustomServerModal.url')}</code>/<code>{i18nT('components.mcpCustomServerModal.headers')}</code> {i18nT('components.mcpCustomServerModal.remote')}
           </p>
         )}
         {editing && specQuery.isLoading && (
@@ -215,6 +225,11 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
             {specQuery.error instanceof Error ? specQuery.error.message : i18nT('components.mcpCustomServerModal.failed_to_load_spec')}
           </span>
         )}
+        {editing && !!specQuery.data && Object.keys(specQuery.data.spec.headers ?? {}).length > 0 && (
+          <p className="text-xs text-text m-0" role="note">
+            {i18nT('components.mcpCustomServerModal.stored_header_values_are_hidden_and_read_only')}
+          </p>
+        )}
 
         <textarea
           value={text}
@@ -222,7 +237,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
           placeholder={editing ? '' : PLACEHOLDER}
           spellCheck={false}
           aria-label={editing ? i18nT('components.mcpCustomServerModal.server_spec_json') : i18nT('components.mcpCustomServerModal.servers_json')}
-          className="w-full min-h-[220px] rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text focus:outline-none focus:ring-1 focus:ring-accent resize-y"
+          className={`w-full ${editing ? 'min-h-[220px]' : 'min-h-[400px]'} rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text focus:outline-none focus:ring-1 focus:ring-accent resize-y`}
         />
 
         {parsed && !parsed.ok && (

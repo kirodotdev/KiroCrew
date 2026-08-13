@@ -401,7 +401,7 @@ export interface McpCustomSpec {
   args?: string[]
   env?: Record<string, string>
   url?: string
-  /** Present on existing remote entries; read responses redact every value. */
+  /** Authorable on remote (url) specs; read responses redact every stored value. */
   headers?: Record<string, string>
 }
 
