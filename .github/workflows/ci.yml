@@ -1069,6 +1069,21 @@ jobs:
     name: Electron Shell Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # electron 43 resolves the binary LAZILY, at require() time: index.js ends in
+    # `module.exports = getElectronPath()`, which on a missing path.txt logs
+    # "Downloading Electron binary..." and shells out to install.js. `npm ci`
+    # really does fetch nothing (the package declares no scripts at all), so the
+    # download lands in `npm test` instead — every green run of this job has been
+    # pulling ~120MB (313MB extracted), and when that fetch fails the first test
+    # file to require() a main-process module dies at load, failing the job with
+    # no assertion failure. ELECTRON_SKIP_BINARY_DOWNLOAD is honored nowhere in
+    # electron 43; ELECTRON_OVERRIDE_DIST_PATH is, and it returns a path without
+    # fetching. Job-scoped so a version that moves the download back to
+    # postinstall is covered too. The suite never launches the binary, so this
+    # path deliberately does not exist — anything that did launch it fails loudly
+    # rather than silently downloading.
+    env:
+      ELECTRON_OVERRIDE_DIST_PATH: /nonexistent/electron-dist
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -1083,9 +1098,10 @@ jobs:
         # Belt-and-braces: this pin currently downloads no Electron binary
         # anyway (electron 43's package ships no install script), so the var is
         # inert today — it is set so a future version that reintroduces the
-        # ~100MB postinstall download cannot silently slow this job down. The
-        # tests require() only main-process modules and the stdlib test runner,
-        # so the binary is never needed.
+        # ~100MB postinstall download cannot silently slow this job down. It does
+        # NOT cover the test step: main-process modules are precisely the ones
+        # that require("electron"), which resolves the binary lazily, so the
+        # binary IS needed there. See ELECTRON_OVERRIDE_DIST_PATH on the job.
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: npm ci --no-audit --no-fund
