@@ -1132,6 +1132,22 @@ export interface KiroPrerequisiteStatus {
    * untranslated: it names the failing install step.
    */
   agent_spec_repair_error: string
+  /**
+   * Kiro Crew's own specs that are PRESENT on disk but which the installed
+   * kiro-cli refuses to load. Presence and acceptance are different questions: a
+   * rejected spec is dropped from kiro-cli's agent table, so `--agent kirocrew`
+   * resolves to the default agent with none of Kiro Crew's MCP servers — the
+   * same total failure as an absent spec, which statting the file cannot detect.
+   * Non-empty forces `ready` false and `repair_required` true.
+   *
+   * Optional because a gateway older than this field does not send it.
+   */
+  rejected_agent_specs?: string[]
+  /**
+   * kiro-cli's own reason for the first rejection above, sanitized. Shown
+   * verbatim and untranslated: it names the file and the construct refused.
+   */
+  agent_spec_rejection_detail?: string
 }
 
 export interface KiroBonusCreditGrantPayload {

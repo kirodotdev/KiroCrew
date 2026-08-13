@@ -549,6 +549,104 @@ function AgentSpecsMissing({
   )
 }
 
+function AgentSpecsRejected({
+  specs,
+  reason,
+  repairError,
+  retrying,
+  onRepair,
+}: {
+  specs: string[]
+  reason: string
+  repairError: string
+  retrying: boolean
+  onRepair: () => void
+}) {
+  return (
+    <SetupShell
+      asideHeadline={i18nT('components.kiroPrerequisiteGate.agent_specs_rejected')}
+      asideBody={i18nT('components.kiroPrerequisiteGate.kiro_crew_installs_the_agent_specs_kiro_cli_load')}
+    >
+      <>
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger">
+          <AlertTriangle className="lucide-inline" />
+        </div>
+        <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-danger">
+          {i18nT('components.kiroPrerequisiteGate.agent_specs_rejected')}
+        </p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+          {i18nT('components.kiroPrerequisiteGate.kiro_cli_will_not_load_kiro_crew_s_agent_specs')}
+        </h1>
+        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+          {i18nT('components.kiroPrerequisiteGate.the_files_are_on_disk_but_kiro_cli_refuses_them')}
+        </p>
+        <div className="mt-5 w-full max-w-lg text-left">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
+            {i18nT('components.kiroPrerequisiteGate.rejected')}
+          </p>
+          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-bg p-3 text-xs text-muted">
+            {specs.join('\n')}
+          </pre>
+        </div>
+        {/* Kiro CLI's own words, verbatim and untranslated. It names the file and
+            the construct it refused, which is the difference between "my agents
+            stopped working" and a report someone can act on. */}
+        {reason ? (
+          <div className="mt-4 w-full max-w-lg text-left">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
+              {i18nT('components.kiroPrerequisiteGate.kiro_cli_s_reason')}
+            </p>
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-bg p-3 text-xs text-muted">
+              {reason}
+            </pre>
+          </div>
+        ) : null}
+        {repairError ? (
+          <div className="mt-4 w-full max-w-lg text-left" role="alert">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-danger">
+              {i18nT('components.kiroPrerequisiteGate.the_repair_attempt_failed')}
+            </p>
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-danger/10 p-3 text-xs text-danger">
+              {repairError}
+            </pre>
+          </div>
+        ) : null}
+        {/* Deliberately does not promise a rewrite. The button re-asks kiro-cli
+            rather than regenerating the spec: the file is already on disk, and a
+            rebuild would discard a concurrent MCP toggle's tools/allowedTools
+            grant. The leading cause is a kiro-cli upgrade, which re-checking
+            cannot fix, so the two remedies get their own labelled lines rather
+            than sitting mid-sentence in a muted paragraph. The commands live in
+            <code> outside the catalog: a translator must not be able to alter a
+            string the user pastes into a shell, and prose cannot be copied. */}
+        <p className="mt-4 max-w-lg text-[13px] leading-relaxed text-muted">
+          {i18nT('components.kiroPrerequisiteGate.repair_rewrites_the_specs_kiro_crew_owns')}
+        </p>
+        <ul className="mt-3 w-full max-w-lg list-none space-y-2 text-left">
+          <li className="text-sm leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.remedy_spec_rejected_update')}
+          </li>
+          <li className="text-sm leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.remedy_spec_rejected_rewrite')}
+            <CopyCommand>
+              <code>kirocrew setup --agent-only --clean</code>
+            </CopyCommand>
+          </li>
+        </ul>
+        {/* Tightened deliberately: the remedy lines and the copy block added
+            enough height to push this button under the fold at a 1280x800
+            viewport, and the card's primary action must stay on screen. */}
+        <div className="mt-4">
+          <Btn type="button" disabled={retrying} onClick={onRepair}>
+            <RefreshCw className="lucide-inline" />
+            {i18nT('components.kiroPrerequisiteGate.check_again')}
+          </Btn>
+        </div>
+      </>
+    </SetupShell>
+  )
+}
+
 export default function KiroPrerequisiteGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   // The gateway probes kiro-cli at boot and on explicit request only, so the
@@ -672,6 +770,24 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     return (
       <AgentSpecsMissing
         specs={missingSpecs}
+        repairError={repairError}
+        retrying={retrying || repairMutation.isPending}
+        onRepair={() => repairMutation.mutate()}
+      />
+    )
+  }
+  // Present but refused. Kiro CLI drops a spec it rejects from its agent table,
+  // so `--agent kirocrew` resolves to the default agent with none of Kiro Crew's
+  // MCP servers -- the same total failure as an absent spec, and the one the
+  // stat-only check above cannot see. Ordered AFTER missing for the same reason
+  // that check is scoped to present files: one fault should raise one card, and
+  // a spec that is absent is not also rejected.
+  const rejectedSpecs = status.rejected_agent_specs ?? []
+  if (rejectedSpecs.length > 0 && status.initial_setup_complete) {
+    return (
+      <AgentSpecsRejected
+        specs={rejectedSpecs}
+        reason={status.agent_spec_rejection_detail ?? ''}
         repairError={repairError}
         retrying={retrying || repairMutation.isPending}
         onRepair={() => repairMutation.mutate()}

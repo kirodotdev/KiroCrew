@@ -157,6 +157,28 @@ def missing_required_agent_specs() -> list[str]:
     return [name for name in REQUIRED_KIRO_AGENT_FILES if not (agents_dir / name).is_file()]
 
 
+def present_required_agent_specs() -> list[tuple[str, Path]]:
+    """Return the :data:`REQUIRED_KIRO_AGENT_FILES` that DO exist, with paths.
+
+    The counterpart to :func:`missing_required_agent_specs`, for the caller that
+    needs to ask a question ABOUT a spec rather than about its absence — currently
+    whether kiro-cli accepts it.
+
+    Shares that function's ownership guard on purpose. An instance not allowed to
+    own these specs (a pod, or a gateway booted from a linked git worktree) must
+    not report on them either: it did not write them, cannot repair them, and its
+    verdict would describe another install's files.
+    """
+    if _decline_shared_agent_home(audit=False) is not None:
+        return []
+    agents_dir = kiro_agents_dir_path()
+    return [
+        (name, agents_dir / name)
+        for name in REQUIRED_KIRO_AGENT_FILES
+        if (agents_dir / name).is_file()
+    ]
+
+
 # AGENT_FILENAME imported from agent_files (single source of truth).
 _MAIN_AGENT_NAME = "kirocrew"
 # Cheap Claude Code model for KiroCrew's background agents (lite / heartbeat).
