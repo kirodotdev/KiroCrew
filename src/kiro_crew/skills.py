@@ -340,6 +340,149 @@ def _project_skills_dir() -> Path | None:
     return None
 
 
+# A YAML block-scalar header: the style character (``>`` folded / ``|``
+# literal), optionally followed by a chomping indicator (``+`` / ``-``) and/or
+# an explicit indentation digit, in either order (``>-``, ``|+``, ``|2``,
+# ``>2-``…), optionally followed by a comment (``> # note``) — group 1 is the
+# indicator itself. Anything else after the colon is an ordinary scalar value.
+_BLOCK_SCALAR_INDICATOR = re.compile(
+    r"^([>|](?:[1-9][+-]?|[+-][1-9]?)?)(?:[ \t]+#.*)?$"
+)
+
+
+def _fold_block_scalar(indicator: str, body: list[str]) -> str:
+    """Fold the indented *body* of a block scalar into a single value.
+
+    *indicator* is the full header (``>``, ``|``, ``>-``, ``|2``…): the first
+    character picks the style, and an explicit indentation digit, when
+    present, sets exactly how many leading spaces to strip (YAML's indentation
+    indicator); otherwise the first non-blank line's indentation is inferred.
+
+    ``>`` folds per YAML for the shapes skills actually use: single newlines
+    between lines become spaces, a blank line becomes a newline, and a
+    more-indented line stays literal on its own line. ``|`` keeps every
+    newline. Leading/trailing blank lines are always trimmed and no trailing
+    newline is kept, regardless of chomping modifier — the value feeds
+    description/trigger fields where stray whitespace is never wanted, which
+    satisfies ``-`` chomping without modeling ``+`` (keep) separately.
+
+    Returns ``""`` when *body* holds no text, so the caller can fall back to
+    the pre-fold behavior for a bare indicator with nothing under it.
+    """
+    start, end = 0, len(body)
+    while start < end and not body[start].strip():
+        start += 1
+    while end > start and not body[end - 1].strip():
+        end -= 1
+    body = body[start:end]
+    if not body:
+        return ""
+    digit = next((c for c in indicator[1:] if c.isdigit()), "")
+    if digit:
+        prefix = " " * int(digit)
+    else:
+        # Spaces only: YAML indentation is never tabs, so a tab after the
+        # indent is CONTENT (a code line) and must survive the dedent.
+        prefix = body[0][: len(body[0]) - len(body[0].lstrip(" "))]
+    dedented = [
+        ""
+        if not ln.strip()
+        else (ln[len(prefix) :] if ln.startswith(prefix) else ln.lstrip(" "))
+        for ln in body
+    ]
+    if indicator[0] == "|":
+        return "\n".join(dedented)
+    # Folded (>): consecutive text lines join with spaces; a run of k blank
+    # lines between text lines becomes k newlines (a double blank keeps its
+    # wider paragraph gap); a more-indented line stays literal on its own
+    # line per YAML (nested lists, code), and because no fold happens around
+    # a literal line, a blank run adjacent to one keeps ALL its newlines
+    # (k blanks -> k+1 newlines). Verified against PyYAML on these shapes.
+    out_parts: list[str] = []
+    blanks = 0
+    prev_literal: bool | None = None  # None = nothing emitted yet
+    for ln in dedented:
+        if not ln:
+            if prev_literal is not None:
+                blanks += 1
+            continue
+        literal = ln[:1].isspace()
+        if prev_literal is None:
+            sep = ""
+        elif blanks:
+            sep = "\n" * (blanks + 1 if (literal or prev_literal) else blanks)
+        elif literal or prev_literal:
+            sep = "\n"
+        else:
+            sep = " "
+        out_parts.append(sep + ln)
+        blanks = 0
+        prev_literal = literal
+    return "".join(out_parts)
+
+
+def parse_frontmatter_block(block: str, *, strip_quotes: bool = True) -> dict[str, str]:
+    """Parse the inner lines of a YAML frontmatter block (simple key: value).
+
+    Only a key at column 0 is a field. An indented ``key: value`` belongs to
+    the enclosing block scalar — a description that documents a setting, for
+    instance — and reading it as the setting made the writer and the reader
+    disagree: ``set_inject_on_trigger`` deliberately leaves an indented
+    occurrence alone (deleting it would rewrite the author's prose), so
+    honoring it here meant the opt-in could never take effect. Ignoring
+    indented lines also drops the junk keys a prose line like ``  Steps: do x``
+    used to invent.
+
+    A column-0 value that is exactly a block-scalar indicator (``>`` / ``|``,
+    with optional chomping/indent modifiers) folds the following more-indented
+    lines into that key's value instead of storing the indicator character
+    (issue #3182 — the router matches on ``description``, so a block-scalar
+    description previously left the skill unroutable). This strengthens both
+    invariants above: an indented ``key: value`` inside the block becomes part
+    of that block's TEXT and still never becomes a field.
+
+    *strip_quotes* preserves each caller's historical single-line behavior:
+    the loader has always stripped surrounding quotes; the dashboard Discover
+    reader never did. A tab-indented ``key: value`` is treated as indented
+    (not a field) for both callers — tabs are not legal YAML indentation, and
+    the loader always read them that way.
+    """
+    meta: dict[str, str] = {}
+    # Normalize CRLF per line: Path.read_text gets universal-newline
+    # translation, but provider-fetched content (the Discover path) arrives
+    # raw — and its block extraction can also leave a dangling final "\r"
+    # when the closing delimiter split a "\r\n" pair.
+    lines = [ln[:-1] if ln.endswith("\r") else ln for ln in block.split("\n")]
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if ":" not in line or line[:1].isspace():
+            continue
+        key, raw_value = line.split(":", 1)
+        value = raw_value.strip()
+        header = _BLOCK_SCALAR_INDICATOR.match(value)
+        if header:
+            body: list[str] = []
+            while i < len(lines) and (
+                not lines[i].strip() or lines[i][:1].isspace()
+            ):
+                body.append(lines[i])
+                i += 1
+            folded = _fold_block_scalar(header.group(1), body)
+            if folded or body:
+                # Any consumed body — even one that folds to empty (a
+                # whitespace-only block) — means the value IS the folded
+                # text: storing the indicator for it would corrupt the field.
+                meta[key.strip()] = folded
+                continue
+            # A bare indicator with no body lines at all: keep the literal
+            # value exactly as this parser stored it before it learned block
+            # scalars.
+        meta[key.strip()] = value.strip("\"'") if strip_quotes else value
+    return meta
+
+
 def _trusted_skill_roots() -> tuple[str, ...]:
     """Resolved roots a symlink inside the skills tree may legitimately point into.
 
@@ -3258,16 +3401,11 @@ class SkillsLoader:
 
     @staticmethod
     def _parse_frontmatter(path: Path) -> dict[str, str]:
-        """Parse YAML frontmatter from a markdown file (simple key: value).
+        """Parse YAML frontmatter from a markdown file.
 
-        Only a key at column 0 is a field. An indented ``key: value`` belongs to
-        the enclosing block scalar — a description that documents a setting, for
-        instance — and reading it as the setting made the writer and the reader
-        disagree: ``set_inject_on_trigger`` deliberately leaves an indented
-        occurrence alone (deleting it would rewrite the author's prose), so
-        honoring it here meant the opt-in could never take effect. Ignoring
-        indented lines also drops the junk keys a prose line like
-        ``  Steps: do x`` used to invent.
+        Extracts the ``--- ... ---`` block and delegates the key/value parsing
+        (including block-scalar folding) to :func:`parse_frontmatter_block`,
+        which carries the column-0 invariants this reader has always enforced.
         """
         content = path.read_text(encoding="utf-8")
         if not content.startswith("---"):
@@ -3275,12 +3413,7 @@ class SkillsLoader:
         match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
         if not match:
             return {}
-        meta: dict[str, str] = {}
-        for line in match.group(1).split("\n"):
-            if ":" in line and not line[:1].isspace():
-                key, value = line.split(":", 1)
-                meta[key.strip()] = value.strip().strip("\"'")
-        return meta
+        return parse_frontmatter_block(match.group(1))
 
     @staticmethod
     def strip_frontmatter(content: str) -> str:

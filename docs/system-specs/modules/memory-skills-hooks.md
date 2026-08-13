@@ -596,7 +596,7 @@ truncated to 300 chars.
 
 ## Skills (`skills.py`)
 
-Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
+Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`). Values may be single-line scalars or block scalars: a `>` folded / `|` literal value folds its indented continuation lines into the field (`parse_frontmatter_block`, shared by the loader and the Discover reader — the loader strips surrounding quotes on single-line values, Discover keeps them; a bare indicator with no indented body keeps the literal character), so a multi-line `description` reaches the router (catalog lines still pass through `_short_desc`, which collapses whitespace and caps at 300 chars). Only a key at column 0 is a field — an indented `key: value` inside a block scalar becomes part of that block's text, never a field.
 
 Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill name is the relative path from the skills root (e.g. `utils/tiny-url`).
 

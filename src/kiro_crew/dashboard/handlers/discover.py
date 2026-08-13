@@ -22,6 +22,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
 from kiro_crew.skill_providers.base import ProviderRegistry
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
+from kiro_crew.skills import parse_frontmatter_block
 from kiro_crew.skills import skills_dir as _skills_dir
 
 logger = logging.getLogger(__name__)
@@ -602,11 +603,23 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     max_preview = 64 * 1024
     # Provider-sourced fields (including the full SKILL.md body) are
     # attacker-controllable -- redact before returning to the dashboard.
+    # Frontmatter fields are length-capped too: a block-scalar value now folds
+    # to its whole indented body (issue #3182) instead of one physical line,
+    # so an attacker-chosen field must not scale the response unboundedly.
+    # Redaction runs BEFORE the cap: a truncation cut can split a credential
+    # pattern so the matcher misses it, while cutting already-redacted text
+    # can only shorten safe output. Field size is bounded upstream by the
+    # provider fetch cap.
+    max_field = 4096
+
+    def _safe_field(key: str) -> str:
+        return _redact_external(meta.get(key, ""))[:max_field]
+
     return web.json_response({
-        "description": _redact_external(meta.get("description", "")),
-        "name": _redact_external(meta.get("name", "")),
-        "license": _redact_external(meta.get("license", "")),
-        "author": _redact_external(meta.get("author", "")),
+        "description": _safe_field("description"),
+        "name": _safe_field("name"),
+        "license": _safe_field("license"),
+        "author": _safe_field("author"),
         "content": _redact_external(content[:max_preview]),
         "files": [_redact_external(f) for f in files[:200]],
         "file_count": len(files),
@@ -614,16 +627,16 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
 
 
 def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter key-value pairs from a SKILL.md."""
+    """Extract YAML frontmatter key-value pairs from a SKILL.md.
+
+    Delegates to :func:`kiro_crew.skills.parse_frontmatter_block` so a
+    block-scalar ``description:`` folds here exactly as in the loader
+    (issue #3182) instead of showing ``>`` in the Discover preview. Quotes
+    are kept on single-line values, as this reader always did.
+    """
     if not content.startswith("---"):
         return {}
     end = content.find("\n---", 3)
     if end == -1:
         return {}
-    frontmatter = content[4:end]
-    result: dict = {}
-    for line in frontmatter.split("\n"):
-        if ":" in line and not line.startswith(" "):
-            key, _, value = line.partition(":")
-            result[key.strip()] = value.strip()
-    return result
+    return parse_frontmatter_block(content[4:end], strip_quotes=False)
