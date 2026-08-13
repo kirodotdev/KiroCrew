@@ -4298,6 +4298,7 @@
         "view_details_for": "查看 {{name}} 的详情"
       },
       "featuredSpotlight": {
+        "collection": "合集",
         "enable": "启用",
         "featured": "精选",
         "get": "获取",

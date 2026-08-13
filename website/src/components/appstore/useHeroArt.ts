@@ -42,15 +42,22 @@ export function hasHeroArt(app: HeroFields): boolean {
   return !!(app.heroImage || app.heroImageDark || app.screenshots?.[0])
 }
 
-export function useHeroArt(app: HeroFields): { src: string; onError: () => void } {
+/**
+ * *app* is optional so a caller can hold the hook call unconditional while still
+ * declining to render: a surface whose app list came from a published document
+ * may legitimately have nothing to show, and React forbids skipping the hook to
+ * handle that. No app means no art, which is the same answer as an app shipping
+ * none.
+ */
+export function useHeroArt(app?: HeroFields): { src: string; onError: () => void } {
   const { theme } = useTheme()
   const dark = theme === 'dark'
   const chosen = (dark
-    ? (app.heroImageDark || app.heroImage)
-    : (app.heroImage || app.heroImageDark)) || app.screenshots?.[0] || ''
+    ? (app?.heroImageDark || app?.heroImage)
+    : (app?.heroImage || app?.heroImageDark)) || app?.screenshots?.[0] || ''
   // Repo-relative manifest paths (all three fields: heroImage, heroImageDark,
   // screenshots) resolve through the blob proxy; absolute paths pass through.
-  const resolved = resolveArtPath(chosen, app.repo)
+  const resolved = resolveArtPath(chosen, app?.repo)
   const [failed, setFailed] = useState('')
   // Reset the failure latch when the resolved art changes (theme flip, or a
   // re-fetch that filled in metadata) so a new URL gets a fresh attempt.

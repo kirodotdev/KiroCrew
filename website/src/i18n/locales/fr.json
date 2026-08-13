@@ -4428,6 +4428,7 @@
         "view_details_for": "Afficher les détails de {{name}}"
       },
       "featuredSpotlight": {
+        "collection": "COLLECTION",
         "enable": "Activer",
         "featured": "À LA UNE",
         "get": "Obtenir",

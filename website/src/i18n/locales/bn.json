@@ -4363,6 +4363,7 @@
         "view_details_for": "{{name}}-এর বিবরণ দেখুন"
       },
       "featuredSpotlight": {
+        "collection": "সংকলন",
         "enable": "চালু করুন",
         "featured": "নির্বাচিত",
         "get": "নিন",

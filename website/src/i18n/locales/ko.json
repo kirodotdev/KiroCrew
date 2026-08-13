@@ -4282,6 +4282,7 @@
         "view_details_for": "{{name}} 세부 정보 보기"
       },
       "featuredSpotlight": {
+        "collection": "컬렉션",
         "enable": "활성화",
         "featured": "추천",
         "get": "설치",

@@ -4282,6 +4282,7 @@
         "view_details_for": "{{name}} の詳細を表示"
       },
       "featuredSpotlight": {
+        "collection": "コレクション",
         "enable": "有効にする",
         "featured": "注目",
         "get": "インストール",

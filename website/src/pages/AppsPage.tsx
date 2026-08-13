@@ -66,12 +66,80 @@ function initialTab(): Tab {
  * deterministically — apps shipping hero art first, then verified publishers,
  * then name.
  */
-/** One published spotlight, as it arrives from the registry endpoint. */
+/**
+ * One published featured section, as it arrives from the registry endpoint.
+ *
+ * `type` is the discriminator the card branches on. An `app` section always
+ * carries exactly one ref; a `collection` carries two or more plus the title
+ * that explains why they share a card. Both spell the refs as a list so
+ * resolution is one code path regardless of type.
+ */
 type EditorialSection = {
+  type: 'app' | 'collection'
   appRefs: string[]
   title?: string
   blurb?: string
   artwork?: EditorialArtwork
+}
+
+/** A collection below this has lost members; see the drop in `featuredSections`. */
+const MIN_COLLECTION_APPS = 2
+/** The schema's collection ceiling, re-applied at the fetch boundary. */
+const MAX_SECTION_APPS = 6
+
+/**
+ * An artwork URL safe to hand an `<img src>`, or undefined.
+ *
+ * The server already screens these refs and this is the SECOND check, not the
+ * first. It exists because one guard for a property the contract states
+ * absolutely -- no scheme other than the catalog's own may reach the DOM -- is
+ * one regression away from none.
+ *
+ * What it blocks: every scheme except https, which covers `javascript:` and
+ * `data:` (neither has a slash after the colon, so a naive `"://"` test admits
+ * both), and the scheme-relative `//host` form that inherits the page scheme
+ * while looking like a path.
+ *
+ * What it deliberately does NOT block: an https URL on a host other than the
+ * catalog. Rejecting that needs the catalog origin, and the only copy of it lives
+ * server-side (`official_catalog.OFFICIAL_CATALOG_BASE`); a second copy here
+ * would silently blank all artwork the day the catalog moves. That case stays
+ * the server's job, where the origin is already known.
+ */
+function editorialArtUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value || value.startsWith('//')) return undefined
+  const local = value.startsWith('/')
+  return local || value.startsWith('https://') ? value : undefined
+}
+
+/** Project a section's artwork, dropping anything whose light variant is unusable. */
+function normalizeEditorialArtwork(value: unknown): EditorialArtwork | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const raw = value as Record<string, unknown>
+  const url = editorialArtUrl(raw.url)
+  if (!url) return undefined
+  const urlDark = editorialArtUrl(raw.urlDark)
+  const alt = typeof raw.alt === 'string' ? raw.alt : undefined
+  return { url, ...(urlDark ? { urlDark } : {}), ...(alt ? { alt } : {}) }
+}
+
+/**
+ * Which app in a featured card has an action in flight, or null.
+ *
+ * `actionLoading` is a single `"<name>:<action>"` slot, so only one app can be
+ * busy at a time. Resolving it to a name lets each row disable its OWN control
+ * instead of the card disabling all of them — pressing Get on one member of a
+ * collection must not freeze the others.
+ *
+ * A value with no colon is treated as the whole name rather than silently losing
+ * its last character, so a future caller that sets a bare name still disables the
+ * right row instead of no row.
+ */
+export function featuredBusyName(actionLoading: string | null, apps: RegistryApp[]): string | null {
+  if (!actionLoading) return null
+  const sep = actionLoading.indexOf(':')
+  const name = sep === -1 ? actionLoading : actionLoading.slice(0, sep)
+  return apps.some(a => a.name === name) ? name : null
 }
 
 export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
@@ -148,19 +216,34 @@ export default function AppsPage() {
         ? res.editorialSections.flatMap((raw: unknown) => {
             if (!raw || typeof raw !== 'object') return []
             const s = raw as Record<string, unknown>
+            // An unrecognised type is skipped, not coerced: the document's
+            // contract is that a client renders what it knows and ignores the
+            // rest, which is what lets a new shape publish ahead of support.
+            if (s.type !== 'app' && s.type !== 'collection') return []
             const refs = Array.isArray(s.appRefs)
-              ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n)
+              ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n.trim()).map(n => n.trim())
               : []
-            if (!refs.length) return []
-            const art = s.artwork
-            const artwork = art && typeof art === 'object' && typeof (art as EditorialArtwork).url === 'string'
-              ? (art as EditorialArtwork)
-              : undefined
+            // Dedupe and cap HERE as well as server-side. This boundary exists to
+            // not trust the payload, and every bound it skipped was one the
+            // component would have rendered: duplicate refs collide row keys, and
+            // an `app` section carrying several refs would render a multi-row card
+            // headed by one member's name.
+            const unique = [...new Set(refs)].slice(0, MAX_SECTION_APPS)
+            if (s.type === 'app' ? unique.length !== 1 : unique.length < MIN_COLLECTION_APPS) return []
+            const title = typeof s.title === 'string' && s.title.trim() ? s.title.trim() : undefined
+            // A collection is nothing without its theme, so one that arrives
+            // without a title is dropped rather than rendered anonymously. A
+            // whitespace-only title is absent, not present-and-blank -- otherwise
+            // the card renders an empty heading over the rows.
+            if (s.type === 'collection' && !title) return []
             return [{
-              appRefs: refs,
-              title: typeof s.title === 'string' ? s.title : undefined,
+              type: s.type,
+              appRefs: unique,
+              // An `app` section is headed by the app's own name; a published
+              // title there means the document meant `collection`.
+              title: s.type === 'collection' ? title : undefined,
               blurb: typeof s.blurb === 'string' ? s.blurb : undefined,
-              artwork,
+              artwork: normalizeEditorialArtwork(s.artwork),
             }]
           })
         : []
@@ -238,23 +321,29 @@ export default function AppsPage() {
   const [spotlight, ...secondary] = featured
 
   /**
-   * Editorial spotlights, resolved against the apps this client can actually
-   * show. A reference that resolves to nothing is dropped, and a section left
-   * with no resolvable app is dropped whole rather than rendered as an empty
-   * hero — the registry is the source of truth for what exists, so editorial can
-   * never conjure an app by naming one.
+   * Editorial featured sections, resolved against the apps this client can
+   * actually show. A reference that resolves to nothing is dropped — the
+   * registry is the source of truth for what exists, so editorial can never
+   * conjure an app by naming one.
+   *
+   * A collection that falls below two resolvable apps is dropped whole rather
+   * than demoted to a single-app card: the title states why several apps belong
+   * together, and showing one survivor under that theme would claim something
+   * the curator did not write.
    *
    * Empty means "fall back to `pickFeatured`", which is what Discover did before
    * the editorial document had a layout. That is also today's live state:
-   * `sections` is published empty, so this ships as a no-op.
+   * `sections` is published empty, so the derived pick is what ships -- rendered
+   * by the same card, so the layout change reaches users before any curated
+   * section does.
    */
-  const editorialSpotlights = useMemo(() => {
+  const featuredSections = useMemo(() => {
     const byName = new Map(browseApps.map(a => [a.name, a]))
     return (registryData?.editorialSections || []).flatMap(section => {
       const resolved = section.appRefs.map(n => byName.get(n)).filter((a): a is RegistryApp => !!a)
-      if (!resolved.length) return []
-      const [hero, ...rest] = resolved
-      return [{ ...section, hero, rest }]
+      const floor = section.type === 'collection' ? MIN_COLLECTION_APPS : 1
+      if (resolved.length < floor) return []
+      return [{ ...section, apps: resolved }]
     })
   }, [registryData, browseApps])
 
@@ -696,32 +785,40 @@ export default function AppsPage() {
           ) : (
             <>
               {/* A published layout replaces the derived one entirely: mixing a
-                  curator's spotlights with `featured`-flag picks would show the
+                  curator's cards with `featured`-flag picks would show the
                   same app twice and give the curator no way to say "only these". */}
-              {showEditorial && editorialSpotlights.length > 0 ? (
-                editorialSpotlights.map(section => (
+              {showEditorial && featuredSections.length > 0 ? (
+                featuredSections.map((section, position) => (
                   <FeaturedSpotlight
-                    key={`${section.hero.name}:${section.title || ''}`}
-                    app={section.hero}
-                    apps={section.rest}
+                    /* Keyed by document POSITION, not content. Two sections may
+                       legitimately agree on type and title -- the publish gate
+                       checks duplicate refs within a section, not across them --
+                       and a colliding key lets React reconcile one card against
+                       the other's fiber, resetting art-failure state or dropping
+                       a card entirely. */
+                    key={`${position}:${section.type}`}
+                    type={section.type}
+                    apps={section.apps}
                     title={section.title}
                     blurb={section.blurb}
                     artwork={section.artwork}
-                    busy={actionLoading === `${section.hero.name}:enable`}
-                    onOpen={e => openDetail(section.hero.name, e)}
-                    onGet={() => getApp(section.hero.name)}
-                    onEnable={() => enableApp(section.hero.name)}
+                    busyName={
+                      featuredBusyName(actionLoading, section.apps)
+                    }
+                    onGet={name => getApp(name)}
+                    onEnable={name => enableApp(name)}
                     onOpenApp={(name, e) => openDetail(name, e)}
                   />
                 ))
               ) : showEditorial && spotlight && (
                 <>
                   <FeaturedSpotlight
-                    app={spotlight}
-                    busy={actionLoading === `${spotlight.name}:enable`}
-                    onOpen={e => openDetail(spotlight.name, e)}
-                    onGet={() => getApp(spotlight.name)}
-                    onEnable={() => enableApp(spotlight.name)}
+                    type="app"
+                    apps={[spotlight]}
+                    busyName={featuredBusyName(actionLoading, [spotlight])}
+                    onGet={name => getApp(name)}
+                    onEnable={name => enableApp(name)}
+                    onOpenApp={(name, e) => openDetail(name, e)}
                   />
                   {secondary.length > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 mb-6">

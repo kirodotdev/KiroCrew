@@ -36,13 +36,34 @@ const darkOnly = {
 
 const noop = () => {}
 
-describe.each([
-  ['FeatureCard', FeatureCard],
-  ['FeaturedSpotlight', FeaturedSpotlight],
-])('%s with a dark-only icon', (_name, Component) => {
+/**
+ * The two surfaces no longer share a prop shape -- `FeaturedSpotlight` takes a
+ * typed section (`type` plus an `apps` list) while `FeatureCard` still takes one
+ * `app` -- so the guard is asserted per component rather than parametrised. The
+ * property under test is the same either way: a dark-only icon must render as
+ * the dark variant instead of degrading to the package glyph.
+ */
+describe('FeatureCard with a dark-only icon', () => {
   it('renders the dark variant instead of falling through to the glyph', () => {
+    render(<FeatureCard app={darkOnly} onOpen={noop} onGet={noop} onEnable={noop} />)
+    const srcs = [...document.querySelectorAll('img')].map(i => i.getAttribute('src'))
+    expect(srcs).toContain('/api/apps/blob?repo=x&path=icon-dark.png')
+  })
+})
+
+describe('FeaturedSpotlight with a dark-only icon', () => {
+  it('renders the dark variant instead of falling through to the glyph', () => {
+    // The icon now lives on the app ROW rather than in the art panel, and the
+    // panel itself falls back to a gradient because this fixture ships no hero
+    // art -- so the blob URL below can only have come from the row's icon.
     render(
-      <Component app={darkOnly} onOpen={noop} onGet={noop} onEnable={noop} />,
+      <FeaturedSpotlight
+        type="app"
+        apps={[darkOnly]}
+        onOpenApp={noop}
+        onGet={noop}
+        onEnable={noop}
+      />,
     )
     const srcs = [...document.querySelectorAll('img')].map(i => i.getAttribute('src'))
     expect(srcs).toContain('/api/apps/blob?repo=x&path=icon-dark.png')

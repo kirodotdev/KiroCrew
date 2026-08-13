@@ -4363,6 +4363,7 @@
         "view_details_for": "{{name}} का विवरण देखें"
       },
       "featuredSpotlight": {
+        "collection": "संग्रह",
         "enable": "सक्षम करें",
         "featured": "विशेष",
         "get": "प्राप्त करें",

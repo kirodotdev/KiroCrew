@@ -4428,6 +4428,7 @@
         "view_details_for": "Mostra i dettagli di {{name}}"
       },
       "featuredSpotlight": {
+        "collection": "RACCOLTA",
         "enable": "Attiva",
         "featured": "IN EVIDENZA",
         "get": "Ottieni",

@@ -3358,6 +3358,7 @@
         "view_details_for": "View details for {{name}}"
       },
       "featuredSpotlight": {
+        "collection": "COLLECTION",
         "enable": "Enable",
         "featured": "FEATURED",
         "get": "Get",
