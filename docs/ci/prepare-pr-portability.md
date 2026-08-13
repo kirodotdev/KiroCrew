@@ -34,9 +34,9 @@ Grounded in a read of the skill's five scripts and `SKILL.md`:
 | --- | --- |
 | `preflight.py` | **None.** Base branch is auto-detected: existing PR's base → `origin/HEAD` → `main`. Pure `git`/`gh`. |
 | `diff_signals.py` | **None.** Changed-file + flagged-signal reporting over `git diff`. |
-| `pr_findings.py` | **None.** Failed-step + log-tail + unresolved-thread extraction over `gh`. |
+| `pr_findings.py` | **None.** Failed-step + log-tail + unresolved-thread extraction over `gh`, plus reviewer findings for the current head with a stable `span=` identity (path + reviewer/kind; no file reads -- finding paths are untrusted comment text); the `[<NAME>-REVIEWED]` stamp contract is discovered from the comments, not configured. |
 | `enable_automerge.py` | **None.** Thin idempotent wrapper around `gh pr merge --auto`. |
-| `pr_status.py` | **One line:** `READINESS_CONTEXT = "PR Readiness"`. And it already **degrades gracefully** — when that aggregate status is absent it falls back to the full check rollup ("legacy PRs without it still use the full rollup"). |
+| `pr_status.py` | **One line:** `READINESS_CONTEXT = "PR Readiness"`. And it already **degrades gracefully** — when that aggregate status is absent it falls back to the full check rollup ("legacy PRs without it still use the full rollup"). The reviewer-marker gate (#2550) is likewise self-configuring: it evaluates whatever `[<NAME>-REVIEWED]` stamps bot comments carry (none found → no gate), with `--reviewers` / `PREPARE_PR_REVIEWERS` as the optional scoping seam. The pull_request-run-for-head assertion applies only when the rollup is Actions-shaped AND the repo demonstrably dispatches pull_request-event runs at all — a push-trigger-only repo is never held to an event it does not use. |
 
 So the executable core already runs anywhere `git` + `gh` are present. Decisions are driven by script **exit codes** (`0 clean / 10 running / 20 blocked / 2 env`), which are project-neutral.
 
@@ -281,6 +281,58 @@ flowchart TB
 ```
 
 The three axes (§5.1) map one-to-one onto the loop's green nodes. Anything a profile omits falls back down the resolution ladder (§5.7), so a repo with no config still runs the loop on auto-detected gates and the scripts' generic behavior.
+
+### 5.9 The reviewer-marker grammar (spec of record)
+
+The `[<NAME>-REVIEWED]` / `[BLOCK-MERGE]` markers are a load-bearing contract
+between three parties: the review workflows that EMIT them
+(`codex-review.yml`, `claude-review.yml`, `design-review.yml`,
+`ux-review.yml`), and the two parity-pinned parser copies in `pr_status.py`
+and `pr_findings.py` that CONSUME them. A workflow change that alters the
+emitted shape silently orphans the parsers — the freshness gate then sees no
+stamps and stops gating — so any change to either side must update this
+section and both parser regexes together
+(`test_prepare_pr_findings.py::TestMarkerRegexParity` pins the two copies to
+each other).
+
+The grammar, one marker per line inside the bot's PR comment body:
+
+- `[<NAME>-REVIEWED] <sha>` — proof the review ran for that commit. `<NAME>`
+  is `[A-Z][A-Z0-9_-]*` (e.g. `GPT`, `OPUS`, `DESIGN`, `UX`); `<sha>` is a
+  7–40 char lowercase hex prefix of the head SHA (workflows emit the full 40).
+- `[BLOCK-MERGE] <sha>` — emitted ADDITIONALLY, only for a blocking verdict on
+  that same commit. Never emitted for advisory findings.
+- Finding lines start with the literal token `BLOCKING` or `FINDING`, followed
+  by `-- <file>:<line>` (GPT lane) or the bold Opus form
+  `**BLOCKING — <file>:<line> — <title>**`; the parsers accept `--` or an
+  em-dash, optional bold markers, and an absent second separator.
+
+Consumption rules the parsers implement: only comments whose author is a Bot
+AND whose login is a trusted marker author count — by default
+`github-actions[bot]`, the actor every review workflow posts through, because
+`user.type == "Bot"` alone is spoofable by a third-party app that echoes
+PR-controlled text (`--marker-authors` / `PREPARE_PR_MARKER_AUTHORS` widens
+the allowlist for a repo whose reviewers post under app-specific logins); an
+agent's own disposition comments quote these tokens verbatim and are excluded
+by both checks; reviewer IDENTITY comes from workflow-authored bytes, never
+from model output — each lane's comment starts with its template-written
+upsert key (`<!-- codex-ai-review -->` → GPT, `<!-- claude-ai-review -->` →
+OPUS, `<!-- design-review -->` → DESIGN, `<!-- ux-review -->` → UX;
+`--marker-bindings` / `PREPARE_PR_MARKER_BINDINGS` overrides), and a stamp
+counts only when the bound lane's own name matches it, so injected model
+output in one lane can never grant another reviewer's freshness whatever
+names it emits (its `[BLOCK-MERGE]` still gates from any trusted comment:
+injection can deny, never forge); bots update their comment in place, so a
+marker naming a
+superseded SHA is history, not signal; freshness is OR-ed across comments per
+reviewer name. Discovery mode holds every stamp found to freshness but does
+not require presence; naming reviewers (`--reviewers` /
+`PREPARE_PR_REVIEWERS`) additionally REQUIRES each named reviewer to have a
+fresh stamp, so a pinned fleet cannot be silently un-gated by an emitter
+drift or a bot that fails to post. Two tests hold the contract together:
+`TestMarkerRegexParity` pins the two consumer copies to each other, and
+`test_emitting_workflows_still_carry_the_marker_grammar` pins the emitting
+workflows to the markers the consumers parse.
 
 ## 6. Distribution — keep it built-in
 
