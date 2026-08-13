@@ -29,7 +29,7 @@ from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.history import INCOGNITO_MEMORY_MODES, SEARCH_MIN_CHARS, _archive_dir
+from kiro_crew.history import SEARCH_MIN_CHARS, _archive_dir, is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import (
     discover_servers_to_sync,
@@ -1042,7 +1042,7 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     meta = await loop.run_in_executor(None, log.get_metadata, key)
     # Defense in depth: never summarize an incognito/temporary session even if a
     # caller somehow passes its key.
-    if str(meta.get("memory_mode", "")).lower() in INCOGNITO_MEMORY_MODES:
+    if is_incognito_transcript(meta.get("memory_mode")):
         return ""
     # Cache: a summary persisted in a sidecar file is reusable as long as the
     # session file hasn't changed since it was generated. session_mtime advances

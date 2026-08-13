@@ -31,6 +31,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew import mcp_core
+from kiro_crew.history import INCOGNITO_MEMORY_MODES
 from kiro_crew.mcp_core import (
     _call_tool,
     _casefold_match_span,
@@ -288,7 +289,7 @@ class TestPostTransportClassification:
 
 class TestHistoryScalarHelpers:
     def test_incognito_detection_is_case_insensitive(self):
-        mode = sorted(mcp_core._HISTORY_INCOGNITO_MODES)[0]
+        mode = sorted(INCOGNITO_MEMORY_MODES)[0]
         assert _history_is_incognito({"memory_mode": mode.upper()}) is True
         assert _history_is_incognito({"memory_mode": "persistent"}) is False
         assert _history_is_incognito({}) is False

@@ -144,6 +144,16 @@ class TestGating:
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is False
         assert called == []
 
+    async def test_mixed_case_incognito_is_refused_too(self, env, monkeypatch):
+        """A hand-edited transcript header is not bound by the API's
+        validation, so the privacy refusal must be case-insensitive."""
+        state, slot = env
+        slot.memory_mode = "Incognito"
+        called = []
+        _stub_llm(monkeypatch, _GOOD_REPLY, called)
+        assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is False
+        assert called == []
+
     async def test_temporary_is_refused_before_any_model_call(self, env, monkeypatch):
         """A temporary session's transcript is discarded; persisting a summary
         of it would leave conversation content on disk after the conversation

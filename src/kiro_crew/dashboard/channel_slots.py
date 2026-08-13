@@ -61,7 +61,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
 from kiro_crew.dashboard.state import _normalize_slot_key
-from kiro_crew.history import carry_provenance
+from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -74,9 +74,6 @@ logger = logging.getLogger(__name__)
 #: bounds how stale the sidebar can be for a channel conversation started while
 #: the dashboard is already open, and each pass is a cheap metadata scan.
 RECONCILE_INTERVAL_SECS = 30
-
-#: Memory modes whose sessions must never be surfaced as a durable slot.
-_EPHEMERAL_MEMORY_MODES = frozenset({"incognito", "temporary"})
 
 #: Human-facing label per channel namespace, used only when a session has no
 #: title of its own yet (first turn still in flight).
@@ -204,11 +201,11 @@ def eligible_channel_sessions(
         # clears the stale flag — see reconcile_channel_slots).
         if _close_stands(s, meta, mtimes or {}):
             continue
-        modes = (
-            str(meta.get("memory_mode", "")).lower(),
-            str(s.get("memory_mode", "")).lower(),
-        )
-        if any(m in _EPHEMERAL_MEMORY_MODES for m in modes):
+        # An ephemeral (incognito/temporary) session must never be surfaced as
+        # a durable slot; either the metadata line or the listing row can carry
+        # the mode, so both are classified.
+        modes = (meta.get("memory_mode"), s.get("memory_mode"))
+        if any(is_incognito_transcript(m) for m in modes):
             continue
         exempt = bool(meta.get("pinned")) or bool(meta.get("folder_id"))
         if not exempt and cutoff is not None and float(s.get("modified", 0) or 0) < cutoff:

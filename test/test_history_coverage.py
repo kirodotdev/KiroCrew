@@ -1376,3 +1376,29 @@ class TestReadMessagesSkipsBlankLines:
             + _jsonl({"role": "user", "content": "only"}),
         )
         assert [m["content"] for m in log._read_messages("k")] == ["only"]
+
+
+class TestIsIncognitoTranscript:
+    """Lock the shared classifier's normalization so call sites can rely on it."""
+
+    @pytest.mark.parametrize("mode", sorted(H.INCOGNITO_MEMORY_MODES))
+    def test_private_modes_classify_true(self, mode: str) -> None:
+        assert H.is_incognito_transcript(mode) is True
+
+    @pytest.mark.parametrize("mode", ["Incognito", "TEMPORARY", "Temporary"])
+    def test_case_insensitive(self, mode: str) -> None:
+        """The set holds lowercase members; a hand-edited header is not bound
+        by API validation, so comparison must be case-insensitive."""
+        assert H.is_incognito_transcript(mode) is True
+
+    @pytest.mark.parametrize("mode", [None, "", "persistent", "unknown", 42, False])
+    def test_absent_or_unrecognized_reads_persistent(self, mode: object) -> None:
+        """None/absent means a legacy persistent session; junk stays
+        not-private — fail-closed callers allowlist BEFORE this predicate."""
+        assert H.is_incognito_transcript(mode) is False
+
+    def test_whitespace_not_stripped(self) -> None:
+        """`"incognito "` deliberately misses the set: the restricted-session
+        write gate normalizes via its own allowlist and denies on None, so
+        stripping here would silently change which callers fail closed."""
+        assert H.is_incognito_transcript("incognito ") is False

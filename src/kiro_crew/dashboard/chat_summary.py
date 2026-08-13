@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.session_summary import (
     count_user_turns,
@@ -41,12 +42,6 @@ logger = logging.getLogger(__name__)
 # Role used to pick the model. Summarization is unattended background work, so
 # it must not ride the interactive chat flagship on every turn.
 _SUMMARY_ROLE = "background"
-
-# Memory modes that forbid deriving durable artifacts from the conversation.
-# Mirrors history.INCOGNITO_MEMORY_MODES: a temporary session's transcript is
-# discarded, so persisting a summary of it to the .intents sidecar would leave
-# conversation content on disk after the conversation itself is gone.
-_NO_DERIVED_ARTIFACT_MODES = frozenset({"incognito", "temporary"})
 
 _PROMPT = """\
 Summarize this chat session by INTENT, for a panel whose only job is to make \
@@ -153,7 +148,10 @@ def _should_summarize(cfg: KiroCrewConfig, slot: Any, user_turns: int | None) ->
         return "disabled"
     if getattr(slot, "_summary_in_flight", False):
         return "in_flight"
-    if getattr(slot, "memory_mode", "") in _NO_DERIVED_ARTIFACT_MODES:
+    # An incognito/temporary session forbids deriving durable artifacts: its
+    # transcript is discarded, so persisting a summary to the .intents sidecar
+    # would leave conversation content on disk after the conversation is gone.
+    if is_incognito_transcript(getattr(slot, "memory_mode", "")):
         return "memory_mode"
     # Require EXACTLY a clean end_turn. The marker is cleared at turn start,
     # so an empty value means the turn never reached EVENT_COMPLETE (ACP

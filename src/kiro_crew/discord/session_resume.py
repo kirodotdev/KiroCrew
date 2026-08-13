@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from kiro_crew.history import INCOGNITO_MEMORY_MODES
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -246,7 +246,7 @@ class DiscordSessionResume:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if str(row.get("memory_mode", "persistent")).lower() in INCOGNITO_MEMORY_MODES:
+            if is_incognito_transcript(row.get("memory_mode")):
                 continue
             key = _history_dashboard_key(row.get("key"))
             if key is None:
