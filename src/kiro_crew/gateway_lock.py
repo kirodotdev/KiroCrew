@@ -25,12 +25,16 @@ The cost of that choice is the other half of the same property. ``fork()`` share
 one description between parent and child, so a forked child that inherits this fd
 keeps the lock alive after the parent dies. A child that wedges before ``exec``
 therefore pins the home: every later start is refused, and the pid recorded in
-the file names a process that no longer exists. This occurs when ``preexec_fn``
-forces a plain ``fork()`` of the multi-threaded gateway in
-:mod:`kiro_crew.kiro_prerequisite`.
+the file names a process that no longer exists.
 
-The remedy is to stop creating such children, not to weaken this guard;
-``_run_process`` therefore does not use ``preexec_fn``. What this
+The remedy is to stop creating such children, not to weaken this guard, so every
+plain ``fork()`` inside the gateway either avoids inheriting this fd or drops it
+before it can wedge. ``_run_process`` does not use ``preexec_fn`` (which would
+force a plain ``fork()`` of the multi-threaded gateway). The sandbox availability
+probe in :mod:`kiro_crew.sandbox` does fork a short-lived child to test
+``unshare``, but that child closes every inherited descriptor — this fd, and the
+dashboard listen socket, included — before it touches the namespace, so it can no
+longer pin the home even if it is orphaned. What this
 module owes the operator meanwhile is an honest refusal: it resolves the process
 that ACTUALLY holds the lock from ``/proc/*/fd`` rather than quoting the pid in
 the file, reports what that process looks like, and names the reclaim command
