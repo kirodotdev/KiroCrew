@@ -1,0 +1,25 @@
+{
+  "name": "mochi-bg",
+  "description": "Mochi background agent — executes watch checks, reminders, and planning tasks. Results are injected into the main agent's context.",
+  "model": "auto",
+  "tools": [
+    "fs_read",
+    "grep",
+    "glob",
+    "web_search",
+    "web_fetch",
+    "@mochi:mochi"
+  ],
+  "includeMcpJson": false,
+  "mcpServers": {},
+  "managedToolPolicy": {
+    "exclude": [
+      "spawn_run",
+      "cron_add",
+      "cron_remove",
+      "cron_update",
+      "cron_remove_all",
+      "task_run"
+    ]
+  }
+}

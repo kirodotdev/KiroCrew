@@ -1,0 +1,107 @@
+# Inclusive language rules for KiroCrew.
+# Mirrors Amazon's InclusiveTechScanner flagged terms.
+# Docs: https://github.com/get-woke/woke#config-file
+
+rules:
+  - name: master
+    terms:
+      - master
+    alternatives:
+      - primary
+      - main
+      - leader
+      - controller
+    severity: error
+    note: "Use 'primary', 'main', 'leader', or 'controller' instead."
+
+  - name: slave
+    terms:
+      - slave
+    alternatives:
+      - replica
+      - secondary
+      - follower
+      - responder
+    severity: error
+    note: "Use 'replica', 'secondary', 'follower', or 'responder' instead."
+
+  - name: whitelist
+    terms:
+      - whitelist
+      - white-list
+      - white_list
+    alternatives:
+      - allowlist
+      - approved list
+      - inclusion list
+    severity: error
+
+  - name: blacklist
+    terms:
+      - blacklist
+      - black-list
+      - black_list
+    alternatives:
+      - denylist
+      - blocklist
+      - exclusion list
+    severity: error
+
+  - name: whiteday
+    terms:
+      - whiteday
+      - whitedays
+      - white day
+      - white days
+    alternatives:
+      - clear day
+      - allowed day
+    severity: error
+
+  - name: blackday
+    terms:
+      - blackday
+      - blackdays
+      - black day
+      - black days
+    alternatives:
+      - blocked day
+    severity: error
+
+  - name: sanity-check
+    terms:
+      - sanity check
+      - sanity-check
+    alternatives:
+      - smoke test
+      - confidence check
+      - quick validation
+    severity: warning
+
+  - name: dummy
+    terms:
+      - dummy
+    alternatives:
+      - placeholder
+      - stub
+      - sample
+    severity: warning
+
+ignore_files:
+  - node_modules/
+  - "*.lock"
+  - package-lock.json
+  - dist/
+  - build/
+  - coverage/
+  - "*.min.js"
+  - "*.min.css"
+  - .git/
+  # Vendored third-party code (llama-cpp-python) — carries upstream GitHub
+  # source URLs and identifiers we must not rewrite.
+  - src/kiro_crew/_vendor/**
+  # Byte-exact deny-rule parity fixture: the git-publish patterns must match the
+  # literal protected git branch name (main|mainline|master) they detect, so the
+  # term cannot be rewritten. The security.py source carries wokeignore comments;
+  # JSON can't, so the fixture is ignored here (mirrored in the CI --stdin scan).
+  - test/fixtures/denied_commands_golden.json

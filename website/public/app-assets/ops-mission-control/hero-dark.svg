@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270">
+  <defs>
+    <linearGradient id="omc-bg-d" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a1b26"/>
+      <stop offset="100%" stop-color="#232538"/>
+    </linearGradient>
+    <linearGradient id="omc-card-d" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.04"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" fill="url(#omc-bg-d)"/>
+
+  <!-- radar sweep, echoing the app icon -->
+  <g transform="translate(78 135)" opacity="0.7">
+    <circle r="58" fill="none" stroke="#818cf8" stroke-width="1.2" opacity="0.3"/>
+    <circle r="40" fill="none" stroke="#818cf8" stroke-width="1.2" opacity="0.42"/>
+    <circle r="22" fill="none" stroke="#818cf8" stroke-width="1.2" opacity="0.58"/>
+    <path d="M0 0 L0 -58 A58 58 0 0 1 41 -41 Z" fill="#818cf8" fill-opacity="0.2"/>
+    <circle r="3.4" fill="#a5b4fc"/>
+    <circle cx="26" cy="-18" r="3" fill="#f87171"/>
+    <circle cx="-31" cy="24" r="2.6" fill="#fbbf24"/>
+  </g>
+
+  <!-- board rows -->
+  <g transform="translate(168 62)">
+    <rect width="252" height="146" rx="10" fill="url(#omc-card-d)"/>
+    <rect x="16" y="16" width="86" height="7" rx="3.5" fill="#a5b4fc" fill-opacity="0.8"/>
+
+    <g transform="translate(16 40)">
+      <circle cx="4" cy="4" r="4" fill="#818cf8"/>
+      <rect x="16" y="1" width="112" height="6" rx="3" fill="#e2e8f0" fill-opacity="0.5"/>
+      <rect x="176" y="0" width="44" height="8" rx="4" fill="#818cf8" fill-opacity="0.26"/>
+    </g>
+    <g transform="translate(16 66)">
+      <circle cx="4" cy="4" r="4" fill="#fbbf24"/>
+      <rect x="16" y="1" width="88" height="6" rx="3" fill="#e2e8f0" fill-opacity="0.42"/>
+      <rect x="176" y="0" width="44" height="8" rx="4" fill="#fbbf24" fill-opacity="0.24"/>
+    </g>
+    <g transform="translate(16 92)">
+      <circle cx="4" cy="4" r="4" fill="#64748b"/>
+      <rect x="16" y="1" width="126" height="6" rx="3" fill="#e2e8f0" fill-opacity="0.32"/>
+      <rect x="176" y="0" width="44" height="8" rx="4" fill="#64748b" fill-opacity="0.3"/>
+    </g>
+    <g transform="translate(16 118)">
+      <circle cx="4" cy="4" r="4" fill="#34d399"/>
+      <rect x="16" y="1" width="70" height="6" rx="3" fill="#e2e8f0" fill-opacity="0.26"/>
+      <rect x="176" y="0" width="44" height="8" rx="4" fill="#34d399" fill-opacity="0.24"/>
+    </g>
+  </g>
+</svg>

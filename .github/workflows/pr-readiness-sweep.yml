@@ -1,0 +1,216 @@
+name: PR Readiness Self-Heal Sweep
+
+# Backstop for a dropped `workflow_run` event.
+#
+# `pr-readiness.yml` publishes a live "PR Readiness" commit status, then relies
+# on the `workflow_run: completed` event from each monitored workflow (CI,
+# Build, Code Review, the AI reviewers) to re-fire and flip the status from the
+# mid-flight `pending` to its terminal verdict (`success` for a same-repository
+# PR, `failure`/maintainer-review for a fork PR). GitHub does NOT guarantee
+# delivery of `workflow_run` events and silently drops them under Actions load.
+# When the FINAL completion event for a head SHA is dropped, nothing recomputes
+# the unchanged commit, so the required "PR Readiness" status is frozen at the
+# stale `pending` forever and the PR can never merge -- even though every check
+# is actually green. (Observed on PR #1461: all checks green at 20:00-20:11,
+# zero workflow_run readiness runs fired afterward, status stuck `pending`.)
+#
+# This sweep finds open PRs whose "PR Readiness" status is stale and re-fires the
+# EXISTING recompute via `pr-readiness.yml`'s `workflow_dispatch` path. It does
+# NOT re-run CI/Build/reviewers and never computes a verdict itself -- it only
+# nudges the authoritative readiness workflow to re-evaluate. The recompute is
+# idempotent and stale-SHA guarded, so a spurious nudge just republishes the
+# correct verdict (including `pending` again, harmlessly, if a long CI run is
+# genuinely still in flight) and stops.
+#
+# TWO freeze modes qualify as stale, and they need different tests:
+#
+#   1. `pending` past STALE_MINUTES -- the dropped-event case above. Age alone is
+#      the signal, because a live fan-out cannot plausibly still be running.
+#
+#   2. `failure` with check evidence that landed AFTER it was published -- the
+#      RE-RUN case. Re-running individual jobs inside an already-completed run
+#      (`gh run rerun --failed`) creates a new run ATTEMPT, and that attempt's
+#      completion does NOT emit a fresh `workflow_run: completed` event, so
+#      nothing re-triggers the aggregator. Proven on PR #2064: CI run 31208434535
+#      reached attempt 2 and completed SUCCESS at 19:16:13Z while "PR Readiness"
+#      stayed frozen on its 19:01:24Z failure -- every underlying check green, the
+#      required aggregate red, and no event left to correct it.
+#
+#      Age is the WRONG test here: a terminal failure is legitimately old on a PR
+#      that is genuinely failing. The test is instead "a check run finished after
+#      the verdict was published", which makes the verdict stale by construction.
+#      That is self-terminating -- republishing makes readiness the newest
+#      timestamp again -- so a genuinely failing PR is nudged at most once per new
+#      piece of check evidence, never once per sweep.
+on:
+  schedule:
+    # Every 15 minutes. A normal fan-out publishes terminal state via events
+    # well inside this window; anything still `pending` past STALE_MINUTES is
+    # treated as a dropped-event freeze and nudged.
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write        # dispatch pr-readiness.yml (workflow_dispatch)
+  contents: read
+  pull-requests: read   # list open PRs
+  statuses: read        # read the "PR Readiness" commit status
+
+concurrency:
+  # Collapse an overlapping sweep into one. The sweep is idempotent, so
+  # cancelling an in-flight run is safe.
+  group: pr-readiness-sweep
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    name: Nudge stuck PR Readiness statuses
+    runs-on: ubuntu-latest
+    # Headroom for the larger dispatch volume: a real backlog can now be drained
+    # in a single sweep (see MAX_DISPATCH), so the job may fire many recomputes.
+    timeout-minutes: 15
+    steps:
+      - name: Re-fire readiness for stale pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STATUS_CONTEXT: "PR Readiness"
+          # A `pending` status older than this (minutes) is considered a
+          # dropped-event freeze rather than an in-flight fan-out.
+          STALE_MINUTES: "15"
+          # Runaway backstop ONLY -- not a fairness throttle. Dispatch is
+          # oldest-stale-first (see the sort in the second pass), so the cap can
+          # never perpetually starve a low-numbered PR the way the old small,
+          # PR-number-ordered cap did. It is sized to cover the entire open-PR
+          # set in a single sweep, so a genuine backlog drains in one pass; it
+          # exists only to bound a single sweep against a pathological run.
+          MAX_DISPATCH: "200"
+        run: |
+          set -euo pipefail
+
+          now_epoch="$(date -u +%s)"
+          stale_seconds=$(( STALE_MINUTES * 60 ))
+
+          # Open PRs with their current head SHA. A single cheap list call.
+          prs="$(gh pr list --repo "$REPO" --state open --limit 300 \
+            --json number,headRefOid)"
+
+          total="$(jq 'length' <<<"$prs")"
+          echo "Scanning $total open pull request(s) for stale PR Readiness."
+
+          # First pass: COLLECT every stale PR; do NOT dispatch inline. Inline
+          # dispatch in `gh pr list` order plus a cap starves whichever stale PRs
+          # land past the cap on every sweep -- in practice the oldest,
+          # lowest-numbered ones, since the list is newest-first. Gather them all
+          # here, then dispatch oldest-first in the second pass below.
+          stale_file="$(mktemp)"
+
+          while read -r row; do
+            [ -n "$row" ] || continue
+            number="$(jq -r '.number' <<<"$row")"
+            sha="$(jq -r '.headRefOid' <<<"$row")"
+            [ -n "$sha" ] && [ "$sha" != "null" ] || continue
+
+            # Most-recent "PR Readiness" commit status for this head SHA. The
+            # statuses API returns newest first, so `first` is authoritative.
+            status_json="$(gh api "repos/$REPO/commits/$sha/statuses" --paginate 2>/dev/null \
+              | jq -c --arg ctx "$STATUS_CONTEXT" \
+                  '[.[] | select(.context == $ctx)] | first // empty' \
+              || echo "")"
+
+            # No readiness status yet -> the PR's own run is coming; not stuck.
+            [ -n "$status_json" ] || continue
+
+            state="$(jq -r '.state' <<<"$status_json")"
+            updated_at="$(jq -r '.updated_at' <<<"$status_json")"
+            updated_epoch="$(date -u -d "$updated_at" +%s 2>/dev/null || echo 0)"
+            age=$(( now_epoch - updated_epoch ))
+
+            case "$state" in
+              pending)
+                if [ "$updated_epoch" -eq 0 ] || [ "$age" -lt "$stale_seconds" ]; then
+                  # Either unparseable, or still within the plausible-running window.
+                  continue
+                fi
+                reason="pending for ${age}s (> ${stale_seconds}s)"
+                ;;
+              failure)
+                # A TERMINAL verdict can go stale too, and this is the case the
+                # pending-only sweep missed entirely. Re-running individual jobs
+                # inside an already-completed run (`gh run rerun --failed`)
+                # creates a new run ATTEMPT, and that attempt's completion does
+                # NOT emit a fresh `workflow_run: completed` event -- so nothing
+                # re-triggers the aggregator. Proven on PR #2064: CI run
+                # 31208434535 reached attempt 2 and completed SUCCESS at
+                # 19:16:13Z, while `PR Readiness` stayed frozen on its 19:01:24Z
+                # failure. Every underlying check was green and the aggregate was
+                # red, with no event left to fix it.
+                #
+                # The re-fire condition is deliberately NOT "state is failure":
+                # that would dispatch on every legitimately-failing PR every 15
+                # minutes, forever. It is "a check run for this SHA finished
+                # AFTER the verdict was published" -- i.e. the verdict is stale
+                # BY CONSTRUCTION, because evidence landed after it was computed.
+                #
+                # That condition is self-terminating, which is what makes it safe
+                # to run on a schedule: republishing the verdict makes the
+                # readiness status the newest timestamp again, so the next sweep
+                # sees nothing newer and does not re-fire. A PR that is genuinely
+                # failing is nudged at most once per new piece of check evidence,
+                # not once per sweep.
+                [ "$updated_epoch" -ne 0 ] || continue
+                newest_check="$(gh api "repos/$REPO/commits/$sha/check-runs" --paginate 2>/dev/null \
+                  | jq -r '[.check_runs[]? | select(.status == "completed") | .completed_at]
+                           | map(select(. != null)) | max // empty' \
+                  || echo "")"
+                [ -n "$newest_check" ] || continue
+                newest_epoch="$(date -u -d "$newest_check" +%s 2>/dev/null || echo 0)"
+                [ "$newest_epoch" -ne 0 ] || continue
+                # Strictly newer, with a small margin so a check completing in
+                # the same second as the publish does not look like new evidence.
+                if [ "$newest_epoch" -le $(( updated_epoch + 5 )) ]; then
+                  continue
+                fi
+                reason="failure published at $updated_at but a check completed later at $newest_check"
+                ;;
+              *)
+                # `success` needs no rescue, and `error` is a publisher fault the
+                # next real event will correct.
+                continue
+                ;;
+            esac
+
+            # Record as "staleness_epoch<TAB>number<TAB>sha<TAB>reason". The
+            # staleness epoch is the status's own updated_at, so a numeric sort
+            # ascending on column 1 orders by HOW LONG each PR has been frozen.
+            printf '%s\t%s\t%s\t%s\n' "$updated_epoch" "$number" "$sha" "$reason" >>"$stale_file"
+          done < <(jq -c '.[]' <<<"$prs")
+
+          stale_total=0
+          [ -s "$stale_file" ] && stale_total="$(wc -l <"$stale_file" | tr -d ' ')"
+          echo "Found $stale_total stale PR Readiness status(es); dispatching oldest-first."
+
+          dispatched=0
+          skipped_cap=0
+
+          # Second pass: dispatch OLDEST-stale-first (numeric sort ascending on
+          # the staleness epoch in column 1). The longest-frozen PR is always
+          # served first, so nothing can be perpetually deferred by the cap.
+          while IFS=$'\t' read -r s_epoch number sha reason; do
+            [ -n "$number" ] || continue
+            if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
+              skipped_cap=$(( skipped_cap + 1 ))
+              continue
+            fi
+            echo "PR #$number: PR Readiness $reason at $sha -> re-firing recompute."
+            if gh workflow run pr-readiness.yml --repo "$REPO" \
+                -f pr="$number" -f sha="$sha" >/dev/null 2>&1; then
+              dispatched=$(( dispatched + 1 ))
+            else
+              echo "PR #$number: failed to dispatch pr-readiness.yml (will retry next sweep)."
+            fi
+          done < <(sort -n -k1,1 "$stale_file")
+
+          rm -f "$stale_file"
+
+          echo "Re-fired $dispatched recompute(s); $skipped_cap stale PR(s) deferred to next sweep by MAX_DISPATCH=$MAX_DISPATCH."

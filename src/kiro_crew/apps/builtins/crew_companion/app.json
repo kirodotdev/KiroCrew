@@ -1,0 +1,57 @@
+{
+  "name": "crew-companion",
+  "version": "1.0.0",
+  "displayName": "Crew Companion",
+  "description": "A desktop companion for Kiro Crew that helps you pace your day: it nudges you to take breaks, holds the reminders you set in plain language, and runs a short breathing exercise when you need to reset. It also lets you know when a session finishes, fails, or needs your OK.",
+  "author": "kirocrew",
+  "license": "MIT",
+  "defaultEnabled": false,
+  "highlights": [
+    "Gentle break nudges — water, stretch, look away — on an interval you choose",
+    "Reminders you set in plain language, like “drink water in 20 minutes”",
+    "A short breathing exercise to reset when you need it",
+    "Tells you when a session finishes, fails, or needs your OK",
+    "Floats on your desktop with a swappable avatar"
+  ],
+  "backend": {
+    "hooks": {
+      "on_startup": "hooks:on_startup",
+      "on_shutdown": "hooks:on_shutdown"
+    },
+    "routes": "backend.routes:register_routes"
+  },
+  "platform": {
+    "requiresDesktopApp": true
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/crew-companion",
+        "label": "Crew Companion",
+        "icon": "Ghost"
+      }
+    ]
+  },
+  "permissions": {
+    "api": [
+      "/api/apps/crew-companion",
+      "/api/apps/crew-companion/*"
+    ],
+    "storage": true,
+    "cron": false,
+    "network": true,
+    "events": [
+      "crew-companion:fire"
+    ]
+  },
+  "tags": [
+    "companion",
+    "desktop-companion",
+    "reminders",
+    "breaks",
+    "wellbeing"
+  ],
+  "iconUrl": "/app-assets/crew-companion/icon.svg",
+  "heroImage": "/app-assets/crew-companion/hero-light.svg",
+  "heroImageDark": "/app-assets/crew-companion/hero-dark.svg"
+}

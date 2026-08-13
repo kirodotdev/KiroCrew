@@ -1,0 +1,88 @@
+# Per-file coverage baseline — files below the floor when the gate landed.
+#
+# The gate (scripts/check_per_file_coverage.py) requires every measured file to
+# meet the per-file floor EXCEPT the ones listed here. This list may only
+# shrink. A refresh DELETES graduated and vanished entries and copies every
+# surviving line through verbatim, so a recorded rate is never rewritten and no
+# path can be added -- neither a new offender nor a regression can be cleared by
+# refreshing instead of by adding tests. Each line therefore stays an accurate
+# record of the moment it was taken.
+#
+# Refresh after a file graduates, is deleted, or is renamed:
+#   python3 scripts/check_per_file_coverage.py <report> --label <lane> \
+#       --floor <n> --baseline <this file> --update-baseline
+#
+# Format: <path> <rate-when-recorded>   # <covered>/<statements>
+src/kiro_crew/_process_group_supervisor.py 32.0   # 41/128
+src/kiro_crew/apple_speech/__init__.py 53.4   # 196/367
+src/kiro_crew/apps/builtins/auto_improvement/backend/clone_setup.py 49.3   # 112/227
+src/kiro_crew/apps/builtins/auto_improvement/backend/commit.py 33.9   # 40/118
+src/kiro_crew/apps/builtins/auto_improvement/backend/sse.py 26.1   # 12/46
+src/kiro_crew/apps/builtins/auto_improvement/spine/agent_discovery.py 56.8   # 166/292
+src/kiro_crew/apps/builtins/auto_improvement/spine/bug_gate.py 20.7   # 12/58
+src/kiro_crew/apps/builtins/auto_improvement/spine/gate.py 19.1   # 22/115
+src/kiro_crew/apps/builtins/auto_improvement/spine/git_safety.py 46.4   # 45/97
+src/kiro_crew/apps/builtins/auto_improvement/spine/pr_pipeline.py 28.7   # 35/122
+src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py 0.0   # 0/6
+src/kiro_crew/apps/builtins/crew_companion/backend/routes.py 62.9   # 112/178
+src/kiro_crew/apps/builtins/file_explorer/server.py 71.9   # 396/551
+src/kiro_crew/apps/builtins/mochi/backend/routes.py 71.5   # 391/547
+src/kiro_crew/apps/builtins/mochi/hooks.py 76.6   # 357/466
+src/kiro_crew/apps/builtins/mochi/queue_file.py 72.8   # 134/184
+src/kiro_crew/apps/builtins/mochi/queue_poller.py 49.7   # 178/358
+src/kiro_crew/apps/builtins/mochi/stats_service.py 66.9   # 212/317
+src/kiro_crew/apps/builtins/mochi/watchlist_file.py 59.3   # 207/349
+src/kiro_crew/apps/builtins/mochi/watchlist_service.py 65.3   # 109/167
+src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 58.9   # 116/197
+src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/github_issues.py 58.4   # 52/89
+src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/http.py 53.8   # 35/65
+src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/pagerduty.py 68.8   # 75/109
+src/kiro_crew/apps/builtins/personal_shopper/backend/routes.py 71.5   # 186/260
+src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
+src/kiro_crew/apps/hooks_integration.py 43.0   # 65/151
+src/kiro_crew/apps/route_registry.py 51.9   # 67/129
+src/kiro_crew/channel.py 70.5   # 258/366
+src/kiro_crew/cli_chat.py 29.5   # 46/156
+src/kiro_crew/cli_cloud.py 61.2   # 178/291
+src/kiro_crew/cli_config.py 70.8   # 114/161
+src/kiro_crew/cloud/ui.py 51.4   # 90/175
+src/kiro_crew/cloud/wizard.py 65.8   # 283/430
+src/kiro_crew/computer_use/cli.py 68.8   # 130/189
+src/kiro_crew/computer_use/macos_skylight.py 54.8   # 142/259
+src/kiro_crew/conpty.py 27.9   # 12/43
+src/kiro_crew/context_management.py 74.2   # 178/240
+src/kiro_crew/dashboard/_types.py 0.0   # 0/3
+src/kiro_crew/dashboard/handlers/agents.py 77.4   # 579/748
+src/kiro_crew/dashboard/handlers/cron.py 70.9   # 400/564
+src/kiro_crew/dashboard/handlers/portability.py 17.0   # 15/88
+src/kiro_crew/dashboard/handlers/prompts.py 64.5   # 260/403
+src/kiro_crew/dashboard/handlers/weixin_qr.py 47.0   # 119/253
+src/kiro_crew/dashboard/handlers/workflows.py 20.4   # 23/113
+src/kiro_crew/dashboard/handlers_channel.py 40.4   # 84/208
+src/kiro_crew/dashboard/handlers_system.py 75.2   # 354/471
+src/kiro_crew/dashboard/ws.py 64.4   # 130/202
+src/kiro_crew/diagnostics.py 69.1   # 143/207
+src/kiro_crew/discord/gateway.py 19.6   # 10/51
+src/kiro_crew/emoji_list.py 0.0   # 0/1
+src/kiro_crew/instances/ssm_token_mint.py 21.5   # 17/79
+src/kiro_crew/knowledge/llm_pool.py 70.8   # 315/445
+src/kiro_crew/knowledge/readers.py 61.7   # 74/120
+src/kiro_crew/knowledge/sync.py 25.7   # 18/70
+src/kiro_crew/mcp_gateway/manager.py 28.7   # 96/335
+src/kiro_crew/mcp_gateway/pool.py 68.6   # 286/417
+src/kiro_crew/mcp_gateway/stub.py 66.6   # 353/530
+src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
+src/kiro_crew/session_workspace.py 38.8   # 26/67
+src/kiro_crew/skill_providers/skillsh.py 64.0   # 137/214
+src/kiro_crew/slack/allowlist.py 57.1   # 68/119
+src/kiro_crew/slack/client.py 67.2   # 246/366
+src/kiro_crew/suggestions.py 18.7   # 31/166
+src/kiro_crew/teams/client.py 52.8   # 121/229
+src/kiro_crew/telegram/client.py 61.8   # 306/495
+src/kiro_crew/telegram/gateway.py 15.5   # 11/71
+src/kiro_crew/tips.py 64.9   # 335/516
+src/kiro_crew/transcribe.py 74.6   # 258/346
+src/kiro_crew/webex/client.py 64.1   # 173/270
+src/kiro_crew/webex/gateway.py 20.4   # 10/49
+src/kiro_crew/wecom/gateway.py 23.5   # 12/51
+src/kiro_crew/weixin/gateway.py 20.4   # 11/54

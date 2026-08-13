@@ -1,0 +1,1612 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # PRs cancel superseded revisions: only a PR's tip commit needs a verdict.
+  # main does not, so let an in-flight run finish instead of killing it.
+  # This does NOT produce a verdict per commit. The group still permits one
+  # pending run, and GitHub evicts that pending run when a newer one queues
+  # (a documented GitHub concurrency behavior). With a ~19min run and a
+  # ~1.4min median merge gap, main gets periodic verdicts instead of none.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# There is deliberately no BACKEND_DESELECTS here any more. Eleven files used to be
+# deselected from EVERY backend pytest invocation because they drive a real
+# `git`/`gh`/`pytest` through `sandboxed_spawn_argv`, and a GH runner denies
+# `unshare(CLONE_NEWNS)` (EPERM) so `wrap_argv` fails closed. That kept 608 tests --
+# including the suites guarding the ops autonomy gate -- off every pull request.
+#
+# They no longer need it: each one that requires a sandbox carries its own
+# `skipif(not userns_available())`, so on a runner it skips with a named reason and on
+# a capable host it runs for real. MEASURED against a faithful local simulation of the
+# runner (`unshare(CLONE_NEWUSER)` ok, `CLONE_NEWNS` EPERM, no user session bus for the
+# cgroup scope, no gh token): 608 passed, 85 skipped, 0 failed.
+#
+# A whole-file deselect is the wrong tool for a missing host capability, and this is
+# why: it is invisible in the run output, it takes the file's OTHER tests with it, and
+# nothing goes red when the reason expires. A capability guard says which capability,
+# on which test, in the report. If a suite here starts needing one again, add the guard
+# -- not a deselect.
+
+jobs:
+  # ── Surface detection (issue #1556) ──────────────────────────────────
+  # Most tests only exercise their own surface, so a single-surface diff can
+  # skip the opposite suite's *provably* single-surface files. The selector
+  # (scripts/ci-surface-tests.py) is deny-by-default: every cross-surface
+  # parity guard -- and anything it cannot classify -- stays in the must-run
+  # set, so a heuristic miss costs CI time, never a skipped guard.
+  #
+  # only_backend / only_frontend are computed here ONCE. `backend` is a
+  # catch-all, so every changed file is exactly one of frontend / meta /
+  # backend: a diff that touches two buckets (or meta) leaves BOTH flags false
+  # and the full matrix runs.
+  changes:
+    name: Detect changed surface
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # dorny/paths-filter reads the PR's changed-file list from the GitHub REST
+    # API on pull_request events -> needs pull-requests:read. Job-level
+    # permissions REPLACE the top-level grant, so contents:read is restated.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      only_backend: ${{ steps.decide.outputs.only_backend }}
+      only_frontend: ${{ steps.decide.outputs.only_frontend }}
+      linux_packaging: ${{ steps.filter.outputs.linux_packaging }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          # 'some-with-excludes': a file matches a filter when it matches at
+          # least one pattern AND none of the negated ones. That lets `backend`
+          # be a true CATCH-ALL ("every changed file that is not frontend and not
+          # meta") instead of an allowlist that would have to be complete to be
+          # safe. Every changed file therefore lands in exactly one bucket, which
+          # is what makes "only_X means only X changed" literally true -- an
+          # unrecognised path (docs/**, *.md, a new root file) counts as backend
+          # rather than silently riding along under a narrowed suite.
+          # NOTE: this quantifier requires >= v4.0.3 (added upstream in PR #322);
+          # v4.0.2 rejects the input and throws, so do not lower the pin.
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            frontend:
+              - 'website/**'
+            meta:
+              - '.github/**'
+              - 'scripts/**'
+            backend:
+              - '**'
+              - '!website/**'
+              - '!.github/**'
+              - '!scripts/**'
+            # Independent of the three buckets above: it answers a different
+            # question ("could this diff change what a Linux package installs?")
+            # and so may overlap them freely.
+            linux_packaging:
+              - 'website/electron/package.json'
+              - 'website/electron/auto-update.js'
+              - 'website/electron/bundle-location.js'
+              - 'packaging/build-desktop.sh'
+              - 'scripts/stamp-distribution.sh'
+              - '.github/workflows/build-desktop.yml'
+
+      - name: Decide surface
+        id: decide
+        env:
+          FRONTEND: ${{ steps.filter.outputs.frontend }}
+          BACKEND: ${{ steps.filter.outputs.backend }}
+          META: ${{ steps.filter.outputs.meta }}
+          # Escape hatch: the ci-full-run label forces the full matrix. NOTE:
+          # this workflow does not listen for the `labeled` event (that would
+          # re-run everything on every bot label), so the label takes effect on
+          # the NEXT push, not the instant it is applied.
+          FULL_RUN: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full-run') }}
+        run: |
+          # A surface is "only" when it changed and NO other bucket did.
+          # `backend` is a catch-all, so an unrecognised path counts as backend
+          # and cannot ride along under a narrowed suite.
+          only_backend=false; only_frontend=false
+          if [ "$FULL_RUN" != "true" ] && [ "$META" != "true" ]; then
+            if [ "$BACKEND" = "true" ] && [ "$FRONTEND" != "true" ]; then only_backend=true; fi
+            if [ "$FRONTEND" = "true" ] && [ "$BACKEND" != "true" ]; then only_frontend=true; fi
+          fi
+          echo "only_backend=$only_backend"   >> "$GITHUB_OUTPUT"
+          echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
+          echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
+
+  # Build the Linux desktop packages and install them for real, but ONLY when the
+  # diff could change what a package installs. The check is expensive (a PBS
+  # interpreter, a full pip closure, then electron-builder three times), and it
+  # verifies things no cheaper gate can: dependency names that must exist in the
+  # target distro's repositories, the generated .desktop entry, and the maintainer
+  # scripts. Same trade the macOS-packaging path gate already makes.
+  #
+  # A packaging change that lands without this having run is the failure mode this
+  # exists to prevent: a package that builds green and refuses to install.
+  linux-packaging:
+    name: Linux Packaging (build + smoke-install)
+    needs: changes
+    if: ${{ needs.changes.outputs.linux_packaging == 'true' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      # Builds all three Linux formats from one backend tree, re-stamping the
+      # beacon distribution between electron-builder invocations.
+      - name: Build the Linux desktop packages
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: bash packaging/build-desktop.sh
+
+      - name: Install the packages in their target distros
+        run: ./scripts/smoke-linux-packages.sh website/electron/dist
+
+  scrub-lint:
+    name: De-Amazon Scrub Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Full history is fetched lazily by the script only for the (skipped)
+        # history scan; the working-tree gate needs just the checkout.
+      - name: Scan working tree for internal markers
+        # Blocking gate: fails the build on any Amazon-internal marker in the
+        # public tree (internal domains/hosts, ticket ids, aliases, credential
+        # shapes) outside the intentional allowlist, so a sync cannot reintroduce
+        # a coupling. --no-history: git-history rewrite is a separate task.
+        run: ./scripts/scrub-lint.sh --no-history
+
+  vendor-manifest:
+    name: Vendored Tree Integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Deliberately NOT gated behind the `changes` job's surface outputs:
+    # everything under src/kiro_crew/_vendor is excluded from semgrep and the
+    # AI reviewers' diff, so this checksum gate is the only content review the
+    # vendored tree gets. Hashing the ~26MB tree takes seconds, and an
+    # always-on job cannot be dodged by a path-filter edge case.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify _vendor tree against the committed sha256 manifest
+        # Blocking gate: fails on any modified, missing, or added file under
+        # src/kiro_crew/_vendor relative to scripts/vendor_manifest.sha256.
+        # Legitimate vendored bumps regenerate the manifest with --write (see
+        # src/kiro_crew/_vendor/README.md) so the change lands as a reviewable
+        # manifest diff. No setup-python step: ubuntu-latest ships Python 3,
+        # same as the other stdlib-only lint jobs in this file.
+        run: python3 scripts/verify_vendor_manifest.py
+
+  brand-lint:
+    name: Brand Name Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the product name on the lines this change adds
+        # Diff-scoped on purpose. The tree still carries thousands of prose lines
+        # that join the two words, from before the convention, so a whole-tree
+        # gate would fail every PR until one enormous rename lands and charge the
+        # break to whoever pushed next. Added lines are complete for regression —
+        # a line only reaches main through a diff that added it — and the
+        # whole-tree number is still printed as a non-failing report.
+        env:
+          # `base.sha`, not `origin/<base>`: the merge ref this run checks out was
+          # computed against that exact commit, so the diff cannot pick up main
+          # moves that landed after the run started. Same reasoning as the
+          # i18n gates below; see the longer note at their first use.
+          BRAND_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          BRAND_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$BRAND_BASE_REF" 'the brand-name gate')" || exit 1
+          export BRAND_BASE_REF
+          # Self-test first: it plants one probe per rule family, so a typo that
+          # silently disables an exemption fails here instead of shipping green.
+          python3 scripts/check_brand_name.py --test
+          python3 scripts/check_brand_name.py
+
+  focus-cue-lint:
+    name: Focus Cue Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the focus cues on the elements this change touches
+        # Diff-scoped on purpose, same reasoning as the brand gate above: the tree
+        # still carries elements that opted out of the focus outline before the
+        # global ring existed, so a whole-tree gate would charge that backlog to
+        # whoever pushed next. Elements a change touched are complete for
+        # regression — a hole only reaches main through a diff that wrote its
+        # className — and the whole-tree number is still printed as a non-failing
+        # report.
+        env:
+          FOCUS_CUE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          FOCUS_CUE_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$FOCUS_CUE_BASE_REF" 'the focus-cue gate')" || exit 1
+          export FOCUS_CUE_BASE_REF
+          # Self-test first: it plants one probe per rule family, so a change that
+          # silently promotes a suppressor to a cue — or disables an exemption —
+          # fails here instead of shipping a gate that passes everything.
+          python3 scripts/check_focus_cue.py --test
+          python3 scripts/check_focus_cue.py
+
+  changelog-history:
+    name: Changelog History Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check that shipped changelog sections survived this change
+        # CHANGELOG.md is append-only history: every section already in it
+        # describes software a user has installed, so a line deleted from one is
+        # unrecoverable from that user's artifact. This has already happened
+        # once — a commit titled "docs: add 0.3.0-insider.9 changelog" REPLACED
+        # the file instead of prepending to it (53 insertions, 322 deletions),
+        # taking [0.2.0], [0.1.3] and [0.1.2] with it. It read as plausible in
+        # review because the insertions are what a reader looks at, and the
+        # deletions sat in the same hunk. Nothing failed; a user noticed the
+        # Releases page had gone nearly empty.
+        #
+        # So the judgment half of the rule (commit dumps, prerelease headings,
+        # whether this PR should touch the file at all) stays in AUTOSDE.yaml
+        # where a reviewer applies it, and the mechanical half runs here, where
+        # nobody has to notice anything. release.yml's stable gate is the
+        # complement: it checks the NEW section exists, not that the old ones
+        # survived — which is the half that actually failed.
+        env:
+          # base.sha, not origin/<base>: the merge ref this run checks out was
+          # computed against that exact commit, so the comparison cannot pick up
+          # base moves that landed after the run started. Same reasoning as the
+          # brand-name and i18n gates above.
+          CHANGELOG_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          CHANGELOG_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$CHANGELOG_BASE_REF" 'the changelog-history gate')" || exit 1
+          export CHANGELOG_BASE_REF
+          # Self-test first: one probe per rule family, so a weakened rule fails
+          # here instead of shipping green and letting a deletion through.
+          python3 scripts/check_changelog_history.py --test
+          python3 scripts/check_changelog_history.py
+
+  harness-parity:
+    name: Harness Parity Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check harness identity tests on the lines this change adds
+        # Kiro Crew drives one first-class harness (kiro-cli) and adapts the
+        # others. The defect class is a call site that spells "this is kiro" as
+        # the ABSENCE of another harness: correct with two backends, and then it
+        # hands the third a capability or a sandbox waiver nobody granted it.
+        # It fails toward the permissive answer, so nothing else goes red.
+        #
+        # Diff-scoped for the same reason as the brand gate above: the tree
+        # carries pre-existing negative tests in the dormant claude seam, and
+        # converting them is a separate change with its own review. Added lines
+        # are complete for regression, and the whole-tree count is still printed
+        # as a non-failing report. Invariants:
+        # docs/system-specs/modules/harness-parity.md
+        env:
+          # `base.sha` for the same reason as the brand gate: the merge ref this
+          # run checks out was computed against that exact commit.
+          HARNESS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          HARNESS_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$HARNESS_BASE_REF" 'the harness-parity gate')" || exit 1
+          export HARNESS_BASE_REF
+          # Self-test first: it plants one probe per rule, so a regex typo that
+          # silently disables a rule fails here instead of shipping green.
+          python3 scripts/check_harness_parity.py --test
+          python3 scripts/check_harness_parity.py
+
+  docs-lint:
+    name: Docs Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify the linter's own checks still fire
+        # Self-test first: a gate that has silently stopped detecting anything is
+        # worse than no gate, because it reads as a green signal. Each check is
+        # exercised against a planted defect in a throwaway tree.
+        run: python3 scripts/docs_lint.py --test
+
+      - name: Lint documentation trees
+        # Blocking gate: every internal link resolves, every doc is reachable from
+        # its directory index, every directory holding docs has one, no code comment
+        # cites a doc that does not exist, and no doc whose filename is hardcoded in
+        # code has been renamed out from under its consumer.
+        # No setup-python step: ubuntu-latest ships Python 3 and the script is
+        # stdlib-only.
+        run: ./scripts/docs-lint.sh
+
+  backend-lint:
+    name: Backend Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      # Full history so the black gate can compute THIS change's own diff. A
+      # shallow clone truncates parent info and leaves no base ref, and the gate
+      # then falls back to judging the whole tree -- which reddens the PR for
+      # files the base branch merged after the baseline was taken. depth 2 was
+      # tried first and was not enough; the gate now prints which scope it used,
+      # so a regression here is visible in the log instead of silent.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # This repo has no uv.lock (pip/pyproject-managed), so point the
+          # cache key at the files that define the dependency set. Without
+          # this, setup-uv defaults to globbing **/uv.lock, finds nothing,
+          # and errors: "No file matched to [**/uv.lock]".
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        # uv resolves/installs the heavy deps far faster than pip and caches
+        # across runs. --system targets the setup-python interpreter (no venv);
+        # --group pulls [dependency-groups].dev from pyproject.
+        run: uv pip install --system -e ".[voice]" --group dev
+
+      # black IS enforced, behind a shrinking baseline. A bare `black --check`
+      # cannot be turned on here: 1,420 files under src/ and test/ are not
+      # black-clean, so the bulk pass it waits on is ~95,800 lines and has been
+      # "pending" long enough for the old estimate in this comment to drift by 3x.
+      # Leaving it off meanwhile was the worse failure: AGENTS.md tells every
+      # contributor to run `black src/kiro_crew test` before committing, and
+      # following that instruction reformats those 1,420 files on top of their
+      # change. The baseline makes the gate real for everything else, so new code
+      # is formatted without any PR being forced to carry unrelated churn.
+      - name: Check formatting (black, baselined)
+        run: python3 scripts/check_black_formatting.py
+
+      # isort/flake8/mypy below are BLOCKING (config in pyproject.toml + setup.cfg).
+      #
+      # The two repo-root modules are named explicitly: `src/kiro_crew test` misses
+      # them, and between them they hold the host-protection floor for all three
+      # testpaths -- the isolation fixtures and the xdist worker budget -- so they
+      # are the last files that should go unlinted.
+
+      - name: Check imports (isort)
+        run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py
+
+      - name: Lint (flake8)
+        run: flake8 src/kiro_crew test conftest.py xdist_budget.py
+
+      - name: Type check (mypy)
+        run: mypy src/kiro_crew/
+
+  backend-test:
+    name: Backend Tests
+    needs: [changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Don't cancel sibling shards when one fails -- we want the full failure
+      # picture across the suite, not just the first shard to break.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+        # Duration-balanced shards (pytest-split). 4 groups x 2 Python = 8
+        # parallel jobs, each on its own runner (4 cores via -n auto). To add
+        # shards, extend this list AND bump SHARD_COUNT to match -- mind the
+        # ~20 concurrent-job ceiling for public repos.
+        group: [1, 2, 3, 4]
+    env:
+      SHARD_COUNT: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # This repo has no uv.lock (pip/pyproject-managed), so point the
+          # cache key at the files that define the dependency set. Without
+          # this, setup-uv defaults to globbing **/uv.lock, finds nothing,
+          # and errors: "No file matched to [**/uv.lock]".
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Select test scope
+        id: scope
+        env:
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        # A frontend-only diff cannot affect a backend test that never touches
+        # the frontend surface, so we run only the files the selector could NOT
+        # prove single-surface (every parity guard, plus anything unclassified).
+        # Every failure path here falls back to the FULL suite on purpose --
+        # never trade a missed test for a faster run.
+        run: |
+          if [ "$ONLY_FRONTEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full backend suite (diff is not frontend-only)."
+            exit 0
+          fi
+          rc=0
+          python3 scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL backend suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
+      - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        # pytest-split slices the suite into SHARD_COUNT balanced groups. With a
+        # committed .test_durations file the split is balanced by *recorded time*,
+        # and brand-new tests are auto-assigned the average duration (distributed
+        # with no manual work); without that file it falls back to an even split
+        # by test count. -n auto still parallelizes within each shard across the
+        # runner's cores -- sharding scales across runners, -n auto across cores.
+        #
+        # Coverage runs only on 3.12 (fast sys.monitoring path); each shard emits
+        # a partial data file merged later by the coverage-combine job. 3.10
+        # passes --no-cov (overriding setup.cfg's forced --cov) for a trace-free,
+        # faster run.
+        env:
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        run: |
+          # Reduced scope (frontend-only diff): run just the cross-surface
+          # files, still sharded, with coverage off -- a subset's coverage is
+          # not comparable to the repo floor, so Coverage Combine/Gate skip the
+          # backend lane for this run (see coverage-gate).
+          if [ "$REDUCED" = "true" ]; then
+            TARGETS=()
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+            pytest -q -n auto --timeout=120 \
+              --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+              --no-cov \
+              "${TARGETS[@]}"
+            exit 0
+          fi
+          pytest -q -n auto --timeout=120 \
+            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            ${{ matrix.python-version == '3.12' && '--cov=kiro_crew --cov=sage_lib' || '--no-cov' }}
+        # Nothing is deselected. The eleven files that used to be -- the two sandbox
+        # suites, the two ops git/gh suites, and the seven auto_improvement suites --
+        # each carry `skipif(not userns_available())` on the tests that need a namespace
+        # sandbox, so on this runner (`unshare(CLONE_NEWNS)` -> EPERM) those skip with a
+        # named reason and the other ~523 run. See the note above the `jobs:` key.
+
+      - name: Stage shard coverage data
+        if: matrix.python-version == '3.12' && steps.scope.outputs.reduced != 'true'
+        # Fold any xdist parallel data files into a single .coverage (no-op if
+        # pytest-cov already combined this shard), then name it per-shard so the
+        # combine job can merge all shards with `coverage combine`.
+        run: |
+          coverage combine 2>/dev/null || true
+          test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
+          mv .coverage ".coverage.${{ matrix.group }}"
+
+      - name: Upload shard coverage
+        if: matrix.python-version == '3.12' && steps.scope.outputs.reduced != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-shard-${{ matrix.group }}
+          path: .coverage.${{ matrix.group }}
+          # upload-artifact v4 excludes dotfiles unless this is set.
+          include-hidden-files: true
+          if-no-files-found: error
+
+  # Windows regression line: the backend supports Windows natively via
+  # kiro_crew.platform_compat (see docs/guides/windows-install.md for the
+  # per-feature status), but until this job existed nothing in CI held
+  # that line -- a POSIX-only regression would land silently. Single
+  # Python (3.12: the preferred Windows runtime; numpy 1.x ships no 3.13
+  # Windows wheel), duration-balanced shards like the POSIX matrix,
+  # trace-free (--no-cov: the coverage-combine job merges ubuntu shards
+  # only). Timeout is higher than the POSIX job: windows-latest runners
+  # run the same tests measurably slower.
+  backend-test-windows:
+    name: Backend Tests (Windows)
+    needs: [changes]
+    runs-on: windows-latest
+    # windows-latest runs the same shards measurably slower than POSIX.
+    timeout-minutes: 40
+    strategy:
+      # Full failure picture across shards, same as backend-test.
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    env:
+      SHARD_COUNT: 4
+      # windows-latest subprocess spawn + filesystem latency is slow and
+      # highly variable; the md_notebook git-ops default (30s) intermittently
+      # times out on plain `git add` here (#1673). Give git invocations a
+      # wider budget on this job only.
+      MDNB_GIT_TIMEOUT_SEC: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the
+          # files that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Select test scope
+        id: scope
+        # bash (Git Bash on windows-latest), not pwsh -- same reason as the test
+        # step below. Mirrors the POSIX backend-test selector exactly.
+        shell: bash
+        env:
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        run: |
+          if [ "$ONLY_FRONTEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full backend suite (diff is not frontend-only)."
+            exit 0
+          fi
+          rc=0
+          python3 scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL backend suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
+      - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        # bash (Git Bash on windows-latest), not pwsh: the invocation shares
+        # the POSIX job's line-continuation and env-interpolation syntax.
+        shell: bash
+        env:
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        run: |
+          if [ "$REDUCED" = "true" ]; then
+            TARGETS=()
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+            pytest -q -n auto --timeout=180 --no-cov \
+              --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+              "${TARGETS[@]}"
+            exit 0
+          fi
+          pytest -q -n auto --timeout=180 --no-cov \
+            --splits "$SHARD_COUNT" --group ${{ matrix.group }}
+        # Nothing is deselected here either, and the same guards carry it: Windows has no
+        # namespace sandbox at all, so `userns_available()` is False and every
+        # sandbox-dependent test skips. Residual POSIX assumptions in
+        # test_dogfood_learnings / test_pr_watchers stay tracked as node ids in
+        # test/windows-expected-failures.txt, which is the mechanism a whole-file deselect
+        # was standing in for.
+
+  # macOS gateway line. Until this job existed macOS had ZERO pytest coverage in
+  # CI -- the macos-14 runners appear only in build.yml, build-desktop.yml and
+  # sign-and-notarize.yml, all of which merely build and notarize the desktop
+  # app. That left the macOS-only identity primitives (LOCAL_PEERPID for the
+  # peer pid, libproc for the process start id) verified by nothing, on the
+  # platform several maintainers develop on.
+  #
+  # Deliberately SCOPED, not the full suite: a full macOS run would need its own
+  # exclusion burn-down first (the Windows line needed 23 file exclusions plus
+  # ~237 node skips before it held), and shipping a job that is red on arrival
+  # trains people to ignore it. The glob keeps the scope from going stale -- a
+  # new test_mcp_gateway_* suite is picked up without editing this file, which a
+  # hand-maintained list would not do.
+  #
+  # Cheap enough to need no sharding: these suites are ~230 tests and run in
+  # about 4 seconds, so the job's wall time is essentially dependency install.
+  backend-test-macos:
+    name: Gateway Tests (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the files
+          # that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # The macOS peer-identity check is admission-gating: gatewayd refuses any
+      # connection that is not MATCH, so this canary -- a real transport.serve /
+      # connect round trip asserting MATCH on real Darwin hardware -- is the ONLY
+      # evidence that the gate admits its own peer. `pytest -q` does not name
+      # passing tests and a skip exits 0, so a canary that quietly stopped running
+      # (a changed skipif, a collection change) would leave this job green while
+      # the gate it proves went unverified. That is the same blindness that let
+      # four mutation-verified tests sit unrun inside conftest's Windows
+      # collect_ignore. Run it by node id and fail unless it actually PASSED.
+      - name: Assert the macOS peer-identity canary runs (not skipped)
+        run: |
+          set -o pipefail
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves" \
+            | tee canary.log
+          grep -q "1 passed" canary.log || {
+            echo "::error::macOS peer-identity canary did not PASS (skipped or not collected)"
+            exit 1
+          }
+
+      - name: Run gateway + platform suites
+        run: |
+          pytest -q -rs --timeout=180 --no-cov \
+            test/test_mcp_gateway_*.py \
+            test/test_socketsec.py \
+            test/test_platform_compat.py \
+            test/test_mcp_apps_e2e.py \
+            test/test_pod*.py \
+            test/test_service.py \
+            test/test_dev_fleet_app.py
+
+  # The one job where the sandbox-dependent tests EXECUTE rather than skip. They need
+  # unprivileged user namespaces (unshare NEWNS), which ubuntu-24.04 restricts via
+  # AppArmor -- the same restriction codex-review.yml clears for its bwrap sandbox.
+  # Without this job the ~/.kiro/crew sensitive-path keystone has no CI coverage at all,
+  # even though branch protection treats breaking it as a blocking offence.
+  #
+  # The shards COLLECT all eleven of these files (nothing is deselected any more), but the
+  # `skipif(not userns_available())` tests inside SIX of them skip there -- so this job is
+  # the only place those 85 assertions execute, the ~/.kiro/crew sensitive-path keystone
+  # among them. The other five carry no such guard and run fully in the shards too; they
+  # are listed here because running them against a REAL sandbox is a different test than
+  # running them against a stubbed one, and this is the only lane that can.
+  #
+  # The list is hand-maintained, so `test_coverage_omit_contract.py` asserts that every
+  # file carrying the guard appears on the argv below. Without that, a twelfth guarded
+  # file would skip in every shard, join no lane, and be silently green -- which is
+  # exactly how these nine came to execute nowhere.
+  #
+  # The nine ops/auto_improvement suites were rejected from this job once, as "~6 minutes
+  # against a real git" and "a poor fit for a 20-minute job". That cost was the launcher's
+  # pre-exec hardlink scan arming on every spawn (1.5s per sandboxed spawn), since fixed.
+  # MEASURED afterwards under this job's own environment -- real sandbox, no gh token, no
+  # user session bus -- all eleven: 694 passed, 1 skipped, 38s.
+  #
+  backend-test-sandbox:
+    name: Backend Tests (namespace sandbox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Enable unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify the namespace sandbox is actually available
+        # Fail LOUDLY if the runner image ever stops allowing this, rather than
+        # letting the suite silently skip and the gate go green having asserted
+        # nothing -- the same failure mode the deselects created.
+        run: unshare --mount --map-root-user true
+
+      - name: Run sandbox-dependent tests
+        # `--no-cov` deliberately. This is the only lane that reaches these lines, so
+        # measuring it is what would let setup.cfg drop the omit for the six guarded test
+        # files -- but that needs this job's data uploaded as an artifact and
+        # `coverage-combine` taught to consume it, which couples the coverage gate to a
+        # job it does not depend on today. Separate change; the omit carries the pointer.
+        run: |
+          pytest -q --timeout=180 --no-cov \
+            test/test_script_hooks.py \
+            test/test_cron_script.py \
+            src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
+            src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_profile_capture.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
+
+  coverage-combine:
+    name: Coverage Combine
+    needs: [backend-test, changes]
+    # A frontend-only diff runs the backend suite as a coverage-free subset, so
+    # there are no shard artifacts to combine. Coverage Gate asserts this job is
+    # exactly `skipped` in that case, and `success` otherwise.
+    if: needs.changes.outputs.only_frontend != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install coverage
+        run: uv pip install --system coverage==7.10.6
+
+      - name: Download shard coverage data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true
+
+      - name: Combine into unified coverage.xml
+        # The downloaded .coverage.<group> files are parallel data files;
+        # `coverage combine` merges them. -o pins the output path (setup.cfg's
+        # [coverage:xml] otherwise redirects it under build/coverage/).
+        run: |
+          coverage combine
+          coverage xml -o coverage.xml
+          coverage report
+
+      - name: Upload combined coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-backend
+          path: coverage.xml
+
+  # ── Coverage Gate ──────────────────────────────────────────────────────
+  # Enforces minimum line-coverage thresholds. Rather than re-running the
+  # entire backend + frontend suites (which duplicated ~30 min of work the
+  # test jobs already did on a single serial runner), this job CONSUMES the
+  # coverage artifacts those jobs already produced in this same run:
+  #   * backend-test (3.12 shards) -> coverage-combine -> coverage.xml
+  #     (artifact: coverage-backend)
+  #   * frontend-test -> build/coverage/cobertura-coverage.xml
+  #     (artifact: coverage-frontend)
+  # Result: download + parse + threshold-check only -- runs in seconds.
+  #
+  # Fail-closed: if an expected artifact/report is missing the job errors
+  # (download-artifact errors on a missing artifact; the report presence is
+  # asserted below), so a broken coverage pipeline can never silently pass.
+  # Lives here (not code-review.yml) so it can use `needs:` for a
+  # deterministic same-run handoff instead of a cross-workflow artifact race.
+  # The check name "Coverage Gate" is unchanged, so branch protection that
+  # requires it is still satisfied.
+  coverage-gate:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, changes]
+    # Single source of truth for the floors -- referenced by the check steps,
+    # their names, and the summary table so the three can never drift apart.
+    #
+    # RATCHET POLICY: keep each floor a little under what `main` actually
+    # measures, so the gate blocks a real coverage regression without going red
+    # on ordinary noise. Raise a floor only after main has held the higher
+    # number for a while, and never above the LOWEST recent main measurement.
+    #
+    #   Backend  measured 90.57% on main (2026-08-18) -> floor 90%
+    #   Frontend measured 91.32-91.47% on main (2026-08-18) -> floor 90%
+    #
+    # Both were sampled across three consecutive successful main runs, because
+    # the policy above is written against the LOWEST recent measurement and one
+    # sample cannot establish that.
+    #
+    # The headroom is deliberately THIN, and asymmetrically so: frontend keeps
+    # ~1.5pp, backend only ~0.6pp. At 0.6pp a single merge that adds a few
+    # hundred uncovered statements reds the gate, so backend coverage now has to
+    # be maintained with each change rather than recovered in later waves. That
+    # is the intended trade: the two lanes are held at the round number they
+    # actually reached. If backend does start bouncing off 90, the fix is to
+    # lower THAT floor to 89 and say why -- not to weaken the gate's logic.
+    #
+    # Why not 85%, which is where this change started: the lanes crossed 90%
+    # while it sat unmerged, and a floor 5-6pp under main protects almost
+    # nothing. The point of the gate is to catch a regression, so the number has
+    # to track what main actually holds.
+    #
+    # How backend got here, so the next person can judge the headroom:
+    #   78.69%  starting point
+    #   80.15%  #2090 stopped measuring test files CI never executes (the
+    #           BACKEND_DESELECTS set) -- an accounting fix, not new tests.
+    #           Since retired: CI runs those files, so they are measured again.
+    #   81.50%  #2103 added unit coverage for 7 pure-logic-ish modules
+    #   81.94%  #2115 added 11 dashboard/Slack/app-platform modules
+    #   86.93%  #2947 and 88.84% #3005, ranked by uncovered-statement MASS
+    #           rather than by percentage -- a 550-statement module at 17% is
+    #           worth more than a small one at 60%
+    #   89.57%  #3118, which converted only 58% of the statements it targeted
+    #           where #3005 converted more than it targeted: what remains sits
+    #           behind I/O, subprocess and network boundaries
+    #   90.57%  work merged since
+    #
+    # And frontend, which moved later and converts differently:
+    #   60.46%  2026-08-07, before any dedicated coverage work
+    #   83.38%  the zero-coverage sweep (files with no test file at all)
+    #   86.14%  #2948 and #3014
+    #   88.29%  #3132, where three surfaces starting at or near 0% produced 739
+    #           of its 1,470 statements while ChatPage.tsx -- the single largest
+    #           target by uncovered count, 481 -- produced nothing measurable
+    #   91.47%  work merged since
+    # Two lessons in those two lines, both of which cost a wave to learn: rank
+    # candidates by how UNCOVERED a file is and not merely by its uncovered
+    # count, because a file near 0% converts far better than a large page
+    # already at 80%; and do not size a frontend wave off a backend one.
+    env:
+      BACKEND_MIN: 90
+      FRONTEND_MIN: 90
+      # The per-file floor, applied to BOTH lanes with a per-lane baseline of
+      # the files that were already below it. A project-wide average lets a
+      # well-covered large file pay for a bare small one, so it can be satisfied
+      # without touching the files that carry the risk; a per-file floor removes
+      # that subsidy. The rationale, the measured cost of this number, and the
+      # three baseline rules live in scripts/check_per_file_coverage.py's
+      # docstring -- deliberately not restated here, where it would go stale.
+      PER_FILE_MIN: 80
+    # Always run so the required check emits a real verdict. Without
+    # `if: always()`, a failing OR skipped dependency would SKIP this job, and
+    # GitHub treats a skipped required check as SATISFIED -- silently defeating
+    # the fail-closed guarantee (including the `if-no-files-found: error` upload
+    # guard this workflow relies on). The first step below converts any
+    # non-success upstream result into an explicit failure.
+    if: ${{ always() }}
+    steps:
+      - name: Require upstream coverage jobs to have succeeded
+        env:
+          CC: ${{ needs.coverage-combine.result }}
+          FE: ${{ needs.frontend-test.result }}
+          FCM: ${{ needs.frontend-coverage-merge.result }}
+          BE: ${{ needs.backend-test.result }}
+          ONLY_BACKEND: ${{ needs.changes.outputs.only_backend }}
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+        run: |
+          echo "coverage-combine=$CC  frontend-test=$FE  frontend-coverage-merge=$FCM  backend-test=$BE  only_backend=$ONLY_BACKEND  only_frontend=$ONLY_FRONTEND"
+          # Empty flags mean the surface-detection job never reported (it failed
+          # or was cancelled) -- its verdict can't be trusted, so fail closed.
+          if [ -z "$ONLY_BACKEND" ] || [ -z "$ONLY_FRONTEND" ]; then
+            echo "::error::surface detection (changes) never reported -- failing closed."
+            exit 1
+          fi
+          # Both test jobs always RUN (only their scope narrows), so both must
+          # always have succeeded -- a subset run that fails is still a failure.
+          # backend-test is checked explicitly because on a frontend-only diff
+          # coverage-combine is skipped by design and would otherwise be the only
+          # signal, masking a failed reduced backend suite.
+          if [ "$FE" != "success" ]; then
+            echo "::error::frontend-test=$FE -- failing closed."
+            exit 1
+          fi
+          # Frontend coverage lane: frontend-coverage-merge unions the shard
+          # blobs into the coverage-frontend artifact. Required to succeed,
+          # EXCEPT on a backend-only diff where the frontend suite ran as a
+          # coverage-free subset and the merge job is skipped by design.
+          # Anything else (failure, cancellation, dependency-skip, or a run that
+          # happened when it shouldn't have) fails closed.
+          if [ "$ONLY_BACKEND" = "true" ]; then
+            if [ "$FCM" != "skipped" ]; then
+              echo "::error::frontend-coverage-merge=$FCM but this run was backend-only (expected exactly 'skipped') -- inconsistent."
+              exit 1
+            fi
+          elif [ "$FCM" != "success" ]; then
+            echo "::error::frontend-coverage-merge=$FCM -- failing closed."
+            exit 1
+          fi
+          if [ "$BE" != "success" ]; then
+            echo "::error::backend-test=$BE -- failing closed."
+            exit 1
+          fi
+          # Backend coverage lane: required to succeed, EXCEPT on a frontend-only
+          # diff where the backend suite ran as a coverage-free subset and
+          # coverage-combine is therefore skipped by design. Anything else
+          # (failure, cancellation, dependency-skip, or a run that happened when
+          # it shouldn't have) fails closed.
+          if [ "$ONLY_FRONTEND" = "true" ]; then
+            if [ "$CC" != "skipped" ]; then
+              echo "::error::coverage-combine=$CC but this run was frontend-only (expected exactly 'skipped') -- inconsistent."
+              exit 1
+            fi
+          elif [ "$CC" != "success" ]; then
+            echo "::error::coverage-combine=$CC -- failing closed."
+            exit 1
+          fi
+
+      # Checked out for the per-file gate: it needs scripts/check_per_file_coverage.py
+      # and the two baselines from the tree. It sits BEFORE the artifact
+      # downloads because actions/checkout cleans the workspace by default and
+      # would otherwise delete them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The gate parses the Cobertura reports through defusedxml rather than the
+      # stdlib parser, which resolves external entities -- and on a fork PR the
+      # report is produced by contributor-controlled code. Installed here because
+      # this job otherwise needs no Python dependencies.
+      #
+      # setup-python is a PREREQUISITE, not decoration: the runner image's /usr
+      # interpreter is externally managed (PEP 668), so `uv pip install --system`
+      # against it exits 2 with "externally managed". coverage-combine provisions
+      # the same pair for the same reason.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Install the per-file gate's XML parser
+        run: uv pip install --system 'defusedxml>=0.7,<1'
+
+      - name: Download backend coverage
+        if: needs.coverage-combine.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-backend
+          path: backend-cov
+
+      - name: Download frontend coverage
+        if: needs.changes.outputs.only_backend != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-frontend
+          path: frontend-cov
+
+      - name: Check backend coverage (min ${{ env.BACKEND_MIN }}%)
+        if: needs.coverage-combine.result == 'success'
+        run: |
+          F=backend-cov/coverage.xml
+          test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
+          # Compare the raw line-rate against the threshold; round only for
+          # display (a round-then-compare would let 89.95%..89.99% pass 90%).
+          python3 - "$F" "$BACKEND_MIN" Backend <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+          rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
+          print(f"{label} coverage: {rate:.2f}%")
+          if rate < floor:
+              print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
+              sys.exit(1)
+          PY
+
+      - name: Check frontend coverage (min ${{ env.FRONTEND_MIN }}%)
+        if: needs.changes.outputs.only_backend != 'true'
+        run: |
+          F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
+          python3 - "$F" "$FRONTEND_MIN" Frontend <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+          rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
+          print(f"{label} coverage: {rate:.2f}%")
+          if rate < floor:
+              print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
+              sys.exit(1)
+          PY
+
+      - name: Check per-file coverage, backend (floor ${{ env.PER_FILE_MIN }}%)
+        # Gated on the same condition as the project floor: on a frontend-only
+        # diff the backend suite ran as a coverage-free subset, and a subset's
+        # per-file rates are not comparable to a baseline recorded on the full
+        # suite -- enforcing them there would fail files whose tests never ran.
+        if: needs.coverage-combine.result == 'success'
+        run: |
+          python3 scripts/check_per_file_coverage.py backend-cov/coverage.xml \
+            --label Backend --floor "$PER_FILE_MIN" \
+            --baseline .github/coverage-baselines/backend.txt
+
+      - name: Check per-file coverage, frontend (floor ${{ env.PER_FILE_MIN }}%)
+        if: needs.changes.outputs.only_backend != 'true'
+        run: |
+          F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
+          python3 scripts/check_per_file_coverage.py "$F" \
+            --label Frontend --floor "$PER_FILE_MIN" \
+            --baseline .github/coverage-baselines/frontend.txt
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Component | Coverage | Min |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|----------|-----|" >> "$GITHUB_STEP_SUMMARY"
+          BF=backend-cov/coverage.xml
+          if [ -f "$BF" ]; then
+            B=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$BF').getroot().attrib['line-rate'])*100:.2f}\")")
+            echo "| Backend | ${B}% | ${BACKEND_MIN}% |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          FF=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          if [ -n "$FF" ]; then
+            FR=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$FF').getroot().attrib['line-rate'])*100:.2f}\")")
+            echo "| Frontend | ${FR}% | ${FRONTEND_MIN}% |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  frontend-lint:
+    name: Frontend Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        working-directory: website
+        # `tsc -b`, NOT `npm run typecheck`: the root tsconfig has `files: []`
+        # + project references, so `tsc --noEmit` (what `typecheck` runs) checks
+        # ZERO files and always passes. `tsc -b` actually type-checks the project.
+        run: npx tsc -b
+
+      - name: Lint
+        working-directory: website
+        # Blocking: fails on any eslint error and on any NEW warning above the
+        # current baseline. Ratchet --max-warnings down toward 0 as the ~1116
+        # pre-existing warnings (no-explicit-any, jsx-a11y, no-console) are burned
+        # down; do not raise it. (Baseline bumped 1066 -> 1116 by the final
+        # Brazil->GitHub sync, which imported upstream warnings that never faced
+        # this gate; burn-down resumes from 1116.)
+        run: npx eslint src/ --max-warnings 1116
+
+      - name: Copy/paste detection
+        working-directory: website
+        run: npx jscpd .
+
+      - name: Check i18n extraction, key references and plurals
+        working-directory: website
+        env:
+          # Two gates need a commit to diff against: `check-source-strings.mjs` compares
+          # the catalogs against it to find NEWLY ADDED keys and CHANGED values, and
+          # `check-i18n-strings.mjs` uses it to find literals on lines this branch wrote.
+          # On a PR this is `base.sha` — the commit the MERGE REF was computed against —
+          # NOT `origin/<base.ref>`. The tip is a moving target measured at step time while
+          # the checked-out tree is a snapshot from job start, so anything that lands on
+          # `main` in between appears only on the base side and is charged to every PR
+          # running in that window. Observed: a PR whose run started 36s before #1223
+          # merged was billed 58 render findings for `WelcomeView` translations its head
+          # simply did not have yet. `base.sha` makes the two sides consistent by
+          # construction. On a push to main it is the commit the push replaced, so a merge
+          # that only breaks in combination with another merge is still charged to a diff. Note `frontend-lint`'s
+          # checkout is shallow, so it has to be fetched — see the step below.
+          # `check-i18n-strings.mjs` falls back from the merge base to the base tip for
+          # exactly that reason, and EXITS NON-ZERO if a configured ref cannot be
+          # resolved rather than skipping itself green.
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        # `npm run i18n:check` is a RUNNER (`website/scripts/i18n-check.mjs`), not an `&&`
+        # chain: it executes all six scripts and reports the eleven checks they contain in
+        # one table, because `&&` short-circuits and a PR only ever learned about its first
+        # failing gate. `--check` on the two codemods is deliberately not `--dry-run`:
+        # dry-run reports and exits 0, which would make this step decorative. An
+        # unrecognised flag makes those scripts refuse to run rather than fall through to
+        # their destructive conversion path.
+        #
+        # ONLY TWO KINDS OF CHECK CAN FAIL THIS STEP.
+        #
+        #   DIFF-SCOPED, zero tolerance — a finding on a line you wrote is yours and there
+        #   is no number to raise:
+        #     [added-lines]     a user-visible literal on a line THIS BRANCH WROTE.
+        #     [vs-base]         a file you touched holds more than it did at the base.
+        #     [source-strings]  new ENGLISH keys must be well-shaped copy.
+        #     [changed-values]  catalog QA over values this branch added or changed.
+        #
+        #   WHOLE-REPO HARD ZEROS — no ceiling to inherit, so a new one is always a diff:
+        #     [key-refs]        a `t()` naming a key that does not exist. i18next returns a
+        #                       missing key as its own fallback, so the symptom is a raw
+        #                       dotted key rendered to a user. Necessarily whole-repo: a
+        #                       reference and its catalog entry are edited independently, so
+        #                       a catalog-only rename dangles references in files the PR
+        #                       never opens. Needs no base ref, so it cannot skip itself.
+        #     [plurals]         a `{n} {t('item')}s` concatenation.
+        #     [pseudolocale]    `en-XA.json` stale against its generator.
+        #
+        # EVERYTHING ELSE IS REPORT ONLY — [untranslated], [allcaps], [extractable] and
+        # [dynamic-keys]. Each is a stored whole-repo total, written by whichever branch
+        # measured it last, so another branch can push it past its number without touching
+        # your files — and then the failure names no diff anyone can fix. Measured twice in
+        # one day: `main` sat at 1120 against its own ALL-CAPS ceiling of 1118 within
+        # minutes of it being set, and every open PR inherited the red. [dynamic-keys] was
+        # the worst, failing when a file IMPROVED. The numbers are still printed; they do
+        # not gate. See docs/ci/i18n-gates.md for the residual gap this leaves on [dynamic-keys]
+        # specifically, and the qa `CEILINGS` / `deadKeys` / `glossary` ratchets that are
+        # still exact in both directions.
+        #
+        # `check-i18n-strings.mjs` drives a SECOND eslint invocation with its own config.
+        # `no-literal-string` at `mode: 'all'` reports thousands of findings, and folding
+        # those into the 1116 budget above would make an i18n regression indistinguishable
+        # from a new `no-explicit-any`.
+        run: |
+          # `actions/checkout` fetches depth 1, so the base branch is not present and
+          # `git show origin/main:…` would fail. Fetch just that one ref.
+          #
+          # `set -e` on the chain is the point: `check-source-strings.mjs` SKIPS ITSELF
+          # and exits 0 when the base ref is unreadable, so a failed fetch used to sail
+          # past this step and silently disable the new-key gate for the whole PR --
+          # observed in practice, where the script printed "OK: skipped -- cannot read
+          # website/src/i18n/locales/en.json at origin/main (shallow clone?)" and the
+          # step still went green. A gate that cannot run must fail, not pass: an
+          # unavailable base ref is a CI problem to fix, not a reason to stop checking.
+          # Absolute path: this step's working-directory is `website`.
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the new-key i18n gate')" || exit 1
+          export I18N_BASE_REF
+          npm run i18n:check
+
+  cfn-lint:
+    name: CloudFormation Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install cfn-lint
+        # Pinned: an unpinned lint tool silently changes the gate's behaviour on
+        # every upstream release. Bump deliberately.
+        run: pip install "cfn-lint==1.22.3"
+
+      - name: Lint deploy templates
+        run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
+
+  # The Electron shell (website/electron) has its own 460+ test node:test suite,
+  # and until now NOTHING ran it on a PR — its only runner was ota-test.yml,
+  # which is nightly/on-demand and called by no other workflow. So main-process
+  # regressions (permission handling, packaging/entitlements contracts, the
+  # updater IPC surface) could land green and surface a day later, or in a
+  # shipped DMG. That is not hypothetical: the missing macOS microphone
+  # entitlement reached users this way. This job is deliberately tiny and fast —
+  # pure unit tests, no Electron binary download, no packaging.
+  electron-test:
+    name: Electron Shell Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/electron/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website/electron
+        # Belt-and-braces: this pin currently downloads no Electron binary
+        # anyway (electron 43's package ships no install script), so the var is
+        # inert today — it is set so a future version that reintroduces the
+        # ~100MB postinstall download cannot silently slow this job down. The
+        # tests require() only main-process modules and the stdlib test runner,
+        # so the binary is never needed.
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci --no-audit --no-fund
+
+      - name: Unit tests
+        working-directory: website/electron
+        run: npm test
+
+  frontend-test:
+    name: Frontend Tests
+    needs: [changes]
+    runs-on: ubuntu-latest
+    # Per-shard budget. The whole suite was ~23 min on one runner; split four
+    # ways each shard is well under this, and a hung shard fails fast.
+    timeout-minutes: 25
+    strategy:
+      # Don't cancel sibling shards when one fails -- we want the full failure
+      # picture across the suite, not just the first shard to break.
+      fail-fast: false
+      matrix:
+        # vitest splits by TEST FILE (not test case) across shards. 4 shards
+        # cuts the ~950-file suite roughly fourfold and confines a fork-worker
+        # crash to one shard instead of reddening the whole job. To change the
+        # count, edit this list AND SHARD_COUNT together -- mind the ~20
+        # concurrent-job ceiling for public repos.
+        shard: [1, 2, 3, 4]
+    env:
+      SHARD_COUNT: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Select test scope
+        id: scope
+        env:
+          ONLY_BACKEND: ${{ needs.changes.outputs.only_backend }}
+          TARGETS_FILE: ${{ runner.temp }}/frontend-targets.txt
+        # Mirror of the backend selector: a backend-only diff cannot affect a
+        # spec that never touches the backend surface. Cross-surface specs (and
+        # anything unclassified) still run. Any failure falls back to the FULL
+        # suite rather than silently narrowing it.
+        run: |
+          if [ "$ONLY_BACKEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full frontend suite (diff is not backend-only)."
+            exit 0
+          fi
+          rc=0
+          python3 scripts/ci-surface-tests.py --surface frontend --summary > "$TARGETS_FILE.all" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE.all" ]; then
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL frontend suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # vitest runs with cwd=website and only covers website/src; the
+          # Electron shell specs belong to electron-test, which stays always-on.
+          sed -n 's#^website/##p' "$TARGETS_FILE.all" | grep -v '^electron/' > "$TARGETS_FILE" || true
+          if [ ! -s "$TARGETS_FILE" ]; then
+            echo "::warning::no in-scope cross-surface specs resolved -- running the FULL frontend suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface spec(s)."
+
+      - name: Unit tests (shard ${{ matrix.shard }}/${{ env.SHARD_COUNT }})
+        working-directory: website
+        env:
+          # Two vitest gates are DIFF-SCOPED rather than baseline-scoped —
+          # `localeFormatting.test.ts`'s `[added-lines]` / `[vs-base]`. They read the
+          # base commit out of git instead of storing a count, and they skip themselves
+          # when this is empty. Without it they would skip on every PR, which is the
+          # "gate nobody watched go red" failure mode their own docs warn about.
+          # Same expression as `frontend-lint`: the base branch on a PR, the commit the
+          # push replaced on a push to main.
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          TARGETS_FILE: ${{ runner.temp }}/frontend-targets.txt
+        # `actions/checkout` fetches depth 1, so the base is not present and
+        # `git diff`/`git show` against it would fail. Fetch just that one commit, and
+        # fail the step if it cannot be fetched — the gates throw on an unresolvable
+        # configured ref rather than skipping green, and this keeps the two consistent.
+        run: |
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped i18n test gates')" || exit 1
+          export I18N_BASE_REF
+          if [ "$REDUCED" = "true" ]; then
+            # Subset run (backend-only diff): coverage of a subset is not
+            # comparable to the repo floor, so it is not collected and the
+            # Coverage Gate skips the frontend lane for this run. Still sharded
+            # and blob-reported so the merge job produces one unified result.
+            TARGETS=()
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+            # Still sharded so the matrix step is uniform; a target set smaller
+            # than SHARD_COUNT leaves some shards with no files, so
+            # --passWithNoTests keeps an empty shard green (a legitimately empty
+            # slice, not a lost suite).
+            # blob alone prints no verdict (it only writes the artifact), so a
+            # failing shard's log would end at "exit code 1" with no FAIL line
+            # or summary; the second reporter keeps a human-readable verdict in
+            # this job's own log.
+            npx vitest run --reporter=blob --reporter=default --passWithNoTests \
+              --shard=${{ matrix.shard }}/"$SHARD_COUNT" "${TARGETS[@]}"
+          else
+            # --reporter=blob stores results + per-shard coverage under
+            # website/.vitest-reports/; the frontend-coverage-merge job stitches
+            # the four shards back into one report and the merged cobertura the
+            # Coverage Gate reads. Coverage is emitted per shard so the merge
+            # can union it -- a single shard covers only the files it ran.
+            # blob alone prints no verdict (it only writes the artifact), so a
+            # failing shard's log would end at "exit code 1" with no FAIL line
+            # or summary; the second reporter keeps a human-readable verdict in
+            # this job's own log.
+            npx vitest run --coverage --reporter=blob --reporter=default \
+              --shard=${{ matrix.shard }}/"$SHARD_COUNT"
+          fi
+
+      - name: Upload shard blob report
+        # Always upload (even a failed shard) so the merge job can render the
+        # full picture; skipped only if the run itself was cancelled. The blob
+        # carries this shard's results AND its coverage data; the merge job
+        # unions them. .vitest-reports is a dot dir -> include-hidden-files.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-blob-${{ matrix.shard }}
+          path: website/.vitest-reports/*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  frontend-coverage-merge:
+    name: Frontend Coverage Merge
+    needs: [frontend-test, changes]
+    # Runs whenever the sharded run collected coverage -- any diff that is not
+    # backend-only. (A backend-only diff runs the frontend suite as a
+    # coverage-free subset, so there is nothing to merge and the Coverage Gate
+    # skips the frontend lane.) `!cancelled()` lets it still stitch a report
+    # when a shard failed, so the failure surfaces in one place.
+    if: ${{ !cancelled() && needs.changes.outputs.only_backend != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Download shard blob reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: website/.vitest-reports
+          pattern: frontend-blob-*
+          merge-multiple: true
+
+      - name: Merge reports and coverage
+        id: merge
+        working-directory: website
+        # --merge-reports stitches the per-shard blobs back into one result set
+        # WITHOUT re-running tests; --coverage unions the per-shard coverage and
+        # re-emits the configured reporters (cobertura/lcov) under
+        # build/coverage/ -- the exact path + artifact name the Coverage Gate
+        # already consumes. A failed shard makes this exit non-zero, surfacing
+        # the failure here too.
+        run: npx vitest --merge-reports --coverage
+
+      - name: Reconcile shard verdicts against blob results
+        # Runs even when the merge step failed -- that is the case it exists
+        # for. A shard (or the merge) can exit non-zero without naming a
+        # failing test anywhere: a worker killed mid-run (the worker-OOM mode
+        # documented in website/vite.config.ts) fails the job while every test
+        # in the blob reads "pass". This step decodes the downloaded blobs,
+        # prints every failing test and unhandled runner error by name, and
+        # states the contradiction explicitly when a red verdict has no failing
+        # test behind it. Diagnostic only: it always exits 0 and never changes
+        # the job's verdict.
+        if: ${{ !cancelled() }}
+        working-directory: website
+        env:
+          FRONTEND_TEST_RESULT: ${{ needs.frontend-test.result }}
+          MERGE_RESULT: ${{ steps.merge.outcome }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/frontend-blob-reconcile.mjs" .vitest-reports
+
+      - name: Upload merged coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-frontend
+          # vitest's reportsDirectory is website/build/coverage (see
+          # vite.config.ts). Fail loudly if the cobertura report is missing so a
+          # broken merge can never hand the Coverage Gate an empty artifact.
+          path: website/build/coverage/
+          if-no-files-found: error
+
+  e2e:
+    name: E2E (stub ACP backend, offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install backend (+ dev)
+        # setuptools is explicit: Python 3.12 no longer bundles it, and an
+        # editable install doesn't add it to the runtime venv -- but
+        # `setup.py test_e2e` imports setuptools.Command, so it must be present.
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e ".[voice,desktop]" --group dev
+
+      - name: Install frontend deps
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: website
+        run: npm run build
+
+      - name: Stage frontend into package
+        # The dashboard Playwright specs render the bundled UI the harness
+        # gateway serves from src/kiro_crew/static/dist. Mirror nightly.yml's
+        # build-wheel staging so the specs hit a real dashboard, not a 404.
+        run: |
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+
+      # The browser install is the single largest source of red on this job, and
+      # never because a test failed: across 112 consecutive E2E jobs the
+      # conclusions were 76 success / 36 cancelled / 0 failure, and 22 of those
+      # cancels trace to this step. `--with-deps` runs `apt-get update` first, and
+      # when the runner's default mirror (azure.archive.ubuntu.com) answers `Ign:`
+      # apt falls back to archive.ubuntu.com and stalls silently -- observed at
+      # 23min, 15min and 12min, against a 25min job budget that then has nothing
+      # left for the specs.
+      #
+      # `--with-deps` is dropped rather than retried because it buys nothing this
+      # gate asserts on. Every shared library Chromium needs is already on the
+      # ubuntu-latest image (the apt log reports libnss3, libx11-6, libxcb1,
+      # libasound2 and libxkbcommon0 as `already the newest version`); the only
+      # packages it newly installs are 9 CJK/Thai/Cyrillic font packages. The suite
+      # has no pixel comparison (no toHaveScreenshot / toMatchSnapshot anywhere
+      # under website/), playwright.config.ts pins `locale: 'en-US'` so every spec
+      # renders the English catalog, and the i18n render gate below reads
+      # textContent rather than measuring geometry. A future spec that asserts
+      # glyph METRICS for a non-Latin script would need those fonts back -- add
+      # them as their own bounded, non-fatal step, not by restoring `--with-deps`.
+      #
+      # The version key must be exact: a restore-key prefix could hand the job a
+      # different Chromium revision than @playwright/test expects.
+      - name: Resolve Playwright version
+        id: playwright-version
+        working-directory: website
+        run: |
+          version="$(node -p \
+            "require('./package-lock.json').packages['node_modules/@playwright/test'].version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium
+
+      # Runs unconditionally rather than behind `cache-hit != 'true'`: on a hit it
+      # is a ~2s no-op, and that keeps a partially-written cache entry from turning
+      # into a missing-browser failure inside the specs.
+      - name: Install Playwright browser (Chromium)
+        # A step-level cap. The download itself takes ~7s, so anything approaching
+        # this is a stalled mirror or CDN -- fail here with budget left for the
+        # specs instead of consuming the job's 25min and reporting nothing.
+        timeout-minutes: 6
+        working-directory: website
+        run: npx playwright install chromium
+
+      - name: i18n render-time gate (en-XA + shipped locales)
+        # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
+        # JSON, so three defect classes are invisible to all of them: a string that
+        # was never extracted (ordinary TypeScript to a scanner), a sentence
+        # assembled from several keys (several correct lookups), and English in a
+        # title/aria-label (never in the text flow). This renders the real SPA under
+        # the en-XA pseudolocale and reads them off the DOM.
+        #
+        # It lives in this job to reuse the Chromium install on the step above --
+        # its own job would re-download the browser for a ~5min script. It needs no
+        # gateway, no token and no backend: the script serves the build over
+        # loopback and answers every /api/** call from fixtures, like the
+        # capture-*.mjs harnesses. It builds its OWN bundle rather than reusing
+        # `npm run build` above, because en-XA is DEV-only and a production build
+        # tree-shakes the catalog out entirely.
+        #
+        # Two runs, one per tree: [vs-base] renders the BASE commit with the same
+        # scanner and fails on any per-surface increase, reading no committed number.
+        # It is the ONLY thing that fails; the debt record in
+        # `src/i18n/render-baseline.json` is printed and never enforced, because a
+        # stored total is written by whichever branch measured it last and two branches
+        # that never touch the same file can combine into a number neither produced --
+        # `projects.latent 16 -> 24` from #1107 + #985, red on main with no diff anyone
+        # could fix. A push to main therefore gets a base too (the commit it replaced),
+        # which is what keeps that interaction enforced somewhere. It costs a second
+        # bundle build on merges, the same ~5min every PR already pays.
+        # The base must be fetched first because this checkout is shallow; the script
+        # EXITS NON-ZERO if a configured ref cannot be resolved rather than skipping
+        # itself green, for the reason the frontend-lint job documents.
+        working-directory: website
+        env:
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
+          export I18N_BASE_REF
+          npm run i18n:render
+
+      - name: Run E2E (smoke + Playwright)
+        # KIROCREW_E2E=1 is set by `setup.py test_e2e` itself. KIROCREW_E2E_REQUIRE=1
+        # turns environment-resolution misses (missing website dir, Playwright CLI,
+        # or node<18) into HARD failures -- without it a skipped suite counts as a
+        # pass and the gate goes green having run zero browser specs. The suite
+        # wires the packaged fake ACP backend (KIROCREW_KIRO_BIN) internally, so
+        # every turn is deterministic and offline: no Kiro/model calls, no cost.
+        env:
+          KIROCREW_E2E_REQUIRE: "1"
+          # CI-enforced on-loop persistence invariant: the e2e gateway boots with
+          # strict mode so any un-offloaded session-JSONL mutator that enters
+          # ``_locked`` on the event loop raises ``OnLoopPersistError`` and fails
+          # this gate at PR time (setup.py test_e2e also sets this; declared here
+          # for discoverability). See docs/system-specs/modules/history.md.
+          KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
+        run: python setup.py test_e2e

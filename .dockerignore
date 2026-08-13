@@ -1,0 +1,11 @@
+# Build context allowlist (inverted): the image consumes ONLY the CI-built
+# wheel + the docker/ scripts. Everything else is excluded so the context
+# stays tiny (a full checkout is ~1GB with node_modules) and no stray source
+# or secrets can leak into layers.
+*
+!dist
+dist/*
+!dist/*.whl
+!docker
+docker/*
+!docker/entrypoint.sh

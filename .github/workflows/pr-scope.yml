@@ -1,0 +1,110 @@
+name: PR Scope
+
+# ADVISORY signal that a PR may not be self-contained -- i.e. it bundles changes
+# to several unrelated areas that would review better as separate PRs.
+#
+# This check NEVER fails the build, and that is a deliberate design decision:
+# "are these changes related?" is a judgment call, and a hard threshold on it
+# would block legitimate work (a cross-cutting refactor, a rename that touches
+# every transport) while being trivially gamed by splitting one logical change
+# across two PRs. A warning that a human reads is the honest strength of the
+# signal available deterministically.
+#
+# The semantic half of this question is already owned by the GPT reviewer, which
+# compares the diff against the PR's stated purpose and flags undeclared scope.
+# This gate covers only what a model cannot see cheaply: raw breadth.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-scope-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-scope:
+    name: PR Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Measure diff breadth
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # A PR must exceed BOTH thresholds to be flagged. Breadth alone is
+          # fine (a one-line rename across 6 transports is self-contained); size
+          # alone is fine (a big change to one module is self-contained). It is
+          # the COMBINATION -- large and scattered -- that reviews badly.
+          MAX_AREAS: "4"
+          MAX_LINES: "400"
+        run: |
+          set -uo pipefail
+
+          # Vendored code and review screenshots are excluded: they inflate both
+          # metrics without adding anything a reviewer must reason about.
+          files="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- . \
+            ':(exclude)src/kiro_crew/_vendor/**' \
+            ':(exclude)temp-screenshots/**' \
+            2>/dev/null || true)"
+          lines="$(git diff --numstat "$BASE_SHA...$HEAD_SHA" -- . \
+            ':(exclude)src/kiro_crew/_vendor/**' \
+            ':(exclude)temp-screenshots/**' \
+            2>/dev/null | awk '{a+=$1; d+=$2} END {print a+d+0}')"
+
+          if [ -z "$files" ]; then
+            echo "No reviewable files changed."
+            exit 0
+          fi
+
+          # An "area" is the unit a reviewer holds in their head. For the backend
+          # and the SPA that is the module/feature directory (2 levels deep), not
+          # the repo-wide bucket -- otherwise every backend PR looks like one area.
+          areas="$(printf '%s\n' "$files" | awk -F/ '
+            /^src\/kiro_crew\// { print (NF>=3 ? $1"/"$2"/"$3 : $1"/"$2); next }
+            /^website\/src\//   { print (NF>=3 ? $1"/"$2"/"$3 : $1"/"$2); next }
+            { print $1 }
+          ' | sort -u)"
+          area_count="$(printf '%s\n' "$areas" | grep -c . || true)"
+
+          echo "reviewable changed lines: $lines"
+          echo "distinct areas: $area_count"
+          printf '%s\n' "$areas" | sed 's/^/  - /'
+
+          {
+            echo "### PR scope"
+            echo
+            echo "| metric | value | threshold |"
+            echo "|---|---|---|"
+            echo "| reviewable changed lines | $lines | $MAX_LINES |"
+            echo "| distinct areas | $area_count | $MAX_AREAS |"
+            echo
+            echo "**Areas touched**"
+            printf '%s\n' "$areas" | sed 's/^/- `/; s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$area_count" -gt "$MAX_AREAS" ] && [ "${lines:-0}" -gt "$MAX_LINES" ]; then
+            echo "::warning::This PR changes $lines lines across $area_count areas. If these changes are independent, splitting them into separate PRs gets each one reviewed properly and keeps them individually revertable."
+            {
+              echo
+              echo "> **Consider splitting.** $lines lines across $area_count areas is wide"
+              echo "> enough that a reviewer cannot hold the whole change at once, and a"
+              echo "> revert takes unrelated work with it."
+              echo ">"
+              echo "> This is advisory only -- it never fails the build. A genuinely"
+              echo "> cross-cutting change (a rename, a shared-helper migration) is"
+              echo "> expected to be wide, and that is fine; say so in the description."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Scope looks self-contained."
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Scope looks self-contained." >> "$GITHUB_STEP_SUMMARY"
+          fi

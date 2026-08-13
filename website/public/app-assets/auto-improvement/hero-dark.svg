@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270">
+  <defs>
+    <linearGradient id="ai-bg-dark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#122a20"/>
+      <stop offset="100%" stop-color="#0d1f18"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" fill="url(#ai-bg-dark)"/>
+
+  <!-- The noise band: the ribbon a delta must clear to count as a real win.
+       Everything else in the composition is read against it. -->
+  <rect x="48" y="150" width="384" height="34" rx="6" fill="#1f4a3a" fill-opacity="0.22"/>
+  <line x1="48" y1="167" x2="432" y2="167" stroke="#059669" stroke-width="1.5" stroke-dasharray="6 5" stroke-opacity="0.75"/>
+  <text x="56" y="204" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#6ee7b7" fill-opacity="0.85">noise band</text>
+
+  <!-- Cumulative-best staircase: each tread is a kept change; a tread only ever
+       steps down, because a candidate inside the band is reverted. -->
+  <path d="M48,120 L120,120 L120,96 L192,96 L192,74 L264,74 L264,58 L384,58"
+        stroke="#34d399" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="120" cy="96" r="5" fill="#34d399"/>
+  <circle cx="192" cy="74" r="5" fill="#34d399"/>
+  <circle cx="264" cy="58" r="5" fill="#34d399"/>
+  <circle cx="384" cy="58" r="7" fill="#a7f3d0"/>
+
+  <!-- Frozen floor anchor: progress is reported as a share of the base-to-floor
+       gap closed, so the floor is drawn as an immovable reference. -->
+  <line x1="48" y1="40" x2="432" y2="40" stroke="#a7f3d0" stroke-width="1.5" stroke-opacity="0.5"/>
+  <text x="56" y="34" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#a7f3d0" fill-opacity="0.8">floor</text>
+
+  <!-- The ruler along the baseline. -->
+  <rect x="48" y="228" width="384" height="18" rx="3" fill="#ffffff" fill-opacity="0.08" stroke="#6ee7b7" stroke-width="1.4" stroke-opacity="0.7"/>
+  <g stroke="#6ee7b7" stroke-width="1.2" stroke-opacity="0.7" stroke-linecap="round">
+    <line x1="96" y1="228" x2="96" y2="238"/>
+    <line x1="144" y1="228" x2="144" y2="238"/>
+    <line x1="192" y1="228" x2="192" y2="238"/>
+    <line x1="240" y1="228" x2="240" y2="238"/>
+    <line x1="288" y1="228" x2="288" y2="238"/>
+    <line x1="336" y1="228" x2="336" y2="238"/>
+    <line x1="384" y1="228" x2="384" y2="238"/>
+  </g>
+</svg>

@@ -1,0 +1,524 @@
+# KiroCrewWebsite AutoSDE Rules
+#
+# This package is the KiroCrew dashboard frontend (React + TypeScript).
+# Backend-only rules (Python security, hooks.py, SEL audit, etc.) live in
+# the KiroCrew package's AUTOSDE.yaml and are not duplicated here.
+
+custom-rules:
+  - id: frontend-security
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+      - "src/**/*.ts"
+    rule: |
+      Enforce KiroCrew frontend security controls based on real vulnerabilities
+      found in this codebase.
+
+      - Never use `.innerHTML = ...` — it caused ACAT findings (commit 3c40ef9 in
+        KiroCrew). Use `textContent`, `createElement`, or React elements
+      - Never use `dangerouslySetInnerHTML` without DOMPurify — use `sanitize()`
+        or `md()` from helpers.ts
+      - Never build HTML strings with template literals containing user/LLM
+        content — use React components
+      - Never use regex URL linkification into HTML strings — use React elements
+        via `.split()`
+      - Mermaid `securityLevel` must be `'strict'` (iframe sandbox) — never
+        `'loose'` which allows JS execution from diagram payloads.
+
+  - id: no-text-below-minimum
+    blocking: false
+    file-patterns:
+      - "src/**/*.tsx"
+      - "src/**/*.ts"
+    regex:
+      pattern: "text-\\[[0-9]px\\]"
+      check-added: true
+      check-removed: false
+    rule: |
+      KiroCrew's typography scale has a minimum usable text size of 10px.
+      Single-digit px values (`text-[0px]` through `text-[9px]`) are not
+      accessible and must not be introduced.
+
+      Follow the established scale:
+      - Body: 14px (`text-sm`)
+      - Labels/buttons/sidebar: `text-[13px]` (not `text-xs`)
+      - Badges/captions: `text-[12px]`
+      - Decorative icons: `text-[10px]`–`text-[11px]`
+      - Code blocks: 13px mono
+
+      See the Typography scale rules in website/docs/frontend-conventions.md.
+
+  - id: use-design-tokens
+    blocking: false
+    file-patterns:
+      - "src/**/*.tsx"
+      - "src/**/*.ts"
+    regex:
+      pattern: "(?:bg|text|border)-(?:gray|slate|zinc|neutral|stone)-\\d"
+      check-added: true
+      check-removed: false
+    rule: |
+      Use CSS custom property design tokens instead of hardcoded Tailwind color classes. Hardcoded colors break dark/light theme switching.
+
+      Use the semantic tokens defined in `index.css` and mapped in `tailwind.config.js`:
+      - `bg-[var(--bg)]`, `bg-[var(--card)]` instead of `bg-gray-900`
+      - `text-[var(--text)]`, `text-[var(--muted)]` instead of `text-gray-400`
+      - `border-[var(--border)]` instead of `border-gray-700`
+      - Semantic: `--ok` (green), `--warn` (amber), `--danger` (red), `--info` (blue)
+      - Special: `--aim` (purple for AIM badges), `--accent` (amber/orange)
+
+      See the design-token rules in website/docs/theming-contract.md.
+
+  - id: narrow-viewport-required
+    blocking: true
+    file-patterns:
+      - "src/pages/*.tsx"
+      - "src/apps/**/*.tsx"
+      - "src/components/**/*.tsx"
+    rule: |
+      A new feature ships its narrow layout WITH the feature, not as a follow-up.
+
+      Why: a phone is not a smaller desktop, and "we will do mobile later" has a
+      measured cost in this repo -- a long series of one-component-at-a-time patches,
+      several of which shipped a surface that was unusable at 390px in the meantime
+      (a 2px message column, a 34px text column, buttons painted over a title). Later
+      is also the expensive time to do it: the desktop shape is load-bearing by then,
+      so the fix arrives as an exception with a hand-synchronized counterpart instead
+      of a baseline.
+
+      What this requires of a NEW page, panel, or layout-owning component: it renders
+      usably at 390px AND 320px. Concretely, at least one of --
+        * responsive classes written narrow-first (unprefixed = phone, `md:` adds
+          desktop), or
+        * a narrow branch driven by a width signal (`useIsMobile`, a container query,
+          a `ResizeObserver` on the pane -- prefer the pane over the viewport when the
+          pane can be narrow at any window size), or
+        * a single-column layout that needs neither.
+
+      A fixed multi-column shell, a `shrink-0` rail, or a pinned pixel width with no
+      narrow provision does not satisfy this.
+
+      Does NOT count as satisfying it: hiding the surface below a breakpoint with no
+      entry point at that width. Hiding is not collapsing -- if a control is the only
+      host of an action, removing it on a phone removes the action.
+
+      Not in scope: a desktop-only surface may stay desktop-only when it says so in a
+      comment at the layout root, with the reason. State it; do not leave it implied.
+
+      Recommended baselines, NOT gates: website/docs/page-layout.md.
+
+  - id: page-layout-pattern
+    blocking: true
+    file-patterns:
+      - "src/pages/*.tsx"
+    regex:
+      pattern: "max-w-\\[(?:9[0-9]{2}|[1-9][0-9]{3,})px\\]"
+      check-added: true
+      check-removed: false
+    rule: |
+      Dashboard pages must use the standard layout pattern, not custom wrappers.
+
+      Why, on a desktop: the dashboard shell renders pages inside a flex column
+      (`flex-1 min-h-0`). The old `p-6 max-w-[960px] mx-auto` wrapper breaks that
+      contract — it prevents `overflow-y-auto` from working correctly, causing double
+      scrollbars or content clipping. The `PageHeader` + `px-4 md:px-6 pb-8
+      overflow-y-auto flex-1 min-h-0` pattern was established in the HooksPage redesign
+      to fix this.
+
+      Why, on a phone: write the structure NARROW-FIRST — the unprefixed classes are
+      the phone's, and `md:` adds the desktop. Tailwind is built that way, and a rule
+      whose unprefixed value is the desktop one forces every narrow fix to claw the
+      width back with `max-md:` plus, usually, a negative margin pinned by hand to a
+      value owned in another file. That is how this repo accumulated a long series of
+      one-component-at-a-time mobile patches. A page whose narrow layout is an
+      afterthought is not conformant to this pattern even when its class string
+      matches; see the narrow-viewport section of website/docs/page-layout.md for the
+      recommended baseline.
+
+      Required structure:
+      1. `<PageHeader title="..." subtitle="..." />` at top
+      2. `<div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">` as content
+         container. What this rule requires is the structure — `overflow-y-auto
+         flex-1 min-h-0` plus a horizontal gutter, not a specific gutter value. The
+         narrow gutter shown here is a RECOMMENDATION, not a requirement: see the
+         narrow-viewport section of website/docs/page-layout.md. A page using a single
+         gutter value at every width is conformant; do not flag it. When a page does
+         narrow its gutter, `PageHeader`'s must match, or the title sits inset from the
+         content it labels.
+      3. `Card` + `CardTitle` + `InfoTip` for data sections
+      4. `table-striped` tables with standard header style
+      5. `Input`, `Btn`, `SendBtn`, `SearchInput` — never raw HTML elements
+      6. `Badge` for status indicators — never raw colored text
+      7. `EmptyState` when lists are empty
+
+      Optional: a `StatCard` row for summary metrics, directly below the content
+      container. Use it when a number is NOT already visible in the content
+      below it (a rolled-up total, a rate, an error count) — not to restate
+      `items.length` for a list rendered on the same screen. A row of derived
+      counts above the list costs ~90px above the fold and carries no action, so
+      a page omitting the row is CONFORMANT: do not flag its absence.
+
+      Do NOT use `<div className="p-6 max-w-[960px] mx-auto">` — this is the old pattern.
+
+      Exception: Multi-tab pages (Settings, Developer, Capabilities) use `SidePanelLayout`
+      which provides its own sidebar nav + content area with proper scroll handling.
+      This is an accepted variant — do not use `PageHeader` + `px-6` for these pages.
+
+      See website/docs/page-layout.md.
+
+  - id: session-row-fixed-height
+    blocking: true
+    file-patterns:
+      - "src/pages/ChatSidebar.tsx"
+      - "src/pages/chat/SessionFlyout.tsx"
+      - "src/components/SessionGridView.tsx"
+    rule: |
+      A chat session list item has a FIXED set of stacked lines. Do NOT add a new
+      one for new per-session metadata.
+
+      Why: the session list is the dashboard's primary navigation surface, and its
+      only real budget is how many sessions fit above the fold. Every extra line
+      is paid by every session in the list, forever, so that one field can be read
+      without hovering — and the fields that keep getting proposed (project
+      directory, branch, model, workspace) are constant for the life of the
+      session, i.e. exactly the information a user does NOT re-read on every scan.
+      The rows that exist are earned: they are mutually exclusive turn state, or
+      they disappear when empty.
+
+      The permitted lines, in order:
+      1. Agent/meta line — agent name, then inline glyphs (popped-out, channel
+         origin, mirror links, clean/incognito/temporary, autopilot), then ONE
+         `ml-auto` group holding the folder chip (flat view) and the timestamp.
+      2. Title line.
+      3. ONE status line, and only one — the branches are a ternary chain
+         (pending approval > sub-agent approval > goal loop > workflow >
+         sub-agents > running > last message), never two lines at once.
+      4. Source-link chips (PR / MR / issue), only when the session has links.
+      5. Tag chips, only when the session has tags.
+
+      To surface a new per-session field, in order of preference:
+      - Put it on the agent/meta line, directly AFTER the agent name, as an inline
+        glyph (`size={10}`) or a compact chip with `truncate` and a `title`
+        tooltip — this is where the project directory belongs.
+      - Fold it into an existing line as trailing detail (the `goalLoopDetail`
+        pattern: ` · <detail>` after the primary label).
+      - Put it in the row's tooltip, the `SessionActionsMenu`, or the session
+        detail/flyout surface.
+
+      Never introduce a fourth-and-a-half stacked `<div>` under the title, and
+      never widen the row to compensate — a wider row is not an option either
+      (the sidebar width is user-controlled and the list must not scroll
+      horizontally).
+
+      Bad:
+      ```tsx
+      <div className="text-[12px] text-muted truncate mt-0.5">{s.project}</div>
+      ```
+
+      Good:
+      ```tsx
+      {/* on the agent/meta line, after the agent name */}
+      {s.project && (
+        <span className="text-muted shrink-0 inline-flex items-center gap-0.5 max-w-[90px]"
+          title={s.project}>
+          <FolderGit2 size={10} className="shrink-0" aria-hidden />
+          <span className="truncate">{basename(s.project)}</span>
+        </span>
+      )}
+      ```
+
+  - id: max-two-buttons-per-row
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+    rule: |
+      A row of buttons holds AT MOST 2. The third action and everything after it
+      goes into an overflow `DropdownMenu` (kebab / "More"), or leaves the row.
+
+      Why: peer buttons side by side carry no ranking, so three or more force a
+      read-every-label scan before the user can click anything, and the row is
+      the first thing to break under width pressure — the dashboard sidebar, a
+      split pane, and a table cell all clip or wrap it instead of degrading.
+      Two buttons still read as primary + secondary at a glance.
+
+      Counts toward the 2 — every action control that is a sibling in the same
+      horizontal group, labeled or icon-only: `Btn`, `SendBtn`, shadcn `Button`,
+      raw `<button>`, an icon button, a link styled as a button. A
+      `DropdownMenu` trigger counts as ONE regardless of how many items it
+      holds, so the overflow is always the cheapest way back under the cap.
+
+      Does NOT count:
+      - A segmented single-choice control (view mode, time range, tab-like
+        toggles) — one control expressing one setting, not N actions.
+      - Pagination arrows, and a text field's own affordances (clear, reveal,
+        submit-inside-the-field).
+      - Controls in a genuinely different row or a separated region — the cap is
+        per visual group, not per component.
+
+      Applies to what the diff ADDS. A row that already carries 3+ on the base
+      branch is grandfathered, but must not grow: adding a fourth is a
+      violation, and the fix is to collapse the row, never to widen it or let it
+      wrap onto a second line.
+
+      The established overflow pattern in this codebase is
+      `src/components/CronRowActions.tsx` (row actions) and
+      `src/components/SessionActionsMenu.tsx` (per-item menu). Copy those rather
+      than inventing a new one, and keep the icon-button label rules
+      (`icon-buttons-need-labels`) on the trigger.
+
+      Bad:
+      ```tsx
+      <div className="flex items-center gap-2">
+        <Btn onClick={onRun}>Run</Btn>
+        <Btn onClick={onPause}>Pause</Btn>
+        <Btn onClick={onDuplicate}>Duplicate</Btn>
+        <Btn danger onClick={onDelete}>Delete</Btn>
+      </div>
+      ```
+
+      Good:
+      ```tsx
+      <div className="flex items-center gap-2">
+        <Btn primary onClick={onRun}>Run</Btn>
+        <Btn onClick={onPause}>Pause</Btn>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Btn aria-label="More actions"><MoreVertical size={14} aria-hidden /></Btn>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onDelete}>Delete</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      ```
+
+  - id: use-react-query
+    blocking: false
+    file-patterns:
+      - "src/**/*.tsx"
+      - "src/**/*.ts"
+    regex:
+      pattern: "useEffect\\(\\s*async|\\.then\\(.*=>|\\[loading,.*setLoading\\]|\\[data,.*setData\\]"
+      check-added: true
+      check-removed: false
+    rule: |
+      Use React Query (`@tanstack/react-query`) for all server state fetching.
+      Do NOT use manual `useState` + `useEffect` + `useCallback` patterns for API calls.
+
+      Why: Manual fetch patterns duplicate cache/loading/error logic across every component,
+      cause stale data bugs when multiple components read the same endpoint, and miss
+      automatic background refetching. React Query centralizes server state with deduped
+      requests, stale-while-revalidate caching, and optimistic update rollback — all of
+      which the KiroCrew dashboard relies on for real-time consistency across tabs.
+
+      Required patterns:
+      - `useQuery({ queryKey: [...], queryFn: ... })` for reads
+      - `useMutation({ mutationFn: ..., onSuccess: ... })` for writes
+      - Optimistic updates via `queryClient.setQueryData()` where possible
+      - Query keys follow `['resource-name']` convention (e.g. `['mcp-servers']`, `['skills']`)
+
+      The QueryClientProvider is configured in `main.tsx` with `staleTime: 30_000` and `retry: 1`.
+
+  - id: use-framer-motion
+    blocking: false
+    file-patterns:
+      - "src/**/*.tsx"
+    regex:
+      pattern: "@keyframes"
+      check-added: true
+      check-removed: false
+    rule: |
+      Do NOT add new CSS `@keyframes` animations. Use Framer Motion instead for
+      orchestrated component transitions (enter/exit, layout, gesture-driven).
+
+      Why: CSS keyframes can't coordinate enter/exit animations across component
+      lifecycles — removed DOM elements just vanish. Framer Motion's `AnimatePresence`
+      keeps exiting elements in the DOM until their exit animation completes, which is
+      critical for the sidebar collapse, panel open/close, and list reorder animations
+      throughout the KiroCrew dashboard. Mixing animation systems also makes motion
+      timing inconsistent and harder to maintain.
+
+      Tailwind utilities are fine for:
+      - `transition-*` — simple state changes (hover, toggle, color)
+      - `animate-spin`, `animate-pulse` — simple loading indicators
+
+      Use Framer Motion for:
+      - Component enter/exit (`motion.div` + `initial`/`animate`/`exit`)
+      - List animations (`AnimatePresence`)
+      - Layout animations (`layout` prop)
+      - Spring physics and gesture-driven motion
+
+      Existing CSS animations (`animate-rise`, `animate-shimmer`) are grandfathered.
+
+  - id: use-lucide-icons
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+    regex:
+      pattern: "<svg[^>]*viewBox"
+      check-added: true
+      check-removed: false
+    rule: |
+      Use `lucide-react` components for all icons. Do NOT create inline SVG elements
+      or hand-roll SVG paths.
+
+      Why: Inline SVGs are verbose (30+ lines per icon), inconsistent in stroke width
+      and sizing, and impossible to search or refactor. lucide-react provides 1,500+
+      tree-shakeable icons with consistent 24×24 viewBox, configurable `size` and
+      `strokeWidth` props, and automatic `currentColor` inheritance — matching the
+      design system's color token approach. The APPROVAL_SEGMENTS in App.tsx already
+      use lucide icons as the reference pattern.
+
+      Import named icons from `lucide-react`:
+      ```tsx
+      import { Plug, BookOpen, Package } from 'lucide-react'
+      <Plug className="lucide-inline" />
+      ```
+
+      Existing inline SVGs are grandfathered but all new icons must use lucide-react.
+
+      BRAND-MARK EXCEPTION (narrow; documents existing practice, adds no new latitude):
+      lucide-react deliberately ships no brand, product, or mascot marks, so a logo /
+      wordmark / mascot has no Lucide equivalent to use. Such a mark is exempt from the
+      "use lucide-react" requirement ONLY when ALL of the following hold:
+
+        1. Asset, not code — the art lives in its own image file (`.svg`, or `.png` when
+           no vector original exists), either under `src/assets/` or co-located beside
+           its component (e.g. `components/icons/`), and is consumed through a plain URL
+           import. No `<svg>` element and no path data appear in any `.tsx` file (the
+           regex gate above still blocks that unconditionally, in every file, with no
+           exception).
+        2. Render matches the mark — a MONOCHROME mark that sits inline among lucide
+           glyphs is painted as a CSS `mask` over `currentColor` so it inherits their
+           size and colour states; reuse the `BrandGlyph` helper in
+           `components/BrandIcon.tsx` (export it if needed) rather than re-implementing
+           the mask, which has a non-obvious data-URI quoting requirement. A FULL-COLOUR
+           mark whose identity depends on its own colours (the channel logos) is rendered
+           as a plain `<img>` — do not flatten it to `currentColor`.
+        3. Brand identity, not affordance — it depicts an identity (a product, a
+           company, the Kiro ghost). Anything lucide-react can express — actions,
+           objects, status, navigation verbs — MUST use lucide-react. "No exact Lucide
+           match for the concept I want" is NOT a brand mark and does NOT qualify.
+
+      In-tree precedent this codifies — monochrome, CSS-mask over `currentColor`:
+      `components/BrandIcon.tsx` (GitHub, Discord marks — "lucide-react ships no brand
+      icons"), `components/icons/GithubLogo.tsx`, `components/icons/GitlabLogo.tsx`.
+      Full-colour, plain `<img>`: `components/SlackIcon.tsx`,
+      `components/TelegramLogo.tsx`, `components/WebexIcon.tsx`,
+      `components/WeComLogo.tsx` (all used as Settings tab glyphs at `size={16}`), and
+      `assets/onboarding/GhostIcons.tsx` (onboarding mascot).
+
+      Why write it down: the exception was already being applied per-PR from those
+      precedents, which made every branded-mark change an argument about intent rather
+      than a check against a rule. Stating the three conditions makes it verifiable in
+      review, and stating condition 3 keeps the escape hatch from widening into
+      "hand-roll any icon Lucide lacks", which is the abuse the rule exists to prevent.
+      This exception removes nothing: the rule stays `blocking: true`, the regex gate is
+      untouched, and ordinary icons remain lucide-only.
+
+  - id: accessible-interactive-elements
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+    regex:
+      pattern: "<(div|span)(?![^>]*role=)[^>]*onClick"
+      check-added: true
+      check-removed: false
+    rule: |
+      Do NOT use `<div onClick>` or `<span onClick>` for interactive elements.
+      Use `<Clickable>` from `src/components/Clickable.tsx` instead.
+
+      Why: Bare `<div onClick>` elements are invisible to screen readers and
+      unreachable by keyboard-only users. They fail WCAG 2.1 AA criteria 2.1.1
+      (Keyboard) and 4.1.2 (Name, Role, Value). The `<Clickable>` component
+      adds `role="button"`, `tabIndex={0}`, and keyboard Enter/Space handling
+      automatically.
+
+      Reference: an accessibility audit identified ~81 instances of inaccessible
+      clickable divs in the KiroCrew dashboard.
+
+      Bad:
+      ```tsx
+      <div className="cursor-pointer" onClick={handler}>Click me</div>
+      ```
+
+      Good:
+      ```tsx
+      import Clickable from '../components/Clickable'
+      <Clickable className="cursor-pointer" onClick={handler}>Click me</Clickable>
+      ```
+
+      Also acceptable (for elements that are sometimes interactive):
+      ```tsx
+      <div role="button" tabIndex={0} onClick={handler}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handler() }}>
+      ```
+
+      Exception: `<div onClick={e => e.stopPropagation()}>` used purely as event
+      boundary (e.g. modal backdrop click-away) does not need Clickable treatment.
+
+  - id: icon-buttons-need-labels
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+    rule: |
+      All icon-only buttons MUST have an `aria-label` prop describing the action.
+      Screen readers announce buttons by their text content — icon-only buttons
+      have no text, making them invisible to assistive technology.
+
+      Bad:
+      ```tsx
+      <button onClick={close}><X className="lucide-inline" /></button>
+      ```
+
+      Good:
+      ```tsx
+      <button aria-label="Close" onClick={close}><X className="lucide-inline" /></button>
+      ```
+
+      This applies to `<Btn>`, `<button>`, and `<Clickable>` elements that contain
+      only icons (Lucide components) without adjacent text.
+
+      Reference: an accessibility audit found numerous icon-only buttons
+      without labels across the dashboard.
+
+  - id: no-emoji-as-icons
+    blocking: true
+    file-patterns:
+      - "src/**/*.tsx"
+      - "src/**/*.ts"
+    rule: |
+      Do NOT use emoji characters as UI icons or status indicators. Use `lucide-react`
+      components instead.
+
+      Why: KiroCrew's dashboard supports 11 color themes with CSS custom property
+      design tokens (`--ok`, `--warn`, `--danger`, `--muted`, etc.). Emoji ignore
+      `currentColor` and design tokens entirely, so emoji-based status badges and
+      buttons render identically across all themes — breaking the visual language.
+      Emoji also render inconsistently across platforms (macOS vs Windows vs Linux),
+      cannot be sized or styled with CSS, and break accessibility (screen readers
+      announce emoji names literally). Migrated 40+ emoji to Lucide icons.
+
+      Exception: do not flag emoji usage in
+      SecretaryPage.tsx (inline emoji reaction picker),
+      folderEmoji.ts + FolderConfigModal.tsx (folder icon picker — FOLDER_EMOJIS
+      grid + custom-emoji input), ChatSidebar.tsx (FolderGlyph renders the
+      folder's icon as data),
+      scene components (src/pages/scenes/), useTheme.ts, or themeEditor.tsx
+      (theme display names). These are intentional decorative/data uses.
+
+      Bad:
+      ```tsx
+      <span>🔍 Search</span>
+      <span>⚠️ {error}</span>
+      icon: '📨'
+      ```
+
+      Good:
+      ```tsx
+      import { Search, AlertTriangle, Inbox } from 'lucide-react'
+      <span><Search className="lucide-inline" /> Search</span>
+      <span><AlertTriangle className="lucide-inline" /> {error}</span>
+      icon: <Inbox className="lucide-inline" />
+      ```

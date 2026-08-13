@@ -1,0 +1,67 @@
+name: Dependency License Gate
+
+# Fails a PR that ADDS or CHANGES a dependency whose license is not on the
+# curated allowlist, keeping this Apache-2.0 project's distributed licenses
+# clean. Allowlist + override rules live in .github/dependency-review-config.yml.
+#
+# Runs on every PR, including Dependabot bumps (same-repo, read-only token is
+# sufficient — the action only reads the dependency graph) and external forks
+# (the gate still evaluates; it just can't post its summary comment there).
+#
+# OVERRIDE: a maintainer (triage/write) can bypass the gate for the COMMIT they
+# reviewed by applying the `license-override` label. The bypass is honored ONLY
+# on the `labeled` event for that specific label, so it is scoped to the commit
+# that was present when the label was applied. Any later push arrives as a
+# `synchronize` event, which re-runs the gate — a new, unvetted dependency can
+# never ride in on a stale override. Re-apply the label to re-approve after a
+# push; removing it (`unlabeled`) likewise re-runs the gate.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+# Read-only for the graph; PR-write lets the action post its failure summary
+# on same-repo PRs. No id-token / contents:write — this job runs no untrusted
+# code and needs no cloud credentials.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dependency-license-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  license-gate:
+    name: Dependency License Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The gate runs on every event EXCEPT the one that applies the override
+      # label. Because a new push is a `synchronize` event (not `labeled`), the
+      # gate always re-runs on new commits — the override never carries over to
+      # unreviewed code.
+      - name: Review dependency licenses
+        if: ${{ !(github.event.action == 'labeled' && github.event.label.name == 'license-override') }}
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
+
+      - name: Record maintainer license override
+        if: ${{ github.event.action == 'labeled' && github.event.label.name == 'license-override' }}
+        run: |
+          {
+            echo "## Dependency License Gate — ⚠️ overridden for this commit"
+            echo
+            echo "A maintainer applied the \`license-override\` label, so the"
+            echo "license allowlist check was skipped for **this commit only**"
+            echo "(\`${{ github.event.pull_request.head.sha }}\`). The PR"
+            echo "timeline records who applied the label."
+            echo
+            echo "Any later push re-runs the gate; re-apply the label to approve"
+            echo "the new commit. For a permanent exception, prefer adding the"
+            echo "package to \`allow-dependencies-licenses\` in"
+            echo "\`.github/dependency-review-config.yml\` instead."
+          } >> "$GITHUB_STEP_SUMMARY"

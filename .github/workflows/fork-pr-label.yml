@@ -1,0 +1,89 @@
+name: Fork PR Label
+
+# Adds a single "fork" label to every pull request opened from a fork, so a
+# reviewer scanning the /pulls list can identify external-contributor PRs at a
+# glance. GitHub does not surface fork status in that list, so the label closes
+# the gap (same idea as pr-merge-conflict-label.yml).
+#
+# Visibility only: this workflow never blocks merge, and never checks out or
+# executes PR code -- it only reads the PR's fork flag and adds a label. Fork
+# status is immutable for a given PR, so the label is only ever ADDED, never
+# removed.
+on:
+  pull_request_target:
+    # Runs in the trusted base context (write token) even for fork PRs, which a
+    # fork `pull_request` run could not do. No fork code is checked out.
+    types: [opened, reopened]
+  schedule:
+    # Backstop sweep: labels any pre-existing open fork PR and catches a PR the
+    # event path missed (e.g. opened while this workflow was briefly failing).
+    - cron: "23 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # Per-PR for the event path; a single shared group for the sweep. The work is
+  # idempotent, so cancelling an in-flight run is safe.
+  group: fork-pr-label-${{ github.event.pull_request.number || 'sweep' }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Label fork pull requests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add "fork" label to fork pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LABEL: "fork"
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Ensure the label exists (idempotent).
+          existing="$(gh label list --repo "$REPO" --limit 300 --json name --jq '.[].name')"
+          if ! grep -Fxq "$LABEL" <<<"$existing"; then
+            gh label create "$LABEL" --repo "$REPO" \
+              --color "5319E7" \
+              --description "Pull request from a fork (external contributor)"
+          fi
+
+          # Adding a label that is already present is a no-op, so this is safe to
+          # re-run on every event and every sweep.
+          add_label() {
+            jq -n --arg label "$LABEL" '{labels: [$label]}' \
+              | gh api --method POST "repos/$REPO/issues/$1/labels" --input - >/dev/null
+          }
+
+          if [ "$EVENT" = "pull_request_target" ]; then
+            # Single PR: label only when it originates from a fork.
+            if [ "$PR_IS_FORK" = "true" ]; then
+              add_label "$PR_NUMBER"
+              echo "PR #$PR_NUMBER is a fork -> ensured '$LABEL'"
+            else
+              echo "PR #$PR_NUMBER is same-repo -> no label"
+            fi
+            exit 0
+          fi
+
+          # Sweep (schedule / manual dispatch): label every open fork PR that is
+          # missing the label. `isCrossRepository` is GitHub's own fork flag.
+          prs="$(gh pr list --repo "$REPO" --state open --limit 300 \
+            --json number,isCrossRepository,labels)"
+          echo "$prs" | jq -c '.[] | select(.isCrossRepository == true)' | while read -r pr; do
+            number="$(jq -r '.number' <<<"$pr")"
+            has_label="$(jq -r --arg l "$LABEL" 'any(.labels[]?; .name == $l)' <<<"$pr")"
+            if [ "$has_label" != "true" ]; then
+              add_label "$number"
+              echo "PR #$number: fork -> added '$LABEL'"
+            else
+              echo "PR #$number: fork -> already labeled"
+            fi
+          done
