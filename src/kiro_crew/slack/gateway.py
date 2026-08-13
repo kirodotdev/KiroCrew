@@ -209,6 +209,7 @@ from kiro_crew.slack.handler import (
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.retry import open_dm_with_retry
+from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
 from kiro_crew.subagent import (
     DIGEST_HOLD_SECS,
     INJECTION_TIMEOUT,
@@ -7134,6 +7135,22 @@ class GatewayOrchestrator:
         if self.dashboard_state:
             self.dashboard_state.slack_socket_connected = connected
             self.dashboard_state.slack_connect_error = getattr(self, "_slack_connect_error", "")
+
+        # Deferred tracked-channel capability probe (fire-and-forget, never
+        # awaited — boot latency is unaffected). A Slack install created before
+        # the manifest gained groups:history keeps its old grant, so a tracked
+        # private channel delivers no events and nothing logs; the probe turns
+        # that silent-dead state into a warning + dashboard notification.
+        if connected and self.slack is not None and self._tracking_channels:
+            _scope_task = asyncio.create_task(
+                warn_unreadable_tracked_channels(
+                    self.slack,
+                    set(self._tracking_channels),
+                    notify=self.dashboard_state.notify if self.dashboard_state else None,
+                )
+            )
+            self._background_tasks.add(_scope_task)
+            _scope_task.add_done_callback(self._background_tasks.discard)
 
         # Block until shutdown
         await shutdown_event.wait()

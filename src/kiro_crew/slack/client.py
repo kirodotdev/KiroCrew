@@ -182,6 +182,19 @@ class SlackClientOps(ABC):
         """
         return None
 
+    async def probe_channel_history(self, channel: str) -> str | None:
+        """Probe whether the bot token can read *channel*'s history.
+
+        Returns the Slack API error code when the read fails with a definite
+        API error (e.g. ``missing_scope`` on an install that predates the
+        ``groups:history`` scope, or ``channel_not_found`` when the token
+        cannot see the channel), or None when the channel is readable or the
+        outcome is undeterminable (transient network failure). Never raises.
+
+        Default returns None (readable) — subclasses override to hit Slack.
+        """
+        return None
+
     async def fetch_thread_replies(self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True) -> list[dict]:
         """Fetch thread replies. Returns list of message dicts with 'user'/'bot_id' and 'text'."""
         return []
@@ -594,6 +607,31 @@ class RealSlackClient(SlackClientOps):
             elif inline_type == "usergroup":
                 texts.append(f'<!subteam^{element.get("usergroup_id", "")}>')
         return [t for t in texts if t]
+
+    async def probe_channel_history(self, channel: str) -> str | None:
+        """Capability probe: one ``conversations.history`` call with limit=1.
+
+        The lightest way to prove the installed token's grant can actually
+        read the channel — ``conversations.info`` is not a substitute because
+        reading a private channel's info needs ``groups:read``, which the same
+        stale install may also lack.
+        """
+        kwargs: dict[str, Any] = {"channel": channel, "limit": 1}
+        self._inject_team(channel, kwargs)
+        try:
+            await self._web.conversations_history(**kwargs)
+        except (SlackClientError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            resp = getattr(exc, "response", None)
+            error = ""
+            if resp is not None:
+                try:
+                    error = str(resp.get("error", "") or "")
+                except Exception:
+                    error = ""
+            if error:
+                return error
+            logger.debug("history probe failed for %s", channel, exc_info=True)
+        return None
 
     async def fetch_message(self, channel: str, ts: str) -> str | None:
         """Fetch a single message's text by channel and timestamp.

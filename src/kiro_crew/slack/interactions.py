@@ -82,6 +82,7 @@ from kiro_crew.slack.renderer import (
     TOOL_TRUST_ACTION_PREFIX,
     SlackApprovalDecider,
 )
+from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -123,6 +124,28 @@ def init(orchestrator: GatewayOrchestrator) -> None:
     fwd_cb = _get_forward_callback()
     if fwd_cb:
         register_view_handler(fwd_cb, _handle_shortcut_submission)
+
+
+def _probe_tracked_channel_scope(channel_ids: set[str]) -> None:
+    """Fire a deferred history-readability probe for newly tracked channels.
+
+    A private channel tracked under a Slack install that predates the
+    ``groups:history`` scope delivers no message events and nothing logs —
+    the probe (see :mod:`kiro_crew.slack.scope_probe`) turns that silent-dead
+    state into a warning + dashboard notification. Fire-and-forget so the
+    interaction ack is never delayed by a Slack API round-trip.
+    """
+    if not channel_ids or not _orch or _orch.slack is None:
+        return
+    t = asyncio.create_task(
+        warn_unreadable_tracked_channels(
+            _orch.slack,
+            channel_ids,
+            notify=_orch.dashboard_state.notify if _orch.dashboard_state else None,
+        )
+    )
+    _orch._handler_tasks.add(t)
+    t.add_done_callback(_orch._handler_tasks.discard)
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +243,10 @@ async def _handle_config_submission(payload: dict) -> None:
         return
 
     if _orch:
+        added = new_channels - _orch._tracking_channels
         _orch._tracking_channels = new_channels
         set_tracking_channels(new_channels)
+        _probe_tracked_channel_scope(added)
 
     logger.info("Config updated via modal: channels=%d", len(new_channels))
     sel().log_api_access(
@@ -1137,6 +1162,7 @@ async def _handle_ch_add(payload: dict, action: dict) -> None:
 
     _orch._tracking_channels.add(cid)
     set_tracking_channels(_orch._tracking_channels)
+    _probe_tracked_channel_scope({cid})
     await run_config_write(persist_tracking_channel, cid)
     logger.info("Channel %s added to tracking", cid)
     sel().log_api_access(
@@ -2163,6 +2189,7 @@ async def _handle_track_channel(
             return
         _orch._tracking_channels.add(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
+        _probe_tracked_channel_scope({target_channel_id})
         await run_config_write(
             persist_tracking_channel, target_channel_id, name=channel_name
         )
@@ -2339,8 +2366,10 @@ async def _handle_channels_select(
         return
 
     if _orch:
+        added = new_channels - _orch._tracking_channels
         _orch._tracking_channels = new_channels
         set_tracking_channels(new_channels)
+        _probe_tracked_channel_scope(added)
 
     logger.info("Tracked channels updated via select: %d channels", len(new_channels))
     sel().log_api_access(
