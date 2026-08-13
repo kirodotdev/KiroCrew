@@ -146,14 +146,24 @@ def _keyword_score(raw_overlap: int) -> float:
     return min(raw_overlap / 10.0, 1.0) if raw_overlap > 0 else 0.0
 
 
-def _hybrid_score(keyword: float, vector: float) -> float:
+def _hybrid_score(keyword: float, vector: float, *, query_has_vector: bool = False) -> float:
     """Merge keyword and vector scores, degrading to keyword-only without a vector.
 
     Shared by every hybrid retrieval path so the weighting cannot drift between
     them; each caller still chooses which text it matches and where its vector
     comes from, because those differ legitimately.
+
+    ``query_has_vector`` distinguishes the two ways ``vector`` can be 0: when
+    the QUERY has no embedding the whole request degrades to keyword-only and
+    every row keeps the unweighted keyword score (uniform, comparable). When
+    the query IS embedded but this ROW has no stored vector, the caller passes
+    ``query_has_vector=True`` so the row scores on the same 0.6/0.4 scale as
+    its embedded siblings — otherwise a vectorless row with keyword overlap k
+    scores k while an embedded row with the same overlap scores at most
+    0.6·cos + 0.4·k, and rows the backfill has not reached yet systematically
+    outrank freshly embedded ones.
     """
-    if vector > 0:
+    if vector > 0 or query_has_vector:
         return _SEMANTIC_VECTOR_WEIGHT * vector + _SEMANTIC_KEYWORD_WEIGHT * keyword
     return keyword
 
@@ -857,12 +867,19 @@ class VectorMemoryStore:
             else:
                 self._log_event("create", "semantic", key, None, value_json, source)
 
-            # 8. Upsert
+            # 8. Upsert. The conflict clause keeps the stored vector ONLY when
+            # the value is unchanged (a re-affirmation with a new confidence or
+            # source — consolidation rewrites the same keys every cycle) and
+            # clears it when the value changed, so a row never keeps ranking by
+            # a vector computed from text it no longer holds. Step 8.5 below
+            # (or the backfill sweep) refills a cleared vector.
             now = _now_iso()
             self.db.execute(
                 "INSERT INTO semantic_memory (key, value_json, confidence, source, created_at, updated_at, is_deleted) "
                 "VALUES (?, ?, ?, ?, ?, ?, 0) "
-                "ON CONFLICT(key) DO UPDATE SET value_json=?, confidence=?, source=?, updated_at=?, is_deleted=0",
+                "ON CONFLICT(key) DO UPDATE SET value_json=?, confidence=?, source=?, updated_at=?, is_deleted=0, "
+                "embedding=CASE WHEN semantic_memory.value_json = excluded.value_json "
+                "THEN semantic_memory.embedding ELSE NULL END",
                 (
                     key,
                     value_json,
@@ -877,6 +894,74 @@ class VectorMemoryStore:
                 ),
             )
             self.db.commit()
+
+        # 8.5. Persist the value's embedding so retrieval can rank this row from
+        # the stored vector instead of re-embedding the whole table per request
+        # (mirrors write_lesson's tail). ``lesson.*`` keys are skipped: lessons
+        # route through here via write_lesson, which owns their vector contract
+        # (raw rule text, written in its own tail) — embedding the JSON envelope
+        # here would double-embed every lesson write with a different text.
+        # An unchanged-value rewrite whose vector survived the upsert's CASE is
+        # skipped too: the stored vector already describes this exact text, and
+        # re-embedding it would spend an inference on every consolidation
+        # re-affirmation. (A tombstone resurrection with the same value keeps
+        # its vector for the same reason — reconcile clears tombstoned rows'
+        # vectors on a model swap, so a kept vector is never from an old space.)
+        #
+        # The embed runs OUTSIDE _db_lock (blocking model inference must never
+        # hold the lock) at PRIORITY_BULK: nothing is blocked on the write-time
+        # vector — retrieval degrades to keyword scoring until it lands — and
+        # this tail is reached from corpus loops (history consolidation, memory
+        # import), which must not queue ahead of interactive work. Same
+        # space-generation contract as write_lesson: sample BEFORE the embed,
+        # re-check under the lock, and leave the row NULL for the backfill when
+        # a model swap lands in the gap. The ``value_json`` guard makes a
+        # concurrent re-write of the same key a no-op here — the later writer
+        # persists its own vector.
+        already_embedded = bool(
+            existing
+            and existing["value_json"] == value_json
+            and existing["embedding"] is not None
+        )
+        if self.embed_fn is not None and not key.startswith("lesson.") and not already_embedded:
+            embed_generation = self._space_generation
+            vec = self._try_embed(f"{key} {value_json}", PRIORITY_BULK)
+            if vec:
+                blob = struct.pack(f"{len(vec)}f", *vec)
+                with self._db_lock:
+                    if self._space_generation == embed_generation:
+                        # Best-effort: the semantic row is already committed, so
+                        # a failure persisting this derived vector (disk full,
+                        # I/O error) must not escape as a failed write — callers
+                        # batch many keys per call, and an exception raised after
+                        # a successful commit would discard every remaining item
+                        # in the batch. The row stays NULL and the backfill sweep
+                        # repairs it.
+                        try:
+                            self.db.execute(
+                                "UPDATE semantic_memory SET embedding = ? "
+                                "WHERE key = ? AND value_json = ? AND is_deleted = 0",
+                                (blob, key, value_json),
+                            )
+                            self.db.commit()
+                        except Exception:
+                            logger.warning(
+                                "Embedding persist failed for %r (semantic write kept; "
+                                "vector left NULL for backfill)",
+                                key,
+                                exc_info=True,
+                            )
+                            try:
+                                self.db.rollback()
+                            except Exception:
+                                logger.debug(
+                                    "Rollback after failed embedding persist failed",
+                                    exc_info=True,
+                                )
+                    else:
+                        logger.debug(
+                            "Dropping a semantic embedding produced in a previous space"
+                        )
 
         # 9. Retire conflicting episodic entries that reference the old value
         # (called outside the lock — _retire_stale_episodic does a blocking embed
@@ -1014,16 +1099,22 @@ class VectorMemoryStore:
             # run_in_embed_pool) concurrent with writers on worker threads, and
             # context.py does not guard this call — an unserialized fetch here
             # used to kill the whole subagent run (see the locked-fetch helper
-            # contract). The helper materializes the rows; the scoring loop
-            # below issues blocking per-row embed calls that must never run
-            # under _db_lock.
+            # contract). The helper materializes the rows.
             all_rows = self._fetch_all_locked(
-                "SELECT key, value_json, updated_at FROM semantic_memory "
+                "SELECT key, value_json, updated_at, embedding FROM semantic_memory "
                 "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'"
             )
 
+            # Stored write-time vectors only — one embed per request (the query),
+            # same as the lessons path. Re-embedding every row here was an
+            # unbounded O(table) loop of blocking embeds per context build. Rows
+            # the write path or backfill has not embedded yet contribute 0.0 on
+            # the vector term of the same weighted scale (see _hybrid_score).
+            similarity = self._stored_similarity_scorer(query_embedding)
+
             scored_rows: list[tuple[float, dict]] = []
-            for r in all_rows:
+            for raw in all_rows:
+                r = dict(raw)
                 # Keyword score (always available)
                 key_words = _stem_words(
                     set(re.findall(r"\w+", r["key"].replace("_", " ").replace(".", " ")))
@@ -1034,22 +1125,18 @@ class VectorMemoryStore:
                 kw_raw = key_overlap * 3 + val_overlap
                 kw_score = _keyword_score(kw_raw)
 
-                # Vector score (when embeddings available)
-                vec_score = 0.0
-                if query_embedding is not None:
-                    entry_text = f"{r['key']} {r['value_json']}"
-                    # BULK: this is an unbounded per-row loop over the whole
-                    # semantic table, recomputed on every call because non-lesson
-                    # rows never persist a vector. It must never outrank the
-                    # interactive query embed that started this same request.
-                    entry_emb = self._try_embed(entry_text, PRIORITY_BULK)
-                    if entry_emb:
-                        vec_score = max(0.0, self._cosine_sim(query_embedding, entry_emb))
+                # Vector score (when a stored vector is present). The mixed
+                # population is real — legacy rows stay NULL until the backfill
+                # sweep or a re-write reaches them — so score them on the same
+                # weighted scale as embedded rows (see _hybrid_score).
+                vec_score = similarity(r)
 
-                score = _hybrid_score(kw_score, vec_score)
+                score = _hybrid_score(
+                    kw_score, vec_score, query_has_vector=query_embedding is not None
+                )
 
                 if score > 0:
-                    scored_rows.append((score, dict(r)))
+                    scored_rows.append((score, r))
 
             scored_rows.sort(key=lambda x: (-x[0], x[1]["updated_at"]))
             rows = [r[1] for r in scored_rows[:max_rows]]
@@ -2773,8 +2860,12 @@ class VectorMemoryStore:
         Rows cleared by :meth:`reconcile_embedding_space` after an embedding-model
         change arrive here the same way, so a model swap re-embeds through this
         one path rather than a parallel one. Lesson vectors cleared by the same
-        call are repaired here too via :meth:`_backfill_lesson_embeddings`; the
-        returned count stays EPISODIC-only, which is what callers report.
+        call are repaired here too via :meth:`_backfill_lesson_embeddings`, and
+        non-lesson semantic rows via :meth:`_backfill_semantic_kv_embeddings`
+        (covers rows written before write-time embedding existed, rows written
+        while the model was absent, and ``set_semantic_if_absent`` imports,
+        which defer embedding to this sweep by design); the returned count stays
+        EPISODIC-only, which is what callers report.
 
         Idempotent and cheap in steady state: a no-op (returns 0) when there is
         no ``embed_fn``, numpy is missing, or no NULL-embedding rows remain.
@@ -2795,6 +2886,12 @@ class VectorMemoryStore:
         # there is not a single NULL episodic row — which is exactly the state
         # after reconcile_embedding_space() on a memory that holds only lessons.
         self._backfill_lesson_embeddings(progress)
+        # Same for non-lesson semantic KV rows: struct-packed, no numpy, no
+        # FAISS — get_semantic_context ranks them straight from the stored blob.
+        # No progress callback: the (done,total) stream belongs to the episodic
+        # loop below, and a second denominator would make the dashboard bar
+        # jump backward when both row types need re-embedding.
+        self._backfill_semantic_kv_embeddings()
         if not _HAS_NUMPY:
             return 0
         rows = self._fetch_all_locked(
@@ -2867,10 +2964,11 @@ class VectorMemoryStore:
         arbitrarily long, and until then dedup silently degrades and can accept a
         duplicate or contradictory lesson.
 
-        Scoped to ``lesson.*`` keys because those are the only semantic rows that
-        ever carry a vector — embedding every semantic KV would be new work, not a
-        repair. Failures leave the row NULL so a later sweep retries it, matching
-        the episodic sweep's contract. No FAISS involvement: lesson vectors are
+        Scoped to ``lesson.*`` keys because lessons embed different TEXT than
+        the other semantic rows (the raw rule text, matching write_lesson);
+        non-lesson rows are swept by :meth:`_backfill_semantic_kv_embeddings`.
+        Failures leave the row NULL so a later sweep retries it, matching the
+        episodic sweep's contract. No FAISS involvement: lesson vectors are
         compared directly, never indexed.
         """
         if self.embed_fn is None:
@@ -2908,6 +3006,68 @@ class VectorMemoryStore:
                 progress(embedded, total)
         if embedded:
             logger.info("Backfilled embeddings for %d lessons", embedded)
+        return embedded
+
+    def _backfill_semantic_kv_embeddings(
+        self, progress: "Callable[[int, int], None] | None" = None
+    ) -> int:
+        """Embed non-lesson semantic rows whose vector is NULL. Returns the count.
+
+        Steady-state rows are embedded at write time (``_write_semantic``); this
+        sweep repairs the rest: rows written while the embedding model was
+        absent, rows cleared by :meth:`reconcile_embedding_space` after a model
+        swap, and bulk-imported rows from :meth:`set_semantic_if_absent`, which
+        defers embedding here the way ``write_episodic(defer_embedding=True)``
+        does for episodic bulk writers.
+
+        The embedded text is ``"<key> <value_json>"`` — the same text the write
+        path embeds and :meth:`get_semantic_context` ranks against, so a
+        backfilled vector is indistinguishable from a write-time one. Blobs are
+        struct-packed and un-normalized, matching the lesson contract
+        (:meth:`_stored_similarity_scorer` divides both norms out). Failures
+        leave the row NULL so a later sweep retries it. No FAISS involvement.
+        """
+        if self.embed_fn is None:
+            return 0
+        rows = self._fetch_all_locked(
+            "SELECT key, value_json FROM semantic_memory "
+            "WHERE is_deleted = 0 AND embedding IS NULL AND key NOT LIKE 'lesson.%'"
+        )
+        if not rows:
+            return 0
+        embedded = 0
+        total = len(rows)
+        if progress is not None:
+            progress(0, total)
+        for row in rows:
+            # Sampled BEFORE the embed, re-checked under the lock: a model swap
+            # landing across the embed must not commit a vector from the old
+            # space (reconcile has already swept past this row).
+            backfill_generation = self._space_generation
+            vec = self._try_embed(f"{row['key']} {row['value_json']}", PRIORITY_BULK)
+            if not vec:
+                if progress is not None:
+                    progress(embedded, total)
+                continue
+            blob = struct.pack(f"{len(vec)}f", *vec)
+            with self._db_lock:
+                if backfill_generation != self._space_generation:
+                    logger.debug("Dropping a semantic backfill from a previous space")
+                    continue
+                # value_json guard: a concurrent re-write of this key already
+                # cleared-and-refilled its own vector; stamping the OLD value's
+                # vector over it would rank the row by text it no longer holds.
+                self.db.execute(
+                    "UPDATE semantic_memory SET embedding = ? "
+                    "WHERE key = ? AND value_json = ? AND embedding IS NULL",
+                    (blob, row["key"], row["value_json"]),
+                )
+                self.db.commit()
+            embedded += 1
+            if progress is not None:
+                progress(embedded, total)
+        if embedded:
+            logger.info("Backfilled embeddings for %d semantic entries", embedded)
         return embedded
 
     def migrate_from_markdown(self) -> dict[str, int]:

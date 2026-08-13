@@ -1427,8 +1427,7 @@ def _emit_context_section_timings(
     # Sub-millisecond sections are omitted from the line to keep it readable;
     # they are still recorded as metric points below. A build whose every
     # section rounds to zero would log a header with no sections at all, which
-    # is noise on the hottest path — the single-section build_message site hits
-    # that whenever episodic retrieval returns without a store lookup.
+    # is noise on the hottest path.
     reportable = [(label, ms) for label, ms in ranked if ms >= 1.0]
     if reportable:
         logger.info(
@@ -2007,7 +2006,15 @@ class ContextBuilder:
                 projects_cap=caps.projects,
                 history_cap=caps.memory_history,
                 semantic_cap=caps.semantic,
-                episodic_cap=caps.episodic,
+                # Bounded by the scaled episodic cap, never above the historical
+                # 3000-char default (same bound the previous build_message-side
+                # injection applied).
+                episodic_cap=min(_EPISODIC_INJECT_CAP, caps.episodic),
+                # Rank semantic memory against the request and let episodic
+                # retrieval fire — both are query-gated inside get_context, so
+                # an empty query (eval runner, re-seeds without a message)
+                # keeps recency-ordered semantic and no episodic block.
+                query=query_text,
             )
             if memory_ctx:
                 parts.append(memory_ctx)
@@ -2462,47 +2469,11 @@ class ContextBuilder:
             len(parts),
         )
 
-        # Episodic memory — only on new sessions to avoid cross-thread contamination;
-        # ACP native history already provides in-thread context for follow-ups.
-        # Skipped for temporary sessions.
-        if minimal_context:
-            logger.info("🔍 Minimal context — episodic memory skipped")
-        elif blocks_reads:
-            logger.info("🔍 Temporary session — episodic memory skipped")
-        elif not _group_included(context_groups, CONTEXT_GROUP_MEMORY):
-            logger.info("🔍 Memory group withheld by parent — episodic memory skipped")
-        elif is_new_session:
-            memory = self.get_memory_for(memory_store or workspace)
-            if memory.vector_store:
-                # Scale the episodic cap to the window like every other section.
-                # This is the ONLY live episodic injection (build_session_context
-                # passes no query, so its episodic_cap path never fires), so it
-                # must scale here or episodic would be the one section that stays
-                # full-size on a small model. Bounded by the scaled episodic cap,
-                # never above the historical 3000-char default.
-                episodic_cap = min(_EPISODIC_INJECT_CAP, _resolve_caps(model_window).episodic)
-                _episodic_t0 = time.monotonic()
-                episodic_ctx = memory.vector_store.get_episodic_context(
-                    query_text=text,
-                    cap=episodic_cap,
-                )
-                # Episodic is a SIBLING of build_session_context, not one of its
-                # sections: it runs after that call returns, so it needs its own
-                # timing point or it stays invisible in the breakdown. Like
-                # lessons it is query-dependent, so it embeds the request.
-                _emit_context_section_timings(
-                    [("", _episodic_t0), ("episodic", time.monotonic())],
-                    scope="build_message",
-                    is_custom=bool(is_custom),
-                    total_chars=len(episodic_ctx or ""),
-                )
-                if episodic_ctx:
-                    parts.append(_neutralize_structural_markers(episodic_ctx) + "\n")
-                    logger.info("🔍 Injected episodic memory (%d chars)", len(episodic_ctx))
-            else:
-                logger.info("🔍 No vector store — episodic memory skipped")
-        else:
-            logger.info("🔍 Follow-up message — episodic memory skipped (trust ACP)")
+        # Episodic memory — injected on new sessions only, via the query-passing
+        # memory.get_context() call inside build_session_context above (episodic
+        # is query-gated there, and follow-ups skip it: ACP native history
+        # already provides in-thread context, and cross-thread contamination is
+        # avoided). A second injection here would duplicate the same fragments.
 
         # Project context — inject on every message so the LLM always knows
         # the active project, even when set/changed after session start.

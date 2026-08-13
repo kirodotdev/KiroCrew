@@ -426,13 +426,25 @@ class TestLessonVectorRepair:
         ).fetchone()
         assert row["embedding"] is None
 
-    def test_non_lesson_semantic_rows_are_not_embedded(self, tmp_path: Path) -> None:
-        """Only lesson rows ever carry a vector — don't invent work."""
+    def test_non_lesson_semantic_rows_are_embedded(self, tmp_path: Path) -> None:
+        """Non-lesson rows carry a vector too — written at write time and
+        repaired by the backfill sweep — so get_semantic_context can rank them
+        without re-embedding the table per request."""
         store = _store(tmp_path, dim=16)
         store.embed_fn = _orthogonal_embed()
         store.set_semantic("pref.os", "linux", 0.9, "user_explicit")
-        store.backfill_missing_embeddings()
         row = store.db.execute(
             "SELECT embedding FROM semantic_memory WHERE key = 'pref.os'"
         ).fetchone()
-        assert row["embedding"] is None
+        assert row["embedding"] is not None
+
+        # A row that missed the write-time embed (model absent) is repaired by
+        # the sweep.
+        store.embed_fn = None
+        store.set_semantic("pref.editor", "vim", 0.9, "user_explicit")
+        store.embed_fn = _orthogonal_embed()
+        store.backfill_missing_embeddings()
+        row = store.db.execute(
+            "SELECT embedding FROM semantic_memory WHERE key = 'pref.editor'"
+        ).fetchone()
+        assert row["embedding"] is not None
