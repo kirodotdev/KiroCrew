@@ -568,27 +568,69 @@ const SESSION_FILTERS: SessionFilterDef[] = [
  * response arrives (or whenever the query drops below `SEARCH_MIN_CHARS`),
  * and keeps the previous result visible while a new query is in flight so
  * the list doesn't blank out between keystrokes.
+ *
+ * `revalidateSignal` re-runs the search for the SAME query whenever it changes.
+ * Callers feed a digest of the session set + titles, so a rename — which mutates
+ * a title but not the query — refreshes the backend result set. Keep the digest
+ * scoped to key/title and NOT status, or idle status ticks spam `sessionsSearch`.
  */
 function useDebouncedSessionSearch<T>(
   query: string,
   transform: (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; folder_id?: string }[]) => T,
+  revalidateSignal?: string,
 ): T | null {
   const [result, setResult] = useState<T | null>(null)
   const token = useRef(0)
+  const queryRef = useRef(query)
+  queryRef.current = query
+  const debounceActive = useRef(false)
+
+  // Debounced: fires 250ms after the last query keystroke.
   useEffect(() => {
     const q = query.trim()
     const myToken = ++token.current
-    if (q.length < SEARCH_MIN_CHARS) { setResult(null); return }
+    if (q.length < SEARCH_MIN_CHARS) { setResult(null); debounceActive.current = false; return }
+    debounceActive.current = true
+    let cancelled = false
     const t = setTimeout(async () => {
       try {
         const d = await api.sessionsSearch(q)
-        if (myToken !== token.current) return
+        if (cancelled || myToken !== token.current) return
         setResult(transform(d.sessions || []))
       } catch { /* keep previous result on error */ }
+      // Cleared AFTER the await: clearing first leaves a window where the debounce
+      // has "finished" but the fetch is outstanding, so the effect below duplicates it.
+      finally { debounceActive.current = false }
     }, 250)
-    return () => clearTimeout(t)
+    return () => { cancelled = true; clearTimeout(t); debounceActive.current = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query])
+
+  // Trailing-throttled re-run on signal change. Compares values rather than
+  // flipping a flag so it survives StrictMode's double-mount.
+  const prevSignal = useRef(revalidateSignal)
+  useEffect(() => {
+    if (prevSignal.current === revalidateSignal) return
+    prevSignal.current = revalidateSignal
+    let cancelled = false
+    const t = setTimeout(async () => {
+      // Preconditions are re-read here, not at effect time: only a signal change or
+      // unmount clears this timer, so a keystroke would otherwise scan a stale query.
+      const q = queryRef.current.trim()
+      if (q.length < SEARCH_MIN_CHARS) return
+      // A pending debounce or in-flight fetch serves this same query already.
+      if (debounceActive.current) return
+      const myToken = ++token.current
+      try {
+        const d = await api.sessionsSearch(q)
+        if (cancelled || myToken !== token.current) return
+        setResult(transform(d.sessions || []))
+      } catch { /* keep previous result on error */ }
+    }, 100)
+    return () => { cancelled = true; clearTimeout(t) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revalidateSignal])
+
   return result
 }
 
@@ -726,7 +768,15 @@ function ChatSidebar({
   // Sidebar-only state
   const [slotFilter, setSlotFilter] = useState('')
   const [historyFilter, setHistoryFilter] = useState('')
-  const historySearchResults = useDebouncedSessionSearch(historyFilter, s => s)
+  // Digest of session keys + titles (NOT status), fed to both searches as their
+  // revalidate signal. Sorted+joined so reordering `slots` alone cannot refetch.
+  const slotTitleDigest = useMemo(
+    () => slots.map(s => s.key + '\u0000' + (s.title || '')).sort().join('\u0001'),
+    [slots],
+  )
+  // The Older Sessions pane renders `history`, so this slots-derived signal is a
+  // proxy: it moves for every rename reachable today, all of which start on a live row.
+  const historySearchResults = useDebouncedSessionSearch(historyFilter, s => s, slotTitleDigest)
   // Which folder groups are collapsed in the grouped search-results view.
   // Ephemeral: reset on every query change so a fresh search shows all groups.
   const [collapsedHistoryGroups, setCollapsedHistoryGroups] = useState<Set<string>>(() => new Set())
@@ -747,6 +797,7 @@ function ChatSidebar({
       })
       return ranks
     },
+    slotTitleDigest,
   )
   const [renamingSlot, setRenamingSlot] = useState<string | null>(null)
   // In board view a multi-tag chat renders once per matching column, so
@@ -1532,7 +1583,10 @@ function ChatSidebar({
       .filter(slot => {
         if (activeFilterDefs.length > 0 && !activeFilterDefs.some(filterDef => slot[filterDef.key])) return false
         if (!slotFilter) return true
-        if (searchRanked) return searchRanked.has(slot.key)
+        // Scoped to title: that is the field a rename mutates, and widening it to
+        // key/agent appends rows the backend's content search deliberately excluded.
+        const titleMatch = (slot.title || '').toLowerCase().includes(slotFilter.toLowerCase())
+        if (searchRanked) return searchRanked.has(slot.key) || titleMatch
         return ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(slotFilter.toLowerCase())
       })
       .sort((a, b) => searchRanked
@@ -3910,14 +3964,19 @@ function ChatSidebar({
              *  scrollability cue, so the bar itself is redundant here. */}
             <div className="overflow-y-auto scrollbar-none p-2 scroll-shadow" style={{ height: `${historyHeight}px`, scrollbarWidth: 'none' }}>
               {(() => {
-                const filteredHistory = (historySearchResults ?? history).filter(s => {
-                  if (!historyFilter) return true
-                  if (historyFilter.trim().length >= SEARCH_MIN_CHARS) {
-                    if (historySearchResults) return true
-                    return ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
+                const historyLocalMatch = (s: { title?: string; key: string }) =>
+                  ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
+                // Additive rather than a boolean OR: here the backend result IS the
+                // source list, so filtering `history` instead would drop backend-only hits.
+                const filteredHistory = (() => {
+                  if (!historyFilter) return history
+                  if (historyFilter.trim().length >= SEARCH_MIN_CHARS && historySearchResults) {
+                    const seen = new Set(historySearchResults.map(s => s.key))
+                    return [...historySearchResults,
+                            ...history.filter(s => !seen.has(s.key) && historyLocalMatch(s))]
                   }
-                  return ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
-                })
+                  return (historySearchResults ?? history).filter(historyLocalMatch)
+                })()
                 // One definition of "search active" for every site below: results
                 // are present AND the query is still at/above the search threshold.
                 // The compound check matters on the clear-X frame: historyFilter
