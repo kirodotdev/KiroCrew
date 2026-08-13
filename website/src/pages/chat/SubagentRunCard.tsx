@@ -17,7 +17,7 @@ import { memo } from 'react'
 import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, switchSlot } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage, SubagentActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from './types'
@@ -150,6 +150,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
   slot: string
 }) {
   const dispatch = useAppDispatch()
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
   const subagents = useAppSelector(s =>
     slot === s.chat.activeSlot ? s.chat.subagents : s.chat.slotActivity[slot]?.subagents ?? EMPTY_SUBAGENTS,
   )
@@ -203,6 +204,14 @@ const SubagentRunCard = memo(function SubagentRunCard({
         : `${total} agent${total === 1 ? '' : 's'}`
 
   const open = () => {
+    // The Subagents panel is mounted for `activeSlot`, and split view
+    // deliberately never moves `activeSlot` with pane focus. Opening from a
+    // background pane therefore has to make THIS card's session active first,
+    // or the panel that opens belongs to a different session and typically
+    // reads "No subagents running" — the card's own label promising otherwise.
+    // Safe inside split view: the auto-enter effect is gated on splitMode being
+    // off, so switching does not reseed or leave the grid.
+    if (slot && slot !== activeSlot) dispatch(switchSlot(slot))
     // Deep-link to the first agent of THIS wave so the panel lands on the
     // transcript the card refers to, not whatever was last selected.
     const first = launch.ids.find(id => subagents[id])

@@ -37,26 +37,30 @@ import type { ChatMessage } from '../../types'
 export interface TranscriptRendererOptions {
   /** Slot these rows belong to. The tool line keys its per-slot log off it. */
   slot: string
-  /** Open a file in the host's side panel. */
+  /** Open a file in the host's side panel. Unwired from a pane until #3300:
+   *  the dock is `activeSlot`-keyed while pane focus deliberately is not. */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
-  /** Open a directory in the host's side panel. */
+  /** Open a directory in the host's side panel. Same #3300 blocker. */
   onFolderOpen?: (path: string) => void
-  /** "Show in side panel" on a sub-agent completion card. */
+  /** "Show in side panel" on a sub-agent completion card. Same #3300 blocker. */
   onOpenSubagentPanel?: (parsed: ParsedSubagentCompletion) => void
   /** Expanded-state map for tool rows, held ABOVE the row: a virtualised or
    *  remounted transcript unmounts the row and would otherwise forget it. */
   toolDisclosure?: Record<string, boolean>
   onToolDisclosureChange?: (key: string, expanded: boolean) => void
-  /** Whether an MCP app may be revealed in the panel, and how. */
+  /** Whether an MCP app may be revealed in the panel, and how. Unwired from a
+   *  pane for the same reason as `onFileOpen` — tracked in #3332. */
   appInPanel?: boolean
   onOpenApp?: (toolCallId: string) => void
   /** Id of the auto-nudge loop this surface can open, plus the opener. The
-   *  match rule stays here so a host never re-implements it. */
+   *  match rule stays here so a host never re-implements it. Unwired from a
+   *  pane until its composer can reach the popover — tracked in #3332. */
   activeNudgeLoopId?: string | null
   onOpenNudgeLoop?: () => void
   /** Turn-recovery state for the error row's Continue button. Omitted → the
    *  row renders without one, which is correct for a surface that cannot
-   *  continue a turn. */
+   *  continue a turn. A pane cannot supply these until `selectContinuable` /
+   *  `selectTurnInterrupted` are slot-aware — tracked in #3332. */
   continuable?: boolean
   interrupted?: boolean
   continuing?: boolean
@@ -130,7 +134,9 @@ export function createTranscriptRenderers(
         // The match already proved this, but a null here must draw the generic
         // line rather than crash the row.
         if (!runId) return toolLine(m, ctx)
-        return ctx.row(<WorkflowRunCard runId={runId} message={m} />)
+        // No ctx.row: this card lays out its own full-width row (it sets
+        // --mc-content-width itself), so wrapping it would double the padding.
+        return <WorkflowRunCard key={ctx.key} runId={runId} message={m} slot={o.slot} />
       },
     },
     {
@@ -140,7 +146,7 @@ export function createTranscriptRenderers(
       render: (m, ctx) => {
         const launch = extractSpawnRunLaunch(m)
         if (!launch) return toolLine(m, ctx)
-        return ctx.row(<SubagentRunCard launch={launch} slot={o.slot} />)
+        return <SubagentRunCard key={ctx.key} launch={launch} slot={o.slot} />
       },
     },
     {

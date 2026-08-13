@@ -18,9 +18,11 @@
  * a stop event, which is exactly what these tests exist to catch.
  */
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
-import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
+import { GROUPED_ROLES, mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
@@ -188,5 +190,53 @@ describe('rows the defaults already draw correctly are left to them', () => {
     // Still deliberately undrawn, and still resolving to an ENTRY that says so.
     expect(idFor(msg('queued'))).toBe('undrawn')
     expect(idFor(msg('system'))).toBe('undrawn')
+  })
+})
+
+describe('drift guard against the single-chat row chain', () => {
+  // The single-chat surface still renders from its own inline role chain, so
+  // this module is a SECOND row set that has to agree with it. Nothing in the
+  // type system notices when they diverge: a branch added to ChatPage lands
+  // only there, and panes quietly regress to a reduced transcript again — the
+  // exact failure mode this PR exists to fix.
+  //
+  // So pin the agreement mechanically. Every role ChatPage dispatches on must
+  // be CLAIMED by some entry in the registry a pane renders through. This is
+  // deliberately a claim check, not a render check: several rows resolve only
+  // with a content guard (a tool row needs its 🔧 prefix), and what drift
+  // breaks is coverage, not the guard.
+  //
+  // Retire this guard when ChatPage consumes these entries directly and there
+  // is only one row set left to keep in sync.
+  const chatPageSrc = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+
+  const rolesInChatPage = [...new Set(
+    [...chatPageSrc.matchAll(/\.role === '([a-z_]+)'/g)].map(m => m[1]),
+  )].sort()
+
+  it('finds the role chain it is guarding (a rename must fail loudly, not silently pass)', () => {
+    // If ChatPage stops matching this shape the extraction returns nothing and
+    // every assertion below becomes vacuous, so assert the corpus itself.
+    expect(rolesInChatPage.length).toBeGreaterThan(8)
+    expect(rolesInChatPage).toContain('assistant')
+    expect(rolesInChatPage).toContain('user')
+    expect(rolesInChatPage).toContain('tool')
+  })
+
+  it('claims every role the single-chat chain dispatches on', () => {
+    const active = registry()
+    // A `'*'` entry carrying a `match` is SHAPE-matched (a stop event, a
+    // sub-agent completion) and claims no role — counting it would make this
+    // guard vacuous, since every role would look covered by it.
+    const claims = (role: string) =>
+      active.some(r => r.roles.includes(role) || (r.roles.includes('*') && !r.match))
+    // A grouped role is assembled into the collapsible group BEFORE per-row
+    // resolution, so no row entry is expected to claim it — the group owns its
+    // display. Read from the SDK's own export rather than hardcoded, so a
+    // change to what gets grouped moves this exclusion with it.
+    const unclaimed = rolesInChatPage
+      .filter(role => !GROUPED_ROLES.includes(role))
+      .filter(role => !claims(role))
+    expect(unclaimed).toEqual([])
   })
 })
