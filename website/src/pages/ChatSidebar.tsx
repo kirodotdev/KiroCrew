@@ -16,7 +16,7 @@ import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
-import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession } from '../store/chatSlice'
+import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal } from '../store/chatSlice'
 import { sseSlotTitle } from '../store/dashboardSlice'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { computeReorderedFolders } from '../utils/reorderFolders'
@@ -694,6 +694,15 @@ const SORT_LS_KEY = 'mc-session-sort'
 const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
 
 export const SIDEBAR_MIN = 180
+/** Reveal-in-sidebar retry budget: ancestor expansion and filter resets land
+ *  through mutations and re-renders, so the target row can enter the DOM
+ *  several frames after the request is consumed. 20 × 100 ms ≈ 2 s, then the
+ *  reveal gives up (the row genuinely isn't renderable, e.g. board lane with
+ *  no matching column). */
+const REVEAL_RETRY_MS = 100
+const REVEAL_MAX_ATTEMPTS = 20
+/** How long the reveal confirmation outline holds before fading out. */
+const REVEAL_FLASH_HOLD_MS = 1600
 export const SIDEBAR_MAX = 1400
 const SIDEBAR_LS_KEY = 'mc-sidebar-width'
 
@@ -1773,29 +1782,112 @@ function ChatSidebar({
     return m
   }, [folders])
 
-  // Reveal-in-sidebar: expand parent folder(s) then scroll to the slot
+  // Reveal-in-sidebar: consume the pending request held in the store (set by
+  // the session header menu). Store state rather than a window event on
+  // purpose: this component is unmounted while the drawer is collapsed, so an
+  // event dispatched before the mount commits had no listener and was silently
+  // dropped — the request waiting here is picked up by this effect on mount as
+  // well as on change (#912 D1). The nonce makes repeat reveals of the same
+  // row distinct requests, so the effect re-fires even when the key repeats.
+  const revealRequest = useAppSelector(s => s.chat.revealRequest)
+  // Serial + pending timer for the in-flight reveal: a newer reveal cancels
+  // the older retry loop, and unmount stops the pending timer outright.
+  const revealRunRef = useRef<{ seq: number; timer: number | null }>({ seq: 0, timer: null })
+  // Row currently flashing as reveal confirmation, keyed by slot. Rendered
+  // into the row's className (not imperative classList mutation) so the
+  // highlight survives row remounts — list reorders and re-keyed renders
+  // would silently drop a manually-added DOM class.
+  const [revealFlash, setRevealFlash] = useState<{ key: string; fading: boolean } | null>(null)
+  const revealFlashTimersRef = useRef<number[]>([])
+  useEffect(() => () => {
+    const run = revealRunRef.current
+    if (run.timer != null) clearTimeout(run.timer)
+    revealFlashTimersRef.current.forEach(clearTimeout)
+  }, [])
+  const sidebarRootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const handler = (e: Event) => {
-      const key = (e as CustomEvent).detail as string
-      if (!key) return
-      const slot = slots.find(s => s.key === key)
-      if (slot?.folder_id) {
-        // Expand all ancestor folders
-        const expand = (fid: string) => {
-          const f = folders.find(x => x.id === fid)
-          if (f?.collapsed) updateFolderMutation.mutate({ id: fid, body: { collapsed: false } })
-          if (f?.parent_id) expand(f.parent_id)
-        }
-        expand(slot.folder_id)
-      }
-      setTimeout(() => {
-        const el = document.querySelector(`[data-slot-key="${key}"]`)
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }, 150)
+    if (!revealRequest) return
+    const { key } = revealRequest
+    // Consume immediately: the request must not survive to a later remount.
+    dispatch(clearSlotReveal())
+    const slot = slots.find(s => s.key === key)
+    if (!slot) return
+    // A live sidebar search or status filter can exclude the target row from
+    // the list entirely (#912 D5) — reveal is an explicit "show me this row",
+    // so drop the filters that hide it rather than scrolling to nothing.
+    if (!filteredSlots.some(s => s.key === key)) {
+      if (slotFilter) setSlotFilter('')
+      if (activeFilters.size > 0) setActiveFilters(new Set())
     }
-    window.addEventListener('reveal-slot', handler)
-    return () => window.removeEventListener('reveal-slot', handler)
-  }, [slots, folders, updateFolderMutation])
+    if (slot.folder_id) {
+      // The folder filter hides whole subtrees in the flat and tree lanes —
+      // un-hide the target's ancestor chain (persisted, mirroring
+      // toggleFolderFilter). Cycle-guarded like filterHiddenSubtree.
+      if (filterHiddenSubtree.has(slot.folder_id)) {
+        setFilterHiddenFolders(prev => {
+          const next = new Set(prev)
+          const visited = new Set<string>()
+          let curId: string | undefined = slot.folder_id
+          while (curId && !visited.has(curId)) {
+            visited.add(curId)
+            next.delete(curId)
+            const cid = curId
+            curId = folders.find(f => f.id === cid)?.parent_id
+          }
+          safeSetItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([...next]))
+          return next
+        })
+      }
+      // Expand all collapsed ancestor folders. Cycle-guarded: a hand-edited
+      // folders.json can contain a parent_id loop and must not hang the tab.
+      const visited = new Set<string>()
+      const expand = (fid: string) => {
+        if (visited.has(fid)) return
+        visited.add(fid)
+        const f = folders.find(x => x.id === fid)
+        if (f?.collapsed) updateFolderMutation.mutate({ id: fid, body: { collapsed: false } })
+        if (f?.parent_id) expand(f.parent_id)
+      }
+      expand(slot.folder_id)
+    }
+    // The row may not be in the DOM yet: ancestor expansion and the filter
+    // resets above land through mutations and re-renders. Retry until the row
+    // exists (bounded), instead of one fixed-delay attempt that silently gives
+    // up whenever the re-render loses the race (#912 D3).
+    const run = revealRunRef.current
+    run.seq += 1
+    const seq = run.seq
+    if (run.timer != null) { clearTimeout(run.timer); run.timer = null }
+    let attempt = 0
+    const tryScroll = () => {
+      if (revealRunRef.current.seq !== seq) return
+      // Scoped to this sidebar, not `document`: other surfaces (and board-view
+      // duplicate renders) can carry the same data-slot-key (#912 D5).
+      const el = sidebarRootRef.current?.querySelector<HTMLElement>(`[data-slot-key="${window.CSS.escape(key)}"]`)
+      if (!el) {
+        attempt += 1
+        if (attempt <= REVEAL_MAX_ATTEMPTS) run.timer = window.setTimeout(tryScroll, REVEAL_RETRY_MS)
+        return
+      }
+      const reduce = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+      if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' })
+      // Visible confirmation even when the row never moved (#912 D4): an
+      // accent outline that fades out (classes in index.css, rendered via
+      // revealFlash state). Outline, not background — the target is usually
+      // the ACTIVE row, which already carries the accent-subtle background —
+      // and not box-shadow, which the recency tint drives inline. The fade is
+      // a non-spatial color transition, so it needs no reduced-motion branch
+      // (same treatment as MarkdownPanel's flashCommentRow); the scroll above
+      // handles the spatial half. A newer flash replaces the older one
+      // immediately, so two rows are never highlighted at once.
+      revealFlashTimersRef.current.forEach(clearTimeout)
+      setRevealFlash({ key, fading: false })
+      const t1 = window.setTimeout(() => setRevealFlash(f => (f && f.key === key ? { key, fading: true } : f)), REVEAL_FLASH_HOLD_MS)
+      const t2 = window.setTimeout(() => setRevealFlash(f => (f && f.key === key ? null : f)), REVEAL_FLASH_HOLD_MS + 500)
+      revealFlashTimersRef.current = [t1, t2]
+    }
+    tryScroll()
+  }, [revealRequest, dispatch, slots, folders, filteredSlots, filterHiddenSubtree, slotFilter, activeFilters, updateFolderMutation])
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
@@ -2236,7 +2328,7 @@ function ChatSidebar({
           <ContextMenuTrigger asChild>
         <div ref={scope === 'list' ? setNodeRef : undefined} {...(scope === 'list' ? listeners : {})}
           data-draggable={(renamingSlot !== s.key).toString()}
-          className={`session-row group relative flex items-start gap-2.5 px-4 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''}`}
+          className={`session-row group relative flex items-start gap-2.5 px-4 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(scope !== 'list' && scope !== 'flat' && renamingSlot !== s.key) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
@@ -2892,7 +2984,7 @@ function ChatSidebar({
 
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    <div className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
+    <div ref={sidebarRootRef} className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
       {/* Drag handle — Pointer-Events column resize (mouse + touch + pen).
           role="separator" gives it correct ARIA; touch-action:none so a touch
           drag resizes the panel instead of scrolling the page. Pointer capture

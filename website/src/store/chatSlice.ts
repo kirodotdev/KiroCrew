@@ -559,6 +559,19 @@ interface ChatState {
    *  treating that as a request would force-focus Files or the last requested
    *  view over the tab the user actually left the chat on. */
   activityTabRequest: number
+  /** Pending "reveal in sidebar" request from the session header menu, or
+   *  null. State, not a window event, on purpose: the sidebar is unmounted
+   *  while the drawer is collapsed (and under preview focus / on mobile), and
+   *  a one-shot CustomEvent dispatched before the listener mounts is silently
+   *  dropped — there is no replay. Held here, the request survives until the
+   *  sidebar consumes and clears it in an effect that also runs on mount
+   *  (issue #912). */
+  revealRequest: { key: string; nonce: number } | null
+  /** Never-reset counter feeding `revealRequest.nonce`, so revealing the same
+   *  session twice produces two distinct requests (a key-only request would
+   *  make the second reveal indistinguishable from the first). Monotonic
+   *  across clears. */
+  revealNonce: number
   /** Tool call to highlight & auto-expand inline. Set by openActivityToTool;
    *  consumed (cleared) once the matching ToolCallLine has expanded itself. */
   focusToolCallId: string | null
@@ -649,6 +662,8 @@ const initialState: ChatState = {
   activityOpen: false,
   activityTab: 'files' as const,
   activityTabRequest: 0,
+  revealRequest: null,
+  revealNonce: 0,
   focusToolCallId: null,
   mcpApps: {},
   slotActivity: seedSlotActivity(),
@@ -2001,6 +2016,11 @@ const chatSlice = createSlice({
     /** Clear after the matching pill has consumed the focus signal, so the same trigger
      *  doesn't re-fire on subsequent re-renders. */
     clearFocusToolCallId(state) { state.focusToolCallId = null },
+    /** Ask the sidebar to reveal a session row (expand collapsed ancestor
+     *  folders, scroll it into view, flash it). Consumed and cleared by
+     *  ChatSidebar once it is mounted and ready — see `revealRequest`. */
+    requestSlotReveal(state, action: PayloadAction<string>) { state.revealNonce += 1; state.revealRequest = { key: action.payload, nonce: state.revealNonce } },
+    clearSlotReveal(state) { state.revealRequest = null },
     /** Drop the previous connection's ephemeral subagent view before the gateway
      *  replays its authoritative running/done snapshot. Without this reset, an
      *  empty replay leaves agents from a restarted gateway visible indefinitely.
@@ -3388,7 +3408,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setGoalLoops, sseGoalLoop,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,

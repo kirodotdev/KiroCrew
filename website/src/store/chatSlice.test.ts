@@ -11,6 +11,8 @@ import chatReducer, {
   switchSlot,
   refreshSlot,
   warmSlotCache,
+  requestSlotReveal,
+  clearSlotReveal,
 } from './chatSlice'
 import { extractSpawnRunLaunch, isSpawnRunTool } from '../pages/chat/SubagentRunCard'
 
@@ -574,5 +576,28 @@ describe('chat frame append is idempotent per server row id (issue #1704)', () =
     )
     const msgs = store.getState().chat.messages
     expect(msgs[msgs.length - 1].content).toBe('newest reply')
+  })
+})
+
+describe('requestSlotReveal / clearSlotReveal — pending reveal request (issue #912)', () => {
+  it('holds the request until consumed and keeps the nonce monotonic across clears', () => {
+    const store = makeStore()
+    expect(store.getState().chat.revealRequest).toBeNull()
+
+    store.dispatch(requestSlotReveal('k-a'))
+    expect(store.getState().chat.revealRequest).toEqual({ key: 'k-a', nonce: 1 })
+
+    // Consumption clears the request so a later sidebar remount cannot
+    // replay a reveal that was already handled.
+    store.dispatch(clearSlotReveal())
+    expect(store.getState().chat.revealRequest).toBeNull()
+
+    // A repeat reveal of the SAME session after consumption is a distinct
+    // request: the nonce never repeats (fed by a never-reset counter), so a
+    // consumer keyed on the request re-fires even for an identical key.
+    store.dispatch(requestSlotReveal('k-a'))
+    expect(store.getState().chat.revealRequest).toEqual({ key: 'k-a', nonce: 2 })
+    store.dispatch(requestSlotReveal('k-b'))
+    expect(store.getState().chat.revealRequest).toEqual({ key: 'k-b', nonce: 3 })
   })
 })

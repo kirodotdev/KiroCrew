@@ -1656,6 +1656,14 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    without fighting hover/active background states, which now use the standard
    neutral tokens (hover:bg-bg-hover, bg-accent-subtle when active). */
 .session-row{--_sc:var(--session-color,transparent);--session-muted:var(--muted)}
+/* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
+   briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
+   background, because the revealed row is usually the active one and already
+   carries the accent-subtle background. The fade is a color transition (not an
+   animation) so the global reduced-motion animation kill-switch above leaves
+   the confirmation visible. */
+.session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px;transition:outline-color .4s ease}
+.session-row.session-reveal-flash-fade{outline-color:transparent}
 .session-row.session-colored{position:relative}
 .session-row.session-colored::before{
   content:"";
