@@ -86,14 +86,14 @@ class TestRemoveStaleUnixSocket:
         assert victim.is_dir()
 
     @requires_unix_socket
-    def test_a_real_stale_socket_is_unlinked(self, tmp_path: Path) -> None:
+    def test_a_real_stale_socket_is_unlinked(self, short_sock_dir: Path) -> None:
         """The arm that lets a restart rebind: a real socket inode is removed.
 
         Asserted against a real ``AF_UNIX`` inode rather than a mocked
         ``os.stat``, because the whole decision is ``S_ISSOCK`` on the real
         mode bits.
         """
-        path = tmp_path / "stale.sock"
+        path = short_sock_dir / "stale.sock"
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             sock.bind(str(path))
@@ -107,7 +107,7 @@ class TestRemoveStaleUnixSocket:
 
     @requires_unix_socket
     def test_an_unlink_failure_is_logged_and_swallowed(
-        self, tmp_path: Path, monkeypatch, caplog
+        self, short_sock_dir: Path, monkeypatch, caplog
     ) -> None:
         """A refused unlink must degrade to TCP-only, not abort startup.
 
@@ -115,7 +115,7 @@ class TestRemoveStaleUnixSocket:
         raising here would take the whole gateway down over an optional
         transport.
         """
-        path = tmp_path / "stale.sock"
+        path = short_sock_dir / "stale.sock"
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             sock.bind(str(path))
@@ -162,7 +162,7 @@ class TestRegisterUnixSocketCleanup:
     @requires_unix_socket
     @pytest.mark.asyncio
     async def test_the_socket_named_after_registration_is_removed(
-        self, tmp_path: Path
+        self, short_sock_dir: Path
     ) -> None:
         """A clean shutdown must not leave a socket file behind.
 
@@ -170,7 +170,7 @@ class TestRegisterUnixSocketCleanup:
         fallback, so this is the difference between a clean restart and one that
         looks broken to every internal caller.
         """
-        path = tmp_path / "dash.sock"
+        path = short_sock_dir / "dash.sock"
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.bind(str(path))
         sock.close()
@@ -366,9 +366,7 @@ class TestStartDashboardWiring:
         ``_audit_denied`` exists at all).
         """
         async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
-            names = [
-                getattr(mw, "__name__", type(mw).__name__) for mw in runner.app.middlewares
-            ]
+            names = [getattr(mw, "__name__", type(mw).__name__) for mw in runner.app.middlewares]
 
         assert "host_validation_middleware" in names
         assert "sel_audit_middleware" in names
@@ -409,9 +407,7 @@ class TestStartDashboardWiring:
                 assert resp.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
 
     @pytest.mark.asyncio
-    async def test_lifecycle_hooks_are_registered_by_name(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    async def test_lifecycle_hooks_are_registered_by_name(self, tmp_path, monkeypatch) -> None:
         """Every long-lived subsystem must have a teardown hook.
 
         Selected BY NAME: the lists are appended to as subsystems are added, so a
@@ -465,9 +461,7 @@ class TestStartDashboardWiring:
                 assert resp.status == 403
 
     @pytest.mark.asyncio
-    async def test_a_configured_url_joins_the_csrf_origin_set(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    async def test_a_configured_url_joins_the_csrf_origin_set(self, tmp_path, monkeypatch) -> None:
         """A published URL widens the CSRF allowlist — but only behind token auth.
 
         The widening is guarded by an explicit re-check that the token-auth
@@ -477,9 +471,11 @@ class TestStartDashboardWiring:
         origin unauthenticated.
         """
         url = "http://dash.example.com:5476"
-        async with _dashboard(
-            tmp_path, monkeypatch, dashboard_url=url, local_only=False
-        ) as (runner, _state, _spies):
+        async with _dashboard(tmp_path, monkeypatch, dashboard_url=url, local_only=False) as (
+            runner,
+            _state,
+            _spies,
+        ):
             assert any(getattr(mw, "_is_token_auth", False) for mw in runner.app.middlewares)
             assert url in runner.app["allowed_origins"]
 
@@ -527,9 +523,7 @@ class TestStartDashboardWiring:
             lambda: SimpleNamespace(
                 tunnel=provider,
                 telemetry=SimpleNamespace(record_event=lambda *_a, **_k: None),
-                dashboard=SimpleNamespace(
-                    start_services=AsyncMock(), stop_services=AsyncMock()
-                ),
+                dashboard=SimpleNamespace(start_services=AsyncMock(), stop_services=AsyncMock()),
             ),
         )
 
