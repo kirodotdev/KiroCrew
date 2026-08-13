@@ -39,7 +39,7 @@ const {
   setGlobalHotkeyLogger,
 } = require("./global-hotkey");
 const { createLivenessMonitor } = require("./gateway-liveness");
-const { chooseRecoveryStrategy, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
+const { chooseRecoveryStrategy, classifyAdoptedGateway, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, classifyGatewayReadiness, FAMILY_META, HEALTH_IDENTITY_PATH, READY_PATH } = require("./instance-guard");
@@ -217,34 +217,42 @@ if (!app.requestSingleInstanceLock()) {
 let mainWindow = null;
 let tray = null;
 let gatewayProcess = null;
-// True only when WE spawned the bundled backend on this flavor's port. False on
-// the reuse path — i.e. a gateway was already answering when we booted, which is
-// exactly the remote-tunnel setup (localhost:<port> is an SSH forward to a
-// remote gateway) and also the "dev ran `kirocrew gateway` in a terminal" case.
-// Recovery must NEVER kill or respawn a gateway we did not spawn: the port-holder
-// is someone else's process (our SSH tunnel, a manual gateway), and the correct
-// fix on a dropped tunnel is to re-probe and reconnect once it heals, not to
-// force-stop the port or spawn a (nonexistent, in remote mode) local backend.
-let weSpawnedGateway = false;
-// True only on the reuse path when the port-holder was POSITIVELY identified as
-// a local same-family Kiro Crew process (same-family /api/health + a "kirocrew"
-// or "service" LISTEN owner). Distinguishes "we adopted a local gateway" from
-// "we connected to a tunnel / external gateway" for recovery: an adopted local
-// gateway that dies will never come back on its own, so recovery must wait
-// BOUNDED and then respawn — never the indefinite tunnel-heal wait, which
-// leaves the shell dead until the user manually relaunches.
+// How the gateway on this flavor's port was obtained — ONE mutually-exclusive
+// state (previously three module-level booleans that encoded it redundantly and
+// could drift out of sync). Vocabulary + the recovery-strategy mapping live in
+// gateway-recovery.js (chooseRecoveryStrategy / classifyAdoptedGateway); assign
+// at exactly one place per outcome.
+//   "none"           — no gateway yet, or the reuse path could NOT positively
+//                      identify the port-holder as a local Kiro Crew process
+//                      (remote SSH tunnel, manual/external gateway, probe
+//                      failure). Recovery must NEVER kill or respawn it: the
+//                      port-holder is someone else's process, and the correct
+//                      fix on a dropped tunnel is to re-probe and reconnect
+//                      once it heals, not to force-stop the port or spawn a
+//                      (nonexistent, in remote mode) local backend.
+//   "spawned"        — WE spawned the bundled backend on this flavor's port;
+//                      recovery may kill + respawn it.
+//   "reused-local"   — reuse path, holder POSITIVELY identified as a local
+//                      same-family Kiro Crew process (same-family /api/health
+//                      + a "kirocrew" LISTEN owner). An adopted local gateway
+//                      that dies will never come back on its own, so recovery
+//                      must wait BOUNDED and then respawn — never the
+//                      indefinite tunnel-heal wait, which leaves the shell
+//                      dead until the user manually relaunches.
+//   "reused-service" — like "reused-local", but the holder was SERVICE-
+//                      classified (PPID = init: a real launchd/systemd unit —
+//                      or an orphan, which reparents to init and is
+//                      indistinguishable at classify time). If that gateway
+//                      later releases the port, a real service manager may be
+//                      about to respawn it, so recovery must offer a bounded
+//                      rebind grace before spawning locally — spawning
+//                      immediately races the manager for the bind and one side
+//                      dies with EADDRINUSE.
 // KNOWN RESIDUAL (Windows): classifyPortOwner cannot positively identify
-// owners there (no lsof/ps), so this flag never sets and an adopted draining
-// gateway still falls into the indefinite "reconnect" wait — deliberately
-// conservative until the Windows-native owner probe lands.
-let reusedLocalGateway = false;
-// True when the adopted holder was specifically SERVICE-classified (PPID = init:
-// a real launchd/systemd unit — or an orphan, which reparents to init and is
-// indistinguishable at classify time). If that gateway later releases the port,
-// a real service manager may be about to respawn it, so recovery must offer a
-// bounded rebind grace before spawning locally — spawning immediately races the
-// manager for the bind and one side dies with EADDRINUSE.
-let reusedServiceGateway = false;
+// owners there (no lsof/ps), so the reused-* states never set and an adopted
+// draining gateway still falls into the indefinite "reconnect" wait —
+// deliberately conservative until the Windows-native owner probe lands.
+let gatewayOwnership = "none";
 // Post-handoff backend liveness monitor (primary window only). Detects a wedged
 // gateway — alive TCP socket, frozen event loop — that the spawn 'exit' watcher
 // can't, since the process never exits. See gateway-liveness.js.
@@ -512,15 +520,13 @@ async function resolveGatewayConflict(rebindDepth = 0) {
       adoptedDraining = true;
     }
     glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
-    weSpawnedGateway = false; // reuse path — recovery must not kill/respawn a gateway we don't own
-    // A same-family gateway held by a local Kiro Crew process is OURS in spirit
+    // Reuse path — recovery must not kill/respawn a gateway we don't own. A
+    // same-family gateway held by a local Kiro Crew process is OURS in spirit
     // even though we didn't spawn it: if it dies, no tunnel will resurrect it,
     // so recovery may respawn after a bounded wait. Anything less positively
     // identified (tunnel, no visible owner, probe failure) keeps the
-    // never-respawn external classification.
-    reusedLocalGateway = decision.reason === "same-family"
-      && (localOwner === "kirocrew" || localOwner === "service");
-    reusedServiceGateway = reusedLocalGateway && localOwner === "service";
+    // never-respawn external classification ("none").
+    gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner });
     // A gateway we adopted mid-drain is not a success to celebrate: recovery
     // may immediately retract it. Keep the status neutral for that case.
     sendStatus(adoptedDraining ? "Connecting to the existing gateway…" : "Gateway already running ✓");
@@ -816,9 +822,10 @@ function spawnGateway(resolve) {
           },
         });
         gatewayProcess = child;
-        weSpawnedGateway = true; // we own this child — recovery may kill+respawn it
-        reusedLocalGateway = false; // ownership transitioned: no longer on an adopted gateway
-        reusedServiceGateway = false; // ditto — stale service classification must not outlive the adoption
+        // We own this child — recovery may kill+respawn it. Ownership
+        // transitioned: any stale adopted/service classification must not
+        // outlive the spawn.
+        gatewayOwnership = "spawned";
         // The child inherits its own dup of the fd; close our copy so it doesn't leak.
         if (typeof childOut === "number") { try { fs.closeSync(childOut); } catch { /* ignore */ } }
 
@@ -2113,7 +2120,7 @@ async function recoverWedgedGateway(win) {
   // fell through to showUnrecoverableGatewayError, which QUIT the app on any
   // button (that was the "crash on Retry"). Instead: leave the tunnel alone and
   // re-probe until it heals, then reconnect.
-  const strategy = chooseRecoveryStrategy({ weSpawnedGateway, reusedLocalGateway });
+  const strategy = chooseRecoveryStrategy({ gatewayOwnership });
   if (strategy === "reconnect") {
     glog("liveness: backend unresponsive on a gateway we did not spawn (remote tunnel / external gateway) — waiting for it to recover instead of killing the port");
     if (!win || win.isDestroyed() || isQuitting) return;
@@ -2247,7 +2254,7 @@ async function reconnectOrRespawnAdoptedGateway(win) {
     return showUnrecoverableGatewayError(win, PORT, "held");
   }
   if (!win || win.isDestroyed() || isQuitting) return;
-  if (reusedServiceGateway) {
+  if (gatewayOwnership === "reused-service") {
     // The dead gateway was SERVICE-classified: a real launchd/systemd unit is
     // (or may be) about to respawn it, and spawning immediately races that
     // rebind for the port. Orphans classify as service too but nothing rebinds
@@ -2270,8 +2277,7 @@ async function reconnectOrRespawnAdoptedGateway(win) {
       const readiness = await fetchGatewayReadiness();
       if (decision.action === "reuse" && readiness !== "shutting-down") {
         glog(`liveness: service manager re-bound :${PORT} (owner=${owner}, reason=${decision.reason}, readiness=${readiness}) — reconnecting to the restarted gateway`);
-        reusedLocalGateway = decision.reason === "same-family" && (owner === "kirocrew" || owner === "service");
-        reusedServiceGateway = reusedLocalGateway && owner === "service";
+        gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner: owner });
         gatewayStartFailure = null;
         return showLoadingThenConnect(win, BACKEND_URL);
       }
