@@ -2948,6 +2948,74 @@ class TestSkillPackaging:
 
         assert api._skill_package(scan, scan.root, manifest) is None
 
+    def test_a_block_scalar_always_value_is_rejected_fail_closed(self, tmp_path: Path) -> None:
+        # The gate's verbatim parser sees only the indicator; the loader that
+        # runs after install resolves the indented `true`. The gate must treat
+        # the unresolvable value as activating, or the package would slip past
+        # here and become always-injected once installed.
+        api = _api()
+        scan = _scan(tmp_path, "codex")
+        manifest = self._skill(scan.root, "demo", "---\nalways: >\n  true\n---\nBody\n")
+
+        assert api._skill_package(scan, scan.root, manifest) is None
+        assert "automatic_activation_excluded" in _reasons(scan)
+
+    def test_a_literal_block_scalar_always_value_is_rejected(self, tmp_path: Path) -> None:
+        api = _api()
+        scan = _scan(tmp_path, "codex")
+        manifest = self._skill(scan.root, "demo", "---\nalways: |-\n  true\n---\nBody\n")
+
+        assert api._skill_package(scan, scan.root, manifest) is None
+        assert "automatic_activation_excluded" in _reasons(scan)
+
+    def test_an_indented_always_line_cannot_mask_a_real_declaration(self, tmp_path: Path) -> None:
+        # _frontmatter's collapsed map takes the last ``key:`` line it sees,
+        # indented prose included — so ``always: false`` inside a block scalar
+        # would overwrite the real column-0 ``always: true``. The gate must
+        # decide from column-0 declarations only, like the loader does.
+        body = "---\nalways: true\ndescription: >\n  always: false\n---\nBody\n"
+        api = _api()
+        scan = _scan(tmp_path, "codex")
+        manifest = self._skill(scan.root, "demo", body)
+
+        assert api._skill_package(scan, scan.root, manifest) is None
+        assert "automatic_activation_excluded" in _reasons(scan)
+
+    def test_an_indented_always_line_alone_does_not_reject(self, tmp_path: Path) -> None:
+        # Prose that merely mentions ``always:`` inside a block scalar is not
+        # a declaration; the loader ignores it, and so must the gate.
+        body = "---\nname: demo\ndescription: >\n  always: true\n---\nBody\n"
+        api = _api()
+        scan = _scan(tmp_path, "codex")
+        manifest = self._skill(scan.root, "demo", body)
+
+        assert api._skill_package(scan, scan.root, manifest) is not None
+
+    def test_an_indented_delimiter_cannot_truncate_the_always_scan(self, tmp_path: Path) -> None:
+        # An indented ``---`` inside a block scalar is prose; the loader's
+        # frontmatter regex closes only at a column-0 ``---``, so a column-0
+        # ``always: true`` after the indented line is a real declaration the
+        # gate must still see.
+        body = "---\ndescription: >\n  ---\nalways: true\n---\nBody\n"
+        api = _api()
+        scan = _scan(tmp_path, "codex")
+        manifest = self._skill(scan.root, "demo", body)
+
+        assert api._skill_package(scan, scan.root, manifest) is None
+        assert "automatic_activation_excluded" in _reasons(scan)
+
+    def test_an_indented_delimiter_cannot_truncate_the_triggers_scan(self, tmp_path: Path) -> None:
+        # Same truncation shape through the ``triggers`` presence check, which
+        # reads _frontmatter's map — the map stops at the indented ``---`` and
+        # would drop the key.
+        body = "---\ndescription: >\n  ---\ntriggers: build\n---\nBody\n"
+        api = _api()
+        scan = _scan(tmp_path, "codex")
+        manifest = self._skill(scan.root, "demo", body)
+
+        assert api._skill_package(scan, scan.root, manifest) is None
+        assert "automatic_activation_excluded" in _reasons(scan)
+
     def test_an_over_large_package_is_diagnosed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

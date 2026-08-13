@@ -36,6 +36,69 @@ logger = logging.getLogger(__name__)
 SKILLS_DIR_NAME = "skills"
 _MIN_TRIGGER_OVERLAP = 0.7
 
+# YAML block-scalar indicators recognized as frontmatter values: folded (>) or
+# literal (|), each with an optional chomping modifier. Explicit indentation
+# indicators (e.g. ">2") are not supported by this minimal parser.
+_BLOCK_SCALAR_INDICATORS = frozenset({">", "|", ">-", "|-", ">+", "|+"})
+
+
+def _fold_block_scalar(indicator: str, block: list[str]) -> str:
+    """Resolve a YAML block scalar's indented lines into a single value.
+
+    ``indicator`` is one of ``_BLOCK_SCALAR_INDICATORS``; ``block`` holds the
+    raw continuation lines (still carrying their indentation). Literal (``|``)
+    scalars keep one line per newline. Folded (``>``) scalars fold a single
+    break between plain lines to a space and keep blank lines as newlines
+    (k blanks -> k newlines plain-to-plain, k+1 next to a more-indented line,
+    where the separator break stays literal), and never fold a break adjacent
+    to a more-indented line, so nested indentation survives. Indentation is
+    stripped relative to the first non-blank line, and the result is trimmed,
+    so the chomping modifier (``-``/``+``) has no residual effect on the
+    stored value.
+    """
+    # Trim trailing blank lines without mutating the caller's list and
+    # without per-iteration copies (a pathological blank run stays linear).
+    end = len(block)
+    while end and not block[end - 1].strip():
+        end -= 1
+    if not end:
+        return ""
+    block = block[:end]
+    first = next(ln for ln in block if ln.strip())
+    indent = len(first) - len(first.lstrip())
+    dedented = [
+        ln[indent:] if ln[:indent].isspace() or not ln.strip() else ln.lstrip() for ln in block
+    ]
+    if indicator.startswith("|"):
+        return "\n".join(dedented).strip()
+    # Folded: a single line break between two plain lines becomes a space;
+    # blank lines are preserved as line breaks (k blanks -> k newlines); and
+    # breaks adjacent to a more-indented line are kept, so indented structure
+    # (nested lists, code-ish content) survives the fold.
+    parts: list[str] = []
+    pending_blanks = 0
+    prev_more_indented = False
+    for ln in dedented:
+        if not ln.strip():
+            pending_blanks += 1
+            continue
+        more_indented = ln[:1].isspace()
+        if parts:
+            if pending_blanks:
+                # The separator break folds to nothing between plain lines,
+                # but stays literal next to a more-indented line: k blanks
+                # yield k newlines plain-to-plain, k+1 otherwise.
+                extra = 1 if (more_indented or prev_more_indented) else 0
+                parts.append("\n" * (pending_blanks + extra))
+            elif more_indented or prev_more_indented:
+                parts.append("\n")
+            else:
+                parts.append(" ")
+        parts.append(ln.rstrip() if more_indented else ln.strip())
+        prev_more_indented = more_indented
+        pending_blanks = 0
+    return "".join(parts)
+
 
 def _matches_any(path: str, globs: list[str]) -> bool:
     """True if *path* matches any fnmatch glob in *globs*.
@@ -3268,6 +3331,14 @@ class SkillsLoader:
         honoring it here meant the opt-in could never take effect. Ignoring
         indented lines also drops the junk keys a prose line like
         ``  Steps: do x`` used to invent.
+
+        A value that is a YAML block-scalar indicator (``>``, ``|``, with an
+        optional chomping ``-``/``+``) is resolved from the indented lines that
+        follow it: folded (``>``) folds single breaks to spaces while keeping
+        blank-line and more-indented structure, literal (``|``) preserves
+        newlines. Without this, the stored value would be the indicator
+        character itself and the real content — a multi-line ``description``
+        used for routing — would be dropped, leaving the skill unroutable.
         """
         content = path.read_text(encoding="utf-8")
         if not content.startswith("---"):
@@ -3276,10 +3347,26 @@ class SkillsLoader:
         if not match:
             return {}
         meta: dict[str, str] = {}
-        for line in match.group(1).split("\n"):
-            if ":" in line and not line[:1].isspace():
-                key, value = line.split(":", 1)
-                meta[key.strip()] = value.strip().strip("\"'")
+        lines = match.group(1).split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            i += 1
+            if ":" not in line or line[:1].isspace():
+                continue
+            key, raw = line.split(":", 1)
+            value = raw.strip()
+            if value in _BLOCK_SCALAR_INDICATORS:
+                # Indented (or blank) lines up to the next column-0 key are the
+                # scalar's content; trailing blanks between fields are trimmed
+                # by the folder.
+                block: list[str] = []
+                while i < len(lines) and (not lines[i].strip() or lines[i][:1].isspace()):
+                    block.append(lines[i])
+                    i += 1
+                meta[key.strip()] = _fold_block_scalar(value, block)
+            else:
+                meta[key.strip()] = value.strip("\"'")
         return meta
 
     @staticmethod

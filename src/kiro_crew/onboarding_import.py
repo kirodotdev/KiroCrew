@@ -47,6 +47,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.skills import _BLOCK_SCALAR_INDICATORS
 from kiro_crew.vector_memory import VectorMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -1212,8 +1213,15 @@ def _skill_package(
             return None
         if path.name == "SKILL.md":
             metadata, _ = _frontmatter(text)
-            always = metadata.get("always", "").casefold() in {"1", "true", "yes"}
-            if always or "triggers" in metadata:
+            # ``_frontmatter`` maps ANY ``key:`` line (indented prose included,
+            # last write wins) and stops at an indented ``---``, while the
+            # loader honors only column-0 keys and closes only at a column-0
+            # ``---`` — so its collapsed map must not decide activation.
+            # ``_column0_activation_declared`` mirrors the loader's region and
+            # key rules; the ``triggers`` presence check on the map is kept as
+            # an extra conservative layer (an indented mention only ever makes
+            # the gate stricter).
+            if _column0_activation_declared(text) or "triggers" in metadata:
                 scan.diagnostic(
                     "skills",
                     "automatic_activation_excluded",
@@ -1895,6 +1903,41 @@ def _frontmatter(text: str) -> tuple[dict[str, str], str]:
     if not end:
         return {}, text
     return metadata, "\n".join(lines[end + 1 :]).strip()
+
+
+def _column0_activation_declared(text: str) -> bool:
+    """True if any column-0 auto-activation declaration is in the frontmatter.
+
+    The activation decision must mirror what ``SkillsLoader._parse_frontmatter``
+    can conclude after install, not ``_frontmatter``'s collapsed map (where an
+    indented prose line like ``  always: false`` overwrites the real value, and
+    an indented ``---`` inside a block scalar truncates the scan). Region and
+    key rules therefore match the loader exactly: the frontmatter closes at the
+    first line that STARTS with ``---`` (the loader's ``\\n---`` regex), and
+    only column-0 keys count. A column-0 ``always`` activates on a truthy plain
+    value or a bare block-scalar indicator (fail-closed: this parser cannot see
+    the continuation lines the loader resolves); a column-0 ``triggers`` key
+    activates by presence. ANY activating declaration rejects — stricter than
+    the loader's last-wins on duplicate keys, which only ever diverges in the
+    conservative direction.
+    """
+    if not text.startswith("---"):
+        return False
+    for line in text.splitlines()[1:]:
+        if line.startswith("---"):
+            break
+        if ":" not in line or line[:1].isspace():
+            continue
+        key, raw = line.split(":", 1)
+        key = key.strip()
+        if key == "triggers":
+            return True
+        if key != "always":
+            continue
+        value = raw.strip().strip("\"'").casefold()
+        if value in {"1", "true", "yes"} or value in _BLOCK_SCALAR_INDICATORS:
+            return True
+    return False
 
 
 def _parse_configs(

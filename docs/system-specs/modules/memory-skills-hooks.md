@@ -598,6 +598,8 @@ truncated to 300 chars.
 
 Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
 
+Frontmatter is parsed line-by-line (`_parse_frontmatter`): only a column-0 `key: value` line is a field. A value that is a bare block-scalar indicator (`>`, `|`, optionally chomped with `-`/`+`) is resolved from the indented lines that follow — folded (`>`) folds single breaks to spaces while preserving blank-line counts and more-indented line breaks, literal (`|`) preserves newlines — so a multi-line `description` still routes. Explicit indentation indicators (`>2`) are not supported. The other frontmatter readers stay reconciled with this resolution: the onboarding import gate treats a bare indicator as an activating `always` value (fail-closed), and the auto-skill update path's `history._frontmatter_value` resolves block scalars the same way, so a live skill's block-scalar `description`/`triggers` survive the staged-candidate round-trip instead of collapsing to the indicator character.
+
 Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill name is the relative path from the skills root (e.g. `utils/tiny-url`).
 
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).

@@ -33,7 +33,12 @@ from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import BACKGROUND_KEY
-from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, AutoSkillProvenance
+from kiro_crew.skills import (
+    _BLOCK_SCALAR_INDICATORS,
+    AUTO_SKILL_MAX_PROCEDURE_CHARS,
+    AutoSkillProvenance,
+    _fold_block_scalar,
+)
 from kiro_crew.skills_dedupe import (
     VERDICT_DUP,
     VERDICT_NEW,
@@ -4069,15 +4074,40 @@ _TOOL_ROLES: frozenset[str] = frozenset({"tool", "tool_call", "tool_result"})
 
 
 def _frontmatter_value(text: str | None, key: str) -> str:
-    """Return a single-line frontmatter value from a SKILL.md body, or ""."""
+    """Return *key*'s frontmatter value from a SKILL.md body, or "".
+
+    Values resolve the way ``SkillsLoader._parse_frontmatter`` resolves them:
+    only a column-0 key is a field, and a bare block-scalar indicator
+    (``>``/``|``, optionally chomped) folds the indented lines that follow.
+    The auto-skill update path carries the live skill's ``description`` and
+    ``triggers`` through this reader into a staged candidate that overwrites
+    the live skill on approval — reading the indicator verbatim would collapse
+    a block-scalar description to ``""`` and inject a bogus ``>`` trigger on
+    that round-trip.
+    """
     if not text:
         return ""
     m = re.match(r"^\s*---\n(.*?)\n---", text, re.DOTALL)
     if not m:
         return ""
-    for ln in m.group(1).split("\n"):
-        if ":" in ln and ln.split(":", 1)[0].strip() == key:
-            return ln.split(":", 1)[1].strip()
+    lines = m.group(1).split("\n")
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        i += 1
+        if ":" not in ln or ln[:1].isspace():
+            continue
+        k, raw = ln.split(":", 1)
+        if k.strip() != key:
+            continue
+        value = raw.strip()
+        if value in _BLOCK_SCALAR_INDICATORS:
+            block: list[str] = []
+            while i < len(lines) and (not lines[i].strip() or lines[i][:1].isspace()):
+                block.append(lines[i])
+                i += 1
+            return _fold_block_scalar(value, block)
+        return value
     return ""
 
 
