@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, act, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLineRef } from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { api } from '../api/client'
@@ -370,6 +371,52 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     await waitFor(() => {
       const code = container.querySelector('code[data-path-kind]')!
       expect(code.getAttribute('title')).toContain('/home/user/a.md')
+    })
+  })
+
+  /**
+   * The instruction half of that tooltip names an application, and the shift+click
+   * it describes calls `api.revealPath` — which shells out on the GATEWAY. So the
+   * sentence follows the gateway's platform, never the browser's, and a directory
+   * carries different wording from a file because clicking one browses rather than
+   * opens.
+   */
+  it.each([
+    ['darwin', 'file', 'Click to open / Shift+click to reveal in Finder'],
+    ['win32', 'file', 'Click to open / Shift+click to open in File Explorer'],
+    // The sentinel a non-owner dashboard user (and a failed probe) receives.
+    ['gateway', 'file', 'Click to open / Shift+click to show in file manager'],
+    ['darwin', 'dir', 'Click to browse / Shift+click to reveal in Finder'],
+    ['win32', 'dir', 'Click to browse / Shift+click to open in File Explorer'],
+    ['linux', 'dir', 'Click to browse / Shift+click to show in file manager'],
+  ])('names the reveal target in the hint for %s / %s', async (platform, kind, hint) => {
+    const isDir = kind === 'dir'
+    stubKind(isDir ? 'dir' : 'file', !isDir)
+    const path = isDir ? '/Users/me/workspace' : '/home/user/a.md'
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(['kiro-prerequisite'], { platform })
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <MarkdownRenderer content={`\`${path}\``} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      const code = container.querySelector('code[data-path-kind]')!
+      expect(code.getAttribute('title')).toBe(`${path}\n${hint}`)
+    })
+  })
+
+  it('still renders a chip in a tree that has no QueryClientProvider', async () => {
+    // Popout frames and Mochi's Electron windows mount with a bare `createRoot`,
+    // where `useQuery` throws "No QueryClient set". Reading the platform must not
+    // make a chip unrenderable there — it falls back to the generic wording.
+    stubKind('file')
+    const { container } = render(<MarkdownRenderer content={'`/home/user/a.md`'} />)
+    await waitFor(() => {
+      const code = container.querySelector('code[data-path-kind]')!
+      expect(code.getAttribute('title')).toBe(
+        '/home/user/a.md\nClick to open / Shift+click to show in file manager',
+      )
     })
   })
 

@@ -2697,12 +2697,14 @@
         "copy_markdown": "Copier le markdown",
         "dismiss": "Ignorer",
         "edit_resend": "Modifier et renvoyer",
+        "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
+        "open_in_finder": "Ouvrir dans le Finder",
         "pinned_files": "Fichiers épinglés",
         "pins": "Épinglés",
         "preview": "Aperçu",
         "remove_screenshot": "Retirer la capture",
-        "reveal_in_finder": "Afficher dans le gestionnaire de fichiers",
         "screenshot": "Capture d'écran",
+        "show_in_file_manager": "Afficher dans le gestionnaire de fichiers",
         "watchlist": "Liste de surveillance"
       },
       "clear": {
@@ -5450,6 +5452,8 @@
       "open_artifact": "Ouvrir l’artefact {{name}}",
       "open_as_artifact": "Ouvrir comme artefact",
       "open_folder": "Ouvrir le dossier {{path}}",
+      "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
+      "open_in_finder": "Ouvrir dans le Finder",
       "open_with_default_app": "Ouvrir avec l’application par défaut",
       "path_copied_to_clipboard_no_desktop_available": "Chemin copié dans le presse-papiers (aucun bureau disponible)",
       "preview": "Aperçu",
@@ -5481,8 +5485,12 @@
       "word_wrap": "Retour à la ligne"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "Cliquer pour parcourir / Shift+clic pour afficher dans l'Explorateur de fichiers",
       "click_to_browse_shift_click_to_reveal_in_finder": "Cliquer pour parcourir / Shift+clic pour afficher dans le Finder",
+      "click_to_browse_shift_click_to_show_in_file_manager": "Cliquer pour parcourir / Shift+clic pour afficher dans le gestionnaire de fichiers",
+      "click_to_open_shift_click_to_open_in_file_explorer": "Cliquer pour ouvrir / Shift+clic pour afficher dans l'Explorateur de fichiers",
       "click_to_open_shift_click_to_reveal_in_finder": "Cliquer pour ouvrir / Shift+clic pour afficher dans le Finder",
+      "click_to_open_shift_click_to_show_in_file_manager": "Cliquer pour ouvrir / Shift+clic pour afficher dans le gestionnaire de fichiers",
       "close": "Fermer",
       "download_d": "Télécharger (d)",
       "download_image": "Télécharger l'image",
@@ -5955,11 +5963,13 @@
       "include_recent_logs": "Inclure les journaux récents",
       "note_placeholder": "ex. : chaque message échoue avec « process exited (rc=None) » depuis la mise à jour.",
       "open_github_issue": "Ouvrir un ticket GitHub",
+      "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
+      "open_in_finder": "Ouvrir dans le Finder",
       "prefill_hint": "L’ouverture du ticket pré-remplit les détails — glissez-y ensuite le zip.",
       "redaction_notice": "Les jetons Bearer, les cookies de session et les clés AWS sont automatiquement masqués avant la création du zip.",
       "report_a_problem": "Signaler un problème",
       "saved_to": "Enregistré dans",
-      "show_in_finder": "Afficher dans le Finder",
+      "show_in_file_manager": "Afficher dans le gestionnaire de fichiers",
       "what_happened": "Que s’est-il passé ?"
     },
     "resizeHandle": {
@@ -7611,9 +7621,11 @@
       "folderPanel": {
         "empty_folder": "Dossier vide",
         "loading": "Chargement…",
+        "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
+        "open_in_finder": "Ouvrir dans le Finder",
         "parent_folder": "Dossier parent",
         "refresh": "Actualiser",
-        "reveal_in_finder": "Afficher dans le Finder",
+        "show_in_file_manager": "Afficher dans le gestionnaire de fichiers",
         "unable_to_list_folder": "Impossible de lister le dossier"
       },
       "knowledgePicker": {

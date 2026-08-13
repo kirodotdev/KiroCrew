@@ -2651,12 +2651,14 @@
         "copy_markdown": "मार्कडाउन कॉपी करो",
         "dismiss": "खारिज करें",
         "edit_resend": "संपादित करके फिर से भेजें",
+        "open_in_file_explorer": "File Explorer में खोलें",
+        "open_in_finder": "Finder में खोलें",
         "pinned_files": "पिन की गई फ़ाइलें",
         "pins": "पिन",
         "preview": "पूर्वावलोकन",
         "remove_screenshot": "स्क्रीनशॉट हटाओ",
-        "reveal_in_finder": "फ़ाइल मैनेजर में दिखाओ",
         "screenshot": "स्क्रीनशॉट",
+        "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
         "watchlist": "निगरानी सूची"
       },
       "clear": {
@@ -5369,6 +5371,8 @@
       "open_artifact": "आर्टिफ़ैक्ट {{name}} खोलो",
       "open_as_artifact": "आर्टिफ़ैक्ट के रूप में खोलें",
       "open_folder": "फ़ोल्डर खोलें {{path}}",
+      "open_in_file_explorer": "File Explorer में खोलें",
+      "open_in_finder": "Finder में खोलें",
       "open_with_default_app": "डिफ़ॉल्ट ऐप में खोलो",
       "path_copied_to_clipboard_no_desktop_available": "पाथ क्लिपबोर्ड में कॉपी किया गया (कोई डेस्कटॉप उपलब्ध नहीं)",
       "preview": "प्रीव्यू",
@@ -5400,8 +5404,12 @@
       "word_wrap": "वर्ड रैप"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "ब्राउज़ करने के लिए क्लिक करें / File Explorer में दिखाने के लिए Shift+क्लिक करें",
       "click_to_browse_shift_click_to_reveal_in_finder": "ब्राउज़ करने के लिए क्लिक करें / Finder में दिखाने के लिए Shift+क्लिक करें",
+      "click_to_browse_shift_click_to_show_in_file_manager": "ब्राउज़ करने के लिए क्लिक करें / फ़ाइल मैनेजर में दिखाने के लिए Shift+क्लिक करें",
+      "click_to_open_shift_click_to_open_in_file_explorer": "खोलने के लिए क्लिक करें / File Explorer में दिखाने के लिए Shift+क्लिक करें",
       "click_to_open_shift_click_to_reveal_in_finder": "खोलने के लिए क्लिक करें / Finder में दिखाने के लिए Shift+क्लिक करें",
+      "click_to_open_shift_click_to_show_in_file_manager": "खोलने के लिए क्लिक करें / फ़ाइल मैनेजर में दिखाने के लिए Shift+क्लिक करें",
       "close": "बंद करें",
       "download_d": "डाउनलोड (d)",
       "download_image": "छवि डाउनलोड करें",
@@ -5868,11 +5876,13 @@
       "include_recent_logs": "हाल के लॉग शामिल करें",
       "note_placeholder": "उदा. अपडेट के बाद हर मैसेज “process exited (rc=None)” के साथ फेल हो रहा है।",
       "open_github_issue": "GitHub पर issue खोलें",
+      "open_in_file_explorer": "File Explorer में खोलें",
+      "open_in_finder": "Finder में खोलें",
       "prefill_hint": "issue खोलने पर विवरण पहले से भर जाते हैं — फिर zip को उसमें खींचकर डालें।",
       "redaction_notice": "zip बनने से पहले Bearer टोकन, सेशन कुकी और AWS कीज़ अपने आप हटा दी जाती हैं।",
       "report_a_problem": "समस्या रिपोर्ट करें",
       "saved_to": "यहाँ सहेजा गया",
-      "show_in_finder": "Finder में दिखाएँ",
+      "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
       "what_happened": "क्या हुआ?"
     },
     "resizeHandle": {
@@ -7510,9 +7520,11 @@
       "folderPanel": {
         "empty_folder": "खाली फ़ोल्डर",
         "loading": "लोड हो रहा है…",
+        "open_in_file_explorer": "File Explorer में खोलें",
+        "open_in_finder": "Finder में खोलें",
         "parent_folder": "पैरेंट फ़ोल्डर",
         "refresh": "रिफ़्रेश करें",
-        "reveal_in_finder": "Finder में दिखाएँ",
+        "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
         "unable_to_list_folder": "फ़ोल्डर की सूची नहीं बनाई जा सकी"
       },
       "knowledgePicker": {

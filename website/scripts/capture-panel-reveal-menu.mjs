@@ -1,6 +1,11 @@
 /**
  * Screenshot harness for the file panel's ⋯ menu after restoring the two
- * desktop hand-off entries ("Open with default app" / "Show in file manager").
+ * desktop hand-off entries ("Open with default app" / the reveal entry).
+ *
+ * The reveal entry names the GATEWAY host's own file manager, so its label
+ * follows the platform this harness stubs — `stub-dashboard-api.mjs` reports
+ * macOS, hence "Open in Finder" below. `capture-reveal-in-finder.mjs` is the
+ * harness that varies the platform axis; this one guards the menu's inventory.
  *
  * The menu IS the change, so the evidence has to be the menu OPEN at a crop
  * where the 13px labels are legible, in both themes — plus one non-English
@@ -49,18 +54,18 @@ const DOC = [
 const EXPECTED = {
   en: [
     'Refresh', 'Full screen', 'Add to artifacts', 'Add to Knowledge',
-    'Open with default app', 'Show in file manager',
+    'Open with default app', 'Open in Finder',
     'Copy path', 'Copy content', 'Download',
   ],
   'zh-CN': [
     '刷新', '全屏', '添加到工件', '添加到知识库',
-    '用默认应用打开', '在文件管理器中显示',
+    '用默认应用打开', '在 Finder 中打开',
     '复制路径', '复制内容', '下载',
   ],
 }
 
 /** The entry to hover, so the highlight row lands on what this harness guards. */
-const HOVER = { en: 'Show in file manager', 'zh-CN': '在文件管理器中显示' }
+const HOVER = { en: 'Open in Finder', 'zh-CN': '在 Finder 中打开' }
 
 mkdirSync(OUT, { recursive: true })
 

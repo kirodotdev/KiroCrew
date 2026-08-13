@@ -2697,12 +2697,14 @@
         "copy_markdown": "Copia markdown",
         "dismiss": "Ignora",
         "edit_resend": "Modifica e reinvia",
+        "open_in_file_explorer": "Apri in Esplora file",
+        "open_in_finder": "Apri nel Finder",
         "pinned_files": "File fissati",
         "pins": "Fissati",
         "preview": "Anteprima",
         "remove_screenshot": "Rimuovi screenshot",
-        "reveal_in_finder": "Mostra nel gestore file",
         "screenshot": "Screenshot",
+        "show_in_file_manager": "Mostra nel gestore file",
         "watchlist": "Elenco di monitoraggio"
       },
       "clear": {
@@ -5450,6 +5452,8 @@
       "open_artifact": "Apri l’artefatto {{name}}",
       "open_as_artifact": "Apri come artefatto",
       "open_folder": "Apri cartella {{path}}",
+      "open_in_file_explorer": "Apri in Esplora file",
+      "open_in_finder": "Apri nel Finder",
       "open_with_default_app": "Apri con l’applicazione predefinita",
       "path_copied_to_clipboard_no_desktop_available": "Percorso copiato negli appunti (nessun desktop disponibile)",
       "preview": "Anteprima",
@@ -5481,8 +5485,12 @@
       "word_wrap": "Ritorno a capo automatico"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "Clicca per esplorare / Maiusc+clic per mostrare in Esplora file",
       "click_to_browse_shift_click_to_reveal_in_finder": "Clicca per esplorare / Maiusc+clic per mostrare nel Finder",
+      "click_to_browse_shift_click_to_show_in_file_manager": "Clicca per esplorare / Maiusc+clic per mostrare nel gestore file",
+      "click_to_open_shift_click_to_open_in_file_explorer": "Clicca per aprire / Maiusc+clic per mostrare in Esplora file",
       "click_to_open_shift_click_to_reveal_in_finder": "Clicca per aprire / Maiusc+clic per mostrare nel Finder",
+      "click_to_open_shift_click_to_show_in_file_manager": "Clicca per aprire / Maiusc+clic per mostrare nel gestore file",
       "close": "Chiudi",
       "download_d": "Scarica (d)",
       "download_image": "Scarica immagine",
@@ -5955,11 +5963,13 @@
       "include_recent_logs": "Includi i log recenti",
       "note_placeholder": "es. Dopo l'aggiornamento ogni messaggio va in errore con \"process exited (rc=None)\".",
       "open_github_issue": "Apri una issue su GitHub",
+      "open_in_file_explorer": "Apri in Esplora file",
+      "open_in_finder": "Apri nel Finder",
       "prefill_hint": "Aprendo la issue i dettagli vengono precompilati — poi trascinaci lo zip.",
       "redaction_notice": "I token Bearer, i cookie di sessione e le chiavi AWS vengono rimossi automaticamente prima di creare lo zip.",
       "report_a_problem": "Segnala un problema",
       "saved_to": "Salvato in",
-      "show_in_finder": "Mostra nel Finder",
+      "show_in_file_manager": "Mostra nel gestore file",
       "what_happened": "Cosa è successo?"
     },
     "resizeHandle": {
@@ -7611,9 +7621,11 @@
       "folderPanel": {
         "empty_folder": "Cartella vuota",
         "loading": "Caricamento…",
+        "open_in_file_explorer": "Apri in Esplora file",
+        "open_in_finder": "Apri nel Finder",
         "parent_folder": "Cartella superiore",
         "refresh": "Aggiorna",
-        "reveal_in_finder": "Mostra nel Finder",
+        "show_in_file_manager": "Mostra nel gestore file",
         "unable_to_list_folder": "Impossibile elencare la cartella"
       },
       "knowledgePicker": {

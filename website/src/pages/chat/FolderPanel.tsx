@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronUp } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
 
@@ -30,6 +31,7 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
   onPathChange?: (p: string) => void
 }) {
   const { t } = useTranslation()
+  const gatewayPlatform = useGatewayPlatform()
   const [cwd, setCwd] = useState(path)
 
   // Re-sync when the tab is re-targeted from outside (a second chip click on a
@@ -55,6 +57,16 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
   // Suppress the up-row at the filesystem root, where parent === path.
   const parent = data?.parent && data.parent !== data.path ? data.parent : null
 
+  // Name the real application where the gateway HAS one, and fall back to the
+  // generic term for Linux and for a platform we could not read. The platform is
+  // the GATEWAY's because `/api/reveal` shells out there, and the wording holds for
+  // a directory as well as a file — this button reveals `cwd` itself.
+  const revealLabel = gatewayPlatform === 'darwin'
+    ? t('pages.chat.folderPanel.open_in_finder')
+    : gatewayPlatform === 'windows'
+      ? t('pages.chat.folderPanel.open_in_file_explorer')
+      : t('pages.chat.folderPanel.show_in_file_manager')
+
   return (
     <DetailPanel
       embedded
@@ -77,8 +89,8 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
           <button
             onClick={() => api.revealPath(cwd)}
             className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
-            title={t('pages.chat.folderPanel.reveal_in_finder')}
-            aria-label={t('pages.chat.folderPanel.reveal_in_finder')}
+            title={revealLabel}
+            aria-label={revealLabel}
           >
             <ExternalLink size={14} />
           </button>

@@ -2743,12 +2743,14 @@
         "copy_markdown": "Скопировать Markdown",
         "dismiss": "Убрать",
         "edit_resend": "Изменить и отправить снова",
+        "open_in_file_explorer": "Открыть в проводнике",
+        "open_in_finder": "Открыть в Finder",
         "pinned_files": "Закреплённые файлы",
         "pins": "Закреплённые",
         "preview": "Предпросмотр",
         "remove_screenshot": "Убрать снимок",
-        "reveal_in_finder": "Показать в файловом менеджере",
         "screenshot": "Снимок экрана",
+        "show_in_file_manager": "Показать в файловом менеджере",
         "watchlist": "Список наблюдения"
       },
       "clear": {
@@ -5531,6 +5533,8 @@
       "open_artifact": "Открыть артефакт {{name}}",
       "open_as_artifact": "Открыть как артефакт",
       "open_folder": "Открыть папку {{path}}",
+      "open_in_file_explorer": "Открыть в проводнике",
+      "open_in_finder": "Открыть в Finder",
       "open_with_default_app": "Открыть в приложении по умолчанию",
       "path_copied_to_clipboard_no_desktop_available": "Путь скопирован в буфер обмена (рабочий стол недоступен)",
       "preview": "Просмотр",
@@ -5562,8 +5566,12 @@
       "word_wrap": "Перенос строк"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "Щелчок — просмотреть / Shift+щелчок — показать в проводнике",
       "click_to_browse_shift_click_to_reveal_in_finder": "Щелчок — просмотреть / Shift+щелчок — показать в Finder",
+      "click_to_browse_shift_click_to_show_in_file_manager": "Щелчок — просмотреть / Shift+щелчок — показать в файловом менеджере",
+      "click_to_open_shift_click_to_open_in_file_explorer": "Щелчок — открыть / Shift+щелчок — показать в проводнике",
       "click_to_open_shift_click_to_reveal_in_finder": "Щелчок — открыть / Shift+щелчок — показать в Finder",
+      "click_to_open_shift_click_to_show_in_file_manager": "Щелчок — открыть / Shift+щелчок — показать в файловом менеджере",
       "close": "Закрыть",
       "download_d": "Скачать (d)",
       "download_image": "Скачать изображение",
@@ -6042,11 +6050,13 @@
       "include_recent_logs": "Включить недавние логи",
       "note_placeholder": "например: После обновления все сообщения падают с «process exited (rc=None)».",
       "open_github_issue": "Открыть issue на GitHub",
+      "open_in_file_explorer": "Открыть в проводнике",
+      "open_in_finder": "Открыть в Finder",
       "prefill_hint": "При открытии issue детали подставятся автоматически — затем перетащите туда zip.",
       "redaction_notice": "Токены Bearer, cookie сессии и ключи AWS удаляются автоматически до создания zip.",
       "report_a_problem": "Сообщить о проблеме",
       "saved_to": "Сохранено в",
-      "show_in_finder": "Показать в Finder",
+      "show_in_file_manager": "Показать в файловом менеджере",
       "what_happened": "Что произошло?"
     },
     "resizeHandle": {
@@ -7712,9 +7722,11 @@
       "folderPanel": {
         "empty_folder": "Пустая папка",
         "loading": "Загрузка…",
+        "open_in_file_explorer": "Открыть в проводнике",
+        "open_in_finder": "Открыть в Finder",
         "parent_folder": "Родительская папка",
         "refresh": "Обновить",
-        "reveal_in_finder": "Показать в Finder",
+        "show_in_file_manager": "Показать в файловом менеджере",
         "unable_to_list_folder": "Не удалось получить список папки"
       },
       "knowledgePicker": {

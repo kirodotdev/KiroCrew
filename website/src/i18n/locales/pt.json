@@ -2697,12 +2697,14 @@
         "copy_markdown": "Copiar markdown",
         "dismiss": "Descartar",
         "edit_resend": "Editar e reenviar",
+        "open_in_file_explorer": "Abrir no Explorador de Arquivos",
+        "open_in_finder": "Abrir no Finder",
         "pinned_files": "Arquivos fixados",
         "pins": "Fixados",
         "preview": "Pré-visualização",
         "remove_screenshot": "Remover captura",
-        "reveal_in_finder": "Mostrar no gerenciador de arquivos",
         "screenshot": "Captura de tela",
+        "show_in_file_manager": "Mostrar no gerenciador de arquivos",
         "watchlist": "Lista de acompanhamento"
       },
       "clear": {
@@ -5450,6 +5452,8 @@
       "open_artifact": "Abrir o artefato {{name}}",
       "open_as_artifact": "Abrir como artefato",
       "open_folder": "Abrir pasta {{path}}",
+      "open_in_file_explorer": "Abrir no Explorador de Arquivos",
+      "open_in_finder": "Abrir no Finder",
       "open_with_default_app": "Abrir com o aplicativo padrão",
       "path_copied_to_clipboard_no_desktop_available": "Caminho copiado para a área de transferência (nenhum desktop disponível)",
       "preview": "Visualizar",
@@ -5481,8 +5485,12 @@
       "word_wrap": "Quebra de linha"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "Clique para navegar / Shift+clique para mostrar no Explorador de Arquivos",
       "click_to_browse_shift_click_to_reveal_in_finder": "Clique para navegar / Shift+clique para mostrar no Finder",
+      "click_to_browse_shift_click_to_show_in_file_manager": "Clique para navegar / Shift+clique para mostrar no gerenciador de arquivos",
+      "click_to_open_shift_click_to_open_in_file_explorer": "Clique para abrir / Shift+clique para mostrar no Explorador de Arquivos",
       "click_to_open_shift_click_to_reveal_in_finder": "Clique para abrir / Shift+clique para mostrar no Finder",
+      "click_to_open_shift_click_to_show_in_file_manager": "Clique para abrir / Shift+clique para mostrar no gerenciador de arquivos",
       "close": "Fechar",
       "download_d": "Baixar (d)",
       "download_image": "Baixar imagem",
@@ -5955,11 +5963,13 @@
       "include_recent_logs": "Incluir logs recentes",
       "note_placeholder": "ex.: Todas as mensagens falham com “process exited (rc=None)” depois de atualizar.",
       "open_github_issue": "Abrir issue no GitHub",
+      "open_in_file_explorer": "Abrir no Explorador de Arquivos",
+      "open_in_finder": "Abrir no Finder",
       "prefill_hint": "Ao abrir a issue os detalhes são preenchidos automaticamente — depois arraste o zip para lá.",
       "redaction_notice": "Tokens Bearer, cookies de sessão e chaves AWS são removidos automaticamente antes de criar o zip.",
       "report_a_problem": "Relatar um problema",
       "saved_to": "Salvo em",
-      "show_in_finder": "Mostrar no Finder",
+      "show_in_file_manager": "Mostrar no gerenciador de arquivos",
       "what_happened": "O que aconteceu?"
     },
     "resizeHandle": {
@@ -7611,9 +7621,11 @@
       "folderPanel": {
         "empty_folder": "Pasta vazia",
         "loading": "Carregando…",
+        "open_in_file_explorer": "Abrir no Explorador de Arquivos",
+        "open_in_finder": "Abrir no Finder",
         "parent_folder": "Pasta pai",
         "refresh": "Atualizar",
-        "reveal_in_finder": "Mostrar no Finder",
+        "show_in_file_manager": "Mostrar no gerenciador de arquivos",
         "unable_to_list_folder": "Não foi possível listar a pasta"
       },
       "knowledgePicker": {

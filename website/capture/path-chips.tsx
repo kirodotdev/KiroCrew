@@ -197,6 +197,15 @@ function Scene() {
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
+// The reveal wording follows the GATEWAY's platform, so it is a scene axis:
+// `?platform=darwin|win32|linux`. Seeded into the query the prerequisite gate
+// owns in the real app, which is the cache `useGatewayPlatform` reads — so the
+// components resolve their label exactly as they do in production. Absent, the
+// cache stays empty and the generic wording renders, which is also what an
+// unreadable platform gets.
+const platform = params.get('platform')
+if (platform) qc.setQueryData(['kiro-prerequisite'], { platform })
+
 initI18n('en')
 
 createRoot(document.getElementById('root')!).render(

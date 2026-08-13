@@ -2651,12 +2651,14 @@
         "copy_markdown": "Markdown kopieren",
         "dismiss": "Verwerfen",
         "edit_resend": "Bearbeiten & erneut senden",
+        "open_in_file_explorer": "Im Explorer öffnen",
+        "open_in_finder": "Im Finder öffnen",
         "pinned_files": "Angeheftete Dateien",
         "pins": "Angeheftet",
         "preview": "Vorschau",
         "remove_screenshot": "Screenshot entfernen",
-        "reveal_in_finder": "Im Dateimanager anzeigen",
         "screenshot": "Screenshot",
+        "show_in_file_manager": "Im Dateimanager anzeigen",
         "watchlist": "Beobachtungsliste"
       },
       "clear": {
@@ -5369,6 +5371,8 @@
       "open_artifact": "Artefakt {{name}} öffnen",
       "open_as_artifact": "Als Artefakt öffnen",
       "open_folder": "Ordner öffnen {{path}}",
+      "open_in_file_explorer": "Im Explorer öffnen",
+      "open_in_finder": "Im Finder öffnen",
       "open_with_default_app": "Mit Standardanwendung öffnen",
       "path_copied_to_clipboard_no_desktop_available": "Pfad in die Zwischenablage kopiert (kein Desktop verfügbar)",
       "preview": "Vorschau",
@@ -5400,8 +5404,12 @@
       "word_wrap": "Zeilenumbruch"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "Klicken zum Durchsuchen / Shift+Klick zum Anzeigen im Explorer",
       "click_to_browse_shift_click_to_reveal_in_finder": "Klicken zum Durchsuchen / Shift+Klick zum Anzeigen im Finder",
+      "click_to_browse_shift_click_to_show_in_file_manager": "Klicken zum Durchsuchen / Shift+Klick zum Anzeigen im Dateimanager",
+      "click_to_open_shift_click_to_open_in_file_explorer": "Klicken zum Öffnen / Shift+Klick zum Anzeigen im Explorer",
       "click_to_open_shift_click_to_reveal_in_finder": "Klicken zum Öffnen / Shift+Klick zum Anzeigen im Finder",
+      "click_to_open_shift_click_to_show_in_file_manager": "Klicken zum Öffnen / Shift+Klick zum Anzeigen im Dateimanager",
       "close": "Schließen",
       "download_d": "Herunterladen (d)",
       "download_image": "Bild herunterladen",
@@ -5868,11 +5876,13 @@
       "include_recent_logs": "Aktuelle Protokolle einbeziehen",
       "note_placeholder": "z. B. Nach dem Update schlägt jede Nachricht mit „process exited (rc=None)“ fehl.",
       "open_github_issue": "GitHub-Issue öffnen",
+      "open_in_file_explorer": "Im Explorer öffnen",
+      "open_in_finder": "Im Finder öffnen",
       "prefill_hint": "Beim Öffnen des Issues werden die Details vorbefüllt — ziehen Sie dann die ZIP-Datei hinein.",
       "redaction_notice": "Bearer-Tokens, Sitzungs-Cookies und AWS-Schlüssel werden automatisch entfernt, bevor die ZIP-Datei erstellt wird.",
       "report_a_problem": "Problem melden",
       "saved_to": "Gespeichert unter",
-      "show_in_finder": "Im Finder anzeigen",
+      "show_in_file_manager": "Im Dateimanager anzeigen",
       "what_happened": "Was ist passiert?"
     },
     "resizeHandle": {
@@ -7510,9 +7520,11 @@
       "folderPanel": {
         "empty_folder": "Leerer Ordner",
         "loading": "Wird geladen…",
+        "open_in_file_explorer": "Im Explorer öffnen",
+        "open_in_finder": "Im Finder öffnen",
         "parent_folder": "Übergeordneter Ordner",
         "refresh": "Aktualisieren",
-        "reveal_in_finder": "Im Finder anzeigen",
+        "show_in_file_manager": "Im Dateimanager anzeigen",
         "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
       },
       "knowledgePicker": {

@@ -787,6 +787,23 @@ describe('ChatPanel pointer feedback', () => {
     fireEvent.mouseLeave(reveal)
     expect(reveal.style.color).toBe('var(--text-muted)')
   })
+
+  /**
+   * The reveal label follows the SHELL's platform, not the gateway's: `revealFile`
+   * is an IPC send Mochi's Electron main process handles, so that host decides
+   * which application opens. With no shell at all — a browser tab — nothing can
+   * be revealed and nothing may be named.
+   */
+  it.each([
+    ['darwin', 'Open in Finder'],
+    ['win32', 'Open in File Explorer'],
+    ['linux', 'Show in file manager'],
+  ])('names the reveal action for a %s desktop shell', async (platform, label) => {
+    stubGlobal('kirocrew', { isElectron: true, platform })
+    history = [turn('assistant', 'Check `src/app/notes.md` please.')]
+    await renderPanel()
+    expect(await screen.findByRole('button', { name: label })).toBeInTheDocument()
+  })
 })
 
 describe('PinnedSidePanel chip hover', () => {

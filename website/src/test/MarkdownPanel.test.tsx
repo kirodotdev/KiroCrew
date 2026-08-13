@@ -102,6 +102,32 @@ describe('MarkdownPanel OverflowMenu', () => {
     expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
   })
 
+  /**
+   * The reveal entry names the GATEWAY's file manager: `/api/reveal` shells out
+   * there, so a dashboard opened from a Mac against a Linux gateway must not say
+   * Finder. `'gateway'` is the sentinel a non-owner dashboard user gets and must
+   * never be read as a platform we can name.
+   */
+  it.each([
+    ['darwin', 'Open in Finder'],
+    ['win32', 'Open in File Explorer'],
+    ['gateway', 'Show in file manager'],
+    ['linux', 'Show in file manager'],
+  ])('names the reveal entry for a %s gateway host', (platform, label) => {
+    queryClient.setQueryData(['kiro-prerequisite'], { platform })
+    openMenu()
+    expect(screen.getByText(label)).toBeInTheDocument()
+    fireEvent.click(screen.getByText(label))
+    expect(api.revealPath).toHaveBeenCalledExactlyOnceWith('/tmp/hello.txt', 'reveal')
+  })
+
+  it('never offers two spellings of the same reveal entry at once', () => {
+    queryClient.setQueryData(['kiro-prerequisite'], { platform: 'darwin' })
+    openMenu()
+    expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
+    expect(screen.queryByText('Open in File Explorer')).not.toBeInTheDocument()
+  })
+
   it('tells the user the path was copied when the host has no desktop', async () => {
     vi.mocked(api).revealPath = vi.fn().mockResolvedValue({ ok: true, copy: '/tmp/hello.txt' })
     openMenu()

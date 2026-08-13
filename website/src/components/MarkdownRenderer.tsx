@@ -32,6 +32,7 @@ import '../utils/hljs'
 import { api } from '../api/client'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import { usePathKind, type PathKind } from '../hooks/usePathKind'
+import { useGatewayPlatform, type GatewayPlatform } from '../hooks/useGatewayPlatform'
 import { fileIcon } from '../utils/fileIcons'
 import { urlTransform, ALLOWED_PROTOCOLS, WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
@@ -582,6 +583,31 @@ function activatePath(path: string, kind: PathKind, reveal: boolean, actions: Pa
 const CHIP_BASE = 'bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono'
 
 /**
+ * The chip's hover instruction, naming the application shift+click will actually
+ * open.
+ *
+ * `api.revealPath` runs on the GATEWAY, so the host to name is that one — a
+ * dashboard opened from a Mac against a Linux gateway must not promise Finder.
+ * Anything we could not read (the `'gateway'` sentinel a non-owner gets, a failed
+ * probe, Linux with no single file manager) takes the generic wording.
+ *
+ * Six whole sentences rather than one sentence with the label interpolated in:
+ * the app name sits in a different case and position per language ("im
+ * Dateimanager", "dans le gestionnaire de fichiers", "ファイルマネージャーに表示"),
+ * which a placeholder cannot carry.
+ */
+function revealHintFor(isDir: boolean, platform: GatewayPlatform): string {
+  if (isDir) {
+    if (platform === 'darwin') return i18nT('components.markdownRenderer.click_to_browse_shift_click_to_reveal_in_finder')
+    if (platform === 'windows') return i18nT('components.markdownRenderer.click_to_browse_shift_click_to_open_in_file_explorer')
+    return i18nT('components.markdownRenderer.click_to_browse_shift_click_to_show_in_file_manager')
+  }
+  if (platform === 'darwin') return i18nT('components.markdownRenderer.click_to_open_shift_click_to_reveal_in_finder')
+  if (platform === 'windows') return i18nT('components.markdownRenderer.click_to_open_shift_click_to_open_in_file_explorer')
+  return i18nT('components.markdownRenderer.click_to_open_shift_click_to_show_in_file_manager')
+}
+
+/**
  * Inline `code` span, upgraded to a click-to-open chip only once the backend has
  * confirmed the text names something that exists.
  *
@@ -601,6 +627,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const codeStr = String(children).replace(/\n$/, '')
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
+  const gatewayPlatform = useGatewayPlatform()
   const raw = codeStr.trim()
   // Split `file.py:447` BEFORE probing, not just before the click. Candidacy is
   // decided on the split path too: `src/main.py:447` fails the extension test as
@@ -652,6 +679,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
     return <code className={CHIP_BASE} {...safeProps}>{children}</code>
   }
   const isDir = kind === 'dir'
+  const revealHint = revealHintFor(isDir, gatewayPlatform)
   const path = rawWins ? raw : stripped
   // A leading glyph is what makes "this is actionable" legible at rest. Without
   // one, a confirmed chip and an inert one differ only on hover, so a reader
@@ -695,9 +723,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
       // `raw`, not `path`, so a `file:447` chip discloses the line it will jump
       // to. That keeps the disclosure honest without a second catalog string:
       // the location is already in the text the user is hovering.
-      title={`${raw}\n${isDir
-        ? i18nT('components.markdownRenderer.click_to_browse_shift_click_to_reveal_in_finder')
-        : i18nT('components.markdownRenderer.click_to_open_shift_click_to_reveal_in_finder')}`}
+      title={`${raw}\n${revealHint}`}
     >
       <Glyph size={12} aria-hidden="true" className="inline align-middle mr-1 opacity-70" />
       {targetLine != null && raw.length > stripped.length

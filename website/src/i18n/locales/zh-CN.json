@@ -2605,12 +2605,14 @@
         "copy_markdown": "复制 Markdown",
         "dismiss": "忽略",
         "edit_resend": "编辑并重新发送",
+        "open_in_file_explorer": "在文件资源管理器中打开",
+        "open_in_finder": "在 Finder 中打开",
         "pinned_files": "已置顶文件",
         "pins": "置顶",
         "preview": "预览",
         "remove_screenshot": "移除截图",
-        "reveal_in_finder": "在文件管理器中显示",
         "screenshot": "截图",
+        "show_in_file_manager": "在文件管理器中显示",
         "watchlist": "监视列表"
       },
       "clear": {
@@ -5288,6 +5290,8 @@
       "open_artifact": "打开工件 {{name}}",
       "open_as_artifact": "作为工件打开",
       "open_folder": "打开文件夹 {{path}}",
+      "open_in_file_explorer": "在文件资源管理器中打开",
+      "open_in_finder": "在 Finder 中打开",
       "open_with_default_app": "用默认应用打开",
       "path_copied_to_clipboard_no_desktop_available": "路径已复制到剪贴板（无可用桌面环境）",
       "preview": "预览",
@@ -5319,8 +5323,12 @@
       "word_wrap": "自动换行"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "点击浏览 / Shift+点击在文件资源管理器中显示",
       "click_to_browse_shift_click_to_reveal_in_finder": "点击浏览 / Shift+点击在 Finder 中显示",
+      "click_to_browse_shift_click_to_show_in_file_manager": "点击浏览 / Shift+点击在文件管理器中显示",
+      "click_to_open_shift_click_to_open_in_file_explorer": "点击打开 / Shift+点击在文件资源管理器中显示",
       "click_to_open_shift_click_to_reveal_in_finder": "点击打开 / Shift+点击在 Finder 中显示",
+      "click_to_open_shift_click_to_show_in_file_manager": "点击打开 / Shift+点击在文件管理器中显示",
       "close": "关闭",
       "download_d": "下载（d）",
       "download_image": "下载图片",
@@ -5781,11 +5789,13 @@
       "include_recent_logs": "包含最近日志",
       "note_placeholder": "例如：更新后每条消息都失败，报“process exited (rc=None)”。",
       "open_github_issue": "新建 GitHub issue",
+      "open_in_file_explorer": "在文件资源管理器中打开",
+      "open_in_finder": "在 Finder 中打开",
       "prefill_hint": "打开后会自动填好详情 — 再把 zip 拖进去即可。",
       "redaction_notice": "Bearer 令牌、会话 cookie 和 AWS 密钥会在生成 zip 前自动移除。",
       "report_a_problem": "反馈问题",
       "saved_to": "保存至",
-      "show_in_finder": "在 Finder 中显示",
+      "show_in_file_manager": "在文件管理器中显示",
       "what_happened": "发生了什么？"
     },
     "resizeHandle": {
@@ -7409,9 +7419,11 @@
       "folderPanel": {
         "empty_folder": "空目录",
         "loading": "正在加载…",
+        "open_in_file_explorer": "在文件资源管理器中打开",
+        "open_in_finder": "在 Finder 中打开",
         "parent_folder": "上级目录",
         "refresh": "刷新",
-        "reveal_in_finder": "在 Finder 中显示",
+        "show_in_file_manager": "在文件管理器中显示",
         "unable_to_list_folder": "无法列出目录内容"
       },
       "knowledgePicker": {

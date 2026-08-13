@@ -53,14 +53,17 @@ describe('ReportProblemCard', () => {
     )
     expect(api.collectDiagnostics).toHaveBeenCalledWith({ note: '', include_logs: true })
 
-    // Finder + download + GitHub issue actions all present
-    expect(screen.getByRole('button', { name: /show in finder/i })).toBeInTheDocument()
+    // Reveal + download + GitHub issue actions all present. The reveal label
+    // names the GATEWAY host's file manager and this card renders without a
+    // platform in the cache, which is the generic arm — the per-platform arms
+    // live in ReportProblemModal.test.tsx.
+    expect(screen.getByRole('button', { name: /show in file manager/i })).toBeInTheDocument()
     const issueLink = screen.getByRole('link', { name: /open github issue/i })
     expect(issueLink).toHaveAttribute('href', RESULT.github_issue_url)
     const dl = screen.getByRole('link', { name: /download zip/i })
     expect(dl).toHaveAttribute('href', RESULT.download_url)
 
-    fireEvent.click(screen.getByRole('button', { name: /show in finder/i }))
+    fireEvent.click(screen.getByRole('button', { name: /show in file manager/i }))
     expect(api.revealPath).toHaveBeenCalledWith(RESULT.zip_path)
   })
 

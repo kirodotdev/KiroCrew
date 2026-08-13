@@ -2605,12 +2605,14 @@
         "copy_markdown": "Markdownをコピー",
         "dismiss": "閉じる",
         "edit_resend": "編集して再送信",
+        "open_in_file_explorer": "エクスプローラーで開く",
+        "open_in_finder": "Finder で開く",
         "pinned_files": "ピン留めファイル",
         "pins": "ピン留め",
         "preview": "プレビュー",
         "remove_screenshot": "スクリーンショットを削除",
-        "reveal_in_finder": "ファイルマネージャーに表示",
         "screenshot": "スクリーンショット",
+        "show_in_file_manager": "ファイルマネージャーに表示",
         "watchlist": "ウォッチリスト"
       },
       "clear": {
@@ -5288,6 +5290,8 @@
       "open_artifact": "アーティファクト {{name}} を開く",
       "open_as_artifact": "アーティファクトとして開く",
       "open_folder": "フォルダー {{path}} を開く",
+      "open_in_file_explorer": "エクスプローラーで開く",
+      "open_in_finder": "Finder で開く",
       "open_with_default_app": "デフォルトアプリで開く",
       "path_copied_to_clipboard_no_desktop_available": "パスをクリップボードにコピーしました（デスクトップ環境がありません）",
       "preview": "プレビュー",
@@ -5319,8 +5323,12 @@
       "word_wrap": "ワードラップ"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "クリックして参照 / Shift+クリックでエクスプローラーに表示",
       "click_to_browse_shift_click_to_reveal_in_finder": "クリックして参照 / Shift+クリックで Finder に表示",
+      "click_to_browse_shift_click_to_show_in_file_manager": "クリックして参照 / Shift+クリックでファイルマネージャーに表示",
+      "click_to_open_shift_click_to_open_in_file_explorer": "クリックして開く / Shift+クリックでエクスプローラーに表示",
       "click_to_open_shift_click_to_reveal_in_finder": "クリックして開く / Shift+クリックで Finder に表示",
+      "click_to_open_shift_click_to_show_in_file_manager": "クリックして開く / Shift+クリックでファイルマネージャーに表示",
       "close": "閉じる",
       "download_d": "ダウンロード (d)",
       "download_image": "画像をダウンロード",
@@ -5781,11 +5789,13 @@
       "include_recent_logs": "最近のログを含める",
       "note_placeholder": "例：更新後、すべてのメッセージが「process exited (rc=None)」で失敗します。",
       "open_github_issue": "GitHub イシューを開く",
+      "open_in_file_explorer": "エクスプローラーで開く",
+      "open_in_finder": "Finder で開く",
       "prefill_hint": "イシューを開くと詳細が事前入力されます — その後、zip をドラッグしてください。",
       "redaction_notice": "Bearer トークン、セッションクッキー、および AWS キーは、zip が作成される前に自動的に削除されます。",
       "report_a_problem": "問題を報告",
       "saved_to": "保存先",
-      "show_in_finder": "Finder に表示",
+      "show_in_file_manager": "ファイルマネージャーに表示",
       "what_happened": "何が起こりましたか？"
     },
     "resizeHandle": {
@@ -7409,9 +7419,11 @@
       "folderPanel": {
         "empty_folder": "空のフォルダー",
         "loading": "読み込み中…",
+        "open_in_file_explorer": "エクスプローラーで開く",
+        "open_in_finder": "Finder で開く",
         "parent_folder": "親フォルダー",
         "refresh": "更新",
-        "reveal_in_finder": "Finder で表示",
+        "show_in_file_manager": "ファイルマネージャーに表示",
         "unable_to_list_folder": "フォルダーを一覧表示できません"
       },
       "knowledgePicker": {

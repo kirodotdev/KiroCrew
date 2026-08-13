@@ -985,6 +985,13 @@
       "row": {
         "deleteConfirm": "You can restore it from <trash>.trash</trash>. Trashed notes aren't synced to the remote."
       }
+    },
+    "mochi": {
+      "chatPanel": {
+        "open_in_file_explorer": "Open in File Explorer",
+        "open_in_finder": "Open in Finder",
+        "show_in_file_manager": "Show in file manager"
+      }
     }
   },
   "components": {
@@ -1550,6 +1557,8 @@
       "open_artifact": "Open artifact {{name}}",
       "open_as_artifact": "Open as artifact",
       "open_folder": "Open folder {{path}}",
+      "open_in_file_explorer": "Open in File Explorer",
+      "open_in_finder": "Open in Finder",
       "open_with_default_app": "Open with default app",
       "path_copied_to_clipboard_no_desktop_available": "Path copied to clipboard (no desktop available)",
       "preview": "Preview",
@@ -1568,7 +1577,11 @@
       "view_source": "View Source"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "Click to browse / Shift+click to open in File Explorer",
       "click_to_browse_shift_click_to_reveal_in_finder": "Click to browse / Shift+click to reveal in Finder",
+      "click_to_browse_shift_click_to_show_in_file_manager": "Click to browse / Shift+click to show in file manager",
+      "click_to_open_shift_click_to_open_in_file_explorer": "Click to open / Shift+click to open in File Explorer",
+      "click_to_open_shift_click_to_show_in_file_manager": "Click to open / Shift+click to show in file manager",
       "reset_zoom": "Reset zoom (0)",
       "zoom_in": "Zoom in (+)",
       "zoom_out": "Zoom out (-)"
@@ -2060,10 +2073,12 @@
       "done": "Done",
       "diagnostics_ready": "Diagnostics ready — {{redactions}} secret(s) redacted across {{files}} file(s).",
       "saved_to": "Saved to",
-      "show_in_finder": "Show in Finder",
       "download_zip": "Download zip",
       "open_github_issue": "Open GitHub issue",
-      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it."
+      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it.",
+      "open_in_finder": "Open in Finder",
+      "open_in_file_explorer": "Open in File Explorer",
+      "show_in_file_manager": "Show in file manager"
     },
     "trustDropdown": {
       "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
@@ -2496,9 +2511,11 @@
       "folderPanel": {
         "empty_folder": "Empty folder",
         "loading": "Loading…",
+        "open_in_file_explorer": "Open in File Explorer",
+        "open_in_finder": "Open in Finder",
         "parent_folder": "Parent folder",
         "refresh": "Refresh",
-        "reveal_in_finder": "Reveal in Finder",
+        "show_in_file_manager": "Show in file manager",
         "unable_to_list_folder": "Unable to list folder"
       },
       "knowledgePicker": {

@@ -2651,12 +2651,14 @@
         "copy_markdown": "মার্কডাউন কপি করো",
         "dismiss": "খারিজ করুন",
         "edit_resend": "সম্পাদনা করে আবার পাঠান",
+        "open_in_file_explorer": "File Explorer-এ খুলুন",
+        "open_in_finder": "Finder-এ খুলুন",
         "pinned_files": "পিন করা ফাইল",
         "pins": "পিন",
         "preview": "প্রিভিউ",
         "remove_screenshot": "স্ক্রিনশট সরাও",
-        "reveal_in_finder": "ফাইল ম্যানেজারে দেখাও",
         "screenshot": "স্ক্রিনশট",
+        "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
         "watchlist": "নজর তালিকা"
       },
       "clear": {
@@ -5369,6 +5371,8 @@
       "open_artifact": "{{name}} আর্টিফ্যাক্ট খোলো",
       "open_as_artifact": "আর্টিফ্যাক্ট হিসেবে খুলুন",
       "open_folder": "ফোল্ডার খুলুন {{path}}",
+      "open_in_file_explorer": "File Explorer-এ খুলুন",
+      "open_in_finder": "Finder-এ খুলুন",
       "open_with_default_app": "ডিফল্ট অ্যাপে খোলো",
       "path_copied_to_clipboard_no_desktop_available": "পাথ ক্লিপবোর্ডে কপি করা হয়েছে (কোনো ডেস্কটপ নেই)",
       "preview": "প্রিভিউ",
@@ -5400,8 +5404,12 @@
       "word_wrap": "ওয়ার্ড র‍্যাপ"
     },
     "markdownRenderer": {
+      "click_to_browse_shift_click_to_open_in_file_explorer": "ব্রাউজ করতে ক্লিক করুন / File Explorer-এ দেখাতে Shift+ক্লিক করুন",
       "click_to_browse_shift_click_to_reveal_in_finder": "ব্রাউজ করতে ক্লিক করুন / Finder-এ দেখাতে Shift+ক্লিক করুন",
+      "click_to_browse_shift_click_to_show_in_file_manager": "ব্রাউজ করতে ক্লিক করুন / ফাইল ম্যানেজারে দেখাতে Shift+ক্লিক করুন",
+      "click_to_open_shift_click_to_open_in_file_explorer": "খুলতে ক্লিক করুন / File Explorer-এ দেখাতে Shift+ক্লিক করুন",
       "click_to_open_shift_click_to_reveal_in_finder": "খুলতে ক্লিক করুন / Finder-এ দেখাতে Shift+ক্লিক করুন",
+      "click_to_open_shift_click_to_show_in_file_manager": "খুলতে ক্লিক করুন / ফাইল ম্যানেজারে দেখাতে Shift+ক্লিক করুন",
       "close": "বন্ধ করুন",
       "download_d": "ডাউনলোড (d)",
       "download_image": "ছবি ডাউনলোড করুন",
@@ -5868,11 +5876,13 @@
       "include_recent_logs": "সাম্প্রতিক লগ যুক্ত করুন",
       "note_placeholder": "যেমন: আপডেটের পর প্রতিটি মেসেজ “process exited (rc=None)” দিয়ে ব্যর্থ হচ্ছে।",
       "open_github_issue": "GitHub-এ issue খুলুন",
+      "open_in_file_explorer": "File Explorer-এ খুলুন",
+      "open_in_finder": "Finder-এ খুলুন",
       "prefill_hint": "issue খুললে বিবরণ আগেই বসে যায় — এরপর zip টেনে সেখানে দিন।",
       "redaction_notice": "zip তৈরির আগেই Bearer টোকেন, সেশন কুকি এবং AWS কী স্বয়ংক্রিয়ভাবে সরানো হয়।",
       "report_a_problem": "সমস্যা জানান",
       "saved_to": "সংরক্ষণ করা হয়েছে",
-      "show_in_finder": "Finder-এ দেখান",
+      "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
       "what_happened": "কী হয়েছে?"
     },
     "resizeHandle": {
@@ -7510,9 +7520,11 @@
       "folderPanel": {
         "empty_folder": "খালি ফোল্ডার",
         "loading": "লোড হচ্ছে…",
+        "open_in_file_explorer": "File Explorer-এ খুলুন",
+        "open_in_finder": "Finder-এ খুলুন",
         "parent_folder": "প্যারেন্ট ফোল্ডার",
         "refresh": "রিফ্রেশ",
-        "reveal_in_finder": "Finder-এ দেখান",
+        "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
         "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি"
       },
       "knowledgePicker": {

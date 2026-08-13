@@ -14,6 +14,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import SelectionToolbar, { type SelectionAction } from './SelectionToolbar'
 import MarkdownOutlineRail from './MarkdownToc'
 import { useFileWatch } from '../hooks/useFileWatch'
+import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { countLines } from './FileChangeChips'
 import { store } from '../store'
@@ -424,6 +425,14 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
   const closeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => { clearTimeout(closeTimerRef.current) }, [])
   const navigate = useNavigate()
+  const gatewayPlatform = useGatewayPlatform()
+  // Name the real application where the gateway HAS one, generic otherwise —
+  // `/api/reveal` shells out on the gateway, so its platform is the one to name.
+  const revealLabel = gatewayPlatform === 'darwin'
+    ? i18nT('components.markdownPanel.open_in_finder')
+    : gatewayPlatform === 'windows'
+      ? i18nT('components.markdownPanel.open_in_file_explorer')
+      : i18nT('components.markdownPanel.show_in_file_manager')
   const knowledge = useFileKnowledgeState(filePath)
   const artifact = useFileArtifactState(filePath, content)
   const delayedClose = () => { closeTimerRef.current = setTimeout(() => setOpen(false), 800) }
@@ -514,7 +523,7 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
             {i18nT('components.markdownPanel.open_with_default_app')}
           </button>
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal'); setOpen(false) }}>
-            {i18nT('components.markdownPanel.show_in_file_manager')}
+            {revealLabel}
           </button>
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_path')}
