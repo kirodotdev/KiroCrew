@@ -2783,6 +2783,26 @@ def _clamp_sandbox_mode(mode: str) -> str:
     return _clamp_sandbox_mode_to_floor(mode, _governance_sandbox_floor())
 
 
+def _floor_mandates_sandbox(floor: str | None) -> bool:
+    """True when an already-read ``sandbox.min_level`` *floor* requires isolation.
+
+    ``None`` means ungoverned.  A governed floor at the LOOSEST tier is a policy
+    that explicitly requires nothing, so testing the raw string for truthiness
+    would read "no isolation required" as "isolation mandatory" and refuse a
+    spawn the operator legitimately opted into — while telling them a floor of
+    ``off`` forbids unsandboxed execution.
+
+    The loosest tier is derived from the enforcer-owned ordinal registry rather
+    than hardcoded, matching :func:`_clamp_sandbox_mode_to_floor`: a renamed or
+    re-ordered scale must not silently invert this test.
+    """
+    if not floor:
+        return False
+    from kiro_crew.platform.governance import _ORDINAL_SCALES
+
+    return floor != _ORDINAL_SCALES["sandbox"][0]
+
+
 def _clamp_sandbox_mode_to_floor(mode: str, floor: str | None) -> str:
     """Clamp *mode* UP to an already-read ``sandbox.min_level`` *floor*, if any.
 
@@ -3147,7 +3167,22 @@ def wrap_argv(
         # This addresses a penetration-test finding — the previous behavior silently
         # returned unmodified argv, allowing the agent subprocess to access all
         # credential paths without any OS-level isolation.
-        if not _allow_unsandboxed_exec():
+        #
+        # ONE read of the opt-in: the gate below and the message that explains a
+        # refusal must describe the same state, and a concurrent config reload
+        # must not let them disagree about the same spawn.
+        opted_in = _allow_unsandboxed_exec()
+        # A governance ``sandbox.min_level`` floor OVERRIDES the config opt-in
+        # (issue #3162).  Before this, the floor did the opposite of what pinning
+        # it implies: it disabled the audited first-party carve-out below while
+        # leaving this broad opt-in untouched, so a governed fleet lost the
+        # constrained path and kept the unconstrained one.  ``config.json`` is not
+        # policy — the floor is — so the flag cannot re-open this on a governed
+        # host.  Derived from the ONE floor read taken at the top of this call,
+        # and via ``_floor_mandates_sandbox`` rather than raw truthiness, because
+        # a pinned floor of the loosest tier requires nothing and must not deny.
+        floor_mandates_sandbox = _floor_mandates_sandbox(governance_floor)
+        if floor_mandates_sandbox or not opted_in:
             # ONE read of the pair: a concurrent re-probe swaps the whole tuple,
             # so failure and remedy can never come from different probes.
             transient, probe_reason, probe_remedy = _last_unshare_failure or (
@@ -3244,6 +3279,41 @@ def wrap_argv(
                 )
             else:
                 guidance = _no_backend_guidance()
+            # When the policy floor is what refused, every guidance above points
+            # at the wrong lever: the operator HAS set the opt-in and the flag is
+            # deliberately powerless here, so naming it would send them down a
+            # dead end.  Replace the remedy rather than appending to it.
+            policy_overrode_opt_in = floor_mandates_sandbox and opted_in
+            if policy_overrode_opt_in:
+                guidance = (
+                    "This host is GOVERNED: an enterprise policy pins "
+                    f"sandbox.min_level={governance_floor!r}, which forbids "
+                    "unsandboxed execution regardless of "
+                    "agent.sandbox_allow_unsandboxed_exec — that flag is set on "
+                    "this host and is deliberately powerless against the policy, "
+                    "so editing config.json cannot resolve this. A governed host "
+                    "also withholds the first-party carve-out, so Kiro Crew's own "
+                    "built-in spawns are refused here too: this host runs no "
+                    "agent subprocess until it has a working sandbox backend "
+                    "(see docs/system-specs/modules/security.md) or the policy "
+                    "owner relaxes sandbox.min_level."
+                )
+                sel_reason = (
+                    "No sandbox backend available and a governance "
+                    f"sandbox.min_level={governance_floor!r} floor forbids "
+                    "unsandboxed exec (the config opt-in is set but overridden)"
+                )
+                refusal = (
+                    "Sandbox backend unavailable and a governance policy forbids "
+                    "unsandboxed execution. "
+                )
+            else:
+                sel_reason = (
+                    "No sandbox backend available and allow_unsandboxed_exec is not set"
+                )
+                refusal = (
+                    "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
+                )
             # Emit SEL audit event for this security-relevant denial so it
             # appears in the tamper-evident audit log (security-review requirement).
             try:
@@ -3256,16 +3326,13 @@ def wrap_argv(
                     tool_name=argv[0] if argv else "unknown",
                     tool_kind="subprocess",
                     outcome="denied",
-                    error=(
-                        "No sandbox backend available and allow_unsandboxed_exec "
-                        f"is not set (probe: {probe_reason})"
-                    ),
+                    error=(f"{sel_reason} (probe: {probe_reason})"),
                 )
             except Exception:
                 logger.warning("Failed to emit SEL audit event for sandbox denial", exc_info=True)
             raise SandboxUnavailableError(
-                "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
-                "No OS-level sandbox backend is available on this host, and the "
+                refusal
+                + "No OS-level sandbox backend is available on this host, and the "
                 "agent subprocess cannot be safely isolated. "
                 f"Probe detail: {probe_reason}. " + guidance,
                 kind=_classify_unavailable(transient),
