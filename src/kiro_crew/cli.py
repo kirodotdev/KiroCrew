@@ -1155,6 +1155,13 @@ Examples:
     cron_update.add_argument("--name", help="New job name")
     cron_update.add_argument("--message", help="New message")
     cron_update.add_argument("--every", type=int, dest="every_secs", help="New interval in seconds")
+    cron_update.add_argument(
+        "--timeout-secs",
+        type=int,
+        dest="timeout_secs",
+        default=None,
+        help="Per-wake execution budget in seconds (1..86400, default 1800)",
+    )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
     cron_update.add_argument("--channel", help="New channel ID")
     cron_update.add_argument(

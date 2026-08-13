@@ -110,6 +110,11 @@ def referenced_skill_names() -> set[str]:
 _STORE_VERSION = 2
 _MIN_INTERVAL_SECS = 60
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
+# Margin the per-wake budget must leave above a command/script subprocess
+# timeout: the wake deadline cancels only the executor FUTURE (threads are
+# not interruptible), so a budget shorter than the subprocess bound leaves
+# the subprocess running while the guards clear and later wakes duplicate it.
+_SUBPROC_CLEANUP_ALLOWANCE_SECS = 5
 _TIMER_POLL_SECS = 30  # check for due cron-expr jobs
 _AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
@@ -1178,6 +1183,7 @@ class CronService:
         session_key: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
+        timeout_secs: int = 0,
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -1236,6 +1242,7 @@ class CronService:
             session_key=session_key,
             minimal_context=minimal_context,
             timeout=timeout,
+            timeout_secs=timeout_secs,
         )
         self._persist_add_locked(job)
         self._arm_timer()
@@ -1330,12 +1337,18 @@ class CronService:
         session_key: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
+        timeout_secs: int = 0,
     ) -> CronJob:
         """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
 
         Shared by :meth:`add_job` and :meth:`add_job_async` so both perform
         identical validation on the event loop before any disk work. Raises
         ``ValueError`` on an invalid schedule or approval mode.
+
+        ``timeout_secs`` is the per-wake execution budget (the
+        ``asyncio.wait_for`` deadline in ``_execute_with_timeout``); ``0`` means
+        the ``_JOB_TIMEOUT_SECS`` default. Distinct from ``timeout``, which
+        bounds only script/command subprocesses.
 
         The optional presentation/routing fields (``agent_id``, ``model``,
         ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
@@ -1347,6 +1360,19 @@ class CronService:
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
+        if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
+            raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
+        if timeout_secs and (command or script):
+            _eff_sub = int(timeout) if timeout else (30 if script else 300)
+            if int(timeout_secs) < _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS:
+                raise ValueError(
+                    "timeout_secs (wake budget) must cover the command/script "
+                    f"subprocess timeout plus cleanup: need >= "
+                    f"{_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, got {timeout_secs}. "
+                    "A shorter wake budget cancels only the executor future — "
+                    "the subprocess keeps running while the next wake launches "
+                    "a duplicate."
+                )
         if timezone and not is_valid_timezone(timezone):
             raise ValueError(f"Invalid timezone: {timezone!r}")
         skip_dates = skip_dates or []
@@ -1393,6 +1419,7 @@ class CronService:
             session_key=session_key,
             minimal_context=minimal_context,
             timeout=timeout,
+            timeout_secs=int(timeout_secs) if timeout_secs else _JOB_TIMEOUT_SECS,
         )
 
     def _persist_add_locked(self, job: CronJob) -> None:
@@ -1437,6 +1464,7 @@ class CronService:
         session_key: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
+        timeout_secs: int = 0,
     ) -> CronJob:
         """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
@@ -1483,6 +1511,7 @@ class CronService:
             session_key=session_key,
             minimal_context=minimal_context,
             timeout=timeout,
+            timeout_secs=timeout_secs,
         )
         await asyncio.to_thread(self._persist_add_locked, job)
         self._arm_timer()
@@ -1493,7 +1522,8 @@ class CronService:
         """Update fields on an existing job. Returns updated job or None if not found.
 
         Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
-        approval_mode, silent, skip_dates, timezone, thread_ts, model.
+        approval_mode, silent, skip_dates, timezone, thread_ts, model,
+        timeout_secs (per-wake execution budget, 1..86400).
 
         Raises :class:`CronStoreBusy` if the store lock is contended past the
         timeout; see :meth:`update_job_async` for the event-loop-safe variant.
@@ -1568,6 +1598,56 @@ class CronService:
                     for _d in kwargs["skip_dates"]:
                         if not is_valid_skip_date(_d):
                             raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
+                # Per-wake budget and subprocess timeout: validated HERE, in
+                # the pre-mutation section with every other check, so a
+                # rejected update cannot leave earlier field mutations (name,
+                # message, ...) stranded on the in-memory job for a later
+                # save to persist. Assignments happen below with the rest.
+                _tsecs: int | None = None
+                if "timeout_secs" in kwargs and kwargs["timeout_secs"] is not None:
+                    try:
+                        _tsecs = int(kwargs["timeout_secs"])
+                    except (ValueError, TypeError) as e:
+                        raise ValueError(
+                            f"Invalid timeout_secs: {kwargs['timeout_secs']!r}"
+                        ) from e
+                    if not 1 <= _tsecs <= 86400:
+                        raise ValueError(
+                            f"timeout_secs must be within 1..86400, got {_tsecs}"
+                        )
+                # Script/command subprocess timeout. MCP cron_update has passed
+                # this since the field existed, but no branch consumed it — the
+                # update was accepted and silently dropped.
+                _tsub: int | None = None
+                if "timeout" in kwargs and kwargs["timeout"] is not None:
+                    try:
+                        _tsub = int(kwargs["timeout"])
+                    except (ValueError, TypeError) as e:
+                        raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
+                    if not 0 <= _tsub <= 86400:
+                        raise ValueError(f"timeout must be within 0..86400, got {_tsub}")
+                # Cross-field: the wake budget must cover the subprocess bound
+                # plus cleanup, evaluated on the POST-update effective values —
+                # the wake deadline cancels only the executor future, so a
+                # shorter budget leaves the subprocess running while later
+                # wakes launch duplicates.
+                if job.command or job.script:
+                    _eff_secs = _tsecs if _tsecs is not None else job.timeout_secs
+                    _eff_sub_new = _tsub if _tsub is not None else job.timeout
+                    _eff_sub = (
+                        int(_eff_sub_new)
+                        if _eff_sub_new
+                        else (30 if job.script else 300)
+                    )
+                    if (_tsecs is not None or _tsub is not None) and _eff_secs < (
+                        _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS
+                    ):
+                        raise ValueError(
+                            "timeout_secs (wake budget) must cover the "
+                            "command/script subprocess timeout plus cleanup: "
+                            f"need >= {_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, "
+                            f"got {_eff_secs}"
+                        )
                 if "name" in kwargs and kwargs["name"]:
                     job.name = kwargs["name"]
                 if "message" in kwargs and kwargs["message"]:
@@ -1596,6 +1676,18 @@ class CronService:
                     job.folder_id = kwargs["folder_id"] or ""
                 if "model" in kwargs:
                     job.model = str(kwargs["model"] or "").strip()
+                # Per-wake budget (the asyncio.wait_for deadline in
+                # _execute_with_timeout). Distinct from ``timeout``, which
+                # bounds only script/command subprocesses. Until this branch
+                # existed the field was read, clamped and persisted but
+                # unreachable through every public writer — a job could only
+                # ever carry the creation-time default (Phase 0, Intervention
+                # 2: the operator had to edit the store under _file_lock by
+                # hand to keep an agent alive).
+                if _tsecs is not None:
+                    job.timeout_secs = _tsecs
+                if _tsub is not None:
+                    job.timeout = _tsub
 
                 # Schedule changes (already validated above)
                 if "cron_expr" in kwargs and kwargs["cron_expr"]:

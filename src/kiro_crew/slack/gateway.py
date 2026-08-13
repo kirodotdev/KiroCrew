@@ -147,9 +147,11 @@ from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
+    acp_error_is_transient,
     provider_last_turn_usage,
     save_conversation_turn_off_loop,
     stream_and_collect,
+    transient_retry_delay,
 )
 from kiro_crew.mcp_cron import vet_job_at_fire_time
 from kiro_crew.mcp_gateway import is_gateway_supported
@@ -311,6 +313,11 @@ def _digest_chunk_size() -> int:
 
 
 SUBAGENT_DIGEST_CHUNK_SIZE = _digest_chunk_size()
+
+# Whole-callback transient retries for the cron LLM path (session acquire /
+# client creation / context assembly), mirroring the subagent path's budget.
+# In-stream transient errors are retried separately by stream_and_collect.
+_CRON_TRANSIENT_RETRIES = 2
 
 logger = logging.getLogger(__name__)
 
@@ -2222,6 +2229,12 @@ class GatewayOrchestrator:
                     )
 
         async def _cron_callback(job: CronJob) -> str | None:
+            # True once ANY prompt has been handed to the provider this
+            # invocation. The whole-callback transient retry below is only
+            # safe BEFORE dispatch: after it, tools may have run, so a
+            # resubmit risks duplicate side effects (in-stream transient
+            # errors are stream_and_collect's own retry's job).
+            _prompt_dispatched = False
             # helper picks stable vs ephemeral session key and
             # decides whether to prepend last_result, based on job.persistent_session.
             session_key, msg = build_cron_session_context(job)
@@ -2709,6 +2722,7 @@ class GatewayOrchestrator:
                         # Brackets only the model turn — session acquisition and
                         # the episodic-query embed above are setup, not the turn.
                         _turn_t0 = time.monotonic()
+                        _prompt_dispatched = True
                         result_text = await stream_and_collect(
                             client,
                             full_message,
@@ -2836,6 +2850,7 @@ class GatewayOrchestrator:
                 # above. acp reports no duration, so this is the row's fallback.
                 _turn_t0 = time.monotonic()
                 _gate = _GateTally()
+                _prompt_dispatched = True
                 result_text = await stream_and_collect(
                     client,
                     full_message,
@@ -3103,6 +3118,63 @@ class GatewayOrchestrator:
                         pass  # retry failed — fall through to dedup + alert
                     finally:
                         job._acp_retried = False  # type: ignore[attr-defined]
+                # ── Transient backend errors: retry the whole callback with ──
+                # backoff instead of counting a failure. stream_and_collect's
+                # in-stream retry only covers errors raised INSIDE the prompt
+                # stream; a throttle/5xx during session acquire, client
+                # creation, or context assembly propagates here and — before
+                # this branch existed — went straight to record_failure(),
+                # marching consecutive_failures toward auto-pause (threshold
+                # 5) on pure infrastructure weather. The subagent path has
+                # retried these 3x with backoff since it existed; this brings
+                # the cron path to the same semantics (Phase 0, Finding 1:
+                # five throttled wakes would silently auto-pause a healthy
+                # perpetual agent).
+                #
+                # Guarded by the same recursion marker pattern as the ACP
+                # retry: the attempt counter lives on the job for the duration
+                # of the outermost invocation only, and the recursive call
+                # re-enters the full callback so a retry that succeeds runs
+                # the complete delivery path.
+                if acp_error_is_transient(exc) and not _prompt_dispatched:
+                    _t_attempt = getattr(job, "_transient_attempts", 0)
+                    if _t_attempt < _CRON_TRANSIENT_RETRIES:
+                        job._transient_attempts = _t_attempt + 1  # type: ignore[attr-defined]
+                        _delay = transient_retry_delay(_t_attempt + 1)
+                        logger.warning(
+                            "Cron '%s': transient backend error (attempt %d/%d), "
+                            "retrying in %.1fs: %s",
+                            job.name,
+                            _t_attempt + 1,
+                            _CRON_TRANSIENT_RETRIES,
+                            _delay,
+                            exc,
+                        )
+                        # The backoff sleep AND the recursive call live inside
+                        # the counter-owning try/finally: a wake-budget
+                        # cancellation (asyncio.wait_for) landing in the sleep
+                        # would otherwise strand the just-consumed attempt on
+                        # the in-memory job, and later wakes would start with
+                        # fewer (or zero) retries.
+                        try:
+                            try:
+                                if _acquired and self.sessions is not None:
+                                    self.sessions.release(session_key)
+                                    _acquired = False
+                            except Exception:
+                                logger.debug(
+                                    "release before transient retry failed", exc_info=True
+                                )
+                            await asyncio.sleep(_delay)
+                            return await _cron_callback(job)
+                        finally:
+                            # Outermost frame owns the counter: clear it once
+                            # the retry chain unwinds — success, failure, or
+                            # cancellation.
+                            if _t_attempt == 0:
+                                job._transient_attempts = 0  # type: ignore[attr-defined]
+                    # Retries exhausted — fall through to dedup + alert +
+                    # record_failure: a persistent outage should still count.
                 logger.exception("Cron job '%s' failed", job.name)
                 # During an in-flight ACP retry (inner recursive _cron_callback
                 # call), suppress all notify/slack/dedup work — the outer
