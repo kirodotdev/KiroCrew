@@ -544,8 +544,9 @@ export function useWebSocket() {
       // was down. fetchNotifications IS still dispatched here despite the
       // mount-effect copy: syncPendingApprovals must only run after a
       // notifications fetch has settled, because fetchNotifications.fulfilled
-      // replaces `items` wholesale and would wipe any approval notifications
-      // synced before it.
+      // replaces membership and ordering wholesale and would wipe any approval
+      // notifications synced before it. Its merge preserves local ack flags
+      // only, so it is no protection for a row the response does not carry.
       dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
       // Eagerly subscribe to subagent events on first connect too.
