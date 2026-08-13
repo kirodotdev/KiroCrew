@@ -1,13 +1,15 @@
 """Tests for the slot's ``needs_input`` status — "the agent asked you something".
 
-A question card is a websocket broadcast with no transcript row, and the
-``[OPTIONS:]`` fallback is a plain assistant message, so before this status
-neither was visible anywhere outside the tab that received it: the sidebar, the
-sessions board and the command palette all showed a quiet, finished-looking
-session while the agent was waiting on an answer.
+A question card is a websocket broadcast with no transcript row, so before this
+status it was invisible anywhere outside the tab that received it — and a
+BLOCKING card parks the turn, so the sidebar, the sessions board and the command
+palette all showed a session that reported ``running`` with nothing able to
+advance it.
 
-The status is deliberately NARROWER than ``waiting_for_input`` (true of every
-finished turn, which is why it cannot carry a badge) and separate from
+That is the whole scope: the status corrects a status that would otherwise be
+wrong. It is NOT raised for a turn that merely ended, including one ending in an
+``[OPTIONS:]`` tag — every finished turn is waiting on the user, which is why
+``waiting_for_input`` cannot carry a badge either. It is separate from
 ``pending_approval`` (a tool gate, answered allow/deny). These tests pin that
 boundary in both directions, plus the record's whole lifecycle: who sets it, and
 every path that must retire it.
@@ -77,21 +79,28 @@ def _turn(slot: _ChatSlot, *rows: tuple[str, str]) -> _ChatSlot:
     return slot
 
 
-# ── Derived from message state: the [OPTIONS:] fallback ──
+# ── NOT derived from message state: an ended turn is not an ask ──
 
 
-def test_options_tag_reports_needs_input() -> None:
-    """The fallback the model uses when no card can render still raises the status."""
+def test_options_tag_does_not_report_needs_input() -> None:
+    """A turn that ended offering choices is an ordinary finished turn.
+
+    Every finished turn is waiting on the user, so a status raised here lights on
+    most of the sidebar and says nothing — and it would outrank the row's live
+    turn status while the next turn runs. The row's last message and unread dot
+    already carry this state.
+    """
     slot = _turn(
         _ChatSlot("chat-1"),
         ("user", "which one?"),
         ("assistant", "Both work.\n\n[OPTIONS: Merge it now | Show me the diff]"),
     )
     payload = slot.to_dict()
-    assert payload["needs_input"] is True
-    assert payload["needs_input_reason"] == "options"
-    # The pre-existing field stays as it was: it excludes has_options by design,
-    # which is exactly why it could not carry this signal.
+    assert payload["needs_input"] is False
+    # The options themselves are still published — the Board's pills read them.
+    assert payload["has_options"] is True
+    # `waiting_for_input` excludes an options turn by its own definition, so no
+    # field claims this row: that is the point. The sidebar shows the message.
     assert payload["waiting_for_input"] is False
 
 
@@ -102,24 +111,12 @@ def test_plain_finished_turn_does_not_report_needs_input() -> None:
     )
     payload = slot.to_dict()
     assert payload["needs_input"] is False
-    assert payload["needs_input_reason"] == ""
     assert payload["waiting_for_input"] is True
-
-
-def test_user_reply_clears_the_options_status() -> None:
-    slot = _turn(
-        _ChatSlot("chat-1"),
-        ("assistant", "Pick one.\n\n[OPTIONS: Merge it now | Skip the rebase]"),
-    )
-    assert slot.to_dict()["needs_input"] is True
-    _turn(slot, ("user", "Merge it now"))
-    assert slot.to_dict()["needs_input"] is False
 
 
 def test_empty_slot_reports_nothing() -> None:
     payload = _ChatSlot("chat-1").to_dict()
     assert payload["needs_input"] is False
-    assert payload["needs_input_reason"] == ""
 
 
 # ── The recorded question card ──
@@ -132,9 +129,6 @@ def test_question_record_reports_needs_input_and_outranks_options() -> None:
     slot._question_pending = {"card-a": {"ts": 0.0, "blocking": False}}
     payload = slot.to_dict()
     assert payload["needs_input"] is True
-    # The card is the live surface when both are somehow present, so it names the
-    # reason — the label the frontend picks differs between the two.
-    assert payload["needs_input_reason"] == "question"
 
 
 def test_question_record_survives_further_assistant_output() -> None:
@@ -142,7 +136,7 @@ def test_question_record_survives_further_assistant_output() -> None:
     slot = _ChatSlot("chat-1")
     slot._question_pending = {"ask-1": {"ts": 0.0, "blocking": True}}
     _turn(slot, ("assistant", "meanwhile, here is what I found"))
-    assert slot.to_dict()["needs_input_reason"] == "question"
+    assert slot.to_dict()["needs_input"] is True
 
 
 def test_user_message_retires_a_stateless_question_record() -> None:
@@ -165,7 +159,7 @@ def test_user_message_leaves_a_BLOCKING_record_standing() -> None:
     slot = _ChatSlot("chat-1")
     slot._question_pending = {"ask-1": {"ts": 0.0, "blocking": True}}
     _turn(slot, ("user", "unrelated reply from Slack"))
-    assert slot.to_dict()["needs_input_reason"] == "question"
+    assert slot.to_dict()["needs_input"] is True
 
 
 def test_needs_input_is_not_gated_on_running() -> None:
@@ -189,7 +183,7 @@ async def test_post_question_card_records_the_status_and_broadcasts_its_id() -> 
     st = _state("chat-1")
     delivered = await st.post_question_card("chat-1", _questions())
     assert delivered == 1
-    assert st._slots["chat-1"].to_dict()["needs_input_reason"] == "question"
+    assert st._slots["chat-1"].to_dict()["needs_input"] is True
     st.push_slots_update.assert_called()  # type: ignore[attr-defined]
     # The client needs the record's identity to dismiss it, so it rides the card.
     (args, _kwargs) = st.deliver_ws_owners.calls[0]  # type: ignore[attr-defined]
@@ -220,12 +214,12 @@ async def test_status_is_recorded_before_delivery_is_awaited() -> None:
     seen: dict[str, object] = {}
 
     async def slow_delivery(*_args, **_kwargs) -> int:
-        seen["reason"] = st._slots["chat-1"].to_dict()["needs_input_reason"]
+        seen["asking"] = st._slots["chat-1"].to_dict()["needs_input"]
         return 1
 
     st.deliver_ws_owners = slow_delivery  # type: ignore[method-assign]
     await st.post_question_card("chat-1", _questions())
-    assert seen["reason"] == "question"
+    assert seen["asking"] is True
 
 
 @pytest.mark.asyncio
@@ -280,7 +274,7 @@ def test_replayed_user_rows_do_not_retire_the_status() -> None:
     slot = _ChatSlot("chat-1")
     slot._question_pending = {"card-a": {"ts": 0.0, "blocking": False}}
     slot.append("user", "a line from the transcript being replayed", broadcast=False)
-    assert slot.to_dict()["needs_input_reason"] == "question"
+    assert slot.to_dict()["needs_input"] is True
     # A live row still retires it.
     slot.append("user", "answering now", broadcast=True)
     assert slot.to_dict()["needs_input"] is False
@@ -465,7 +459,7 @@ async def test_blocking_question_marks_then_retires_on_answer() -> None:
         st.request_question("a1", "chat-1", _questions(), timeout=30)
     )
     await _await_registered(st, 1)
-    assert st._slots["chat-1"].to_dict()["needs_input_reason"] == "question"
+    assert st._slots["chat-1"].to_dict()["needs_input"] is True
 
     st.resolve_question("a1", {"Which approach?": "Option A"})
     assert await task == {"Which approach?": "Option A"}

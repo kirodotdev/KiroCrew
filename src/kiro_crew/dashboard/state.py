@@ -2067,26 +2067,25 @@ class _ChatSlot:
             and bool(self.messages)
             and last_conv_role == "assistant"
         )
-        # needs_input: the agent ASKED the user something and cannot move past it
-        # — an unanswered question card, or a turn that ended with an [OPTIONS:]
-        # tag (the fallback the model uses when no card can be rendered).
+        # needs_input: an unanswered question CARD is on screen and the agent
+        # cannot move past it.
         #
-        # Deliberately narrower than `waiting_for_input`, which is true of every
-        # ordinary finished turn: a status that lights on all of them says
-        # nothing, and the sidebar's unread dot already covers that case. It is
-        # also separate from `pending_approval`, whose answer is allow/deny on a
-        # tool rather than input, and which keeps its own precedence and label.
+        # Scoped to the card on purpose. It exists to correct a status that would
+        # otherwise be WRONG, not to add one: a blocking ask_question parks the
+        # turn mid-flight, so `self.running` stays true and the row would read
+        # "Thinking…" forever while nothing can advance without the user. That is
+        # why it is NOT gated on `self.running`.
         #
-        # NOT gated on `self.running`: a blocking ask_question parks the turn
-        # mid-flight, so the session is running AND waiting on the user.
-        # `reason` is a discriminator for the label, not a severity: "question"
-        # outranks "options" because a card is the live surface when both are
-        # somehow present.
-        needs_input_reason = ""
-        if self._question_pending:
-            needs_input_reason = "question"
-        elif has_options:
-            needs_input_reason = "options"
+        # A turn that merely ENDED — including one ending in an [OPTIONS:] tag —
+        # is not this. Every finished turn is waiting on the user, so a status
+        # that lights on them says nothing (the same reason `waiting_for_input`
+        # cannot carry a badge), and the row already carries the last message plus
+        # the unread dot. Raising it there only displaced the message and hid the
+        # live turn status behind a constant string.
+        #
+        # Separate from `pending_approval`, whose answer is allow/deny on a tool
+        # rather than input, and which keeps its own precedence and label.
+        needs_input = bool(self._question_pending)
         # If an approval is pending, surface the tool metadata from the most
         # recent unresolved permission message so the Board can show inline
         # Approve/Trust/Reject buttons without a second API call.
@@ -2143,8 +2142,7 @@ class _ChatSlot:
             "pending_approval_info": pending_approval_info,
             "last_activity_ts": last_activity_ts,
             "waiting_for_input": waiting_for_input,
-            "needs_input": bool(needs_input_reason),
-            "needs_input_reason": needs_input_reason,
+            "needs_input": needs_input,
             "stop_state": self._stop_state,
             # In-flight `wait` sleep, or None. Carries the absolute deadline the
             # transcript counts down against and the wait_id the "End wait"

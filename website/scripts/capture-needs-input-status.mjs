@@ -6,10 +6,16 @@
  * no dashboard token, no sessions created.
  *
  * The four sidebar rows are one deliberate comparison, top to bottom: an owed
- * tool approval (warn, outranks everything), an unanswered question card and an
- * [OPTIONS:] turn (both info, the two `needs_input` reasons), and a plain
- * finished turn that keeps the blue unread dot. Reading them together is how the
- * precedence and the "one marker per row" rule are checked by eye.
+ * tool approval (warn, outranks everything), an unanswered question card (info —
+ * the one thing `needs_input` is raised for, shown even though the slot reports
+ * running), a turn that ENDED offering `[OPTIONS:]` (not an ask: it keeps its
+ * message and its dot), and a running session showing live turn status. Reading
+ * them together is how the precedence and the "one marker per row" rule are
+ * checked by eye.
+ *
+ * The two middle rows are seeded UNREAD (`mc-unread-slots`) because the dot is
+ * half of what the scene proves: the card drops it, the finished `[OPTIONS:]`
+ * turn keeps it.
  *
  * Usage: node scripts/capture-needs-input-status.mjs <baseUrl> <outDir>
  */
@@ -43,7 +49,6 @@ const slots = [
     title: 'Pick the cache eviction policy',
     running: true,
     needs_input: true,
-    needs_input_reason: 'question',
     last_message: 'Both policies fit the read pattern.',
     messages: 8,
     agent: 'kirocrew',
@@ -57,8 +62,6 @@ const slots = [
     key: 'chat-options',
     title: 'Rebase the devcontainer branch',
     running: false,
-    needs_input: true,
-    needs_input_reason: 'options',
     last_message: 'CI is green except the shelf button-count rule.',
     messages: 21,
     agent: 'kirocrew',
@@ -69,15 +72,15 @@ const slots = [
     source_links_total: 0,
   },
   {
-    key: 'chat-done',
+    key: 'chat-running',
     title: 'Add the token-bucket limiter',
-    running: false,
-    last_message: 'Added the limiter and its tests. All gates green.',
+    running: true,
+    last_message: 'Reading the existing middleware.',
     messages: 6,
     agent: 'kirocrew',
     memory_mode: 'persistent',
     modified: now,
-    last_ts: new Date((now - 900) * 1000).toISOString(),
+    last_ts: new Date((now - 12) * 1000).toISOString(),
     source_links: [],
     source_links_total: 0,
   },
@@ -157,11 +160,13 @@ async function main() {
       localStorage.clear()
       localStorage.setItem('mc-theme', t)
       localStorage.setItem('mc-onboarded', '1')
-      // The last row is the active session, so the four rows read as one list
-      // with a single focus rather than four competing highlights. Unread state
-      // is websocket-driven and therefore absent here — the dot's suppression on
-      // an asking row is pinned by ChatSidebar.needsInput.test.tsx instead.
-      localStorage.setItem('mc-active-slot', 'chat-done')
+      // The approval row is the active session, so the four rows read as one
+      // list with a single focus rather than four competing highlights — and it
+      // keeps the active highlight off the two rows the scene is about.
+      localStorage.setItem('mc-active-slot', 'chat-approval')
+      // Seeds `unreadSlots` (dashboardSlice reads this key at store init), which
+      // is otherwise websocket-driven and therefore absent from a fixture run.
+      localStorage.setItem('mc-unread-slots', JSON.stringify(['chat-question', 'chat-options']))
     }, theme)
     await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)

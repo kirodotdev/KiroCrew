@@ -194,28 +194,31 @@ so a plain `broadcast_ws` would hand them the owner's question text, options, an
 
 ## Session status: `needs_input`
 
-A card is a websocket broadcast with no transcript row, and the `[OPTIONS:]`
-fallback is an ordinary assistant message, so an ask was visible only in the tab
-that happened to receive it. Every slot payload therefore carries two derived
-fields:
+A card is a websocket broadcast with no transcript row, so an ask was visible only
+in the tab that happened to receive it — and a BLOCKING ask parks the turn, so the
+slot went on reporting `running` with nothing able to advance it. Every slot
+payload therefore carries one derived field:
 
 | Field | Meaning |
 |---|---|
-| `needs_input` | the agent asked something and cannot move past it |
-| `needs_input_reason` | `"question"` (a card is unanswered), `"options"` (the turn ended with an `[OPTIONS:]` tag), or `""` |
+| `needs_input` | an unanswered question card is on screen |
 
-It is deliberately narrower than `waiting_for_input`, which is true of every
-finished turn — a status that lights on all of them carries no information, and
-the sidebar's unread dot already covers that case. It is also separate from
-`pending_approval`, whose answer is allow/deny on a tool rather than input, and
-which keeps its own precedence and label everywhere the two are rendered.
+Its scope is exactly that: it corrects a status that would otherwise be **wrong**.
+A turn that merely ENDED is not an ask, including one ending in an `[OPTIONS:]`
+tag — every finished turn is waiting on the user, so a status raised there carries
+no information (the same reason `waiting_for_input` cannot carry a badge) and the
+row already says so with its last message and its unread dot. Raising it there
+also cost the row its live turn status, since surfaces rank this above every
+"working" signal. It is separate from `pending_approval`, whose answer is
+allow/deny on a tool rather than input, and which keeps its own precedence and
+label everywhere the two are rendered.
 
 It is **not** gated on `running`: a blocking ask parks the turn mid-flight, so the
 session is running AND waiting on the user. Surfaces rank it directly below the
 approval treatments and above every "working" signal for that reason — otherwise
 a blocked session reads as "Thinking…".
 
-The `"question"` half is a record on the slot: a map keyed by the ask's identity,
+The record is a map on the slot keyed by the ask's identity,
 `{card_id: {ts, blocking, questions?}}`, written by `post_question_card` (with a
 minted `card_id`, which also rides the broadcast so a client can name it later)
 and by `request_question` (`card_id` = the `ask_id`). A map rather than one field

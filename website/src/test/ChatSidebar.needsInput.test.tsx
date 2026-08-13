@@ -1,13 +1,18 @@
 /**
  * Session status surfacing for "the agent asked you something" (`needs_input`).
  *
- * The backend raises the flag; these tests pin what the surfaces DO with it,
- * which no backend test can see:
- *  (1) the sidebar row shows an info-coloured label instead of a bare unread dot,
- *      and shows it even while the slot reports running (a blocking card parks
- *      the turn, so "Thinking…" would be wrong);
+ * The backend raises the flag for an unanswered question CARD only; these tests
+ * pin what the sidebar DOES with it, which no backend test can see:
+ *  (1) the row shows an info-coloured label instead of a bare unread dot, and
+ *      shows it even while the slot reports running (a blocking card parks the
+ *      turn, so "Thinking…" would be wrong);
  *  (2) a pending tool approval still outranks it — an owed allow/deny is the more
  *      specific state and keeps its own warn treatment.
+ *
+ * A turn that ended offering `[OPTIONS:]` is deliberately NOT this: it never
+ * raises the flag, so its row keeps its message preview, its unread dot, and —
+ * once the next turn starts — its live turn status. `test_slot_needs_input_status
+ * .py` pins that half.
  *
  * The session-grid picker's own sort and dot are pinned in
  * `SessionGridViewCoverage.test.tsx`, which owns that view's stubs.
@@ -109,25 +114,47 @@ afterEach(() => vi.clearAllMocks())
 describe('chat sidebar — the agent is waiting on your answer', () => {
   it('labels an unanswered question card', () => {
     const slots: ChatSlot[] = [
-      { key: 'k-q', title: 'asked-a-question', running: false, messages: 3, needs_input: true, needs_input_reason: 'question' },
+      { key: 'k-q', title: 'asked-a-question', running: false, messages: 3, needs_input: true },
     ]
     const { getByText } = renderSidebar(slots, ['k-q'])
     expect(getByText('Needs your answer')).toBeTruthy()
   })
 
-  it('labels an [OPTIONS:] turn differently — it is a choice, not an open question', () => {
+  it('does not trail the last message after the ask', () => {
+    // A card has no transcript row, so the message is whatever the agent said
+    // BEFORE asking — printed after "Needs your answer ·" it reads as the
+    // question itself.
     const slots: ChatSlot[] = [
-      { key: 'k-o', title: 'offered-options', running: false, messages: 3, needs_input: true, needs_input_reason: 'options' },
+      {
+        key: 'k-q', title: 'asked', running: false, messages: 3, needs_input: true,
+        last_message: 'Both policies fit the read pattern.',
+      },
     ]
     const { getByText, queryByText } = renderSidebar(slots)
-    expect(getByText('Waiting on your choice')).toBeTruthy()
+    expect(getByText('Needs your answer')).toBeTruthy()
+    expect(queryByText(/Both policies fit the read pattern/)).toBeNull()
+  })
+
+  it('leaves a plain [OPTIONS:] turn alone — the backend never flags one', () => {
+    // Pinned here as well as in the backend suite because this row is what the
+    // regression looked like: a constant label where the message should be.
+    const slots: ChatSlot[] = [
+      {
+        key: 'k-o', title: 'offered-options', running: false, messages: 3,
+        last_message: 'CI is green except the shelf button-count rule.',
+      },
+    ]
+    const { getByText, queryByText, getAllByTitle } = renderSidebar(slots, ['k-o'])
+    expect(getByText('CI is green except the shelf button-count rule.')).toBeTruthy()
     expect(queryByText('Needs your answer')).toBeNull()
+    // And it keeps the dot: it is an ordinary finished turn.
+    expect(getAllByTitle('Agent finished — your turn')).toHaveLength(1)
   })
 
   it('suppresses the blue "your turn" dot on that row', () => {
     // Two markers for one state read as two things to do; the label says more.
     const slots: ChatSlot[] = [
-      { key: 'k-q', title: 'asked', running: false, messages: 3, needs_input: true, needs_input_reason: 'question' },
+      { key: 'k-q', title: 'asked', running: false, messages: 3, needs_input: true },
       { key: 'k-turn', title: 'plain-finish', running: false, messages: 2 },
     ]
     const { getAllByTitle } = renderSidebar(slots, ['k-q', 'k-turn'])
@@ -139,16 +166,27 @@ describe('chat sidebar — the agent is waiting on your answer', () => {
     // A blocking ask_question parks the turn, so `running` stays true — a
     // "Thinking…" row would hide the only thing that can unblock it.
     const slots: ChatSlot[] = [
-      { key: 'k-q', title: 'blocked-on-you', running: true, messages: 3, needs_input: true, needs_input_reason: 'question' },
+      { key: 'k-q', title: 'blocked-on-you', running: true, messages: 3, needs_input: true },
     ]
     const { getByText, queryByText } = renderSidebar(slots)
     expect(getByText('Needs your answer')).toBeTruthy()
     expect(queryByText('Thinking…')).toBeNull()
   })
 
+  it('keeps showing live turn status on a running session that is not asking', () => {
+    // The ask branch outranks `running`, so anything that raises the flag on an
+    // ordinary turn takes the row's live status with it.
+    const slots: ChatSlot[] = [
+      { key: 'k-run', title: 'working', running: true, messages: 3, last_message: 'earlier reply' },
+    ]
+    const { getByText, queryByText } = renderSidebar(slots)
+    expect(getByText('Thinking…')).toBeTruthy()
+    expect(queryByText('Needs your answer')).toBeNull()
+  })
+
   it('keeps a pending tool approval ahead of it', () => {
     const slots: ChatSlot[] = [
-      { key: 'k-both', title: 'approval-and-question', running: false, messages: 4, pending_approval: true, needs_input: true, needs_input_reason: 'question' },
+      { key: 'k-both', title: 'approval-and-question', running: false, messages: 4, pending_approval: true, needs_input: true },
     ]
     const { getByText, queryByText } = renderSidebar(slots)
     expect(getByText('Needs approval')).toBeTruthy()

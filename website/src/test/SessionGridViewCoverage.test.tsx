@@ -66,7 +66,6 @@ type Slot = {
   running?: boolean
   pending_approval?: boolean
   needs_input?: boolean
-  needs_input_reason?: '' | 'question' | 'options'
   messages?: number
   agent?: string
   last_activity_ts?: string
@@ -401,7 +400,7 @@ describe('SessionGridView — picker list', () => {
     // their last activity says.
     seedApi([
       { key: 'run', title: 'Running one', running: true, last_activity_ts: '2026-08-02T00:00:00' },
-      { key: 'ask', title: 'Asking one', needs_input: true, needs_input_reason: 'options', last_activity_ts: '2026-07-01T00:00:00' },
+      { key: 'ask', title: 'Asking one', needs_input: true, last_activity_ts: '2026-07-01T00:00:00' },
       { key: 'appr', title: 'Approval one', pending_approval: true },
     ])
     renderGrid(null)
