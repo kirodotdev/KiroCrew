@@ -266,16 +266,34 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
     return "\n".join(ctx_parts) + "\n" if ctx_parts else ""
 
 
-def _turn_outcome(stop_reason: str | None) -> str:
+def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
     """Map an EVENT_COMPLETE stop_reason to a low-cardinality turn outcome.
 
     Single source of truth shared by the ``kirocrew.turn.duration`` emit in
     ``_run_chat`` and its unit test, so the mapping can't silently drift from
     what the test asserts (tests must exercise real production logic).
+
+    The two watchdog stop reasons are distinct outcomes, not ``error``: a
+    stall-recovery turn is re-driven in place (its budget/outcome is tracked
+    by ``kirocrew.watchdog.recovery.outcome``), so folding it into ``error``
+    would make the fault rate count every recovered stall as a fault AND hide
+    the stall population the watchdog work exists to measure. Checked BEFORE
+    the ``timeout`` substring so a stall never misclassifies.
+
+    ``exhausted`` marks a stall turn whose recovery budget is already spent
+    (the caller reads the slot budgets the stop-reason branches maintain):
+    the slot dies with "start a new chat", so the turn labels
+    ``stall_exhausted`` — a terminal fault to the aggregator — keeping the
+    recovered-stall exclusion from hiding dead sessions while ``fault_rate``
+    stays a single-series computation.
     """
     s = stop_reason or ""
     if s in ("", "end_turn", "stop", "completed"):
         return "ok"
+    if s == STOP_REASON_TOOL_STALL or s == STOP_REASON_STALE_RECOVER:
+        if exhausted:
+            return "stall_exhausted"
+        return "tool_stall" if s == STOP_REASON_TOOL_STALL else "stale_recover"
     if "timeout" in s:
         return "timeout"
     return "error"
@@ -287,6 +305,7 @@ def _emit_turn_metric(
     slot_key: str,
     *,
     elapsed_ms: int | float | None = None,
+    exhausted: bool = False,
 ) -> None:
     """Emit kirocrew.turn.duration (best-effort).
 
@@ -317,7 +336,7 @@ def _emit_turn_metric(
     value = duration_ms or elapsed_ms
     if not value:
         return
-    attrs: dict = {"outcome": _turn_outcome(stop_reason)}
+    attrs: dict = {"outcome": _turn_outcome(stop_reason, exhausted=exhausted)}
     try:
         source = infer_use_case(slot_key)
         if source:
@@ -328,6 +347,37 @@ def _emit_turn_metric(
         get_recorder().histogram("kirocrew.turn.duration", value, unit="ms", attrs=attrs)
     except Exception:
         logger.debug("turn metric emit failed", exc_info=True)
+
+
+def _emit_recovery_outcome(mechanism: str, outcome: str, attempts: int) -> None:
+    """Emit kirocrew.watchdog.recovery.outcome (best-effort).
+
+    One counter point per RESOLVED recovery cycle, derived from the per-slot
+    retry budgets the stop-reason branches already maintain
+    (``slot._stale_recovery_retries`` / ``slot._tool_stall_retries``):
+
+    - ``outcome=recovered`` — a synthetic recovery turn completed ``ok`` while
+      a budget was armed (emitted at the budget-reset block, which is the one
+      place a completed cycle and its attempt count coexist).
+    - ``outcome=exhausted`` — the budget hit its cap and the slot surfaced
+      "start a new chat" (emitted in the stall branches themselves).
+
+    ``attempt_bucket`` is the attempt count clamped to the budget cap (1-3) —
+    a closed enum per the metrics/schema.py cardinality rule, mirroring the
+    CLI's ``attempt_number_bucket`` precedent. Single source of truth shared
+    with its unit test so the mapping cannot silently drift.
+    """
+    try:
+        get_recorder().counter(
+            "kirocrew.watchdog.recovery.outcome",
+            attrs={
+                "mechanism": mechanism,
+                "outcome": outcome,
+                "attempt_bucket": max(1, min(int(attempts), 3)),
+            },
+        )
+    except Exception:
+        logger.debug("recovery outcome metric emit failed", exc_info=True)
 
 
 def _pre_tool_hooks_should_block(pre_hook_results: Any) -> bool:
@@ -2976,11 +3026,17 @@ async def _eager_spawn(
             # switches don't — the snapshot covers them all uniformly.
             _bound = (slot.agent, slot.model, slot.project, slot.reasoning_effort)
             kiro_agent: str | None = None
+            # Canonical crew identity for watchdog overrides. Seeded from the
+            # slot, replaced by the resolver's alias below: an EMPTY slot runs
+            # the DEFAULT crew (resolve_agent_bindings step 2), whose overrides
+            # would be discarded by passing "" here.
+            crew_alias = slot.agent or ""
             agent_model = ""
             try:
                 cfg = KiroCrewConfig.load()
                 bindings = resolve_agent_bindings(cfg, slot.agent or None)
                 kiro_agent = bindings.kiro_agent
+                crew_alias = bindings.resolved_alias
                 agent_model = normalize_agent_model(bindings.model)
             except Exception:
                 logger.warning(
@@ -2999,6 +3055,12 @@ async def _eager_spawn(
                 _, is_new, resumed = await sessions.get_or_create(
                     session_key,
                     agent=kiro_agent or slot.agent or None,
+                    # Canonical crew identity — the resolver's alias, which
+                    # covers the default crew on an empty slot; plumbed to the
+                    # session so per-agent watchdog windows never depend on a
+                    # cross-namespace name match. "" is authoritative: no
+                    # alias applied, so no override applies.
+                    crew_agent=crew_alias,
                     model=slot.model or agent_model or None,
                     cwd=slot.project or None,
                     speculative=True,
@@ -4015,6 +4077,11 @@ async def _run_chat(
         # guards (`is_claude_backend`, the advertised list) rather than trusting a
         # provider name that could not be read.
         provider_name = ""
+        # Canonical crew identity for watchdog overrides — same seeding rule
+        # as the eager-spawn path (the two must agree): slot value until the
+        # resolver supplies its alias, which covers the default crew on an
+        # empty slot.
+        crew_alias = slot.agent or ""
         try:
             cfg = KiroCrewConfig.load()
             provider_name = cfg.agent.provider
@@ -4025,6 +4092,7 @@ async def _run_chat(
             await warm_project_agent_names(slot.project)
             bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
             kiro_agent = bindings.kiro_agent
+            crew_alias = bindings.resolved_alias
             memory_store = bindings.memory_store_name
             agent_model = normalize_agent_model(bindings.model)
         except Exception:
@@ -4041,6 +4109,10 @@ async def _run_chat(
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
+            # Same canonical crew identity as the eager-spawn path — the two
+            # must agree or an eager session and its real first turn would
+            # carry different watchdog windows.
+            crew_agent=crew_alias,
             model=slot.model or agent_model or None,
             cwd=slot.project or None,
             reasoning_effort_override=slot.reasoning_effort or None,
@@ -6193,11 +6265,26 @@ async def _run_chat(
                 # elapsed_ms carries the wall clock computed above because acp
                 # leaves usage.duration_ms at 0 — without it this histogram is
                 # never emitted for the default backend.
+                # ``exhausted`` mirrors the stop-reason branches below: the
+                # recovery-outcome exclusion from fault_rate is earned only by
+                # a turn that is actually re-driven in place, so a stall takes
+                # the terminal stall_exhausted label when its 3-attempt budget
+                # is already spent ("Session stuck") OR when it is a NESTED
+                # turn (depth > 0), which the branches below never re-queue —
+                # it dies with "please retry", a user-visible fault that must
+                # reach fault_rate.
                 _emit_turn_metric(
                     event.usage.duration_ms,
                     event.stop_reason,
                     slot.key,
                     elapsed_ms=_turn_elapsed_ms,
+                    exhausted=(
+                        (_prompt_depth > 0 or slot._stale_recovery_retries >= 3)
+                        if event.stop_reason == STOP_REASON_STALE_RECOVER
+                        else (_prompt_depth > 0 or slot._tool_stall_retries >= 3)
+                        if event.stop_reason == STOP_REASON_TOOL_STALL
+                        else False
+                    ),
                 )
                 _stop_reason = event.stop_reason
                 # Recorded on the slot so post-turn consumers reached later
@@ -6257,6 +6344,18 @@ async def _run_chat(
                 )
                 _emit_stale("⟳ Recovering a stalled turn…")
             elif slot._stale_recovery_retries >= 3:
+                # Budget exhausted — terminal for this slot until a turn
+                # actually completes. The budget is deliberately NOT reset
+                # here: zeroing it would re-arm a fresh 3-attempt recovery
+                # cycle on the next stall of a permanently wedged slot
+                # (recover→exhaust looping forever). Telemetry dedup is the
+                # emitted flag's job instead: emit exhausted once per cycle,
+                # and the flag also blocks a later "recovered" mis-emit.
+                if not slot._stale_recovery_exhausted_emitted:
+                    _emit_recovery_outcome(
+                        "stale_recover", "exhausted", slot._stale_recovery_retries
+                    )
+                    slot._stale_recovery_exhausted_emitted = True
                 _emit_stale("Session stuck — please start a new chat.")
             else:
                 # depth>0 (nested turn) with budget remaining: reset the session
@@ -6303,6 +6402,15 @@ async def _run_chat(
                 )
                 _emit_stall("⟳ Tool appeared stalled — recovering…")
             elif slot._tool_stall_retries >= 3:
+                # Budget exhausted — mirrors the stale_recover branch above:
+                # budget left alone (a wedged slot must not re-enter a fresh
+                # recovery cycle); the emitted flag dedups the metric and
+                # blocks a later "recovered" mis-emit.
+                if not slot._tool_stall_exhausted_emitted:
+                    _emit_recovery_outcome(
+                        "tool_stall", "exhausted", slot._tool_stall_retries
+                    )
+                    slot._tool_stall_exhausted_emitted = True
                 _emit_stall("Session stuck — please start a new chat.")
             else:
                 _emit_stall("⟳ Tool appeared stalled — please retry.")
@@ -6609,11 +6717,33 @@ async def _run_chat(
             # every counter: an empty re-queue is NOT a successful turn, so it must
             # not reset the pipe-death/busy budgets (otherwise an empty interleaved
             # between transient failures would extend the intended 3-retry budget).
+            #
+            # A non-zero stall budget reaching this reset on an OK turn is a
+            # COMPLETED recovery cycle: the stall branches return early, so the
+            # only way here with an armed budget is the synthetic recovery turn
+            # finishing cleanly. Emit outcome=recovered with the attempt count
+            # read BEFORE the reset (the exhausted counterpart lives in the
+            # stall branches). Gated on the ok outcome so a user cancelling the
+            # recovery turn is never counted as a successful recovery.
+            if _turn_outcome(_stop_reason) == "ok":
+                # An armed budget whose cycle already emitted "exhausted" is
+                # not a recovery — the flag blocks the mis-emit (the budget is
+                # no longer zeroed at exhaustion, so it can reach here armed).
+                if slot._stale_recovery_retries > 0 and not slot._stale_recovery_exhausted_emitted:
+                    _emit_recovery_outcome(
+                        "stale_recover", "recovered", slot._stale_recovery_retries
+                    )
+                if slot._tool_stall_retries > 0 and not slot._tool_stall_exhausted_emitted:
+                    _emit_recovery_outcome(
+                        "tool_stall", "recovered", slot._tool_stall_retries
+                    )
             slot._empty_response_retries = 0
             slot._prompt_busy_retries = 0
             slot._acp_pipe_death_retries = 0
             slot._stale_recovery_retries = 0
             slot._tool_stall_retries = 0
+            slot._stale_recovery_exhausted_emitted = False
+            slot._tool_stall_exhausted_emitted = False
             slot._transient_5xx_retries = 0
             # NOTE: the poisoned-conversation streak/one-shot
             # (_prestream_exhausted_cycles / _poisoned_reset_used) are NOT

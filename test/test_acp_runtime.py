@@ -1542,6 +1542,9 @@ async def test_tool_stall_cancels_session_not_runtime(monkeypatch):
             await asyncio.sleep(0.06)
             raise asyncio.TimeoutError
 
+        def qsize(self) -> int:
+            return 0  # always empty; TOCTOU guard sees no new frames
+
     handle._queue = _SilentQueue()  # type: ignore[assignment]
 
     events = []
@@ -1584,6 +1587,9 @@ async def test_tool_stall_recovery_completes_even_if_cancel_fails(monkeypatch):
         async def get(self):
             await asyncio.sleep(0.06)
             raise asyncio.TimeoutError
+
+        def qsize(self) -> int:
+            return 0  # always empty; TOCTOU guard sees no new frames
 
     handle._queue = _SilentQueue()  # type: ignore[assignment]
 

@@ -121,6 +121,12 @@ class WatchdogSettings:
     tool_stall_hard_cap_secs: float = 3600.0
     model_silent_probe_secs: float = 900.0
     wellness_sample_secs: float = 3.0
+    # Whether a per-agent watchdog_tool_stall_* override was applied to this
+    # snapshot. Telemetry-only (the kirocrew.watchdog.action attr): a BOOLEAN,
+    # never the agent name — free-form agent names are a cardinality bomb on
+    # OTel attrs (metrics/schema.py); per-agent joins happen via the always-on
+    # token row store instead.
+    agent_override: bool = False
 
 
 # Fraction of a turn's deadline that a watchdog idle window may occupy. A window
@@ -189,24 +195,49 @@ def _warn_if_above_chat_ceiling(key: str, value: float, chat_ceiling: float) -> 
         )
 
 
-def _load_watchdog_settings() -> WatchdogSettings:
+def _load_watchdog_settings(crew_agent: str = "") -> WatchdogSettings:
     """Snapshot ``watchdog.*`` from config. Function-level import (mirrors
     ``_sync_effort_levels``) avoids the config -> dashboard -> acp import
-    cycle; any failure falls back to defaults rather than breaking a handle."""
+    cycle; any failure falls back to defaults rather than breaking a handle.
+
+    ``crew_agent`` is the CANONICAL Kiro Crew agent name — a ``cfg.agents``
+    key resolved by the surface that owns the identity (the dashboard slot,
+    or a crew-name-passing surface like Slack/cron) and plumbed here through
+    provider -> runtime -> handle. Resolution is a direct dict lookup: no
+    cross-namespace matching happens here, so a bound kiro agent name (or any
+    non-crew name) simply inherits the globals. That crew's
+    ``watchdog_tool_stall_*`` overrides overlay the globals (> 0 means
+    override; 0 inherits — the same empty-inherits convention as the agent's
+    ``model``).
+    """
     try:
         # circular import: config.loader -> dashboard -> session -> acp
         from kiro_crew.config.loader import KiroCrewConfig
 
         cfg = KiroCrewConfig.load()
         w = cfg.watchdog
+        raw = {key: float(getattr(w, key)) for key in _TURN_BOUNDED_WINDOWS}
+        overridden = False
+        crew = cfg.agents.get(crew_agent) if crew_agent else None
+        if crew is not None:
+            if crew.watchdog_tool_stall_suspect_secs > 0:
+                raw["tool_stall_suspect_secs"] = float(crew.watchdog_tool_stall_suspect_secs)
+                overridden = True
+            if crew.watchdog_tool_stall_hard_cap_secs > 0:
+                raw["tool_stall_hard_cap_secs"] = float(crew.watchdog_tool_stall_hard_cap_secs)
+                overridden = True
+        # Overrides are applied BEFORE the ceiling pass so a per-agent window is
+        # bounded exactly like a global one — an over-ceiling override is clamped
+        # with the same warning instead of smuggling past the prompt timeout.
         chat_ceiling = float(cfg.agent.chat_turn_timeout_secs)
         bounded = {}
         for key in _TURN_BOUNDED_WINDOWS:
-            value = _clamp_to_prompt_ceiling(key, float(getattr(w, key)), chat_ceiling)
+            value = _clamp_to_prompt_ceiling(key, raw[key], chat_ceiling)
             _warn_if_above_chat_ceiling(key, value, chat_ceiling)
             bounded[key] = value
         return WatchdogSettings(
             wellness_sample_secs=float(w.wellness_sample_secs),
+            agent_override=overridden,
             **bounded,
         )
     except Exception:
@@ -232,6 +263,31 @@ _WORKING_WARN_DEADLINE_FRACTION = 0.25
 # the interval above, 0.0 reads as "logged moments ago" and swallows the very
 # first deferral line — exactly the evidence a freshly restarted gateway needs.
 _WORKING_NEVER_LOGGED = float("-inf")
+
+
+def _watchdog_evidence_class(evidence: str) -> str:
+    """Bucket a free-form oracle evidence string into a closed enum.
+
+    OTel attribute values MUST be low-cardinality (metrics/schema.py): the raw
+    evidence carries pids, byte deltas, and command fragments, so only its
+    SHAPE is emitted. Buckets: ``established_flat`` (LLM-shaped — runtime-held
+    backend socket, flat subtree), ``mcp_flat`` (opaque MCP tool, moving or
+    flat), ``shell`` (shell-child evidence), ``wait`` (the declared-duration
+    wait tool), ``degraded`` (everything else: sampling baseline, unreadable
+    /proc, no pid, oracle error — the oracle could not attest either way).
+    """
+    e = evidence or ""
+    if e.startswith(EVIDENCE_ESTABLISHED_FLAT):
+        return "established_flat"
+    if "mcp subtree" in e:
+        return "mcp_flat"
+    if "shell child" in e:
+        return "shell"
+    if e.startswith("wait tool"):
+        return "wait"
+    return "degraded"
+
+
 # Unresponsive-cancel budget: after cancel() is sent, if kiro-cli does not
 # ack (via a cancelled stopReason on the prompt response) within this window,
 # the dispatch loop unblocks the caller with a terminal EVENT_COMPLETE. The
@@ -336,6 +392,7 @@ class AcpSessionHandle:
         queue: asyncio.Queue[JsonRpcMessage | None],
         runtime: AcpRuntimeProtocol,
         watchdog: WatchdogSettings | None = None,
+        crew_agent: str = "",
     ) -> None:
         self._session_id = session_id
         self._queue = queue
@@ -346,7 +403,17 @@ class AcpSessionHandle:
         # Watchdog windows are snapshotted here (construction time) so the
         # dispatch loop never reads config; the liveness oracle carries the
         # per-session evidence state (tracked child, counter samples).
-        self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings()
+        # ``crew_agent`` is the CANONICAL crew identity resolved by the surface
+        # that owns it and plumbed down (see _load_watchdog_settings): it keys
+        # the per-agent watchdog_tool_stall_* overrides by direct config lookup.
+        # It must NEVER become an OTel metric attribute (free-form =>
+        # cardinality bomb; see metrics/schema.py) — telemetry carries the
+        # agent_override BOOLEAN. An explicit ``watchdog`` always wins
+        # verbatim: the async creation paths (runtime.create_session /
+        # load_session) resolve it off-loop and hand it in, so the synchronous
+        # load below is only the fallback for direct constructions (tests).
+        self._crew_agent = crew_agent
+        self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings(crew_agent)
         self._oracle = LivenessOracle(sample_min_secs=self._watchdog.wellness_sample_secs)
         # Keep the executor future, not an await-scoped flag: wait_for can time
         # out while the underlying thread continues its /proc walk. A pending
@@ -380,6 +447,16 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._last_stop_reason = ""
+        # Monotonically increasing count of NOTIFICATION frames delivered to this
+        # session by the shared queue. Incremented in _wait_for_response whenever
+        # it consumes a notification (not a response) from the queue while
+        # buffering for a concurrent command call. The TOCTOU guard in
+        # _dispatch_events snapshots this before the oracle await and compares
+        # after: an advance means a real activity frame arrived while the oracle
+        # was executing (even if _wait_for_response had consumed it from the
+        # queue in the meantime). Pure queue-depth checks cannot see frames that
+        # are temporarily held in a concurrent consumer's buffer list.
+        self._ingress_seq: int = 0
         # Consumer-park accounting, read by the idle clocks in _dispatch_events
         # and by external observers via parked_for_secs(). `_parked_total` is
         # cumulative for the turn; `_parked_since` is set only while suspended at
@@ -1145,6 +1222,31 @@ class AcpSessionHandle:
                     ]
         return []
 
+    def rebind_watchdog(
+        self, crew_agent: str, settings: WatchdogSettings | None = None
+    ) -> None:
+        """Re-snapshot the watchdog windows for a new canonical crew identity.
+
+        Called on warm-pool rekey: the pooled runtime was spawned before any
+        crew claimed it, so the construction-time snapshot cannot know the
+        claiming crew's ``watchdog_tool_stall_*`` overrides — the identity
+        travels with the SESSION, not the pool key. The dispatch loop reads
+        ``self._watchdog`` on every tick, so the swap takes effect at the next
+        watchdog check; an empty ``crew_agent`` (a claim with no crew) rebinds
+        to the globals so a recycled runtime never carries a previous crew's
+        windows. The oracle keeps its per-session evidence state — only its
+        sampling floor follows the new snapshot.
+
+        ``settings`` is the pre-resolved snapshot: an ASYNC caller (the
+        warm-pool claim) resolves it off-loop and hands it in, making the
+        no-event-loop-I/O property an explicit data dependency rather than a
+        cache-timing contract; None loads synchronously (config-cache hit in
+        practice) for callers without an off-loop path.
+        """
+        self._crew_agent = crew_agent
+        self._watchdog = settings if settings is not None else _load_watchdog_settings(crew_agent)
+        self._oracle._sample_min_secs = self._watchdog.wellness_sample_secs
+
     def store_session_config(self, resp: dict[str, Any]) -> None:
         """Extract configOptions and available models from session/new or session/load response.
 
@@ -1298,7 +1400,17 @@ class AcpSessionHandle:
                         # (terminal) from a capacity blip (retryable).
                         _raise_acp_error(msg.error, self._advertised_model_ids())
                     return msg
-                # Not our response — buffer (do not drop) for re-injection.
+                # Not our response — buffer (do not drop) for re-injection,
+                # and advance the ingress sequence for EVERY buffered frame:
+                # the TOCTOU guard in _dispatch_events snapshots it before the
+                # oracle await and compares after, so frames consumed by this
+                # concurrent waiter are still detected regardless of queue
+                # depth at the time of the check. Responses count too — a
+                # buffered response can be the prompt turn's own terminal
+                # frame, and skipping it let the watchdog cancel a turn whose
+                # completion was sitting in this buffer. A spurious bump only
+                # defers one watchdog tick, so over-counting is fail-safe.
+                self._ingress_seq += 1
                 buffered.append(msg)
             raise AcpTimeoutError(f"Timeout waiting for response to request {req_id}")
         finally:
@@ -1396,19 +1508,69 @@ class AcpSessionHandle:
                         _tool_idle = max(0.0, (now - last_data_ts) - _parked)
                         if _tool_idle <= wd.check_after_secs:
                             continue
+                        # F2 — TOCTOU guard: two complementary signals cover
+                        # the two delivery paths for a frame that arrives DURING
+                        # the oracle await (up to 10 s in an executor, event
+                        # loop yielded).
+                        #
+                        # Path A — no concurrent _wait_for_response: the frame
+                        # sits in _queue until the dispatch loop consumes it.
+                        # qsize() advances when the frame lands.
+                        #
+                        # Path B — concurrent _wait_for_response: it dequeues
+                        # the frame (qsize unchanged), buffers it, and re-
+                        # injects it later. _ingress_seq (incremented in
+                        # _wait_for_response for notification frames) advances.
+                        #
+                        # Combining both signals means an UNKNOWN-over-window
+                        # cancel cannot fire while real activity is in-flight on
+                        # either delivery path.
+                        _ingress_before = self._ingress_seq
+                        _q_depth_before = self._queue.qsize()
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=False)
+                        # TOCTOU recheck — activity on either path prevents the cancel.
+                        if (
+                            self._ingress_seq != _ingress_before
+                            or self._queue.qsize() > _q_depth_before
+                        ):
+                            last_data_ts = time.monotonic()
+                            continue
                         if verdict == VERDICT_WORKING:
                             self._log_working_deferral(_tool_idle, evidence, timeout)
                             continue
-                        # UNKNOWN acts at the suspect window; the hard cap governs
-                        # only the stale/model-wait branch below (it bounds the
-                        # extended UNKNOWN deferral windows there).
+                        # UNKNOWN acts at the suspect window. The suspect
+                        # default (1h) is BUILD-scale forbearance — an LLM-shaped
+                        # stall (flat subtree whose only live evidence is an
+                        # established backend socket: a model turn riding inside
+                        # a tool, e.g. kiro-cli use_subagent) narrows to the
+                        # model-silent budget, because its longest legitimate
+                        # silent gap is minutes, not hours. Keyed STRICTLY on
+                        # the oracle's established_flat evidence tag: plain
+                        # flat-subtree or shell-child evidence (a quiet build /
+                        # quiet MCP tool) keeps the full window.
+                        # F3 — hard cap: watchdog_tool_stall_hard_cap_secs is
+                        # the absolute ceiling for UNKNOWN forbearance. Apply
+                        # min(suspect_window, hard_cap) so the configured cap
+                        # always bounds the effective window. WORKING deferred
+                        # unconditionally above; DEAD/STUCK_INPUT act
+                        # immediately regardless of the window.
+                        # WORKING was already deferred above; the action below
+                        # is the existing non-lethal tool-stall recovery.
+                        _suspect = wd.tool_stall_suspect_secs
+                        _narrowed = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+                        if _narrowed:
+                            _suspect = min(wd.model_silent_probe_secs, _suspect)
+                        _suspect = min(_suspect, wd.tool_stall_hard_cap_secs)
                         _acting = (
                             verdict in (VERDICT_DEAD, VERDICT_STUCK_INPUT)
-                            or _tool_idle > wd.tool_stall_suspect_secs
+                            or _tool_idle > _suspect
                         )
                         if not _acting:
                             continue  # UNKNOWN, within budget — keep waiting
+                        self._emit_watchdog_metric(
+                            "cancel", verdict, evidence, _tool_idle,
+                            window="narrowed" if _narrowed else "standard",
+                        )
                         async for ev in self._end_stalled_tool(verdict, evidence, _tool_idle):
                             yield ev
                         return
@@ -1427,10 +1589,41 @@ class AcpSessionHandle:
                         )
                         if _stale_idle <= wd.check_after_secs:
                             continue
+                        # TOCTOU guard — the tool branch's two frame-path
+                        # signals PLUS the runtime activity clock, because this
+                        # branch's idle measurement (unlike the tool clock)
+                        # folds in _last_activity: snapshot all three before
+                        # the oracle await (up to 10 s, event loop yielded) and
+                        # recheck after. Path A: a frame stays in _queue →
+                        # qsize grows. Path B: _wait_for_response buffers it →
+                        # _ingress_seq advances. Either advance means a live
+                        # activity frame arrived during the oracle; reset the
+                        # stale clock and continue rather than probing a live
+                        # turn on a stale idle measurement.
+                        _stale_ingress_before = self._ingress_seq
+                        _stale_q_before = self._queue.qsize()
+                        _stale_runtime_before = self._runtime._last_activity
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=True)
+                        if (
+                            self._ingress_seq != _stale_ingress_before
+                            or self._queue.qsize() > _stale_q_before
+                        ):
+                            last_data_ts = time.monotonic()
+                            continue
+                        # Path C: stderr/keepalive/stdin traffic advanced the
+                        # runtime clock without a session frame — activity that
+                        # would have deferred this probe had it landed one tick
+                        # earlier must defer it now too. last_data_ts is NOT
+                        # reset (it means "last session frame" and also feeds
+                        # the frames-only tool clock); the next iteration's
+                        # max(last_data_ts, _last_activity) re-derives the
+                        # stale clock from the newer runtime activity itself.
+                        if self._runtime._last_activity > _stale_runtime_before:
+                            continue
                         if verdict == VERDICT_WORKING:
                             self._log_working_deferral(_stale_idle, evidence, timeout)
                             continue
+                        _flat_wait = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
                         if verdict != VERDICT_DEAD:
                             # UNKNOWN: probe only past the window. An established-
                             # but-flat backend connection is probably a non-streamed
@@ -1439,7 +1632,7 @@ class AcpSessionHandle:
                             # cap bounds any UNKNOWN deferral absolutely.
                             window = (
                                 wd.model_silent_probe_secs
-                                if evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+                                if _flat_wait
                                 else wd.stale_window_secs
                             )
                             if _stale_idle <= min(window, wd.tool_stall_hard_cap_secs):
@@ -1450,6 +1643,18 @@ class AcpSessionHandle:
                         # turn-complete branch (auto-recovery, never "cancelled by
                         # user"), and an unacked cancel confirms the wedge via the
                         # unresponsive-cancel branch at the loop top.
+                        # ``window`` = "extended" when the established_flat
+                        # model-wait probe window (model_silent_probe_secs, 900s)
+                        # governed the decision instead of the ordinary stale
+                        # window (stale_window_secs, 300s). The established_flat
+                        # case is an EXTENSION for model-wait (silence of a
+                        # non-streamed think), not a narrowing as on the tool
+                        # branch — emitting "extended" lets dashboards distinguish
+                        # the two cases correctly.
+                        self._emit_watchdog_metric(
+                            "probe", verdict, evidence, _stale_idle,
+                            window="extended" if _flat_wait else "standard",
+                        )
                         logger.warning(
                             "Stale turn on session %s (idle %.0fs, verdict=%s: %s) — "
                             "probing via session/cancel",
@@ -1814,6 +2019,60 @@ class AcpSessionHandle:
             "Watchdog deferral on session %s: idle %.0fs but verdict WORKING (%s)",
             self._session_id, idle, evidence,
         )
+        # Telemetry rides the same rate limit as the log line: one deferral
+        # point per interval per session, so an hours-long WORKING build contributes a
+        # bounded handful of points instead of one per 5s dispatch tick.
+        self._emit_watchdog_metric("deferral", VERDICT_WORKING, evidence, idle)
+
+    def _emit_watchdog_metric(
+        self, action: str, verdict: str, evidence: str, idle: float, *,
+        window: str = "standard",
+    ) -> None:
+        """Emit kirocrew.watchdog.action + kirocrew.watchdog.idle.duration (best-effort).
+
+        One counter point + one histogram point per watchdog DECISION —
+        ``deferral`` (WORKING, rate-limited via _log_working_deferral),
+        ``probe`` (the non-lethal session/cancel stale probe), and ``cancel``
+        (tool-stall recovery via _end_stalled_tool). Attrs are all closed
+        enums (metrics/schema.py cardinality rule): the free-form evidence is
+        bucketed by :func:`_watchdog_evidence_class`; ``window`` is one of:
+        "standard" (default), "narrowed" (tool-branch established_flat reduces
+        the build-scale suspect window to the model-silent budget), or "extended"
+        (model-wait established_flat extends the 300s stale window to the
+        model-silent probe window for a non-streamed server-side think).
+        ``agent_override`` is the per-agent-override BOOLEAN from the settings
+        snapshot — deliberately NOT the agent name (per-agent joins happen via
+        the always-on token row store, not OTel attrs). Failures never reach
+        the dispatch loop.
+        """
+        try:
+            # circular import: importing get_recorder at module top would form
+            # config.loader -> ... -> acp.client -> metrics.provider ->
+            # config.loader (provider reads KiroCrewConfig). Keep it lazy so
+            # provider is never loaded during config.loader's import chain
+            # (mirrors AcpClient.ensure_ready's emit).
+            from kiro_crew.metrics.provider import get_recorder
+
+            attrs: dict[str, str | int | bool | float] = {
+                "action": action,
+                "verdict": verdict,
+                "evidence_class": _watchdog_evidence_class(evidence),
+                "window": window,
+                "agent_override": bool(self._watchdog.agent_override),
+            }
+            rec = get_recorder()
+            rec.counter("kirocrew.watchdog.action", attrs=attrs)
+            # ms, like every other kirocrew duration histogram: the dashboard's
+            # generic aggregation reports all histograms under *_ms keys, so a
+            # seconds-unit instrument would render 1000x off there.
+            rec.histogram(
+                "kirocrew.watchdog.idle.duration",
+                float(idle) * 1000.0,
+                unit="ms",
+                attrs={"action": action, "evidence_class": attrs["evidence_class"]},
+            )
+        except Exception:  # telemetry must never break the watchdog
+            logger.debug("watchdog metric emit failed", exc_info=True)
 
     async def _end_stalled_tool(
         self, verdict: str, evidence: str, idle: float
@@ -2173,6 +2432,7 @@ class AcpSessionHandle:
                     command=ev.tool_input,
                     dispatch_ts=time.monotonic(),
                     is_shell=ev.is_shell,
+                    tool_name=ev.tool_name,
                 )
                 self._retire_liveness_state()
             elif ev.kind == EVENT_TOOL_RESULT:

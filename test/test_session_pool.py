@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp.session_handle import WatchdogSettings
+
 
 @pytest.fixture(autouse=True)
 def _isolate_config_dir(tmp_path, monkeypatch):
@@ -338,9 +340,43 @@ class TestGetOrCreatePoolIntegration:
         )
 
         assert provider is pooled
-        pooled.client.rekey.assert_called_once_with("test-key", "ch-1")
+        # crew_agent="" — the caller supplied no canonical crew identity, and
+        # the claim must still rebind (a recycled runtime never carries a
+        # previous crew's watchdog windows). The watchdog snapshot is resolved
+        # off-loop by the claim site and handed in as data.
+        assert pooled.client.rekey.call_count == 1
+        args, kwargs = pooled.client.rekey.call_args
+        assert args == ("test-key", "ch-1")
+        assert kwargs["crew_agent"] == ""
+        assert isinstance(kwargs["watchdog"], WatchdogSettings)
         mgr._schedule_replenish.assert_called_once()
         factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_claim_forwards_canonical_crew_identity_to_rekey(self):
+        """The claiming session's crew_agent kwarg reaches rekey so the pooled
+        handle's watchdog windows rebind to the claiming crew — the identity
+        travels with the session, not the pool key."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        provider, _, _ = await mgr.get_or_create(
+            "test-key", agent="kirocrew", channel_id="ch-1", crew_agent="pr-reviewer"
+        )
+
+        assert provider is pooled
+        args, kwargs = pooled.client.rekey.call_args
+        assert args == ("test-key", "ch-1")
+        assert kwargs["crew_agent"] == "pr-reviewer"
+        assert isinstance(kwargs["watchdog"], WatchdogSettings)
 
     @pytest.mark.asyncio
     async def test_skips_pool_when_resume_sid_set(self):

@@ -21,7 +21,8 @@ class _CapturingRecorder:
         )
 
 
-def _run(duration_ms, stop_reason, slot_key="dashboard:abc123", elapsed_ms=None):
+def _run(duration_ms, stop_reason, slot_key="dashboard:abc123", elapsed_ms=None,
+         exhausted=False):
     """Invoke the production emit helper with a patched recorder; return it."""
     from kiro_crew.dashboard import chat_runner
 
@@ -29,7 +30,8 @@ def _run(duration_ms, stop_reason, slot_key="dashboard:abc123", elapsed_ms=None)
     # chat_runner imports get_recorder at module top-level → patch the consumer.
     with patch("kiro_crew.dashboard.chat_runner.get_recorder", return_value=rec):
         chat_runner._emit_turn_metric(
-            duration_ms, stop_reason, slot_key, elapsed_ms=elapsed_ms
+            duration_ms, stop_reason, slot_key, elapsed_ms=elapsed_ms,
+            exhausted=exhausted,
         )
     return rec
 
@@ -70,8 +72,39 @@ class TestTurnMetricOutcomeMapping:
     def test_error_prefix_is_error(self):
         assert _turn_call(_run(2000, "error: cancel unacked"))["attrs"]["outcome"] == "error"
 
-    def test_stale_recover_is_error(self):
-        assert _turn_call(_run(7000, "stale_recover"))["attrs"]["outcome"] == "error"
+    def test_stale_recover_is_distinct_outcome(self):
+        """Watchdog stall recoveries are their own outcome, not folded into
+        error — a recovered stall is re-driven in place, and counting it as a
+        generic fault would both inflate the fault rate and hide the stall
+        population the watchdog metrics exist to measure."""
+        assert _turn_call(_run(7000, "stale_recover"))["attrs"]["outcome"] == "stale_recover"
+
+    def test_tool_stall_is_distinct_outcome(self):
+        """STOP_REASON_TOOL_STALL starts with "error:" by design (branch-less
+        callers degrade to generic handling) — the outcome mapping must check
+        it BEFORE the error/timeout fallbacks."""
+        from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
+
+        assert (
+            _turn_call(_run(9000, STOP_REASON_TOOL_STALL))["attrs"]["outcome"] == "tool_stall"
+        )
+
+    def test_exhausted_stall_is_stall_exhausted(self):
+        """A stall turn arriving with its recovery budget already spent dies
+        with "start a new chat" — it must label stall_exhausted (a terminal
+        fault to the aggregator), not the excluded recovery outcomes."""
+        from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
+
+        c = _turn_call(_run(9000, STOP_REASON_TOOL_STALL, exhausted=True))
+        assert c["attrs"]["outcome"] == "stall_exhausted"
+        c = _turn_call(_run(7000, "stale_recover", exhausted=True))
+        assert c["attrs"]["outcome"] == "stall_exhausted"
+
+    def test_exhausted_flag_only_affects_stall_outcomes(self):
+        """The exhausted flag is a stall-budget signal; it must never relabel
+        an ordinary outcome."""
+        assert _turn_call(_run(1500, "end_turn", exhausted=True))["attrs"]["outcome"] == "ok"
+        assert _turn_call(_run(400, "cancelled", exhausted=True))["attrs"]["outcome"] == "error"
 
     def test_timeout_is_timeout(self):
         assert _turn_call(_run(120000, "timeout"))["attrs"]["outcome"] == "timeout"

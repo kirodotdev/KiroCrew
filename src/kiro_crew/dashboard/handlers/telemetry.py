@@ -69,6 +69,32 @@ _COST_WINDOW_DAYS = 7
 # two entries wide and needs no cap.
 _OTHER_SPLIT_ATTRS = frozenset({"warm"})
 
+# F4: only terminal-fault outcomes count toward fault_rate. The two watchdog
+# recovery outcomes ("tool_stall" and "stale_recover") are NOT faults: a
+# recovered stall is re-driven in place and tracked separately under
+# kirocrew.watchdog.recovery.outcome. Counting them as faults inflated the
+# fault rate and hid the true error population. Use an explicit allowlist so
+# future outcome labels added to _turn_outcome() must actively opt in — a
+# cross-module test (test_telemetry_handler) fails on any label that is
+# neither here nor explicitly excluded, so drift can't silently deflate
+# fault_rate.
+# "unknown" is included: it covers metric shards written before the explicit
+# outcome labels were introduced. Excluding it would silently move pre-change
+# fault counts into the denominator without increasing the numerator, biasing
+# fault_rate downward on the 14-day lookback window.
+# "stall_exhausted" is included: a stall turn arriving with its recovery
+# budget already spent dies with "start a new chat" — the emit site labels
+# it distinctly so the recovered-stall exclusion cannot hide dead sessions,
+# and fault_rate stays a single-series computation.
+# Every entry here must have a producer: either a _turn_outcome return label
+# or "unknown" (minted by this aggregator for attribute-less points) — the
+# cross-module test enforces that, so a dead entry (e.g. a "cancelled" label
+# nothing ever emitted — user cancels map to "error") cannot linger and
+# mislead readers about what fault_rate counts.
+_TERMINAL_FAULT_OUTCOMES = frozenset(
+    {"error", "timeout", "unknown", "stall_exhausted"}
+)
+
 # (shard-fingerprint, TTL) cache — shards are append-only, so a change to any
 # shard's (mtime, size) invalidates the cache exactly when needed (same pattern
 # as usage._parse_token_history).
@@ -516,7 +542,7 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
 
     turn_outcome = turn.outcomes
     turn_total = sum(turn_outcome.values())
-    turn_faults = sum(v for k, v in turn_outcome.items() if k != "ok")
+    turn_faults = sum(v for k, v in turn_outcome.items() if k in _TERMINAL_FAULT_OUTCOMES)
     turn_block = {
         # ``other_generations`` arrives via stats(): >0 means the window
         # straddles a bucket-boundary change and only the dominant generation

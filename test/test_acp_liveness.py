@@ -254,6 +254,110 @@ def test_mcp_tool_moving_counters_working(tmp_path):
     assert verdict == VERDICT_WORKING
 
 
+def test_mcp_tool_flat_with_runtime_backend_socket_is_tagged_established_flat(tmp_path):
+    """A genuinely flat tool subtree whose RUNTIME process holds an established
+    backend socket is the LLM-turn-inside-a-tool shape (e.g. use_subagent
+    wrapping a model turn) → UNKNOWN with the established_flat tag so the
+    caller narrows the window to the model-silent budget.
+
+    Requires positive tool-identity attribution: tool_name must be a known
+    model-wrapping tool (use_subagent) for the tag to apply."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, io_bytes=1000)
+    fake.add_socket_fd(100, 7, "31337")
+    fake.set_net_tcp(100, ["31337"])
+    oracle = _oracle(fake, clock, sample_min=1.0)
+    # tool_name="use_subagent" → positive model-wrapping attribution
+    tool = ToolCallState(title="use_subagent", command="{}", dispatch_ts=clock.t,
+                         tool_name="use_subagent")
+
+    verdict, evidence = oracle.check_tool(100, tool)
+    assert verdict == VERDICT_UNKNOWN  # baseline sample — never tagged
+    assert not evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+    clock.advance(2.0)
+    verdict, evidence = oracle.check_tool(100, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+
+
+def test_mcp_tool_flat_ordinary_tool_with_runtime_socket_not_tagged(tmp_path):
+    """F1 regression: a quiet ordinary MCP tool (no model-wrapping tool_name)
+    running while the runtime holds a persistent ESTABLISHED socket must NOT
+    receive the established_flat tag.
+
+    The runtime may hold a keepalive socket to the model service at all times;
+    the socket's presence alone is not proof that the *current tool* is waiting
+    on a model response. Without positive tool-identity attribution (tool_name
+    in _MODEL_WRAPPING_TOOLS) the oracle must fall back to plain mcp_subtree_flat
+    so the full 1h build-scale window governs, not the 15-min model-silent budget.
+    """
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, io_bytes=1000)
+    # Runtime holds a persistent backend socket (model-service keepalive)
+    fake.add_socket_fd(100, 7, "31337")
+    fake.set_net_tcp(100, ["31337"])
+    oracle = _oracle(fake, clock, sample_min=1.0)
+    # tool_name="" → no model-wrapping attribution; plain MCP call
+    tool = ToolCallState(title="ReadInternalWebsites", command="{}", dispatch_ts=clock.t,
+                         tool_name="")
+
+    oracle.check_tool(100, tool)  # baseline
+    clock.advance(2.0)
+    verdict, evidence = oracle.check_tool(100, tool)
+    assert verdict == VERDICT_UNKNOWN
+    # Must NOT be tagged established_flat for a non-model-wrapping tool
+    assert not evidence.startswith(EVIDENCE_ESTABLISHED_FLAT), (
+        "established_flat must not fire for a tool without model-wrapping attribution"
+    )
+    assert "mcp subtree flat" in evidence
+
+
+def test_mcp_tool_flat_without_runtime_socket_keeps_plain_evidence(tmp_path):
+    """A quiet MCP tool with no established socket on the runtime process keeps
+    the untagged flat evidence — the full build-scale tool windows apply. Also
+    covers the socket-on-a-DESCENDANT case: an MCP server blocked on its own
+    remote call must not read as an LLM wait."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, children=[300], io_bytes=1000)
+    fake.add_pid(300, cmdline="node mcp-server.js", io_bytes=2000)
+    fake.set_net_tcp(100, [])  # runtime itself: no established sockets
+    # The DESCENDANT holds an established socket (its own remote call) — this
+    # must NOT trigger the tag; only the runtime's own backend connection is
+    # LLM-wait evidence.
+    fake.add_socket_fd(300, 7, "555")
+    fake.set_net_tcp(300, ["555"])
+    oracle = _oracle(fake, clock, sample_min=1.0)
+    tool = ToolCallState(title="ReadInternalWebsites", command="{}", dispatch_ts=clock.t)
+
+    oracle.check_tool(100, tool)  # baseline
+    clock.advance(2.0)
+    verdict, evidence = oracle.check_tool(100, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert not evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+    assert "mcp subtree flat" in evidence
+
+
+def test_mcp_tool_baseline_sample_never_tagged(tmp_path):
+    """The first (baseline) tick reports "sampling" — no real flatness delta
+    exists yet, so the established_flat tag must not fire even with a live
+    backend socket on the runtime."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, io_bytes=1000)
+    fake.add_socket_fd(100, 7, "31337")
+    fake.set_net_tcp(100, ["31337"])
+    oracle = _oracle(fake, clock, sample_min=1.0)
+    tool = ToolCallState(title="use_subagent", command="{}", dispatch_ts=clock.t)
+
+    verdict, evidence = oracle.check_tool(100, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert "sampling" in evidence
+    assert not evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+
+
 def test_model_wait_bytes_flowing_working(tmp_path):
     clock = _Clock()
     fake = FakeProc(tmp_path / "proc")

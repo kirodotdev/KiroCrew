@@ -2649,7 +2649,45 @@ class SessionManager:
                 )
 
                 if isinstance(provider, AcpProvider):
-                    provider.client.rekey(key, channel_id)
+                    # The claiming session's canonical crew identity travels
+                    # with the claim: a kiro-shared client rebinds the handle's
+                    # per-agent watchdog windows; the AcpClient path accepts it
+                    # for parity. Pool claims are default-agent-only, so the
+                    # caller-supplied kwarg (the dashboard slot's resolved
+                    # alias) is the only possible source. The snapshot is
+                    # resolved OFF the loop and handed in as data — the load
+                    # is file reads + jsonschema validation on a config
+                    # change, and passing it explicitly (instead of a cache
+                    # pre-warm) means no future rekey caller can silently put
+                    # that I/O back on the event loop.
+                    # circular import: session -> acp.session_handle at module
+                    # scope would loop through acp.client -> session.
+                    from kiro_crew.acp.session_handle import _load_watchdog_settings
+                    from kiro_crew.config.loader import resolve_crew_identity
+
+                    _claim_kwarg = extra_factory_kwargs.get("crew_agent")
+
+                    def _resolve_claim_watchdog() -> tuple[str, object]:
+                        # Same identity rule as the provider factory (a claim
+                        # must match the cold start it replaces), on a FRESH
+                        # config so a crew added since factory build resolves.
+                        _cfg = KiroCrewConfig.load()
+                        _crew = resolve_crew_identity(
+                            _cfg,
+                            agent,
+                            None if _claim_kwarg is None else str(_claim_kwarg),
+                        )
+                        return _crew, _load_watchdog_settings(_crew)
+
+                    _claim_crew, _claim_wd = await asyncio.to_thread(
+                        _resolve_claim_watchdog
+                    )
+                    provider.client.rekey(
+                        key,
+                        channel_id,
+                        crew_agent=_claim_crew,
+                        watchdog=_claim_wd,
+                    )
                     # Switch model post-claim if caller requested non-default.
                     if model:
                         _pool_model = (

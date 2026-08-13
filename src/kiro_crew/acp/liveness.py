@@ -73,6 +73,25 @@ VERDICT_STUCK_INPUT = "stuck_input"
 # ordinary stale window.
 EVIDENCE_ESTABLISHED_FLAT = "established_flat"
 
+# Tool names that are known to wrap a model call (e.g. kiro-cli's use_subagent
+# which starts a sub-agent turn inside the current tool call). The
+# established_flat narrowing is ONLY applied when the in-flight tool's trusted
+# ``tool_name`` (from ``_meta.kiro.toolName``) is in this set. Without
+# positive attribution the socket may be a persistent keepalive for an
+# unrelated backend connection (e.g. model-service keep-alive) while an
+# ordinary quiet MCP tool is running — narrowing the build-scale suspect window to 15
+# minutes in that case would incorrectly penalise long-running ordinary tools.
+#
+# COUPLING: these are kiro-cli TOOL NAMES, matched verbatim against the ACP
+# tool-call frame. If kiro-cli renames use_subagent or ships another
+# model-wrapping tool, narrowing silently stops applying and those stalls
+# fall back to the build-scale window (fail-safe direction: too patient,
+# never a surprise cancel — but the fast-detection this list exists for is
+# lost). No handshake advertises the model-wrapping property today, so a
+# name list is the only attribution available; update it alongside any
+# kiro-cli subagent-tool surface change.
+_MODEL_WRAPPING_TOOLS: frozenset[str] = frozenset({"use_subagent"})
+
 # ── Tunables (contract constants, not config — config governs the caller) ──
 
 # A tracked shell child that exited gets this long for its tool result frame to
@@ -332,6 +351,11 @@ class ToolCallState:
     command: str = ""  # redacted cached tool input
     dispatch_ts: float = 0.0  # time.monotonic() at EVENT_TOOL_CALL
     is_shell: bool = False
+    # Trusted tool name from ``_meta.kiro.toolName`` (empty when the backend
+    # does not emit ``_meta``; fail-closed). Required for established_flat
+    # attribution: the narrowing applies ONLY when this matches a known
+    # model-wrapping tool (see ``_MODEL_WRAPPING_TOOLS``).
+    tool_name: str = ""
 
 
 class LivenessOracle:
@@ -439,6 +463,42 @@ class LivenessOracle:
         moved, evidence = self._tree_movement(runtime_pid)
         if moved:
             return VERDICT_WORKING, f"mcp subtree active ({evidence})"
+        # LLM-turn shape inside a tool (e.g. a use_subagent call wrapping a
+        # model turn in kiro-cli): the subtree is GENUINELY flat (a real
+        # two-sample delta, not the baseline tick or unreadable counters) and
+        # the RUNTIME PROCESS ITSELF holds an established backend socket. Tag
+        # it — same tag as the model-wait branch — so the caller narrows the
+        # UNKNOWN window to the model-silent budget instead of the build-scale
+        # forbearance. Verdict stays UNKNOWN: the tag is evidence, never an
+        # action. Deliberately NARROWER than the model-wait branch's full-tree
+        # ``_any_established``: here the descendants include the tool's own
+        # workers, and an MCP server blocked on ITS remote socket (a long
+        # remote call, zero CPU/IO while in recv) must keep the full tool
+        # windows — only kiro-cli's own backend connection is LLM-wait
+        # evidence. Shell-child evidence never reaches this branch (it returns
+        # from _check_shell_child above), and a flat subtree without the
+        # runtime-held socket keeps the plain evidence. Under the OS sandbox
+        # (pid = launcher parent) the runtime holds no sockets, so this fails
+        # toward the old full-window behavior, never toward over-narrowing.
+        #
+        # F1 attribution guard: only apply established_flat narrowing when the
+        # in-flight tool is a KNOWN model-wrapping operation (tool.tool_name in
+        # _MODEL_WRAPPING_TOOLS). A persistent keepalive socket to the model
+        # service can exist independently of the current MCP tool: tagging a
+        # quiet ReadInternalWebsites with established_flat would incorrectly
+        # narrow its build-scale window to 15 minutes. Without positive tool-identity
+        # attribution (empty tool_name or an unknown tool), fall back to the
+        # plain mcp_subtree_flat evidence so the full build-scale window holds.
+        if (
+            evidence not in ("sampling", "no readable counters")
+            and tool.tool_name in _MODEL_WRAPPING_TOOLS
+        ):
+            held = socket_inodes(self._proc, runtime_pid)
+            if held and held & established_inodes(self._proc, runtime_pid):
+                return (
+                    VERDICT_UNKNOWN,
+                    f"{EVIDENCE_ESTABLISHED_FLAT}: mcp subtree flat ({evidence})",
+                )
         return VERDICT_UNKNOWN, f"mcp subtree flat ({evidence})"
 
     def _check_shell_child(self, runtime_pid: int, tool: ToolCallState) -> tuple[str, str]:

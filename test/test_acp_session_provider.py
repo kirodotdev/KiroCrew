@@ -8,6 +8,7 @@ import pytest
 
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.acp.runtime import AcpRuntimeDead
+from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import AcpEvent, AcpPromptStats
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
@@ -669,6 +670,25 @@ class TestAcpSessionProviderRound4Parity:
         assert provider._session_key == "dashboard:slot9"
         assert provider._channel_id == "chan-7"
         assert runtime._last_activity > 0.0
+
+    def test_rekey_rebinds_watchdog_to_claiming_crew(self):
+        """The claiming session's canonical crew identity travels with the
+        claim: rekey rebinds the live handle's watchdog snapshot AND updates
+        the runtime default so later sessions (new_conversation) inherit the
+        claimed crew, not the pool's spawn state."""
+        handle = _make_handle()
+        runtime = _make_runtime()
+        provider = AcpSessionProvider(handle, runtime)
+        wd = WatchdogSettings(tool_stall_suspect_secs=123.0)
+        provider.rekey("dashboard:slot9", "chan-7", crew_agent="pr-reviewer", watchdog=wd)
+        handle.rebind_watchdog.assert_called_once_with("pr-reviewer", settings=wd)
+        assert runtime._crew_agent == "pr-reviewer"
+        # An identity-less claim still rebinds (to the globals): a recycled
+        # runtime must not carry a previous crew's windows. Without a
+        # pre-resolved snapshot the rebind loads synchronously (settings=None).
+        provider.rekey("dashboard:slot3", None)
+        handle.rebind_watchdog.assert_called_with("", settings=None)
+        assert runtime._crew_agent == ""
 
     def test_rekey_resets_context_state(self):
         """#2932 -- the handoff must drop the previous session's context state

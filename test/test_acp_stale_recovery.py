@@ -303,6 +303,37 @@ class _SilentQueue:
         await asyncio.sleep(self._tick)
         raise asyncio.TimeoutError
 
+    def qsize(self) -> int:
+        """Always empty — no frames accumulate in the silent queue."""
+        return 0
+
+
+class _SilentQueueWithBacklog:
+    """Queue that times out when empty but delivers items added via put_nowait.
+
+    Used for TOCTOU Path A tests: a frame put_nowait()-ed DURING the oracle
+    await stays in the backlog. qsize() reflects the actual count, so the
+    TOCTOU guard's queue-depth check fires correctly. Once items are present
+    they are delivered immediately on the next get(), so the loop consumes
+    them and updates last_data_ts normally.
+    """
+
+    def __init__(self, tick: float = 0.02) -> None:
+        self._tick = tick
+        self._items: list = []
+
+    async def get(self):
+        if self._items:
+            return self._items.pop(0)
+        await asyncio.sleep(self._tick)
+        raise asyncio.TimeoutError
+
+    def put_nowait(self, item) -> None:
+        self._items.append(item)
+
+    def qsize(self) -> int:
+        return len(self._items)
+
 
 @pytest.mark.asyncio
 async def test_working_verdict_never_probed_at_any_idle():
@@ -422,6 +453,250 @@ async def test_unknown_tool_verdict_waits_for_suspect_window():
     events = await _drain(handle, req_id=1, timeout=5.0)
     handle._runtime.send_notification.assert_awaited()
     assert events[-1].stop_reason == STOP_REASON_TOOL_STALL
+
+
+@pytest.mark.asyncio
+async def test_established_flat_tool_verdict_narrows_to_model_silent_window():
+    """UNKNOWN tool evidence tagged established_flat (flat subtree, backend
+    socket on the runtime itself — an LLM turn riding inside a tool, e.g.
+    kiro-cli use_subagent) uses min(model_silent_probe_secs,
+    tool_stall_suspect_secs) as the effective suspect window instead of the
+    build-scale forbearance."""
+    from kiro_crew.acp.liveness import ToolCallState
+
+    # Build-scale suspect window (999s) but a tight model-silent budget: only
+    # the narrowed window can trigger the cancel inside this test's runtime.
+    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=999.0,
+                          tool_stall_hard_cap_secs=999.0, model_silent_probe_secs=0.05)
+    handle = _make_handle(watchdog=wd)
+    handle._stale_eligible = False
+    handle._tool_dispatched = True
+    handle._inflight_tool = ToolCallState(title="use_subagent", command="{}", is_shell=False)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_tool = lambda pid, tool: (
+        "unknown", "established_flat: mcp subtree flat (io +0B cpu +0t)"
+    )
+
+    events = await _drain(handle, req_id=1, timeout=5.0)
+
+    handle._runtime.send_notification.assert_awaited()
+    assert handle._runtime.send_notification.await_args.args[0] == "session/cancel"
+    assert events[-1].stop_reason == STOP_REASON_TOOL_STALL
+
+
+@pytest.mark.asyncio
+async def test_plain_flat_tool_verdict_keeps_full_suspect_window():
+    """UNKNOWN tool evidence WITHOUT the established_flat tag (a quiet MCP
+    tool / build) keeps the full tool_stall_suspect_secs — the narrowed
+    model-silent window must never leak onto build-shaped stalls."""
+    from kiro_crew.acp.liveness import ToolCallState
+
+    # Tight model-silent budget, build-scale suspect window: if the narrowing
+    # incorrectly applied here, the cancel would fire within this test.
+    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=999.0,
+                          tool_stall_hard_cap_secs=999.0, model_silent_probe_secs=0.05)
+    handle = _make_handle(watchdog=wd)
+    handle._stale_eligible = False
+    handle._tool_dispatched = True
+    handle._inflight_tool = ToolCallState(title="mystery", command="", is_shell=False)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_tool = lambda pid, tool: (
+        "unknown", "mcp subtree flat (io +0B cpu +0t)"
+    )
+
+    events = await _drain(handle, req_id=1, timeout=0.3)
+
+    handle._runtime.send_notification.assert_not_awaited()
+    assert all(ev.stop_reason != STOP_REASON_TOOL_STALL for ev in events)
+
+
+@pytest.mark.asyncio
+async def test_narrowed_tool_window_never_exceeds_suspect_window():
+    """min() semantics: when the per-agent suspect window is ALREADY tighter
+    than model_silent_probe_secs, the tighter one governs an established_flat
+    tool stall (an override can only ever narrow, never extend)."""
+    from kiro_crew.acp.liveness import ToolCallState
+
+    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.05,
+                          tool_stall_hard_cap_secs=999.0, model_silent_probe_secs=999.0)
+    handle = _make_handle(watchdog=wd)
+    handle._stale_eligible = False
+    handle._tool_dispatched = True
+    handle._inflight_tool = ToolCallState(title="use_subagent", command="{}", is_shell=False)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_tool = lambda pid, tool: (
+        "unknown", "established_flat: mcp subtree flat (io +0B cpu +0t)"
+    )
+
+    events = await _drain(handle, req_id=1, timeout=5.0)
+
+    assert events[-1].stop_reason == STOP_REASON_TOOL_STALL
+
+
+@pytest.mark.asyncio
+async def test_working_verdict_still_never_acted_on_with_established_flat_windows():
+    """Invariant: the narrowed window governs only UNKNOWN — a WORKING tool
+    verdict is never cancelled regardless of the model-silent budget."""
+    from kiro_crew.acp.liveness import ToolCallState
+
+    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=0.05,
+                          tool_stall_hard_cap_secs=0.05, model_silent_probe_secs=0.05)
+    handle = _make_handle(watchdog=wd)
+    handle._stale_eligible = False
+    handle._tool_dispatched = True
+    handle._inflight_tool = ToolCallState(title="use_subagent", command="{}", is_shell=False)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_tool = lambda pid, tool: ("working", "backend bytes flowing")
+
+    events = await _drain(handle, req_id=1, timeout=0.3)
+
+    handle._runtime.send_notification.assert_not_awaited()
+    assert all(ev.stop_reason != STOP_REASON_TOOL_STALL for ev in events)
+
+
+# ── Per-agent watchdog-window overrides (WatchdogSettings snapshot) ──────────
+
+
+def _cfg_with_agent_overrides(monkeypatch, agents: dict) -> None:
+    """Patch KiroCrewConfig.load() with a real default config carrying *agents*."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.agents = agents
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+
+def test_per_agent_override_narrows_watchdog_snapshot(monkeypatch):
+    """A crew declaring watchdog_tool_stall_* overrides gets them in the
+    WatchdogSettings snapshot; the untouched windows keep global values."""
+    from kiro_crew.acp.session_handle import _load_watchdog_settings
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    _cfg_with_agent_overrides(monkeypatch, {
+        "pr-reviewer": KiroCrewAgentConfig(
+            kiro_agent="pr-reviewer-kiro",
+            watchdog_tool_stall_suspect_secs=900.0,
+            watchdog_tool_stall_hard_cap_secs=1800.0,
+        ),
+    })
+
+    wd = _load_watchdog_settings("pr-reviewer")
+    assert wd.tool_stall_suspect_secs == 900.0
+    assert wd.tool_stall_hard_cap_secs == 1800.0
+    # Non-overridden windows inherit the globals untouched.
+    assert wd.model_silent_probe_secs == 900.0
+    assert wd.stale_window_secs == 300.0
+
+
+def test_per_agent_override_zero_inherits_global(monkeypatch):
+    """0 (the default) inherits the global window — the same empty-inherits
+    convention as the agent's model field."""
+    from kiro_crew.acp.session_handle import _load_watchdog_settings
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    _cfg_with_agent_overrides(monkeypatch, {
+        "builder": KiroCrewAgentConfig(kiro_agent="builder-kiro"),
+    })
+
+    wd = _load_watchdog_settings("builder")
+    assert wd.tool_stall_suspect_secs == 3600.0
+    assert wd.tool_stall_hard_cap_secs == 3600.0
+
+
+def test_kiro_binding_name_is_not_resolved(monkeypatch):
+    """Resolution is a direct lookup on the CANONICAL crew name only. A bound
+    kiro agent name is a different namespace: it inherits the globals rather
+    than being reverse-matched to the crew that binds it — the surface that
+    owns the identity passes the crew name (see the chat_runner call sites),
+    so no cross-namespace guessing happens here."""
+    from kiro_crew.acp.session_handle import _load_watchdog_settings
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    _cfg_with_agent_overrides(monkeypatch, {
+        "pr-reviewer": KiroCrewAgentConfig(
+            kiro_agent="pr-reviewer-kiro",
+            watchdog_tool_stall_suspect_secs=600.0,
+        ),
+    })
+
+    assert _load_watchdog_settings("pr-reviewer-kiro").tool_stall_suspect_secs == 3600.0
+
+
+def test_shared_binding_cannot_collide_canonical_names(monkeypatch):
+    """Two crews binding the same kiro agent were a collision under the old
+    cross-namespace match; canonical resolution keys each crew's overrides to
+    its own name, so both apply independently."""
+    from kiro_crew.acp.session_handle import _load_watchdog_settings
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    _cfg_with_agent_overrides(monkeypatch, {
+        "a": KiroCrewAgentConfig(kiro_agent="shared", watchdog_tool_stall_suspect_secs=60.0),
+        "b": KiroCrewAgentConfig(kiro_agent="shared", watchdog_tool_stall_suspect_secs=120.0),
+    })
+
+    assert _load_watchdog_settings("a").tool_stall_suspect_secs == 60.0
+    assert _load_watchdog_settings("b").tool_stall_suspect_secs == 120.0
+
+
+def test_handle_snapshots_crew_agent_overrides(monkeypatch):
+    """The handle keys its construction-time watchdog snapshot on crew_agent
+    (the canonical identity); a construction without it snapshots the
+    globals."""
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    _cfg_with_agent_overrides(monkeypatch, {
+        "pr-reviewer": KiroCrewAgentConfig(
+            kiro_agent="pr-reviewer-kiro",
+            watchdog_tool_stall_suspect_secs=450.0,
+        ),
+    })
+
+    rt = MagicMock()
+    rt.pid = None
+    handle = AcpSessionHandle("s1", asyncio.Queue(), rt, crew_agent="pr-reviewer")
+    assert handle._watchdog.tool_stall_suspect_secs == 450.0
+    assert handle._watchdog.agent_override is True
+    bare = AcpSessionHandle("s2", asyncio.Queue(), rt)
+    assert bare._watchdog.tool_stall_suspect_secs == 3600.0
+    assert bare._watchdog.agent_override is False
+
+
+def test_rebind_watchdog_follows_warm_pool_rekey(monkeypatch):
+    """rebind_watchdog() re-snapshots for the claiming crew (identity travels
+    with the session, not the pool key), and an empty rebind drops a previous
+    crew's windows back to the globals."""
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+
+    _cfg_with_agent_overrides(monkeypatch, {
+        "claimer": KiroCrewAgentConfig(
+            kiro_agent="shared", watchdog_tool_stall_suspect_secs=300.0
+        ),
+    })
+
+    rt = MagicMock()
+    rt.pid = None
+    handle = AcpSessionHandle("s1", asyncio.Queue(), rt)  # pool spawn: no crew
+    assert handle._watchdog.tool_stall_suspect_secs == 3600.0
+
+    handle.rebind_watchdog("claimer")
+    assert handle._crew_agent == "claimer"
+    assert handle._watchdog.tool_stall_suspect_secs == 300.0
+    assert handle._watchdog.agent_override is True
+
+    handle.rebind_watchdog("")
+    assert handle._watchdog.tool_stall_suspect_secs == 3600.0
+    assert handle._watchdog.agent_override is False
+
+
+def test_unknown_agent_inherits_global(monkeypatch):
+    """An agent with no config entry (or no agent name at all) snapshots the
+    plain global windows."""
+    from kiro_crew.acp.session_handle import _load_watchdog_settings
+
+    _cfg_with_agent_overrides(monkeypatch, {})
+
+    assert _load_watchdog_settings("nope").tool_stall_suspect_secs == 3600.0
+    assert _load_watchdog_settings("").tool_stall_suspect_secs == 3600.0
 
 
 @pytest.mark.asyncio
@@ -553,6 +828,291 @@ def test_extract_log_redirect_target():
     assert extract_log_redirect_target("cmd > /dev/null 2>&1") == ""
     assert extract_log_redirect_target("plain command") == ""
 
+
+# ── F2: TOCTOU race — progress frame during oracle must prevent cancel ────────
+
+
+@pytest.mark.asyncio
+def _make_one_shot_oracle(dead_evidence: str):
+    """Factory for a one-shot oracle mock. The FIRST call blocks until
+    released and returns a DEAD verdict (so the cancel branch IS reached
+    without the TOCTOU guard). Subsequent calls return WORKING (simulating
+    the oracle observing the activity that arrived during the first wait).
+
+    This models real behavior: if a session is alive (frame arrived during
+    the oracle), the oracle detects activity on the NEXT check and returns
+    WORKING — the TOCTOU guard is only needed to bridge the window between
+    the stale snapshot and the real activity observation.
+
+    Mutation check: removing the TOCTOU guard leaves the first DEAD verdict
+    unintercepted → session/cancel is sent. With the guard the first call is
+    skipped, last_data_ts is reset, and the second call returns WORKING →
+    no cancel.
+    """
+    oracle_entered = asyncio.Event()
+    oracle_release = asyncio.Event()
+    call_count = 0
+
+    async def oracle(*, model_wait: bool) -> tuple[str, str]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            oracle_entered.set()
+            await oracle_release.wait()
+            return ("dead", dead_evidence)
+        return ("working", "activity observed")
+
+    return oracle, oracle_entered, oracle_release
+
+
+@pytest.mark.asyncio
+async def test_wait_for_response_counts_buffered_responses_in_ingress_seq():
+    """EVERY frame buffered by a concurrent _wait_for_response advances
+    _ingress_seq — responses included, not just notifications. A buffered
+    response can be the prompt turn's own terminal frame; when only
+    notifications counted, the TOCTOU guard could not see it and the watchdog
+    could cancel a turn whose completion sat in the buffer."""
+    handle = _make_handle()
+    seq_before = handle._ingress_seq
+    # A non-matching RESPONSE (method=None) arrives before the awaited one.
+    handle._queue.put_nowait(JsonRpcMessage(id=42, result={"stopReason": "end_turn"}))
+    handle._queue.put_nowait(JsonRpcMessage(id=7, result={}))
+
+    msg = await handle._wait_for_response(7, timeout=5.0)
+
+    assert msg.id == 7
+    assert handle._ingress_seq == seq_before + 1  # the buffered response counted
+    # The buffered frame is re-injected, not dropped.
+    assert handle._queue.get_nowait().id == 42
+
+
+@pytest.mark.asyncio
+async def test_toctou_path_b_ingress_seq_prevents_cancel():
+    """F2 Path B: concurrent _wait_for_response consumed the progress frame.
+
+    The frame is NOT in the queue when the oracle returns — it is in
+    _wait_for_response's buffer list. qsize() is still 0, but _ingress_seq
+    was incremented when _wait_for_response buffered the notification.
+    The TOCTOU guard detects _ingress_seq advanced and skips the cancel.
+
+    The oracle returns DEAD on its first call so the cancel branch IS
+    reached when the guard is absent. Subsequent calls return WORKING.
+    Mutation check: removing the _ingress_seq arm lets the first DEAD
+    verdict reach _end_stalled_tool → session/cancel.
+    """
+    evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
+    oracle, oracle_entered, oracle_release = _make_one_shot_oracle(evidence)
+
+    wd = WatchdogSettings(check_after_secs=0.01)
+    handle = _make_handle(watchdog=wd)
+    handle._stale_eligible = False
+    handle._tool_dispatched = True
+    from kiro_crew.acp.liveness import ToolCallState
+    handle._inflight_tool = ToolCallState(title="ReadInternalWebsites", command="")
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._consult_oracle_offloaded = oracle  # type: ignore[method-assign]
+
+    async def do_drain():
+        return [ev async for ev in handle._dispatch_events(req_id=99, timeout=2.0)]
+
+    drain_task = asyncio.create_task(do_drain())
+    await asyncio.wait_for(oracle_entered.wait(), timeout=1.0)
+
+    # Simulate _wait_for_response buffering a notification during oracle.
+    # Path B: frame is NOT in the queue; _ingress_seq is the only signal.
+    handle._ingress_seq += 1
+
+    oracle_release.set()
+    await asyncio.sleep(0.1)
+    drain_task.cancel()
+    try:
+        await drain_task
+    except asyncio.CancelledError:
+        pass
+
+    # _ingress_seq advanced → TOCTOU guard fired → first DEAD verdict skipped
+    # → second call returned WORKING → no session/cancel.
+    handle._runtime.send_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_toctou_path_a_queue_depth_prevents_cancel():
+    """F2 Path A: no concurrent _wait_for_response — the progress frame lands
+    directly in the session queue and stays there during the oracle await.
+
+    qsize() grows from 0 to 1 while the oracle is blocked. The TOCTOU guard
+    detects the queue-depth change and skips the cancel.
+
+    Oracle returns DEAD on first call (cancel branch reached without guard);
+    subsequent calls return WORKING (activity observed after reset).
+    Mutation check: removing the qsize() arm lets the first DEAD reach
+    _end_stalled_tool → session/cancel.
+
+    Uses _SilentQueueWithBacklog: times out when empty (fast watchdog trigger)
+    but delivers items added via put_nowait() on the next get() call.
+    """
+    evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
+    oracle, oracle_entered, oracle_release = _make_one_shot_oracle(evidence)
+
+    wd = WatchdogSettings(check_after_secs=0.01)
+    handle = _make_handle(watchdog=wd)
+    handle._stale_eligible = False
+    handle._tool_dispatched = True
+    from kiro_crew.acp.liveness import ToolCallState
+    handle._inflight_tool = ToolCallState(title="ReadInternalWebsites", command="")
+    # Backlog queue: times out fast when empty, delivers put_nowait items.
+    handle._queue = _SilentQueueWithBacklog()  # type: ignore[assignment]
+    handle._consult_oracle_offloaded = oracle  # type: ignore[method-assign]
+
+    async def do_drain():
+        return [ev async for ev in handle._dispatch_events(req_id=99, timeout=2.0)]
+
+    drain_task = asyncio.create_task(do_drain())
+    await asyncio.wait_for(oracle_entered.wait(), timeout=1.0)
+
+    # Put a progress frame directly into the queue DURING the oracle.
+    # Path A: no _wait_for_response active; qsize() grows from 0 to 1.
+    handle._queue.put_nowait(  # type: ignore[union-attr]
+        JsonRpcMessage(method="notifications/progress", params={})
+    )
+
+    oracle_release.set()
+    await asyncio.sleep(0.1)
+    drain_task.cancel()
+    try:
+        await drain_task
+    except asyncio.CancelledError:
+        pass
+
+    # qsize() grew → TOCTOU guard fired → first DEAD skipped → WORKING →
+    # no session/cancel.
+    handle._runtime.send_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_toctou_stale_eligible_path_also_guarded():
+    """F2: the model-wait (_stale_eligible) oracle path has the same TOCTOU
+    race as the tool-dispatch path and must be guarded too.
+
+    Without the guard, a DEAD verdict on the stale branch would probe/cancel
+    a live session that had a progress frame arrive during the oracle await.
+    The guard detects the queue-depth change and skips the first DEAD cancel.
+
+    Oracle returns DEAD on first call; WORKING on subsequent calls.
+    """
+    evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
+    oracle, oracle_entered, oracle_release = _make_one_shot_oracle(evidence)
+
+    wd = WatchdogSettings(check_after_secs=0.01)
+    handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
+    handle._stale_eligible = True
+    handle._tool_dispatched = False
+    handle._queue = _SilentQueueWithBacklog()  # type: ignore[assignment]
+    handle._consult_oracle_offloaded = oracle  # type: ignore[method-assign]
+
+    async def do_drain():
+        return [ev async for ev in handle._dispatch_events(req_id=99, timeout=2.0)]
+
+    drain_task = asyncio.create_task(do_drain())
+    await asyncio.wait_for(oracle_entered.wait(), timeout=1.0)
+
+    # Progress frame arrives during oracle — qsize grows from 0 to 1.
+    handle._queue.put_nowait(  # type: ignore[union-attr]
+        JsonRpcMessage(method="notifications/progress", params={})
+    )
+
+    oracle_release.set()
+    await asyncio.sleep(0.1)
+    drain_task.cancel()
+    try:
+        await drain_task
+    except asyncio.CancelledError:
+        pass
+
+    # TOCTOU guard on the stale branch prevented the probe cancel.
+    handle._runtime.send_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
+    """TOCTOU Path C, stale branch only: runtime activity without a frame.
+
+    The stale idle clock folds in ``_runtime._last_activity`` (stderr
+    thinking-tokens, keepalives, stdin writes), none of which enqueue a
+    session frame or advance ``_ingress_seq`` — so the two frame-path signals
+    are blind to it. Activity that would have deferred the probe had it
+    landed one tick before the snapshot must defer it when it lands during
+    the oracle await too: the guard also snapshots/rechecks the runtime
+    clock on this branch.
+
+    Oracle returns DEAD on first call (probe reached without the guard);
+    WORKING on subsequent calls. Mutation check: removing the runtime-clock
+    arm lets the first DEAD verdict reach the probe → session/cancel.
+    """
+    evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
+    oracle, oracle_entered, oracle_release = _make_one_shot_oracle(evidence)
+
+    wd = WatchdogSettings(check_after_secs=0.01)
+    handle = _make_handle(last_activity=time.monotonic() - 100.0, watchdog=wd)
+    handle._stale_eligible = True
+    handle._tool_dispatched = False
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._consult_oracle_offloaded = oracle  # type: ignore[method-assign]
+
+    async def do_drain():
+        return [ev async for ev in handle._dispatch_events(req_id=99, timeout=2.0)]
+
+    drain_task = asyncio.create_task(do_drain())
+    await asyncio.wait_for(oracle_entered.wait(), timeout=1.0)
+
+    # Runtime clock advances during the oracle — no frame, no _ingress_seq.
+    handle._runtime._last_activity = time.monotonic()
+
+    oracle_release.set()
+    await asyncio.sleep(0.1)
+    drain_task.cancel()
+    try:
+        await drain_task
+    except asyncio.CancelledError:
+        pass
+
+    # Runtime-clock arm fired → first DEAD skipped → WORKING → no probe.
+    handle._runtime.send_notification.assert_not_awaited()
+
+
+# ── F3: hard cap bounds UNKNOWN forbearance absolutely ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_hard_cap_below_suspect_window_fires_at_cap():
+    """F3: when tool_stall_hard_cap_secs < tool_stall_suspect_secs, the cancel
+    must fire just after the hard cap, not after the (larger) suspect window.
+
+    With cap=0.05s and suspect=999s, the cancel would never fire within this
+    test's runtime unless the hard cap is applied as min(suspect, hard_cap).
+    """
+    from kiro_crew.acp.liveness import ToolCallState
+
+    wd = WatchdogSettings(
+        check_after_secs=0.01,
+        tool_stall_suspect_secs=999.0,   # would never fire without the cap
+        tool_stall_hard_cap_secs=0.05,   # hard cap < suspect → governs
+    )
+    handle = _make_handle(watchdog=wd)
+    handle._stale_eligible = False
+    handle._tool_dispatched = True
+    handle._inflight_tool = ToolCallState(title="mystery", command="", is_shell=False)
+    handle._queue = _SilentQueue()  # type: ignore[assignment]
+    handle._oracle.check_tool = lambda pid, tool: ("unknown", "mcp subtree flat")
+
+    events = await _drain(handle, req_id=1, timeout=5.0)
+
+    # The cancel must have fired (hard cap governs) ...
+    handle._runtime.send_notification.assert_awaited()
+    assert handle._runtime.send_notification.await_args.args[0] == "session/cancel"
+    # ... and the terminal event carries the tool-stall stop reason.
+    assert events and events[-1].kind == EVENT_COMPLETE
+    assert events[-1].stop_reason == STOP_REASON_TOOL_STALL
 
 # ── Offloaded-consult hygiene: one walk per generation, retire don't reset ────
 #
@@ -959,7 +1519,7 @@ async def test_a_previous_tools_walk_cannot_claim_the_new_tools_child():
     child of the previous command; with an in-place ``reset()`` that write lands
     on the live oracle and the new tool's next tick reports
     ``WORKING "shell child N alive"`` for a process that has nothing to do with
-    it — deferring recovery of a genuinely stalled tool to the 3h hard cap.
+    it — deferring recovery of a genuinely stalled tool to the hard cap.
     """
     handle = _consult_handle()
     tool_a_oracle = handle._oracle

@@ -2135,8 +2135,19 @@ class AcpClient:
         """Set a kiro-cli session ID to restore via session/load on next ensure_ready()."""
         self._resume_session_id = sid
 
-    def rekey(self, session_key: str, channel_id: str | None = None) -> None:
-        """Re-key this client for a different session (used by warm pool)."""
+    def rekey(
+        self,
+        session_key: str,
+        channel_id: str | None = None,
+        crew_agent: str = "",
+        watchdog: object | None = None,
+    ) -> None:
+        """Re-key this client for a different session (used by warm pool).
+
+        ``crew_agent`` and ``watchdog`` exist only for signature parity with
+        AcpSessionProvider.rekey (session.py calls provider.client.rekey
+        uniformly): this client's dispatch loop carries no per-agent watchdog
+        snapshot, so both are accepted and deliberately not stored."""
         self._session_key = session_key
         self._channel_id = channel_id
         self._last_activity = time.monotonic()

@@ -2752,6 +2752,30 @@ class KiroCrewAgentConfig:
         default="kirocrew",
         metadata=_meta("Source", "Agent origin: kirocrew or builtin."),
     )
+    # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
+    # defaults (1h) are build-scale forbearance; an agent that never runs a long
+    # build (a pure-LLM reviewer, read-only git) can declare much lower windows
+    # here. 0 (the default) inherits the global value — mirrors the
+    # empty-inherits convention of ``model`` above.
+    watchdog_tool_stall_suspect_secs: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Tool stall suspect override (s)",
+            "Per-agent override for watchdog.tool_stall_suspect_secs on sessions "
+            "running this agent. 0 inherits the global window (default 1h, tuned "
+            "for long builds). Set low (e.g. 900) for a pure-LLM agent whose "
+            "longest legitimate silent gap is minutes, not hours.",
+        ),
+    )
+    watchdog_tool_stall_hard_cap_secs: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Tool stall hard cap override (s)",
+            "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions "
+            "running this agent. 0 inherits the global cap (default 1h). Applies "
+            "ONLY to UNKNOWN verdicts — a WORKING session is never acted on.",
+        ),
+    )
     telegram_account: str = field(
         default="",
         metadata=_meta(
@@ -5538,6 +5562,17 @@ class KiroCrewConfig:
                         description=entry.get("description", ""),
                         triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),
+                        # Same guard family as model/triggers: config.json is
+                        # hand-editable, so a junk value must collapse to 0
+                        # (inherit the global window), never crash the load.
+                        # lo=0 keeps a negative override from arming an
+                        # instant-cancel window.
+                        watchdog_tool_stall_suspect_secs=_safe_float(
+                            entry.get("watchdog_tool_stall_suspect_secs", 0.0), 0.0, lo=0.0
+                        ),
+                        watchdog_tool_stall_hard_cap_secs=_safe_float(
+                            entry.get("watchdog_tool_stall_hard_cap_secs", 0.0), 0.0, lo=0.0
+                        ),
                         telegram_account=entry.get("telegram_account", ""),
                     )
 
@@ -6572,9 +6607,14 @@ class KiroCrewConfig:
             cwd: str | None = None,
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
+            crew_agent: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
+            # Canonical crew identity for the session (keys per-agent watchdog
+            # windows on the handle) — one shared resolution rule, see
+            # resolve_crew_identity.
+            crew_agent = resolve_crew_identity(self, agent, crew_agent)
             # Resolve the model, highest tier first:
             #   1. model_override — the caller's explicit pick. The dashboard
             #      passes the slot's own model, else the KiroCrew agent's
@@ -6632,6 +6672,7 @@ class KiroCrewConfig:
                 work_dir=wdir,
                 model=m,
                 agent=agent,
+                crew_agent=crew_agent,
                 sandbox_mode=sandbox,
                 session_key=session_key,
                 channel_id=channel_id,
@@ -7011,6 +7052,35 @@ def _project_declares_agent(agent_name: str, project_dir: str) -> bool:
     except Exception:  # noqa: BLE001 — a probe failure only costs a fallback
         logger.debug("Project agent probe failed for %r", agent_name, exc_info=True)
         return False
+
+
+def resolve_crew_identity(
+    config: "KiroCrewConfig", agent: str | None, crew_agent: str | None
+) -> str:
+    """Canonical Kiro Crew identity (a ``config.agents`` key) for a session.
+
+    One rule shared by every session-granting path (provider factory, warm-pool
+    claim) so cold starts and claims can never disagree. An explicit
+    ``crew_agent`` wins verbatim — including "" ("no crew"), which is how the
+    dashboard, the one kiro-name-passing surface, opts out of the fallback.
+    When absent, the surface convention documented on
+    :func:`_resolve_model_for_agent` applies: Slack threads, cron jobs and
+    spawned agents pass a CREW name as ``agent``, so crew-namespace membership
+    makes it canonical — a membership check on names the surface owns, not a
+    cross-namespace match.
+    """
+    if crew_agent is not None:
+        return crew_agent
+    if agent and agent in config.agents:
+        # DEBUG, not INFO: every Slack/cron session resolves here routinely.
+        # The line exists so a kiro-template name that collides with a crew
+        # key (which would silently inherit that crew's watchdog windows) is
+        # diagnosable from logs.
+        logger.debug(
+            "crew_agent %r resolved by crew-namespace fallback", agent
+        )
+        return agent
+    return ""
 
 
 def resolve_agent_bindings(

@@ -182,6 +182,18 @@ _TURN_BUCKETS_MS: list[float] = [
     1800000, 2700000, 3600000,
 ]
 
+# Watchdog idle-at-decision. The watchdog consults the oracle from
+# check_after_secs (60s) and the default hard cap is 1h (3600s,
+# tool_stall_hard_cap_secs), so the range is 1s .. 4h — headroom above the cap
+# because per-agent overrides can raise it; densest around the window
+# boundaries (300s stale / 900s model-silent / 3600s cap) that the
+# distribution is meant to tune. Sub-minute bounds exist because tests and
+# per-agent overrides can legitimately act earlier than the default 60s gate.
+_WATCHDOG_IDLE_BUCKETS_MS: list[float] = [
+    1000, 5000, 15000, 30000, 60000, 120000, 180000, 300000, 450000,
+    600000, 900000, 1800000, 3600000, 5400000, 7200000, 10800000, 14400000,
+]
+
 # Instrument name -> boundaries. This map is the COMPLETE set of kirocrew
 # duration histograms: the Views below are built from it and there is no
 # catch-all, because the OTEL SDK applies EVERY matching View rather than the
@@ -191,7 +203,9 @@ _TURN_BUCKETS_MS: list[float] = [
 # Consequence: a new histogram missing from this map falls back to OTEL's
 # default 10s-ceiling boundaries. `test/metrics/test_provider_bucket_views.py`
 # fails when a histogram metric name in the source has no entry here — add the
-# instrument to this map when you add the metric.
+# instrument to this map when you add the metric. All values are ms — the
+# dashboard's generic aggregation reports every histogram under *_ms keys, so
+# a non-ms instrument would surface 1000x off there.
 _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.gateway.request.duration": _FAST_BUCKETS_MS,
     "kirocrew.db.query.duration": _FAST_BUCKETS_MS,
@@ -216,6 +230,7 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.mcp.lazy_load.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.gateway.boot.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.turn.duration": _TURN_BUCKETS_MS,
+    "kirocrew.watchdog.idle.duration": _WATCHDOG_IDLE_BUCKETS_MS,
 }
 
 _lock = threading.Lock()

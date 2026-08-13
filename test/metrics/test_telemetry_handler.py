@@ -153,6 +153,142 @@ def test_aggregate_startup_turn_and_other(tmp_path: Path):
     assert warm_rows[0]["by_attr"]["result=miss"] == 1.0
 
 
+def _turn_dp(attrs: dict, count: int = 1) -> dict:
+    """Minimal turn histogram data-point (single bucket, no distribution)."""
+    counts = [0] * (len(_BOUNDS) + 1)
+    counts[1] = count
+    return {
+        "attributes": attrs,
+        "count": count,
+        "sum": float(count * 20),
+        "min": 20.0,
+        "max": 20.0,
+        "bucket_counts": counts,
+        "explicit_bounds": _BOUNDS,
+    }
+
+
+def test_fault_rate_excludes_watchdog_recovery_outcomes(tmp_path: Path):
+    """F4 regression: tool_stall and stale_recover must NOT count toward
+    fault_rate even though they are not 'ok'. Only genuine terminal faults
+    (error, timeout, unknown) are faults; watchdog recovery outcomes are
+    tracked separately under kirocrew.watchdog.recovery.outcome.
+
+    'unknown' IS included because pre-labelling metric shards use it for
+    unclassified non-ok outcomes; excluding it would silently inflate the
+    denominator without matching the numerator on the 14-day lookback."""
+    turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
+        _turn_dp({"outcome": "ok"}, count=4),
+        _turn_dp({"outcome": "error"}, count=1),      # terminal fault
+        _turn_dp({"outcome": "timeout"}, count=1),    # terminal fault
+        _turn_dp({"outcome": "unknown"}, count=1),    # legacy shard — terminal fault
+        _turn_dp({"outcome": "tool_stall"}, count=3),     # watchdog recovery — NOT a fault
+        _turn_dp({"outcome": "stale_recover"}, count=2),  # watchdog recovery — NOT a fault
+    ]}}
+    result = _aggregate([_write_shard(tmp_path, [turn])])
+
+    total = 4 + 1 + 1 + 1 + 3 + 2  # = 12
+    true_faults = 1 + 1 + 1          # error + timeout + unknown
+    expected_rate = round(true_faults / total, 4)
+
+    assert result["turn"]["outcome"] == {
+        "ok": 4, "error": 1, "timeout": 1, "unknown": 1, "tool_stall": 3, "stale_recover": 2,
+    }
+    assert result["turn"]["fault_rate"] == expected_rate  # = 0.25
+
+    # Ensure genuine error/timeout STILL count as faults (not accidentally
+    # excluded by an overly aggressive allowlist).
+    sub = tmp_path / "sub"
+    sub.mkdir(exist_ok=True)
+    error_only_turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
+        _turn_dp({"outcome": "ok"}, count=3),
+        _turn_dp({"outcome": "error"}, count=1),
+    ]}}
+    result2 = _aggregate([_write_shard(sub, [error_only_turn])])
+    assert result2["turn"]["fault_rate"] == 0.25  # 1 error / 4 — unchanged
+
+
+def test_fault_rate_counts_exhausted_stall_turns_as_faults(tmp_path: Path):
+    """A stall_exhausted turn is a dead session and must reach fault_rate.
+
+    The recovered-stall exclusion labels recovery turns tool_stall /
+    stale_recover — but the final turn of a cycle whose budget dies with
+    "start a new chat" labels stall_exhausted at the emit site, which the
+    aggregator's allowlist counts as a terminal fault. Recovered stalls stay
+    excluded; dead sessions count; fault_rate remains single-series."""
+    turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
+        _turn_dp({"outcome": "ok"}, count=5),
+        _turn_dp({"outcome": "tool_stall"}, count=3),        # retries — NOT faults
+        _turn_dp({"outcome": "stale_recover"}, count=1),     # recovered — NOT a fault
+        _turn_dp({"outcome": "stall_exhausted"}, count=1),   # dead session — fault
+    ]}}
+    # The recovery counter is pure mechanism telemetry: it must NOT feed
+    # fault_rate (the exhausted turn above already carries the fault).
+    recovery = {"name": "kirocrew.watchdog.recovery.outcome", "data": {"data_points": [
+        {"attributes": {"mechanism": "tool_stall", "outcome": "exhausted",
+                        "attempt_bucket": 3}, "value": 1},
+        {"attributes": {"mechanism": "stale_recover", "outcome": "recovered",
+                        "attempt_bucket": 1}, "value": 1},
+    ]}}
+    result = _aggregate([_write_shard(tmp_path, [turn, recovery])])
+
+    # 1 exhausted turn / 10 turns; recovery-counter points change nothing.
+    assert result["turn"]["fault_rate"] == 0.1
+
+
+def test_every_turn_outcome_label_is_classified_fault_or_excluded():
+    """Cross-module drift gate between _turn_outcome and the fault allowlist.
+
+    ``_turn_outcome`` (chat_runner) mints the labels; ``_TERMINAL_FAULT_OUTCOMES``
+    (telemetry) decides which count toward fault_rate. They are hand-synced lists
+    in different modules, and because the aggregator is an allowlist, a label
+    added to the emitter but classified in neither set would silently fall out of
+    the fault_rate numerator while still growing the denominator — an optimistic
+    dashboard with no failing test. Labels are harvested from _turn_outcome's
+    return statements via AST so a new branch cannot dodge this gate."""
+    import ast
+    import inspect
+
+    from kiro_crew.dashboard.chat_runner import _turn_outcome
+    from kiro_crew.dashboard.handlers.telemetry import _TERMINAL_FAULT_OUTCOMES
+
+    labels: set[str] = set()
+    for node in ast.walk(ast.parse(inspect.getsource(_turn_outcome))):
+        if isinstance(node, ast.Return) and node.value is not None:
+            labels |= {
+                c.value
+                for c in ast.walk(node.value)
+                if isinstance(c, ast.Constant) and isinstance(c.value, str)
+            }
+    # Self-check that the AST harvest actually captured the emitter's range —
+    # an empty/partial harvest would make the assertions below vacuous.
+    assert {"ok", "error", "stall_exhausted"} <= labels
+
+    # Non-faults, each with its exclusion reason pinned by the tests above:
+    # "ok" succeeded; "tool_stall"/"stale_recover" are recovered-in-place stalls
+    # tracked under kirocrew.watchdog.recovery.outcome. Add a new label here or
+    # to _TERMINAL_FAULT_OUTCOMES — never leave it unclassified.
+    excluded = {"ok", "tool_stall", "stale_recover"}
+    unclassified = labels - _TERMINAL_FAULT_OUTCOMES - excluded
+    assert not unclassified, (
+        f"_turn_outcome label(s) {sorted(unclassified)} are neither terminal "
+        "faults nor explicitly excluded — classify them so fault_rate stays "
+        "truthful."
+    )
+    # A label can't be both a fault and excluded.
+    assert not (_TERMINAL_FAULT_OUTCOMES & excluded)
+    # The reverse direction: every fault entry must have a producer — a
+    # _turn_outcome label or "unknown" (minted by the aggregator itself for
+    # attribute-less points). A dead entry can't be caught by the harvest
+    # above and would misdocument what fault_rate counts.
+    dead = _TERMINAL_FAULT_OUTCOMES - labels - {"unknown"}
+    assert not dead, (
+        f"_TERMINAL_FAULT_OUTCOMES entr(ies) {sorted(dead)} have no producer "
+        "— no _turn_outcome branch returns them and the aggregator does not "
+        "mint them."
+    )
+
+
 # ── Bucket-generation truthfulness + the acquire warm/cold split ──────────
 #
 # Two shipped defects are pinned here:

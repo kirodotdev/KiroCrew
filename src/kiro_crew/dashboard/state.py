@@ -915,7 +915,9 @@ class _ChatSlot:
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
         "_stale_recovery_retries",
+        "_stale_recovery_exhausted_emitted",
         "_tool_stall_retries",
+        "_tool_stall_exhausted_emitted",
         "_transient_5xx_retries",
         "_posttoken_retry_used",
         "_prestream_exhausted_cycles",
@@ -1176,6 +1178,16 @@ class _ChatSlot:
         # original message verbatim — one false positive burned the whole
         # session budget). Bounded (3); reset on a completed turn.
         self._tool_stall_retries: int = 0
+        # Telemetry dedup for the exhausted outcome: set when outcome=exhausted
+        # is emitted for the corresponding budget, cleared when the budget
+        # resets on a completed turn. Keeps a repeatedly-stalling wedged slot
+        # from re-emitting "exhausted" every stall, and keeps a later ok turn
+        # from mis-emitting "recovered" for an already-exhausted cycle —
+        # WITHOUT mutating the budget itself (a wedged slot stays terminal
+        # until a turn actually completes; it never re-enters a fresh
+        # recovery cycle just because the metric fired).
+        self._stale_recovery_exhausted_emitted: bool = False
+        self._tool_stall_exhausted_emitted: bool = False
         # Transient backend 5xx (InternalServerError / DispatchFailure /
         # ConnectionReset) retries on the interactive stream path. Distinct
         # budget from prompt-busy / pipe-death; reset on a completed turn.

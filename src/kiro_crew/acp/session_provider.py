@@ -32,6 +32,7 @@ from kiro_crew.acp.client import (
     model_is_unusable,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
+from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
@@ -344,15 +345,32 @@ class AcpSessionProvider(LLMProvider):
         """Refresh activity timestamp on the runtime."""
         self._runtime._last_activity = time.monotonic()
 
-    def rekey(self, session_key: str, channel_id: str | None = None) -> None:
+    def rekey(
+        self,
+        session_key: str,
+        channel_id: str | None = None,
+        crew_agent: str = "",
+        watchdog: WatchdogSettings | None = None,
+    ) -> None:
         """Re-key for a different session on warm-pool claim (parity with
         AcpClient.rekey). session.py:1309 calls provider.client.rekey(...); when
         the pooled provider is kiro-shared, provider.client is THIS class, so a
         missing rekey() would AttributeError on claim. Stores the correlation
         keys and refreshes runtime activity so the just-claimed process is not
-        idle-reaped."""
+        idle-reaped.
+
+        ``crew_agent`` is the claiming session's canonical crew identity: the
+        pooled runtime was spawned before any crew claimed it, so both the
+        runtime default (future sessions, e.g. new_conversation) and the live
+        handle's watchdog snapshot are rebound here — the identity travels
+        with the session, not the pool key. Empty means "no crew" and rebinds
+        to the globals, so a recycled runtime never carries a previous crew's
+        windows. ``watchdog`` is the pre-resolved snapshot from the async
+        caller (resolved off-loop); None makes rebind load it synchronously."""
         self._session_key = session_key
         self._channel_id = channel_id
+        self._runtime._crew_agent = crew_agent
+        self._handle.rebind_watchdog(crew_agent, settings=watchdog)
         self._runtime._last_activity = time.monotonic()
         # Parity with AcpClient.rekey: the handle's prompt stats describe the
         # session this runtime served BEFORE the handoff; leaking them lets
