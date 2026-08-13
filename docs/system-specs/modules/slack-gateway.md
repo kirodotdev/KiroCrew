@@ -30,6 +30,22 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 
 ## APIs
 
+### Slack App OAuth Contract
+
+The bundled `slack-manifest.yaml` is the setup source of truth. Its bot scopes
+are `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
+`commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
+`im:history`, `im:read`, `im:write`, `reactions:write`, and `users:read`.
+`message.groups` is subscribed alongside `message.channels` so private-channel
+turns and thread continuation are delivered.
+
+The manifest also requests user scopes `channels:history`, `channels:read`,
+`groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`,
+`mpim:read`, `search:read`, and `users:read`. These scopes apply only to a
+separately configured Slack MCP/search integration's `xoxp-...` token. The
+gateway constructs every Slack client with `SLACK_BOT_TOKEN`; it does not read
+or store the user token.
+
 ### `run_gateway(cfg: KiroCrewConfig, *, no_dashboard=False, no_crons=False) -> None`
 Starts the Socket Mode listener. Blocks until SIGINT/SIGTERM. When `no_crons=True`, the `CronService` is instantiated but not started — cron jobs are visible in the dashboard but not executed. Use for multi-instance setups where a single primary instance handles cron execution. On shutdown, calls `dashboard_state.close_all_ws()` before `AppRunner.cleanup()` to prevent 30s hang from blocked WebSocket `async for msg` loops.
 

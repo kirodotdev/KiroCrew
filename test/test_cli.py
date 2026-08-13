@@ -1414,6 +1414,45 @@ class TestGetAlias:
 class TestManifest:
     """Tests for _manifest."""
 
+    def test_packaged_manifest_declares_complete_oauth_scopes(self):
+        import yaml
+
+        from kiro_crew import slack_manifest
+
+        manifest = yaml.safe_load(slack_manifest.render("scope-test"))
+        assert manifest["oauth_config"]["scopes"] == {
+            "bot": [
+                "app_mentions:read",
+                "channels:history",
+                "channels:read",
+                "chat:write",
+                "commands",
+                "files:read",
+                "files:write",
+                "groups:history",
+                "groups:read",
+                "im:history",
+                "im:read",
+                "im:write",
+                "reactions:write",
+                "users:read",
+            ],
+            "user": [
+                "channels:history",
+                "channels:read",
+                "groups:history",
+                "groups:read",
+                "im:history",
+                "im:read",
+                "mpim:history",
+                "mpim:read",
+                "search:read",
+                "users:read",
+            ],
+        }
+        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
+        assert "message.groups" in bot_events
+
     def _patch_template(
         self, content="name: KiroCrew-{{ALIAS}}\ndisplay_name: KiroCrew-{{ALIAS}}\n"
     ):

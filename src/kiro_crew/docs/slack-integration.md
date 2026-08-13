@@ -156,12 +156,22 @@ your own workspace.
 1. **Create a Slack app** at https://api.slack.com/apps and enable **Socket
    Mode**. Generate an app-level token (`xapp-`) with the `connections:write`
    scope.
-2. **Add a bot user** and OAuth scopes for the features you use (e.g.
-   `chat:write`, `im:history`, `app_mentions:read`, `reactions:write`). Install
-   the app to your workspace to get the bot token (`xoxb-`).
-3. **Set credentials** in `~/.kiro/crew/.env` (`SLACK_APP_TOKEN`,
+2. **Add a bot user** with these Bot Token Scopes:
+   `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
+   `commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
+   `im:history`, `im:read`, `im:write`, `reactions:write`, and `users:read`.
+3. **Add User Token Scopes** if the same app supplies a user token to a
+   separately configured Slack MCP/search integration: `channels:history`,
+   `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
+   `mpim:history`, `mpim:read`, `search:read`, and `users:read`. The gateway
+   does not consume this `xoxp-...` token.
+4. **Subscribe to bot events**: `message.im`, `message.channels`,
+   `message.groups`, `app_mention`, `app_home_opened`, `file_change`, and
+   `member_joined_channel`. Install or reinstall the app to grant the scopes and
+   get the bot token (`xoxb-`).
+5. **Set credentials** in `~/.kiro/crew/.env` (`SLACK_APP_TOKEN`,
    `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`).
-4. **Slash command** (optional) — the command name is configurable via
+6. **Slash command** (optional) — the command name is configurable via
    `slack.command` in config.json (default: `kirocrew`). Each app instance
    should use a unique name.
 
