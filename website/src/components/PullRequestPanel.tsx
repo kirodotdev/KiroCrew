@@ -62,6 +62,13 @@ const STATUS_FOLLOWUP_MS = 5_000
  *  STATUS_POLL_MAX_MS. Polling is never abandoned — a transient network or
  *  gateway blip must not freeze the strip's glyphs until the user intervenes. */
 const STATUS_ERROR_BACKOFF_MS = 30_000
+/** Retries allowed when the gateway reports it is at its concurrent-fetch
+ *  ceiling (`code: source_busy`). The server already waited its own admission
+ *  budget before answering, so these are spaced attempts at a ceiling that
+ *  clears as in-flight fetches complete — not a tight poll. Bounded so a
+ *  genuinely saturated gateway still surfaces the error instead of spinning. */
+const SOURCE_BUSY_RETRIES = 2
+const SOURCE_BUSY_RETRY_BASE_MS = 2_000
 /** Consecutive in-flight-refresh polls allowed at the fast interval before
  *  falling back to TTL pacing — bounds a provider that never settles. */
 export const STATUS_FOLLOWUP_MAX = 3
@@ -110,18 +117,26 @@ export function pullRequestErrorDetails(error: unknown): {
   loginCommand: 'gh auth login' | 'glab auth login' | ''
   /** The server refused pending an acknowledgement the client may now offer. */
   confirmationRequired: boolean
+  /** The gateway was at its concurrent-fetch ceiling; the same request may succeed later. */
+  sourceBusy: boolean
 } {
   let message = error instanceof Error ? error.message : String(error || '')
   let confirmationRequired = false
+  let sourceBusy = false
   // ApiError already unwraps the human message, which discards every other
   // field, so the structured marker is read from the raw body it preserves.
   const raw = typeof (error as { body?: unknown })?.body === 'string'
     ? (error as { body: string }).body
     : message
   try {
-    const payload = JSON.parse(raw) as { error?: unknown; confirmationRequired?: unknown }
+    const payload = JSON.parse(raw) as {
+      error?: unknown
+      confirmationRequired?: unknown
+      code?: unknown
+    }
     if (typeof payload.error === 'string') message = payload.error
     confirmationRequired = payload.confirmationRequired === true
+    sourceBusy = payload.code === 'source_busy'
   } catch {
     // Provider and network errors may already be plain text.
   }
@@ -131,11 +146,26 @@ export function pullRequestErrorDetails(error: unknown): {
     : authenticationFailure && /(?:`|\b)glab auth login(?:`|\b)/i.test(message)
       ? 'glab auth login'
       : ''
-  return { message, loginCommand, confirmationRequired }
+  return { message, loginCommand, confirmationRequired, sourceBusy }
 }
 
-function safeExternalUrl(value: string): string | undefined {
-  if (!value) return undefined
+/** Whether a failed source read is worth another attempt.
+ *
+ * Only admission pressure retries. A provider error (not authenticated, PR gone,
+ * malformed payload) is a message the user has to act on, so retrying it just
+ * delays that; `source_busy` instead means the gateway was at its
+ * concurrent-fetch memory ceiling, which clears on its own as in-flight fetches
+ * complete. */
+export function shouldRetrySourceRead(failureCount: number, error: unknown): boolean {
+  return pullRequestErrorDetails(error).sourceBusy && failureCount < SOURCE_BUSY_RETRIES
+}
+
+/** Backoff for a `source_busy` retry: 2s, then 4s. */
+export function sourceBusyRetryDelay(failureCount: number): number {
+  return SOURCE_BUSY_RETRY_BASE_MS * 2 ** failureCount
+}
+
+function safeExternalUrl(value: string): string | undefined {  if (!value) return undefined
   try {
     const url = new URL(value)
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined
@@ -801,7 +831,13 @@ export default function PullRequestPanel({
     },
     enabled: !!selected,
     staleTime: Infinity,
-    retry: false,
+    // Provider errors (auth, missing PR, bad payload) stay fail-fast: retrying
+    // them only delays a message the user has to act on. Capacity pressure is
+    // the one retryable case -- the gateway is holding its concurrent-fetch
+    // ceiling and already waited its own budget, so a couple of spaced attempts
+    // turn a dead-end error card into a slower load.
+    retry: shouldRetrySourceRead,
+    retryDelay: sourceBusyRetryDelay,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   })
