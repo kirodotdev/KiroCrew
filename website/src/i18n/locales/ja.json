@@ -8203,7 +8203,15 @@
       "worktree": "ワークツリー",
       "worktrees": "ワークツリー",
       "worktrees_count": "ワークツリー（{{count}}）",
-      "worktrees_created_under_a_previous_repository_na": "以前のリポジトリ名の下で作成されたワークツリー。デフォルトでは非表示。マージ済み削除の対象です。"
+      "worktrees_created_under_a_previous_repository_na": "以前のリポジトリ名の下で作成されたワークツリー。デフォルトでは非表示。マージ済み削除の対象です。",
+      "cancel_staged_cutover": "準備済みの切り替えをキャンセル",
+      "keeps_name_the_live_target_and_discards_the_stag": "{{name}} がライブ対象のままとなり、{{staged}} への準備済みの切り替えは破棄されます。何も再起動されません — ゲートウェイは現在のコードで動作し続けます。",
+      "keeps_this_checkout_the_live_target_and_discards": "このチェックアウトがライブ対象のままとなり、{{staged}} への準備済みの切り替えは破棄されます（何も再起動されません）",
+      "cancel_staged_cutover_2": "準備済みの切り替えをキャンセルしますか？",
+      "keep_cutover": "切り替えを維持",
+      "cutover_staged_run_cmd_to_finish_or_cancel": "切り替え準備完了：ゲートウェイの次回起動時にこのワークツリーがライブになります。完了するには `{{cmd}}` を実行するか、この行のメニュー → 準備済みの切り替えをキャンセル で取り消せます。それまでゲートウェイは以前のチェックアウトで動作し続けます。",
+      "keeps_the_live_checkout_the_live_target_and_disc": "ライブ中のチェックアウトがライブ対象のままとなり、{{staged}} への準備済みの切り替えは破棄されます（何も再起動されません）",
+      "restarting_completes_the_pending_cutover_boots": "再起動すると保留中の切り替えが完了します：ゲートウェイは現在のチェックアウトではなく「{{staged}}」で起動します。ダッシュボードは一時的に切断され、自動的に再接続されます。取り消す場合は、準備済みの切り替えをキャンセル を使用してください。"
     },
     "developer": {
       "previewSurfacesCard": {

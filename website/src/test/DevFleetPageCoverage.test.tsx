@@ -843,6 +843,184 @@ describe('DevFleetPage make live', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /Make live/i }))
   }
 
+  it('offers Cancel cutover on the live main row while a cutover is staged, and cancels without a restart handshake', async () => {
+    // A staged cutover is cancelled by re-confirming the LIVE checkout as the
+    // live target — the backend re-pins the pointer and nothing restarts, so
+    // the flow must not enter the restart overlay or the identity handshake.
+    const bodies: string[] = []
+    let healthPolled = false
+    installFetch(
+      {
+        ...fleetOf({ ...MAIN_ROW, path: '/w/main' }, readyRow({ name: 'wt-staged', path: '/w/wt-staged', is_staged: true })),
+        gateway_service_active: false,
+        staged_target: '/w/wt-staged',
+        staged_cancel_available: true,
+        manual_restart: 'kirocrew restart',
+      },
+      (u, opts) => {
+        if (u.includes('/make-live') && isPost(opts)) {
+          bodies.push(String(opts?.body))
+          return res({ ok: true, cancelled: true, target: '/w/main', notice: 'Staged cutover cancelled. main stays the live target and no restart is needed.' })
+        }
+        if (u.includes('/health')) { healthPolled = true; return res({}) }
+        return null
+      },
+    )
+    renderPage()
+    await waitForRow('wt-staged')
+    fireEvent.click(screen.getByText('Cancel staged cutover').closest('button') as HTMLButtonElement)
+    const dialog = await screen.findByRole('dialog')
+    // The dialog names the staged worktree the operator is backing out of
+    // (in the title and the body, so either match satisfies the check).
+    expect(within(dialog).getAllByText(/wt-staged/).length).toBeGreaterThan(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: /Cancel staged cutover/i }))
+    // The backend-authored notice surfaces, the POST carried the LIVE row's
+    // path, and no restart overlay or health handshake ever started.
+    await waitFor(() => expect(screen.getByText(/no restart is needed/i)).toBeInTheDocument())
+    expect(bodies).toHaveLength(1)
+    expect(JSON.parse(bodies[0]).path).toBe('/w/main')
+    // The cancel is bound to the confirmed stage so a concurrent re-stage is
+    // refused server-side instead of silently discarded.
+    expect(JSON.parse(bodies[0]).expected_staged).toBe('/w/wt-staged')
+    expect(screen.queryByText('Restarting — reconnecting…')).toBeNull()
+    expect(healthPolled).toBe(false)
+  }, 15000)
+
+  it('hides the cancel control when no cutover is staged', async () => {
+    installFetch(fleetOf(MAIN_ROW, readyRow()))
+    renderPage()
+    await waitForRow('wt-a')
+    expect(screen.queryByText('Cancel staged cutover')).toBeNull()
+    const menu = await openRowMenu()
+    expect(menu.queryByText('Cancel staged cutover')).toBeNull()
+  })
+
+  it('offers Cancel staged cutover in a live feature row\u2019s menu', async () => {
+    // The live checkout is not always main: after a cutover to a feature
+    // worktree, a NEW stage (e.g. back onto main) must be cancellable from the
+    // feature row that is currently live.
+    installFetch({
+      ...fleetOf(
+        { ...MAIN_ROW, is_live: false, is_staged: true, path: '/w/main' },
+        readyRow({ is_live: true }),
+      ),
+      gateway_service_active: false,
+      staged_target: '/w/main',
+      staged_cancel_available: true,
+    })
+    renderPage()
+    await waitForRow('wt-a')
+    const menu = await openRowMenu()
+    expect(menu.getByText('Cancel staged cutover')).toBeInTheDocument()
+  })
+
+  it('hides the cancel control when the backend would refuse the pointer-only cancel', async () => {
+    // A stage can outlive the host state it was created in: if the service
+    // manager becomes drivable after staging, /make-live refuses the
+    // pointer-only cancel (staged_cutover_pending) because the stage also
+    // carries a service definition. The backend reports that predicate as
+    // staged_cancel_available; when it is false (or absent — older backend),
+    // the control must not render a promise the POST cannot keep.
+    installFetch({
+      ...fleetOf({ ...MAIN_ROW, path: '/w/main' }, readyRow({ name: 'wt-staged', path: '/w/wt-staged', is_staged: true })),
+      gateway_service_active: true,
+      staged_target: '/w/wt-staged',
+      staged_cancel_available: false,
+    })
+    renderPage()
+    await waitForRow('wt-staged')
+    expect(screen.queryByText('Cancel staged cutover')).toBeNull()
+  })
+
+  it('restart confirm names the staged worktree it will boot while a stage is pending', async () => {
+    // A restart with a stage pending COMPLETES the cutover — the opposite of
+    // the cancel beside it. The confirm must say which checkout comes up.
+    installFetch({
+      ...fleetOf({ ...MAIN_ROW, path: '/w/main' }, readyRow({ name: 'wt-staged', path: '/w/wt-staged', is_staged: true })),
+      gateway_service_active: true,
+      staged_target: '/w/wt-staged',
+      staged_cancel_available: false,
+    })
+    renderPage()
+    await waitForRow('wt-staged')
+    fireEvent.click(screen.getByLabelText('Restart gateway'))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/comes back up on .wt-staged./)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/Applies the last Pull\+Build/)).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  })
+
+  it('hides Make live on the already-staged row', async () => {
+    // On a staged row "Make live" only re-stages, and beside the cancel it
+    // misreads as "complete the cutover now".
+    installFetch({
+      ...fleetOf({ ...MAIN_ROW, path: '/w/main' }, readyRow({ name: 'wt-staged', path: '/w/wt-staged', is_staged: true })),
+      gateway_service_active: false,
+      staged_target: '/w/wt-staged',
+      staged_cancel_available: true,
+    })
+    renderPage()
+    await waitForRow('wt-staged')
+    const menu = await openRowMenu()
+    expect(menu.queryByText('Make live')).toBeNull()
+    expect(menu.getByText('Cancel staged cutover')).toBeInTheDocument()
+  })
+
+  it('offers the cancel on the STAGED row itself and still posts the live path', async () => {    // The staged row wears the "Restart pending" badge, so it is where an
+    // operator who staged the wrong worktree looks first. Its menu offers the
+    // same cancel; the POST still names the LIVE checkout (re-confirming it
+    // is the cancel) bound to the confirmed stage.
+    const bodies: string[] = []
+    installFetch(
+      {
+        ...fleetOf({ ...MAIN_ROW, path: '/w/main' }, readyRow({ name: 'wt-staged', path: '/w/wt-staged', is_staged: true })),
+        gateway_service_active: false,
+        staged_target: '/w/wt-staged',
+        staged_cancel_available: true,
+      },
+      (u, opts) => {
+        if (u.includes('/make-live') && isPost(opts)) {
+          bodies.push(String(opts?.body))
+          return res({ ok: true, cancelled: true, target: '/w/main', notice: 'Staged cutover cancelled.' })
+        }
+        return null
+      },
+    )
+    renderPage()
+    await waitForRow('wt-staged')
+    const menu = await openRowMenu()
+    fireEvent.click(menu.getByText('Cancel staged cutover'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /Cancel staged cutover/i }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(JSON.parse(bodies[0]).path).toBe('/w/main')
+    expect(JSON.parse(bodies[0]).expected_staged).toBe('/w/wt-staged')
+  }, 15000)
+
+  it('collapses Restart and Cancel staged cutover into one overflow menu when both apply', async () => {    // Reachable on a foreground-eligible host: Restart is offered via the
+    // foreground last resort (gateway_service_active true) while the staged
+    // cancel is also accepted (staged_cancel_available true). Rendering both
+    // as siblings would put a third button beside Pull+Build, breaking the
+    // two-button row cap — they collapse into a single overflow trigger.
+    installFetch({
+      ...fleetOf({ ...MAIN_ROW, path: '/w/main' }, readyRow({ name: 'wt-staged', path: '/w/wt-staged', is_staged: true })),
+      gateway_service_active: true,
+      staged_target: '/w/wt-staged',
+      staged_cancel_available: true,
+    })
+    renderPage()
+    await waitForRow('wt-staged')
+    // Neither gateway action renders as an inline button…
+    expect(screen.queryByText('Cancel staged cutover')).toBeNull()
+    expect(screen.queryByLabelText('Restart gateway')).toBeNull()
+    // …both live in the main row's overflow menu (first More-actions trigger:
+    // rows render main first).
+    fireEvent.click(screen.getAllByLabelText('More actions')[0])
+    const menu = within(await screen.findByRole('menu'))
+    expect(menu.getByText('Restart')).toBeInTheDocument()
+    expect(menu.getByText('Cancel staged cutover')).toBeInTheDocument()
+  })
+
   it('refuses a cutover to a worktree whose path the backend did not report', async () => {
     let posts = 0
     installFetch(fleetOf(MAIN_ROW, readyRow({ path: undefined })), (u, opts) => {

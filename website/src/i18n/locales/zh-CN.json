@@ -8203,7 +8203,15 @@
       "worktree": "工作树",
       "worktrees": "工作树",
       "worktrees_count": "工作树（{{count}}）",
-      "worktrees_created_under_a_previous_repository_na": "在旧仓库名下创建的工作树。默认隐藏；仍在“清理已合并”范围内。"
+      "worktrees_created_under_a_previous_repository_na": "在旧仓库名下创建的工作树。默认隐藏；仍在“清理已合并”范围内。",
+      "cancel_staged_cutover": "取消已暂存的切换",
+      "keeps_name_the_live_target_and_discards_the_stag": "{{name}} 仍为运行版本，切换到 {{staged}} 的暂存操作将被丢弃。不会重启任何进程 — 网关继续运行当前代码。",
+      "keeps_this_checkout_the_live_target_and_discards": "此检出仍为运行版本，切换到 {{staged}} 的暂存操作将被丢弃（不会重启）",
+      "cancel_staged_cutover_2": "取消已暂存的切换？",
+      "keep_cutover": "保留切换",
+      "cutover_staged_run_cmd_to_finish_or_cancel": "切换已暂存：网关下次启动时此工作树将成为运行版本。运行 `{{cmd}}` 完成切换，或使用此行菜单 → 取消已暂存的切换来撤销。在此之前网关仍运行之前的检出。",
+      "keeps_the_live_checkout_the_live_target_and_disc": "运行中的检出仍为运行版本，切换到 {{staged}} 的暂存操作将被丢弃（不会重启）",
+      "restarting_completes_the_pending_cutover_boots": "重启将完成待定的切换：网关将在“{{staged}}”上启动，而不是当前检出。仪表板会短暂断开并自动重连。如需撤销，请使用“取消已暂存的切换”。"
     },
     "developer": {
       "previewSurfacesCard": {

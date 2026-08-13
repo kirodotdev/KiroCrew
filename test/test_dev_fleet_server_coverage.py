@@ -1121,6 +1121,37 @@ async def test_worktree_remove_handler_forwards_force(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["\x00", "a\x00b", "", 7])
+async def test_make_live_handler_rejects_malformed_expected_staged(monkeypatch, bad):
+    """A NUL byte in expected_staged would reach Path.resolve() and raise
+    ValueError into a 500; the handler must refuse it (and the other
+    malformed shapes) with a 400 before _make_live ever runs."""
+    _sel_capture(monkeypatch)
+    make_live = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(mod, "_make_live", make_live)
+
+    resp = await mod.api_dev_fleet_make_live(
+        _json_request({"path": "/w/x", "expected_staged": bad})
+    )
+    assert resp.status == 400
+    assert "expected_staged" in json.loads(resp.text)["error"]
+    make_live.assert_not_awaited()
+
+
+def test_same_path_survives_unresolvable_operands(tmp_path):
+    """Defense in depth behind the handler gate: an operand Path.resolve()
+    rejects (embedded NUL, or a symlink loop — RuntimeError on some
+    platform/version combinations) means "not the same path", never a crash."""
+    assert mod._same_path("\x00", "/tmp") is False
+    assert mod._same_path("/tmp", "a\x00b") is False
+    if sys.platform != "win32":
+        a, b = tmp_path / "loop-a", tmp_path / "loop-b"
+        a.symlink_to(b)
+        b.symlink_to(a)
+        assert mod._same_path(str(a), str(tmp_path)) is False
+
+
+@pytest.mark.asyncio
 async def test_prune_run_handler_rejects_invalid_json(monkeypatch):
     _sel_capture(monkeypatch)
     resp = await mod.api_dev_fleet_prune_run(_raw_request(b"{", json_error=ValueError("bad")))
@@ -1259,7 +1290,7 @@ async def test_make_live_handler_forwards_dry_run(monkeypatch):
 
     resp = await mod.api_dev_fleet_make_live(_json_request({"path": "/w", "dry_run": True}))
     assert resp.status == 200
-    make_live.assert_awaited_once_with("/w", True)
+    make_live.assert_awaited_once_with("/w", True, expected_staged=None)
     assert sink.events[0]["resources"] == "/w"
 
 

@@ -1011,7 +1011,7 @@ async def test_make_live_handler_passes_dry_run_through(monkeypatch):
     resp = await mod.api_dev_fleet_make_live(_body_request(raw))
 
     assert resp.status == 200
-    make_live.assert_awaited_once_with("/wt/feat", True)
+    make_live.assert_awaited_once_with("/wt/feat", True, expected_staged=None)
 
 
 @pytest.mark.asyncio

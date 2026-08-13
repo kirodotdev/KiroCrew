@@ -429,7 +429,7 @@ interface Worktree {
   path?: string
   provision_run_id?: string | null
 }
-interface FleetData { worktrees: Worktree[]; error?: string; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
+interface FleetData { worktrees: Worktree[]; error?: string; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; manual_restart?: string }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
@@ -638,7 +638,7 @@ export default function DevFleetPage() {
     invalidateFleet()
   }
   function toggleProvLog(name: string) { setProvLogOpen((o) => ({ ...o, [name]: !o[name] })) }
-  const [confirmReq, setConfirmReq] = useState<{ title: string; desc: ReactNode; confirmLabel?: string; danger?: boolean; width?: number; resolve: (v: boolean) => void } | null>(null)
+  const [confirmReq, setConfirmReq] = useState<{ title: string; desc: ReactNode; confirmLabel?: string; cancelLabel?: string; danger?: boolean; width?: number; resolve: (v: boolean) => void } | null>(null)
   const [restarting, setRestarting] = useState(false)
   // A cutover is dangerous BEFORE `restarting` goes true: makeLive() awaits the
   // /make-live POST, and that request stages the live-target pointer and issues the
@@ -649,10 +649,30 @@ export default function DevFleetPage() {
   // row (the busy flag is per-worktree, the hazard is process-wide).
   const makeLivePending = Object.entries(busy).some(([k, v]) => v && k.endsWith(':makelive'))
   const gatewayMutating = restarting || makeLivePending
+  // The worktree a cutover is staged onto (live-target pointer written, gateway
+  // not yet restarted into it), but only while the backend would ACCEPT the
+  // pointer-only cancel: on a drivable host /make-live refuses it
+  // (staged_cutover_pending), so offering the control there would promise a
+  // cancel that never happens. staged_cancel_available comes from the same
+  // predicate the backend's cancel branch uses; absent (older backend) fails
+  // closed to the pre-cancel-control behaviour. Non-null exactly while the
+  // live row should offer "Cancel staged cutover".
+  const stagedWorktree = fleet?.staged_cancel_available === true
+    ? (fleet?.worktrees || []).find((x) => x.is_staged && !x.is_live) || null
+    : null
+  // The row the cancel actually posts (re-confirming it as the live target
+  // is the cancel). Needed by the staged row's co-located menu item.
+  const liveWorktree = stagedWorktree
+    ? (fleet?.worktrees || []).find((x) => x.is_live && x.path) || null
+    : null
+  // ANY pending stage, cancellable or not: a restart boots the staged
+  // checkout, so the restart confirm must say so — that hazard does not
+  // depend on whether the pointer-only cancel is available.
+  const pendingStage = (fleet?.worktrees || []).find((x) => x.is_staged && !x.is_live) || null
   const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string }[]; scanned: number } | null>(null)
   const [pruneSelected, setPruneSelected] = useState<Set<string>>(new Set())
   const [pruneProgress, setPruneProgress] = useState<{ names: string[]; items: Record<string, { status: string; error?: string | null }>; done: number; total: number; running: boolean } | null>(null)
-  const askConfirm = (title: string, desc: ReactNode, opts?: { confirmLabel?: string; danger?: boolean; width?: number }) => new Promise<boolean>((resolve) => setConfirmReq({ title, desc, ...(opts || {}), resolve }))
+  const askConfirm = (title: string, desc: ReactNode, opts?: { confirmLabel?: string; cancelLabel?: string; danger?: boolean; width?: number }) => new Promise<boolean>((resolve) => setConfirmReq({ title, desc, ...(opts || {}), resolve }))
   const settleConfirm = (val: boolean) => setConfirmReq((c) => { if (c) c.resolve(val); return null })
 
   const setFlag = (k: string, v: boolean) => setBusy((b) => ({ ...b, [k]: v }))
@@ -1098,7 +1118,14 @@ export default function DevFleetPage() {
   }
 
   async function restartGateway() {
-    const ok = await askConfirm(i18nT('pages.devFleetPage.restart_gateway_2'), i18nT('pages.devFleetPage.applies_the_last_pull_build_the_dashboard_will_b'), { confirmLabel: i18nT('pages.devFleetPage.restart') })
+    const ok = await askConfirm(i18nT('pages.devFleetPage.restart_gateway_2'),
+      // With a stage pending, a restart COMPLETES the cutover: the gateway
+      // comes back on the staged checkout, the opposite of the cancel that
+      // sits beside this control. The confirm must say which code comes up.
+      pendingStage
+        ? i18nT('pages.devFleetPage.restarting_completes_the_pending_cutover_boots', { staged: pendingStage.name })
+        : i18nT('pages.devFleetPage.applies_the_last_pull_build_the_dashboard_will_b'),
+      { confirmLabel: i18nT('pages.devFleetPage.restart') })
     if (!ok) return
     setRestarting(true)
     setGatewayError(null)
@@ -1122,31 +1149,58 @@ export default function DevFleetPage() {
   async function makeLive(w: Worktree) {
     // Only the already-live row is blocked. Main is a valid target when it is
     // NOT live (after a cutover to a feature worktree, this is the way back).
-    if (w.is_live) return
+    // The live row is a valid target too while a cutover is staged onto another
+    // worktree: re-confirming the running checkout as the live target is how
+    // the stage is cancelled (the backend re-pins the pointer; nothing
+    // restarts), and it is the only cancel the dashboard can offer.
+    const cancellingStage = !!w.is_live && !!stagedWorktree
+    if (w.is_live && !cancellingStage) return
     if (!w.path) { notify(i18nT('pages.devFleetPage.cannot_resolve_worktree_path_for_name', { name: w.name }), { type: 'error' }); return }
     // The dialog must not promise an automatic restart on a host where Dev Fleet
     // cannot drive the service: there the cutover only STAGES, and the operator
     // finishes it by hand. Keyed off the same signal the backend uses to decide,
     // so the copy cannot drift from what actually happens.
     const canRestart = fleet?.gateway_service_active === true
-    const ok = await askConfirm(i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
-      canRestart
-        ? i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this')
-        : i18nT('pages.devFleetPage.stages_the_code_behind_the_live_dashboard_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
-      { confirmLabel: i18nT('pages.devFleetPage.make_live') })
+    const ok = await askConfirm(
+      cancellingStage
+        ? i18nT('pages.devFleetPage.cancel_staged_cutover_2')
+        : i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
+      cancellingStage
+        ? i18nT('pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', { name: w.name, staged: stagedWorktree?.name ?? '' })
+        : canRestart
+          ? i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this')
+          : i18nT('pages.devFleetPage.stages_the_code_behind_the_live_dashboard_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
+      cancellingStage
+        ? { confirmLabel: i18nT('pages.devFleetPage.cancel_staged_cutover'), cancelLabel: i18nT('pages.devFleetPage.keep_cutover') }
+        : { confirmLabel: i18nT('pages.devFleetPage.make_live') })
     if (!ok) return
     setFlag(w.name + ':makelive', true)
     try {
       const r = await api.post<{
         ok?: boolean; error?: string; start_id?: string | null
-        staged_only?: boolean; notice?: string
-      }>('/make-live', { path: w.path })
+        staged_only?: boolean; cancelled?: boolean; notice?: string
+      }>('/make-live', cancellingStage && stagedWorktree?.path
+        // Bind the cancel to the stage the operator confirmed: the backend
+        // refuses (stage_changed) if another tab re-staged between the dialog
+        // and this POST, instead of silently discarding a stage never seen.
+        ? { path: w.path, expected_staged: stagedWorktree.path }
+        : { path: w.path })
       if (!r?.ok) {
         // Same treatment as a failed restart: this branch surfaces
         // restart_detached's message, which names a remedy the operator has to
         // act on — useless in a 7s toast.
         const msg = r?.error || i18nT('pages.devFleetPage.make_live_failed')
         notify(msg, { type: 'error' }); setGatewayError(msg); setFlag(w.name + ':makelive', false); return
+      }
+      // Stage cancelled: the pointer is re-pinned at the running checkout and
+      // no process is coming or going, so the restart overlay and the identity
+      // handshake must both be skipped — waiting would strand the user on the
+      // 60s timeout for a restart that never happens.
+      if (r.cancelled) {
+        if (r.notice) notify(r.notice, { type: 'info' })
+        setFlag(w.name + ':makelive', false)
+        invalidateFleet()
+        return
       }
       // Staged, not bounced: this gateway is not a service Dev Fleet can
       // restart, so the operator finishes the cutover with the command the
@@ -1271,25 +1325,53 @@ export default function DevFleetPage() {
           {iconLabel(<RefreshCw size={13} className="lucide-inline" />, busy['__syncmain'] || syncRun?.status === 'running' ? i18nT('pages.devFleetPage.building') : i18nT('pages.devFleetPage.pull_build_2'))}
         </ConfirmBtn>,
       ]
-      if (fleet?.gateway_service_active) {
+      const showRestart = !!fleet?.gateway_service_active
+      const showCancel = !!w.is_live && !!stagedWorktree
+      if (showRestart && showCancel) {
+        // Both gateway actions at once (reachable on a foreground-eligible
+        // host with a stage pending) would put a third sibling beside
+        // Pull+Build and break the two-button row cap — collapse them into
+        // one overflow trigger, which counts as a single control.
         out.push(
-          <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label={i18nT('pages.devFleetPage.restart_gateway')}>
-            {iconLabel(<RotateCw size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.restart'))}
-          </Btn>
+          <MenuBtn key="gwmenu" items={[
+            { label: i18nT('pages.devFleetPage.restart'), icon: <RotateCw size={13} className="lucide-inline" />, onClick: () => restartGateway(), disabled: gatewayMutating },
+            { label: i18nT('pages.devFleetPage.cancel_staged_cutover'), icon: <X size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.keeps_this_checkout_the_live_target_and_discards', { staged: stagedWorktree?.name ?? '' }) },
+          ]} />
         )
-      }
-      // After a cutover to a feature worktree, main is dormant (is_live=false)
-      // and this inline control is the only way back to running main live. It sits
-      // OUTSIDE the gateway_service_active gate on purpose: staging a cutover
-      // needs no drivable service, and a host without one is precisely where
-      // gating it would strand the operator on a feature worktree with no route
-      // back. Consistent with makeLive()'s guard: shown iff the row is NOT live.
-      if (!w.is_live) {
-        out.push(
-          <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}>
-            {iconLabel(<Rocket size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.make_live'))}
-          </Btn>
-        )
+      } else {
+        if (showRestart) {
+          out.push(
+            <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label={i18nT('pages.devFleetPage.restart_gateway')}>
+              {iconLabel(<RotateCw size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.restart'))}
+            </Btn>
+          )
+        }
+        // After a cutover to a feature worktree, main is dormant (is_live=false)
+        // and this inline control is the only way back to running main live. It sits
+        // OUTSIDE the gateway_service_active gate on purpose: staging a cutover
+        // needs no drivable service, and a host without one is precisely where
+        // gating it would strand the operator on a feature worktree with no route
+        // back. Consistent with makeLive()'s guard: shown iff the row is NOT live.
+        if (!w.is_live && !w.is_staged) {
+          out.push(
+            <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}>
+              {iconLabel(<Rocket size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.make_live'))}
+            </Btn>
+          )
+        }
+        // Mutually exclusive with Make live: this appears only while THIS row is
+        // live and a cutover is staged onto another worktree. Same makeLive()
+        // call — re-confirming the running checkout as the live target is the
+        // cancel — and it sits outside the gateway_service_active gate for the
+        // same reason Make live does: staged cutovers exist precisely on hosts
+        // without a drivable service.
+        if (showCancel) {
+          out.push(
+            <Btn key="cancelcutover" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.keeps_this_checkout_the_live_target_and_discards', { staged: stagedWorktree?.name ?? '' })}>
+              {iconLabel(<X size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.cancel_staged_cutover'))}
+            </Btn>
+          )
+        }
       }
       if (fleet?.build_pending) {
         // Keep the visible text short: the ACTIONS grid column is fixed-width and
@@ -1316,7 +1398,18 @@ export default function DevFleetPage() {
       // Staging a cutover writes only the live-target pointer, so it needs no
       // pod support and no drivable service — gating it on podsAvailable would
       // hide it on exactly the hosts it exists to serve.
-      !w.is_live ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
+      // Hidden on the already-staged row: there it only re-stages, and next
+      // to Cancel staged cutover it misreads as "complete the cutover now".
+      !w.is_live && !w.is_staged ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
+      // The cancel counterpart: only while THIS row is live and a cutover is
+      // staged onto another worktree. Ungated on podsAvailable for the same
+      // reason as Make live — cancelling touches only the live-target pointer.
+      w.is_live && stagedWorktree ? { label: i18nT('pages.devFleetPage.cancel_staged_cutover'), icon: <X size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.keeps_this_checkout_the_live_target_and_discards', { staged: stagedWorktree.name }) } : null,
+      // The same cancel, co-located with the state that prompts it: the STAGED
+      // row wears the "Restart pending" badge, so it is where an operator who
+      // staged the wrong worktree actually looks. Still cancels by confirming
+      // the LIVE worktree — the item just lives where the problem is visible.
+      !w.is_live && stagedWorktree?.name === w.name && liveWorktree ? { label: i18nT('pages.devFleetPage.cancel_staged_cutover'), icon: <X size={13} className="lucide-inline" />, onClick: () => makeLive(liveWorktree), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.keeps_the_live_checkout_the_live_target_and_disc', { staged: stagedWorktree.name }) } : null,
       // QA + video drives the pod-e2e suite, which brings a pod up.
       podsAvailable ? { label: i18nT('pages.devFleetPage.qa_video'), icon: <Video size={13} className="lucide-inline" />, onClick: () => launchQa(w.name) } : null,
       podsAvailable && w.running ? { label: i18nT('pages.devFleetPage.stop_pod'), icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
@@ -1446,7 +1539,9 @@ export default function DevFleetPage() {
             {/* A staged cutover outlives the toast that announced it: without a
                 persistent marker an operator who dismissed or missed the toast
                 reads the old running image as the new one. */}
-            {w.is_staged ? <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.cutover_staged_run_the_restart_command_to_finish', { cmd: fleet?.manual_restart || 'kirocrew restart' })}>{i18nT('pages.devFleetPage.restart_pending')}</Badge> : null}
+            {w.is_staged ? <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={stagedWorktree?.name === w.name
+              ? i18nT('pages.devFleetPage.cutover_staged_run_cmd_to_finish_or_cancel', { cmd: fleet?.manual_restart || 'kirocrew restart' })
+              : i18nT('pages.devFleetPage.cutover_staged_run_the_restart_command_to_finish', { cmd: fleet?.manual_restart || 'kirocrew restart' })}>{i18nT('pages.devFleetPage.restart_pending')}</Badge> : null}
             {w.summary ? <span title={w.summary} style={{ fontSize: 11.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' } as CSSProperties}>{w.summary}</span> : null}
           </div>
           {isMainWithStepper ? renderSyncStepper() : provActive ? renderProvStepper(w) : (
@@ -1490,7 +1585,7 @@ export default function DevFleetPage() {
   else body = <div>{columnHeader}{visible.map(renderRow)}{legacyToggle}</div>
 
   const confirmDialog = (
-    <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || i18nT('pages.devFleetPage.confirm')}</Btn></>}>
+    <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{confirmReq?.cancelLabel || i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || i18nT('pages.devFleetPage.confirm')}</Btn></>}>
       <p className="text-sm text-muted m-0">{confirmReq?.desc}</p>
     </Modal>
   )

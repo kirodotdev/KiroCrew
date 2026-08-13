@@ -8311,7 +8311,15 @@
       "worktree": "Worktree",
       "worktrees": "Worktrees",
       "worktrees_count": "Worktrees ({{count}})",
-      "worktrees_created_under_a_previous_repository_na": "পূর্ববর্তী রিপোজিটরির নামে তৈরি worktree। ডিফল্টভাবে লুকানো; তবুও Prune merged এগুলো পরিষ্কার করে।"
+      "worktrees_created_under_a_previous_repository_na": "পূর্ববর্তী রিপোজিটরির নামে তৈরি worktree। ডিফল্টভাবে লুকানো; তবুও Prune merged এগুলো পরিষ্কার করে।",
+      "cancel_staged_cutover": "স্টেজ করা কাটওভার বাতিল করো",
+      "keeps_name_the_live_target_and_discards_the_stag": "{{name}} লাইভ লক্ষ্য হিসেবে থেকে যায় এবং {{staged}}-এ স্টেজ করা পরিবর্তন বাতিল হয়। কিছুই রিস্টার্ট হয় না — গেটওয়ে এখন যে কোড চালাচ্ছে তা-ই চালাতে থাকে।",
+      "keeps_this_checkout_the_live_target_and_discards": "এই চেকআউট লাইভ লক্ষ্য হিসেবে থেকে যায় এবং {{staged}}-এ স্টেজ করা পরিবর্তন বাতিল হয় (কিছুই রিস্টার্ট হয় না)",
+      "cancel_staged_cutover_2": "স্টেজ করা কাটওভার বাতিল করবে?",
+      "keep_cutover": "কাটওভার রাখো",
+      "cutover_staged_run_cmd_to_finish_or_cancel": "কাটওভার স্টেজ করা হয়েছে: গেটওয়ে পরের বার চালু হলে এই ওয়ার্কট্রি লাইভ হবে। শেষ করতে `{{cmd}}` চালাও, বা ফিরিয়ে নিতে এই সারির মেনু → স্টেজ করা কাটওভার বাতিল করো ব্যবহার করো। তার আগ পর্যন্ত গেটওয়ে আগের চেকআউটেই চলবে।",
+      "keeps_the_live_checkout_the_live_target_and_disc": "লাইভ চেকআউট লাইভ লক্ষ্য হিসেবে থেকে যায় এবং {{staged}}-এ স্টেজ করা পরিবর্তন বাতিল হয় (কিছুই রিস্টার্ট হয় না)",
+      "restarting_completes_the_pending_cutover_boots": "রিস্টার্ট করলে মুলতুবি কাটওভার সম্পূর্ণ হবে: গেটওয়ে \"{{staged}}\"-এ ফিরে আসবে, বর্তমান চেকআউটে নয়। ড্যাশবোর্ড অল্প সময়ের জন্য বিচ্ছিন্ন হয়ে নিজে থেকে আবার সংযুক্ত হবে। ফিরিয়ে নিতে চাইলে স্টেজ করা কাটওভার বাতিল করো ব্যবহার করো।"
     },
     "developer": {
       "previewSurfacesCard": {

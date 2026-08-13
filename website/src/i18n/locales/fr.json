@@ -8419,7 +8419,15 @@
       "worktree": "Worktree",
       "worktrees": "Worktrees",
       "worktrees_count": "Worktrees ({{count}})",
-      "worktrees_created_under_a_previous_repository_na": "Worktrees créés sous un ancien nom de dépôt. Masqués par défaut ; toujours pris en compte par Élaguer les fusionnés."
+      "worktrees_created_under_a_previous_repository_na": "Worktrees créés sous un ancien nom de dépôt. Masqués par défaut ; toujours pris en compte par Élaguer les fusionnés.",
+      "cancel_staged_cutover": "Annuler la bascule préparée",
+      "keeps_name_the_live_target_and_discards_the_stag": "Conserve {{name}} comme cible active et abandonne la bascule préparée vers {{staged}}. Rien ne redémarre — la passerelle continue d'exécuter le code actuel.",
+      "keeps_this_checkout_the_live_target_and_discards": "Conserve ce checkout comme cible active et abandonne la bascule préparée vers {{staged}} (rien ne redémarre)",
+      "cancel_staged_cutover_2": "Annuler la bascule préparée?",
+      "keep_cutover": "Garder la bascule",
+      "cutover_staged_run_cmd_to_finish_or_cancel": "Bascule préparée : ce worktree deviendra actif au prochain démarrage de la passerelle. Exécutez `{{cmd}}` pour la terminer, ou utilisez le menu de cette ligne → Annuler la bascule préparée pour revenir en arrière. D'ici là, la passerelle exécute toujours le checkout précédent.",
+      "keeps_the_live_checkout_the_live_target_and_disc": "Conserve le checkout actif comme cible active et abandonne la bascule préparée vers {{staged}} (rien ne redémarre)",
+      "restarting_completes_the_pending_cutover_boots": "Redémarrer termine la bascule en attente : la passerelle reviendra sur «{{staged}}», pas sur le checkout actuel. Le tableau de bord se déconnectera brièvement puis se reconnectera automatiquement. Pour revenir en arrière, utilisez plutôt Annuler la bascule préparée."
     },
     "developer": {
       "previewSurfacesCard": {

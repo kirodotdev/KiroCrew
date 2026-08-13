@@ -8419,7 +8419,15 @@
       "worktree": "Worktree",
       "worktrees": "Worktrees",
       "worktrees_count": "Worktrees ({{count}})",
-      "worktrees_created_under_a_previous_repository_na": "Worktrees creados con un nombre de repositorio anterior. Ocultos por defecto; aun así los cubre Purgar fusionados."
+      "worktrees_created_under_a_previous_repository_na": "Worktrees creados con un nombre de repositorio anterior. Ocultos por defecto; aun así los cubre Purgar fusionados.",
+      "cancel_staged_cutover": "Cancelar el cambio preparado",
+      "keeps_name_the_live_target_and_discards_the_stag": "Mantiene {{name}} como destino activo y descarta el cambio preparado hacia {{staged}}. No se reinicia nada: el gateway sigue ejecutando el código actual.",
+      "keeps_this_checkout_the_live_target_and_discards": "Mantiene este checkout como destino activo y descarta el cambio preparado hacia {{staged}} (no se reinicia nada)",
+      "cancel_staged_cutover_2": "¿Cancelar el cambio preparado?",
+      "keep_cutover": "Mantener el cambio",
+      "cutover_staged_run_cmd_to_finish_or_cancel": "Cambio preparado: este worktree se activará la próxima vez que arranque el gateway. Ejecuta `{{cmd}}` para completarlo, o usa el menú de esta fila → Cancelar el cambio preparado para deshacerlo. Hasta entonces el gateway sigue ejecutando el checkout anterior.",
+      "keeps_the_live_checkout_the_live_target_and_disc": "Mantiene el checkout activo como destino activo y descarta el cambio preparado hacia {{staged}} (no se reinicia nada)",
+      "restarting_completes_the_pending_cutover_boots": "Reiniciar completa el cambio pendiente: el gateway volverá con \"{{staged}}\", no con el checkout actual. El panel se desconectará brevemente y se reconectará automáticamente. Para deshacerlo, usa Cancelar el cambio preparado."
     },
     "developer": {
       "previewSurfacesCard": {

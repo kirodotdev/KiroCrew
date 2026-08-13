@@ -8419,7 +8419,15 @@
       "worktree": "Worktree",
       "worktrees": "Worktree",
       "worktrees_count": "Worktree ({{count}})",
-      "worktrees_created_under_a_previous_repository_na": "Worktree creati con un precedente nome del repository. Nascosti per impostazione predefinita; comunque coperti da \"Elimina i worktree uniti\"."
+      "worktrees_created_under_a_previous_repository_na": "Worktree creati con un precedente nome del repository. Nascosti per impostazione predefinita; comunque coperti da \"Elimina i worktree uniti\".",
+      "cancel_staged_cutover": "Annulla il passaggio preparato",
+      "keeps_name_the_live_target_and_discards_the_stag": "Mantiene {{name}} come destinazione attiva e scarta il passaggio preparato verso {{staged}}. Non viene riavviato nulla: il gateway continua a eseguire il codice attuale.",
+      "keeps_this_checkout_the_live_target_and_discards": "Mantiene questo checkout come destinazione attiva e scarta il passaggio preparato verso {{staged}} (non viene riavviato nulla)",
+      "cancel_staged_cutover_2": "Annullare il passaggio preparato?",
+      "keep_cutover": "Mantieni il passaggio",
+      "cutover_staged_run_cmd_to_finish_or_cancel": "Passaggio preparato: questo worktree diventerà attivo al prossimo avvio del gateway. Esegui `{{cmd}}` per completarlo, oppure usa il menu di questa riga → Annulla il passaggio preparato per annullarlo. Fino ad allora il gateway continua a eseguire il checkout precedente.",
+      "keeps_the_live_checkout_the_live_target_and_disc": "Mantiene il checkout attivo come destinazione attiva e scarta il passaggio preparato verso {{staged}} (non viene riavviato nulla)",
+      "restarting_completes_the_pending_cutover_boots": "Il riavvio completa il passaggio in sospeso: il gateway ripartirà su \"{{staged}}\", non sul checkout attuale. La dashboard si disconnetterà brevemente e si riconnetterà automaticamente. Per annullare, usa invece Annulla il passaggio preparato."
     },
     "developer": {
       "previewSurfacesCard": {

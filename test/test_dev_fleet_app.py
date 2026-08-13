@@ -3801,6 +3801,102 @@ async def test_drivable_host_with_a_stage_pending_refuses(monkeypatch, tmp_path)
 
 @pytest.mark.asyncio
 @_POSIX_ONLY
+async def test_stale_cancel_after_stage_completed_never_becomes_a_cutover(monkeypatch, tmp_path):
+    """The destructive variant of the two-tab race.
+
+    Stage B COMPLETES while tab A's cancel dialog is open: nothing is staged
+    any more and B is live. Tab A's stale POST names checkout A (which was
+    live) — without the entry gate it would fall past both cancel branches
+    into the FULL CUTOVER path and restart the gateway back into A. A request
+    carrying expected_staged must refuse (stage_changed) the moment the stage
+    it names is gone, whatever branch it would otherwise reach.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+    # Complete the staged cutover: `other` is the running checkout now and the
+    # pointer agrees with it, so nothing is staged (and the live path resolves
+    # to `other` for the same_as_running branch below the gate).
+    monkeypatch.setattr(mod, "_running_checkout", lambda: other)
+    monkeypatch.setattr(mod, "_live_worktree_path",
+                        AsyncMock(return_value=str(other)))
+    assert mod._staged_target() is None
+
+    res = await mod._make_live(str(running), expected_staged=str(other))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "stage_changed", res
+    assert "nothing is staged now" in res["error"]
+    # Crucially: no cutover side effects — no service definition written and
+    # the pointer still names the completed target.
+    assert not mod._dropin_path().exists()
+    assert mod.live_target.read_target() == other.resolve()
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_stale_cancel_refuses_when_the_live_checkout_moved(monkeypatch, tmp_path):
+    """The other stale-cancel variant: the LIVE side moved.
+
+    A cancel re-pins the checkout the operator saw as live. If a cutover to C
+    landed and a new stage appeared while the dialog sat open, the stale
+    request's path names a checkout that is no longer running — matching the
+    (re-created) stage alone would let it fall through to the cutover path
+    and restart the gateway into the old checkout. The live binding refuses.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+    # The gateway moved to a third checkout; the SAME stage happens to exist.
+    third = _mk_make_live_wt(tmp_path / "third", venv=True, dist=True)
+    monkeypatch.setattr(mod, "_running_checkout", lambda: third)
+    monkeypatch.setattr(mod, "_live_worktree_path",
+                        AsyncMock(return_value=str(third)))
+    assert mod._staged_target() == str(other)
+
+    res = await mod._make_live(str(running), expected_staged=str(other))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "stage_changed", res
+    assert "live checkout changed" in res["error"]
+    # No cutover side effects: nothing written, the stage survives.
+    assert not mod._dropin_path().exists()
+    assert mod._staged_target() == str(other)
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_cancel_refuses_when_the_stage_changed_since_confirm(monkeypatch, tmp_path):
+    """A cancel is bound to the stage the operator confirmed.
+
+    Two dashboards race: tab A opens the cancel dialog against stage A, tab B
+    cancels A and stages B, tab A submits. Without the binding the POST names
+    only the live checkout, so it would discard stage B — a stage tab A's
+    operator never saw. With ``expected_staged`` the backend refuses instead.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+    confirmed_against = tmp_path / "some-older-stage"
+
+    res = await mod._make_live(str(running),
+                               expected_staged=str(confirmed_against))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "stage_changed", res
+    # The current stage survives untouched, and the message names both sides.
+    assert mod._staged_target() == str(other)
+    assert other.name in res["error"]
+    assert confirmed_against.name in res["error"]
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_cancel_with_matching_expected_stage_proceeds(monkeypatch, tmp_path):
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+
+    res = await mod._make_live(str(running), expected_staged=str(other))
+
+    assert res.get("cancelled") is True, res
+    assert mod._staged_target() is None
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_keeps_a_pointer_selected_checkout_live(monkeypatch, tmp_path):
     """The scenario that makes deletion wrong.
 
@@ -5145,6 +5241,60 @@ async def test_fleet_payload_reports_no_reason_when_pods_work():
     )
     assert fleet["pods_available"] is True
     assert fleet["pods_unavailable_reason"] is None
+
+
+# =============================================================================
+# staged_cancel_available: the payload must mirror the _make_live cancel
+# branch's own precondition (not can_restart), NOT _gateway_service_active
+# (which also goes true for the foreground last resort, where the pointer-only
+# cancel still works). Otherwise the dashboard offers a cancel that /make-live
+# refuses with staged_cutover_pending.
+# =============================================================================
+@pytest.mark.asyncio
+async def test_staged_cancel_available_truth_table():
+    # No service backend at all: nothing to drive, cancel accepted.
+    with patch.object(mod, "_gateway_backend", return_value=None):
+        assert await mod._staged_cancel_available() is True
+    # Drivable manager (unit status ok): _make_live refuses the pointer-only
+    # cancel, so the payload must say unavailable.
+    with patch.object(mod, "_gateway_backend", return_value=object()), \
+         patch.object(mod, "_live_user_unit_status",
+                      new_callable=AsyncMock, return_value="ok"):
+        assert await mod._staged_cancel_available() is False
+    # Manager present but not drivable (e.g. system unit): cancel accepted —
+    # including the foreground-eligible codes, where _gateway_service_active
+    # would report True but can_restart stays False.
+    with patch.object(mod, "_gateway_backend", return_value=object()), \
+         patch.object(mod, "_live_user_unit_status",
+                      new_callable=AsyncMock, return_value="no_user_unit"):
+        assert await mod._staged_cancel_available() is True
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_reports_staged_cancel_available_with_stage():
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _load_cfg=lambda: None,
+        _staged_target=lambda: "/w/other",
+        _staged_cancel_available=AsyncMock(return_value=True),
+    )
+    assert fleet["staged_cancel_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_staged_cancel_false_without_stage():
+    """No stage pending: the field is False and the host is NOT probed — the
+    fleet endpoint is polled, so an unconditional service-manager probe would
+    add a subprocess per poll for a control that cannot render anyway."""
+    probe = AsyncMock(return_value=True)
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _load_cfg=lambda: None,
+        _staged_target=lambda: None,
+        _staged_cancel_available=probe,
+    )
+    assert fleet["staged_cancel_available"] is False
+    probe.assert_not_awaited()
 
 
 @pytest.mark.asyncio
