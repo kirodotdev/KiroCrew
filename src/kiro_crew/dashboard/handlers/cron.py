@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -666,6 +667,172 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
     return web.json_response({"runs": runs, "total": total})
 
 
+# Delete-route policy for the archived-session recovery path: only a temporary
+# session is blocked from deleting; incognito may delete (an active user
+# action), mirroring the live-slot ``_blocks_reads_session`` policy. The create
+# route blocks every private mode via the canonical
+# ``history.is_incognito_transcript`` classifier instead.
+def _is_temporary_transcript(persisted_mode: str) -> bool:
+    return persisted_mode == "temporary"
+
+
+async def _recognize_session(
+    state: DashboardState,
+    sk: str,
+    operation: str,
+    *,
+    blocks_persisted_mode: Callable[[str], bool],
+    error_codes: bool = False,
+) -> web.Response | None:
+    """Session-recognition gate shared by the lessons routes.
+
+    Applies one slot / restricted-key / channel-namespace / persisted-JSONL
+    cascade to every caller so the create and delete routes cannot diverge.
+    Returns a refusal :class:`web.Response`, or ``None`` when the session is
+    recognised. Every decision — allow or deny — emits a SEL audit event
+    under *operation*.
+
+    ``blocks_persisted_mode`` is the per-route policy for the
+    archived-session recovery path: create blocks every private mode (the
+    canonical ``history.is_incognito_transcript`` classifier); delete blocks
+    only ``temporary``. A ``None``
+    (unreadable or ambiguous) persisted mode always fails closed regardless
+    of policy. ``error_codes`` controls whether the 400 refusal bodies carry
+    the machine-readable ``code`` field (the delete route's error contract;
+    the create route's 400 responses predate it and stay code-less); the 403
+    refusal carries ``restricted_session`` on both routes.
+    """
+    if not sk:
+        _sel().log_api_access(
+            caller="anonymous", operation=operation, outcome="denied",
+            source="dashboard", resources="missing_session_key",
+        )
+        if error_codes:
+            return web.json_response(
+                {"error": "missing X-Session-Key", "code": "missing_session_key"},
+                status=400,
+            )
+        return web.json_response({"error": "missing X-Session-Key"}, status=400)
+    if sk == "dashboard:ui":
+        # Browser UI's static key — implicitly trusted, but the allow
+        # decision itself is still an authorization outcome and must be
+        # audited (every permission decision emits a SEL event).
+        _sel().log_api_access(
+            caller=sk, operation=operation, outcome="allowed",
+            source="dashboard", resources="dashboard_ui",
+        )
+        return None
+    slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
+    in_slots = slot_name in state._slots
+    in_restricted = sk in state._restricted_keys
+    # A channel-originated session (Slack, Telegram, Discord, Webex,
+    # WeCom, …) is a legitimate established session: its key is namespaced
+    # ``{channel}:{conversation_id}`` and the transport publishes
+    # ``session_pid`` so the gateway resolves this X-Session-Key (#232).
+    # Recognise the WHOLE channel-namespace family via the canonical
+    # ``is_channel_session_key`` — not just Slack. Two reasons this is the
+    # right gate, both already true for Slack:
+    #   * the first memory call in a fresh channel thread races the JSONL
+    #     flush (which only lands after the LLM turn completes), so a
+    #     namespace fast-path avoids a spurious HTTP 400 until the
+    #     transcript is on disk; and
+    #   * the ``_probe_persisted_session`` fallback below cannot
+    #     rescue a channel key anyway — ``slot_name`` is
+    #     ``sk.split(":", 1)[-1]`` (inner colons kept, channel prefix
+    #     dropped) while the file is ``dashboard_<safe_key>.jsonl`` with
+    #     colons folded to ``_``, so no probed name ever matches (and a
+    #     colon is now rejected outright by ``_persisted_session_path``).
+    # Before this, only ``slack:`` was accepted, so learn_add failed with
+    # HTTP 400 "unknown session" from every OTHER channel (Telegram /
+    # Discord / Webex / WeCom) even though the session is fully identified
+    # (#1268). The bare Slack thread_ts shim stays for legacy native-Slack
+    # keys. Incognito/temporary sessions are still blocked by each route's
+    # live-slot policy check (Slack is the only channel with that concept),
+    # so widening the namespace does not widen memory writes to ephemeral
+    # sessions.
+    is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.match(sk))
+    # Only consult the on-disk JSONL when the cheaper in-memory checks all
+    # fail. ``_probe_persisted_session()`` performs synchronous filesystem
+    # I/O (path resolution plus a bounded metadata head read), so it runs
+    # via ``asyncio.to_thread`` — never on the event loop (AUTOSDE
+    # ``no-blocking-call-on-event-loop``) — and only on this rare recovery
+    # path, leaving the common live-slot path free of both I/O and a thread
+    # hop. One composed call answers BOTH questions (does the session
+    # exist, and may it touch memory) from a single path resolution, so the
+    # two decisions can never be made about different files.
+    if not (in_slots or in_restricted or is_channel_ns):
+        exists, persisted_mode = await asyncio.to_thread(
+            _probe_persisted_session, slot_name
+        )
+        if not exists:
+            # Slot may have been evicted from memory (idle sweep,
+            # gateway restart) while the MCP subprocess keeps its
+            # original KIROCREW_SESSION_KEY. No session JSONL means
+            # the key genuinely does not belong to any established
+            # session. (Presence does NOT imply the session is
+            # non-ephemeral — every memory_mode writes a transcript —
+            # which is what ``persisted_mode`` below settles.)
+            _sel().log_api_access(
+                caller=sk, operation=operation, outcome="denied",
+                source="dashboard", resources="unknown_session",
+            )
+            if error_codes:
+                return web.json_response(
+                    {"error": "unknown session", "code": "unknown_session"},
+                    status=400,
+                )
+            return web.json_response({"error": "unknown session"}, status=400)
+        if persisted_mode is None or blocks_persisted_mode(persisted_mode):
+            # Archiving a tab drops the slot AND discards its
+            # ``_restricted_keys`` entry while leaving the transcript —
+            # and its ``memory_mode`` marker — on disk, so the two
+            # in-memory checks above cannot see that this session is
+            # ephemeral. The persisted mode is the only remaining
+            # evidence. ``None`` means the header was unreadable, which
+            # is NOT evidence that the call is allowed: append() writes
+            # the metadata line at file creation, so a normal session
+            # always has one. Fail closed.
+            _sel().log_api_access(
+                caller=sk, operation=operation, outcome="denied",
+                source="dashboard", resources="restricted_session_block",
+            )
+            return web.json_response(
+                {
+                    "error": "Memory writes are not allowed in this session mode.",
+                    # Machine-readable per the error-code contract; matches
+                    # the code already used for this condition at
+                    # handlers/memory.py's restricted-session refusal.
+                    "code": "restricted_session",
+                },
+                status=403,
+            )
+        # JSONL-fallback is the sole reason the call is permitted.
+        # Audit it as an allow decision so session-recovery
+        # authorization is traceable alongside the deny path above.
+        _sel().log_api_access(
+            caller=sk, operation=operation, outcome="allowed",
+            source="dashboard", resources="jsonl_fallback_recovery",
+        )
+    elif in_slots:
+        # Live in-memory slot — the common happy path. Audit so that
+        # every permission decision on this branch is traceable.
+        _sel().log_api_access(
+            caller=sk, operation=operation, outcome="allowed",
+            source="dashboard", resources="live_slot",
+        )
+    elif in_restricted:
+        _sel().log_api_access(
+            caller=sk, operation=operation, outcome="allowed",
+            source="dashboard", resources="restricted_key",
+        )
+    else:  # is_channel_ns
+        _sel().log_api_access(
+            caller=sk, operation=operation, outcome="allowed",
+            source="dashboard", resources="channel_namespace",
+        )
+    return None
+
+
 async def api_lessons_create(request: web.Request) -> web.Response:
     """POST /api/lessons — add a lesson (vector store or JSONL fallback)."""
     from kiro_crew.learn import Lesson  # noqa: F811
@@ -679,125 +846,12 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
     # Block lesson writes from restricted (incognito/temporary/guest) sessions.
     sk = request.headers.get("X-Session-Key", "")
-    if not sk:
-        _sel().log_api_access(
-            caller="anonymous", operation="learn_add", outcome="denied",
-            source="dashboard", resources="missing_session_key",
-        )
-        return web.json_response({"error": "missing X-Session-Key"}, status=400)
-    if sk != "dashboard:ui":
-        slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
-        in_slots = slot_name in state._slots
-        in_restricted = sk in state._restricted_keys
-        # A channel-originated session (Slack, Telegram, Discord, Webex,
-        # WeCom, …) is a legitimate established session: its key is namespaced
-        # ``{channel}:{conversation_id}`` and the transport publishes
-        # ``session_pid`` so the gateway resolves this X-Session-Key (#232).
-        # Recognise the WHOLE channel-namespace family via the canonical
-        # ``is_channel_session_key`` — not just Slack. Two reasons this is the
-        # right gate, both already true for Slack:
-        #   * the first learn_add in a fresh channel thread races the JSONL
-        #     flush (which only lands after the LLM turn completes), so a
-        #     namespace fast-path avoids a spurious HTTP 400 until the
-        #     transcript is on disk; and
-        #   * the ``_probe_persisted_session`` fallback below cannot
-        #     rescue a channel key anyway — ``slot_name`` is
-        #     ``sk.split(":", 1)[-1]`` (inner colons kept, channel prefix
-        #     dropped) while the file is ``dashboard_<safe_key>.jsonl`` with
-        #     colons folded to ``_``, so no probed name ever matches (and a
-        #     colon is now rejected outright by ``_persisted_session_path``).
-        # Before this, only ``slack:`` was accepted, so learn_add failed with
-        # HTTP 400 "unknown session" from every OTHER channel (Telegram /
-        # Discord / Webex / WeCom) even though the session is fully identified
-        # (#1268). The bare Slack thread_ts shim stays for legacy native-Slack
-        # keys. Incognito/temporary sessions are still blocked below by
-        # ``_is_restricted_session`` (Slack is the only channel with that
-        # concept), so widening the namespace does not widen memory writes to
-        # ephemeral sessions.
-        is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.match(sk))
-        # Only consult the on-disk JSONL when the cheaper in-memory checks all
-        # fail. ``_probe_persisted_session()`` performs synchronous filesystem
-        # I/O (path resolution plus a bounded metadata head read), so it runs
-        # via ``asyncio.to_thread`` — never on the event loop (AUTOSDE
-        # ``no-blocking-call-on-event-loop``) — and only on this rare recovery
-        # path, leaving the common live-slot path free of both I/O and a thread
-        # hop. One composed call answers BOTH questions (does the session
-        # exist, and may it write memory) from a single path resolution, so the
-        # two decisions can never be made about different files.
-        if not (in_slots or in_restricted or is_channel_ns):
-            exists, persisted_mode = await asyncio.to_thread(
-                _probe_persisted_session, slot_name
-            )
-            if not exists:
-                # Slot may have been evicted from memory (idle sweep,
-                # gateway restart) while the MCP subprocess keeps its
-                # original KIROCREW_SESSION_KEY. No session JSONL means
-                # the key genuinely does not belong to any established
-                # session. (Presence does NOT imply the session is
-                # non-ephemeral — every memory_mode writes a transcript —
-                # which is what ``persisted_mode`` below settles.)
-                _sel().log_api_access(
-                    caller=sk, operation="learn_add", outcome="denied",
-                    source="dashboard", resources="unknown_session",
-                )
-                return web.json_response({"error": "unknown session"}, status=400)
-            if persisted_mode is None or is_incognito_transcript(persisted_mode):
-                # Archiving a tab drops the slot AND discards its
-                # ``_restricted_keys`` entry while leaving the transcript —
-                # and its ``memory_mode`` marker — on disk, so the two
-                # in-memory checks above cannot see that this session is
-                # ephemeral. The persisted mode is the only remaining
-                # evidence. ``None`` means the header was unreadable, which
-                # is NOT evidence that writes are allowed: append() writes
-                # the metadata line at file creation, so a normal session
-                # always has one. Fail closed.
-                _sel().log_api_access(
-                    caller=sk, operation="learn_add", outcome="denied",
-                    source="dashboard", resources="restricted_session_block",
-                )
-                return web.json_response(
-                    {
-                        "error": "Memory writes are not allowed in this session mode.",
-                        # Machine-readable per the error-code contract; matches
-                        # the code already used for this condition at
-                        # handlers/memory.py's restricted-session refusal.
-                        "code": "restricted_session",
-                    },
-                    status=403,
-                )
-            # JSONL-fallback is the sole reason the call is permitted.
-            # Audit it as an allow decision so session-recovery
-            # authorization is traceable alongside the deny path above.
-            _sel().log_api_access(
-                caller=sk, operation="learn_add", outcome="allowed",
-                source="dashboard", resources="jsonl_fallback_recovery",
-            )
-        elif in_slots:
-            # Live in-memory slot — the common happy path. Audit so that
-            # every ``learn_add`` permission decision on this branch is
-            # traceable.
-            _sel().log_api_access(
-                caller=sk, operation="learn_add", outcome="allowed",
-                source="dashboard", resources="live_slot",
-            )
-        elif in_restricted:
-            _sel().log_api_access(
-                caller=sk, operation="learn_add", outcome="allowed",
-                source="dashboard", resources="restricted_key",
-            )
-        else:  # is_channel_ns
-            _sel().log_api_access(
-                caller=sk, operation="learn_add", outcome="allowed",
-                source="dashboard", resources="channel_namespace",
-            )
-    else:
-        # Browser UI's static key — implicitly trusted, but the allow
-        # decision itself is still an authorization outcome and must be
-        # audited (every permission decision emits a SEL event).
-        _sel().log_api_access(
-            caller=sk, operation="learn_add", outcome="allowed",
-            source="dashboard", resources="dashboard_ui",
-        )
+    refusal = await _recognize_session(
+        state, sk, "learn_add",
+        blocks_persisted_mode=is_incognito_transcript,
+    )
+    if refusal is not None:
+        return refusal
     if _is_restricted_session(state, request):
         sk = request.headers.get("X-Session-Key", "")
         logger.warning("Blocked learn_add from restricted session %s", sk)
@@ -913,10 +967,32 @@ async def api_lessons_create(request: web.Request) -> web.Response:
 async def api_lessons_delete(request: web.Request) -> web.Response:
     """DELETE /api/lessons — remove lessons by substring."""
     state: DashboardState = request.app["state"]
-    # Block lesson deletes from temporary sessions only.
+    # Require the SAME session recognition as ``api_lessons_create``, via the
+    # shared ``_recognize_session`` gate. Before this gate, deleting a lesson
+    # was LESS protected than adding one: a key that create rejects with HTTP
+    # 400 "unknown session" (forged, or a fresh background session whose
+    # transcript hasn't flushed yet) could still substring-delete any durable
+    # lesson. That asymmetry also breaks the remove-then-re-add consolidation
+    # pattern non-atomically — the destructive remove succeeds, then the
+    # re-add is refused, and the lesson is lost. Gating delete the same way
+    # makes the pattern fail closed at step one.
+    #
+    # Policy differences from create are carried by the gate's parameters:
+    # incognito sessions MAY delete (an active user action), only temporary
+    # sessions are blocked — both for live slots (``_blocks_reads_session``
+    # below) and, on the archived-session recovery path, via the persisted
+    # memory-mode probe.
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "lessons.delete",
+        blocks_persisted_mode=_is_temporary_transcript,
+        error_codes=True,
+    )
+    if refusal is not None:
+        return refusal
+    # Block lesson deletes from live temporary sessions only.
     # Incognito allows learn_remove (active user action).
     if _blocks_reads_session(state, request):
-        sk = request.headers.get("X-Session-Key", "")
         _sel().log_api_access(
             caller=sk,
             operation="lessons.delete",

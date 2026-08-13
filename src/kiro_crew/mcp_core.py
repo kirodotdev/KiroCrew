@@ -887,6 +887,7 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
         raw = ""
     message = raw or str(exc)
     counted = False
+    code = ""
     if raw:
         try:
             parsed = json.loads(raw)
@@ -897,6 +898,17 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
                 # error-body flattening or spawn_run would double-reconcile
                 # in-process rejections and close waves early.
                 counted = bool(parsed.get("counted"))
+                # Preserve the backend's machine-readable error code (e.g.
+                # ``unknown_session`` from DELETE /api/lessons) so callers can
+                # dispatch on the stable code instead of matching the
+                # human-readable wording. The body is untrusted external
+                # content, so only a short identifier-shaped value survives —
+                # anything else is dropped rather than echoed onward.
+                raw_code = parsed.get("code")
+                if isinstance(raw_code, str) and _re.fullmatch(
+                    r"[a-z0-9_.-]{1,64}", raw_code
+                ):
+                    code = raw_code
         except Exception:
             pass
     message, _ = redact_exfiltration_urls(message)
@@ -904,6 +916,8 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     out: dict = {"error": message}
     if counted:
         out["counted"] = True
+    if code:
+        out["code"] = code
     return out
 
 

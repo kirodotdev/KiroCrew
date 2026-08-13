@@ -182,8 +182,23 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
 def learn_remove(name: str, args: dict[str, Any]) -> str:
     query = args["query"]
     d = mcp_core._delete("/api/lessons", {"rule": query})
-    if d.get("error"):
-        return f"Error: {d['error']}"
+    err_val = d.get("error")
+    if err_val:
+        # Same session-scope mapping as ``learn_add``, but dispatched on the
+        # machine-readable ``code`` the delete route emits (and ``_delete``
+        # preserves) rather than the error wording, so a rephrased message
+        # cannot break the mapping. Make explicit that NOTHING was deleted, so
+        # a remove-then-re-add consolidation knows it failed closed at step
+        # one instead of assuming the destructive half went through.
+        if d.get("code") == "unknown_session":
+            return (
+                "No lessons were removed: this session is not recognised "
+                "by the gateway (no active slot, restricted key, or "
+                "persisted history found for this session key). Retry "
+                "from an established session (dashboard tab or Slack "
+                "thread), or use `kirocrew learn remove` from a shell."
+            )
+        return f"Error: {err_val}"
     return f"Removed lessons matching: {query}"
 
 
