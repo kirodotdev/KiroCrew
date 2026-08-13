@@ -925,6 +925,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             messages = mem_msgs
         total = len(messages)
         has_more = False
+        # This branch returns the whole corpus, so there is no older page to ask
+        # for. Sent anyway so the field is present on every response shape.
+        next_before = 0
     else:
         # Legacy pagination path (retained for programmatic callers).
         # Always reads from chained disk history; no in-memory offset math.
@@ -957,6 +960,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         start = max(0, end - limit)
         messages = all_msgs[start:end]
         has_more = start > 0
+        # The cursor the client should send next, in the RAW index space this
+        # slice was taken in. The client cannot derive it from the response: the
+        # returned rows are _prepare_messages output, which collapses chunk runs
+        # and drops done, so their count is not the span consumed here.
+        next_before = start
 
     prepared = _prepare_messages(messages, slot.running)
 
@@ -975,6 +983,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             ],
             "total": total,
             "has_more": has_more,
+            "next_before": next_before,
             # Seeds the context meter on open. Turn-scoped WS frames alone leave
             # it empty for a session reopened in a new tab; omitted entirely
             # (not zeroed) when genuinely unknown, so the frontend can tell
@@ -3462,6 +3471,12 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         total = len(existing.messages)
         recent = existing.messages[-200:] if total > 200 else existing.messages
         prepared = _prepare_messages(recent, existing.running)
+        # Raw index this window starts at: the frozen on-disk prefix plus the
+        # in-memory rows it skipped. has_more is derived from the same number so
+        # the flag cannot contradict the cursor -- counting only the in-memory
+        # window said "no more" for a slot with a prefix, and the client drops a
+        # cursor it was told not to use.
+        next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
         return web.json_response(
             {
                 "ok": True,
@@ -3472,7 +3487,8 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                     for q in existing._queue
                 ],
                 "total": total,
-                "has_more": total > 200,
+                "has_more": next_before > 0,
+                "next_before": next_before,
                 "memory_mode": existing.memory_mode,
                 # Return the slot's mode (and its `surface` alias) so the
                 # frontend can render the recovered slot in the correct mode
@@ -3636,6 +3652,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         {
             "ok": True,
             "key": slot.key,
+            # `total` is the full on-disk length here, so this already is the
+            # raw index the next older page starts from.
+            "next_before": total - len(recent),
             "messages": _prepare_messages(recent, slot.running),
             "queue": [
                 {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue

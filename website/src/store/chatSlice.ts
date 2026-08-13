@@ -907,26 +907,14 @@ export const fetchHistory = createAsyncThunk(
   },
 )
 
-/** Raw server rows one older-history page consumes. The handler slices
- *  all_msgs[end - limit : end] (chat_handlers.api_chat_slot_detail), so when it
- *  reports has_more this limit IS the raw span -- unlike the returned array,
- *  which _prepare_messages has already collapsed. */
-const OLDER_PAGE_RAW = 100
-
-/** Raw server rows a paged resume consumes: api_chat_slot_resume sends
- *  messages[-200:] and reports has_more only when total > 200, so a paged
- *  resume always consumed exactly this many raw rows. */
-const RESUME_PAGE_RAW = 200
+/** Rows to request per older-history page. */
+const OLDER_PAGE_LIMIT = 100
 
 async function fetchSlotDetail(key: string) {
   // No limit → backend returns all chained history (across gateway restarts).
   const d = await api.chatSlotDetail(key)
   type QueueItem = string | { content: string; id: string }
-  // This path requests no limit, so the handler returns the whole tail and
-  // reports has_more false; the raw span is therefore the entire history. Any
-  // value would do while has_more is false, but total keeps the cursor at 0
-  // rather than at a wrong index if that ever changes.
-  return { key, rawCount: d.total || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  return { key, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }
 
 /** SINGLE hydration path for the slot-detail context-meter fields — the one
@@ -1281,7 +1269,10 @@ export const resumeFromHistory = createAsyncThunk(
       dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
-    return { ok: d.ok, key: d.key, rawCount: RESUME_PAGE_RAW, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    // Without a cursor this response cannot be paged, so do not advertise more:
+    // a zero cursor beside hasMore renders an affordance that loads nothing.
+    const cursor = typeof d.next_before === 'number' ? d.next_before : null
+    return { ok: d.ok, key: d.key, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
   },
 )
 
@@ -1311,13 +1302,8 @@ export const loadOlderMessages = createAsyncThunk(
     if (!state.activeSlot || !state.slotHasMore) return null
     if (state.slotOldestIndex <= 0) return null
     const slot = state.activeSlot
-    const d = await api.chatSlotDetail(slot, OLDER_PAGE_RAW, state.slotOldestIndex)
-    // rawCount is the span of RAW server rows this page consumed, which is NOT
-    // the length of what came back: the handler returns _prepare_messages(...),
-    // which collapses chunk runs and drops done. When has_more is true the
-    // handler took exactly `limit` raw rows (start = end - limit), so the
-    // requested limit IS the span.
-    return { slot, rawCount: OLDER_PAGE_RAW, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, state.slotOldestIndex)
+    return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
   },
   {
     // Concurrency guard belongs HERE, not in the payload creator: `pending`
@@ -3165,7 +3151,7 @@ const chatSlice = createSlice({
         state._wsChunkedDuringFetch = false
       })
       .addCase(switchSlot.fulfilled, (state, action) => {
-        const { key, messages, running, hasMore, total, queue, rawCount } = action.payload
+        const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
         state.slotState = running ? 'streaming' : 'idle'
@@ -3241,7 +3227,7 @@ const chatSlice = createSlice({
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
         state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? Math.max(0, total - rawCount) : 0
+        state.slotOldestIndex = hasMore ? nextBefore : 0
         // Hydrate queued messages from the backend queue field through the
         // single shared path (hydrateQueuedBubbles) so this reducer cannot drift
         // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
@@ -3267,7 +3253,7 @@ const chatSlice = createSlice({
       })
       .addCase(refreshSlot.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages, running, hasMore, total, queue, rawCount } = action.payload
+        const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
         // Merge permission messages: prefer state perms (have frontend resolved flags)
@@ -3310,7 +3296,7 @@ const chatSlice = createSlice({
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
         state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? Math.max(0, total - rawCount) : 0
+        state.slotOldestIndex = hasMore ? nextBefore : 0
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
@@ -3431,7 +3417,7 @@ const chatSlice = createSlice({
           state.slotState = 'idle'
           state.pendingTurnSlot = null
           state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? Math.max(0, action.payload.total - action.payload.rawCount) : 0
+          state.slotOldestIndex = action.payload.hasMore ? action.payload.nextBefore : 0
         }
       })
       .addCase(deleteHistorySession.fulfilled, (state, action) => {
@@ -3454,9 +3440,7 @@ const chatSlice = createSlice({
           const fresh = merged.filter(m => !isRedeliveredMessage(state.messages, m.meta))
           state.messages = [...fresh, ...state.messages]
           state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore
-            ? Math.max(0, state.slotOldestIndex - action.payload.rawCount)
-            : 0
+          state.slotOldestIndex = action.payload.hasMore ? action.payload.nextBefore : 0
         }
       })
       .addCase(loadOlderMessages.rejected, (state) => {

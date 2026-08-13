@@ -925,7 +925,7 @@ describe('chatSlice thunks', () => {
         { role: 'user', content: 'old question', cls: '' },
         { role: 'chunk', content: 'dropped', cls: '' },
       ],
-      has_more: true, total: 250, mode: 'dashboard', surface: 'dashboard', memory_mode: 'full',
+      has_more: true, total: 250, next_before: 50, mode: 'dashboard', surface: 'dashboard', memory_mode: 'full',
     })
     const store = makeStore()
     store.dispatch(setActiveSlot('origin'))
@@ -935,10 +935,8 @@ describe('chatSlice thunks', () => {
     // Streaming scaffolding roles never enter the transcript.
     expect(s.messages.map(m => m.role)).toEqual(['user'])
     expect(s.slotHasMore).toBe(true)
-    // The cursor is a RAW index into the server's history. A paged resume always
-    // consumes exactly 200 raw rows (messages[-200:], has_more only when
-    // total > 200), however few of them survive _prepare_messages and
-    // filterMessages -- here just one of the two that arrived.
+    // The cursor is the server's raw index: only one of the two arrived rows
+    // survived filterMessages, and neither count bears on it.
     expect(s.slotOldestIndex).toBe(50)
     expect(store.getState().dashboard.slots.some(sl => sl.key === 'resumed')).toBe(true)
   })
@@ -970,12 +968,11 @@ describe('chatSlice thunks', () => {
   it('prepends an older page and tracks the remaining depth', () => {
     let s = chatReducer(initial, setActiveSlot('A'))
     // Arm the cursor the way a resume does: one resident message out of ten, so
-    // nine remain above it. loadOlder then walks the cursor back by the number of
-    // RAW messages each page returned.
+    // nine remain above it. Each page then carries the next cursor itself.
     s = chatReducer(s, lifecycle('chat/resumeFromHistory/fulfilled', 'A', {
       ok: true,
       key: 'A',
-      rawCount: 1,
+      nextBefore: 9,
       messages: [msg({ role: 'user', content: 'newest', ts: '9' })],
       hasMore: true,
       total: 10,
@@ -985,7 +982,7 @@ describe('chatSlice thunks', () => {
     expect(s.loadingOlder).toBe(true)
     s = chatReducer(s, lifecycle('chat/loadOlder/fulfilled', 'A', {
       slot: 'A',
-      rawCount: 1,
+      nextBefore: 8,
       messages: [msg({ role: 'user', content: 'older', ts: '1' })],
       hasMore: true,
       total: 10,

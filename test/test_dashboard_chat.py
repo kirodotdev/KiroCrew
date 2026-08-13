@@ -948,11 +948,16 @@ class TestSlotDetailPagination:
             assert data["has_more"] is True
             assert len(data["messages"]) == 200
             assert data["total"] == 300
+            # The cursor for the next page, in the raw index space this slice was
+            # taken in. The client cannot derive it from the response body, whose
+            # rows have already been collapsed by _prepare_messages.
+            assert data["next_before"] == 100
 
-            resp = await client.get("/api/chat/slots/test?limit=200&before=100")
+            resp = await client.get(f"/api/chat/slots/test?limit=200&before={data['next_before']}")
             data = await resp.json()
             assert len(data["messages"]) == 100
             assert data["has_more"] is False
+            assert data["next_before"] == 0
             assert data["messages"][0]["content"] == "msg 0"
 
     @pytest.mark.asyncio
@@ -1863,6 +1868,60 @@ class TestResumeDedupe:
         assert r["surface"] == "orchestrator"
         # The live slot must also carry the restored mode.
         assert state._slots["orchhist"].mode == "orchestrator"
+
+    @pytest.mark.asyncio
+    async def test_resume_from_disk_sends_the_older_history_cursor(self, tmp_path, monkeypatch):
+        """A fresh resume must send next_before. The client pages by that field
+        and treats its absence as 'no older history', so omitting it strands
+        every row outside the returned window."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        for i in range(250):
+            log.append("dashboard:deep", "user", f"m{i}")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            r = await (
+                await client.post(
+                    "/api/chat/slots/deep/resume", json={"key": "dashboard:deep"}
+                )
+            ).json()
+
+        assert r["ok"] is True
+        assert r["has_more"] is True, "250 rows past a 200-row page must report more"
+        assert "next_before" in r, "resume omitted the cursor the client pages by"
+        assert r["next_before"] == 250 - 200
+
+    @pytest.mark.asyncio
+    async def test_resume_existing_slot_cursor_counts_the_frozen_prefix(
+        self, tmp_path, monkeypatch
+    ):
+        """`total` on this branch counts only the in-memory window, so the cursor
+        has to add the frozen on-disk prefix back. Without that it points inside
+        the range it is meant to skip past, and paging silently loses rows."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:s1", "user", "hello")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
+            # A restored slot keeps its older on-disk rows outside slot.messages.
+            state._slots["s1"]._disk_older_count = 300
+            r = await (
+                await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
+            ).json()
+
+        assert r["ok"] is True
+        # window is 1 row and is entirely returned, so the cursor is the prefix.
+        assert r["next_before"] == 300, (
+            "cursor ignored _disk_older_count; it would page from inside the prefix"
+        )
+        # A cursor the client is told not to use is dead: every reducer does
+        # `hasMore ? nextBefore : 0`, so asserting the value alone would pass
+        # while the fix stayed inert for exactly the slot shape it targets.
+        assert r["has_more"] is True, (
+            "has_more counted only the in-memory window, so the client discards the cursor"
+        )
 
     @pytest.mark.asyncio
     async def test_resume_existing_slot_returns_it(self, tmp_path, monkeypatch):

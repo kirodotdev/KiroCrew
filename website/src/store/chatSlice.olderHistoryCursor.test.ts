@@ -35,7 +35,7 @@ vi.mock('../api/client', () => ({
       const lim = limit ?? 200
       const end = before !== undefined ? Math.max(0, Math.min(before, TOTAL)) : TOTAL
       const start = Math.max(0, end - lim)
-      return Promise.resolve({ messages: HISTORY.slice(start, end), has_more: start > 0, total: TOTAL })
+      return Promise.resolve({ messages: HISTORY.slice(start, end), has_more: start > 0, total: TOTAL, next_before: start })
     }),
     resumeChatSlot: vi.fn(() => Promise.resolve({ ok: true })),
   },
@@ -62,7 +62,7 @@ function resumed(store: ReturnType<typeof makeStore>) {
   const recent = HISTORY.slice(TOTAL - PAGE)
   store.dispatch(
     resumeFromHistory.fulfilled(
-      { ok: true, key: 'active', rawCount: recent.length, messages: recent, hasMore: true, total: TOTAL },
+      { ok: true, key: 'active', nextBefore: TOTAL - PAGE, messages: recent, hasMore: true, total: TOTAL },
       'req-resume',
       { key: 'active', title: 'active' },
     ),
@@ -129,11 +129,8 @@ describe('loadOlderMessages', () => {
   })
 
   it('does not overlap when the server collapses rows before returning them', async () => {
-    // _prepare_messages collapses chunk runs and drops done, so a page returns
-    // fewer rows than the raw span it consumed. Collapse is a property of the
-    // ROW, so the same row is omitted from every window it falls in. Sizing the
-    // cursor from the returned length steps it too little, and the next page
-    // re-fetches rows the previous page already delivered.
+    // A page returns fewer rows than the raw span it consumed, so only the
+    // server's cursor steps far enough to avoid re-delivering rows.
     const collapsed = (m: FakeMsg) => Number(m.content.slice(1)) % 5 === 0
     const detailMock = api.chatSlotDetail as unknown as {
       mockImplementation: (f: (s: string, l?: number, b?: number) => Promise<unknown>) => void
@@ -146,6 +143,7 @@ describe('loadOlderMessages', () => {
         messages: HISTORY.slice(start, end).filter((m) => !collapsed(m)),
         has_more: start > 0,
         total: TOTAL,
+        next_before: start,
       })
     })
 
@@ -157,5 +155,33 @@ describe('loadOlderMessages', () => {
     const contents = store.getState().chat.messages.map((m) => m.content)
     const dupes = [...new Set(contents.filter((c, i) => contents.indexOf(c) !== i))]
     expect(dupes).toEqual([])
+  })
+})
+
+describe('resume cursor', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // Both directions: without the positive case, a thrown thunk would leave
+  // hasMore false and the guard assertion would pass for the wrong reason.
+  it('advertises older history when the server sends a cursor', async () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    ;(api.resumeChatSlot as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, key: 'active', messages: [], has_more: true, total: TOTAL, next_before: TOTAL - PAGE,
+    })
+    await store.dispatch(resumeFromHistory({ key: 'active', title: 'active' }) as never)
+    expect(store.getState().chat.slotHasMore).toBe(true)
+    expect(store.getState().chat.slotOldestIndex).toBe(TOTAL - PAGE)
+  })
+
+  it('does not advertise older history when the server omits the cursor', async () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    ;(api.resumeChatSlot as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, key: 'active', messages: [], has_more: true, total: TOTAL,
+    })
+    await store.dispatch(resumeFromHistory({ key: 'active', title: 'active' }) as never)
+    expect(store.getState().chat.slotHasMore).toBe(false)
+    expect(store.getState().chat.slotOldestIndex).toBe(0)
   })
 })
