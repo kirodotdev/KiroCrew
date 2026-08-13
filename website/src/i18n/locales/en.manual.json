@@ -2928,7 +2928,10 @@
       "keep_cutover": "Keep cutover",
       "cutover_staged_run_cmd_to_finish_or_cancel": "Cutover staged: this worktree becomes live when the gateway next starts. Run `{{cmd}}` to finish it, or use this row’s menu → Cancel staged cutover to back out. The gateway is still running the previous checkout until then.",
       "keeps_the_live_checkout_the_live_target_and_disc": "Keeps the live checkout as the live target and discards the staged switch to {{staged}} (nothing restarts)",
-      "restarting_completes_the_pending_cutover_boots": "Restarting completes the pending cutover: the gateway comes back up on \"{{staged}}\", not the current checkout. The dashboard will briefly disconnect and reconnect automatically. To back out instead, use Cancel staged cutover."
+      "restarting_completes_the_pending_cutover_boots": "Restarting completes the pending cutover: the gateway comes back up on \"{{staged}}\", not the current checkout. The dashboard will briefly disconnect and reconnect automatically. To back out instead, use Cancel staged cutover.",
+      "no_checkout_found": "No Kiro Crew checkout found",
+      "no_checkout_found_help": "Dev Fleet manages the git worktrees of a Kiro Crew source checkout. None was found in your project directory, in the checkout serving this dashboard, or in the usual clone locations. Set the environment variable below, or add dev_fleet.repo_path to config.json in your Kiro Crew data directory (~/.kiro/crew by default) to make it stick, then restart the gateway.",
+      "no_checkout_found_env_example": "KIROCREW_DEVFLEET_REPO=/path/to/your/checkout"
     },
     "developerPage": {
       "tabs": {

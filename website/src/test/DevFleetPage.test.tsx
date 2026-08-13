@@ -471,6 +471,30 @@ describe('DevFleetPage', () => {
     expect(gridDiv).toBeUndefined()
   })
 
+  it('shows a setup state, not a discovery error, when no checkout was found', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify({ worktrees: [], needs_setup: true }), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('devfleet-needs-setup')).toBeInTheDocument())
+    // A first run is a question, not a failure: no alert, and nothing claiming a
+    // path is missing that the user never chose.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText('Discovery Error')).not.toBeInTheDocument()
+    expect(screen.getByText('No Kiro Crew checkout found')).toBeInTheDocument()
+    expect(screen.getByText(/KIROCREW_DEVFLEET_REPO=/)).toBeInTheDocument()
+    // Controls that act on a fleet which does not exist yet are suppressed:
+    // rendering them invites a click whose only answer is a failure toast.
+    expect(screen.queryByText('Prune merged')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Filter worktrees…')).not.toBeInTheDocument()
+    // Counts are dashed, not zeroed: "WORKTREES 0" asserts something about a
+    // fleet that was never located, which is the false certainty this fix removes.
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3)
+  })
+
   it('shows discovery error prominently when fleet returns error field', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
       const u = typeof url === 'string' ? url : (url as Request).url
@@ -482,6 +506,11 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     expect(screen.getByText('Discovery Error')).toBeInTheDocument()
     expect(screen.getByText('sandbox disabled: no git binary found')).toBeInTheDocument()
+    // The fleet is equally unknown here, so the same chrome is equally wrong:
+    // "WORKTREES 0" would assert a count nobody measured, and Prune merged has
+    // nothing to act on (it answers 409 repo_unreadable).
+    expect(screen.queryByText('Prune merged')).not.toBeInTheDocument()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3)
   })
 
   it('is registered in builtin component registry', async () => {

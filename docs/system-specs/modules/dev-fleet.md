@@ -24,6 +24,64 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 7. **Make Live** — repoint the live gateway at another worktree via a
    live-target pointer file (no service definition is ever mutated)
 
+## Main Checkout Discovery
+
+Every git operation is rooted at `MAIN_REPO`, the primary checkout whose worktrees the
+fleet manages. It is resolved in this order, first hit wins:
+
+| Tier | Source | Marker-tested? |
+|------|--------|----------------|
+| 1 | `KIROCREW_DEVFLEET_REPO` env var | no — taken verbatim |
+| 2 | `dev_fleet.repo_path` in `config.json` / `config.local.json` | no — taken verbatim |
+| 3 | `KIROCREW_PROJECT_DIR` | yes |
+| 4 | the checkout this gateway is executing from (`src/kiro_crew` layout walk) | yes |
+| 5 | conventional clone locations under `$HOME` (`kirocrew`, `KiroCrew`, `kiro-crew` directly and under `Repos`, `repos`, `src`, `Projects`, `projects`, `dev`, `git`, `code`, `workplace`) | yes |
+
+Tier 5 matches directory names case-insensitively against each parent's own listing rather than joining the guessed spellings, so the resolved path is spelled the way the filesystem spells it. A blind join succeeds against a differently-cased directory on a case-insensitive filesystem (macOS) and yields a path that does not match the ones git reports for the same tree.
+
+The marker test (`_is_kirocrew_checkout`) requires `.git`, `src/kiro_crew/` and
+`pyproject.toml` together. `.git` alone is insufficient on purpose: an unrelated
+repository adopted as the main checkout would have its worktrees listed and Pull+Build,
+rebase and worktree-removal git commands run inside it. Tiers 1–2 skip the test because
+the user named that path — a typo must surface as an error against it rather than be
+silently replaced by a discovered checkout.
+
+Module import evaluates tiers 1, 3 and 4 — two env reads and a handful of stats — because
+the module is imported from the async route-registration path. Tier 2 (a config-file read)
+and tier 5 (up to 30 candidate directories x 3 markers) run only on the subprocess executor
+in `dev_fleet_startup()`. The startup result is then normalized through
+`_resolve_primary_checkout`, so a hint naming a linked worktree still manages the whole
+fleet.
+
+When no tier resolves, `MAIN_REPO` is `""` — never a synthesized path. Discovery raises
+`RepoNotConfigured` and `/fleet` answers `{"worktrees": [], "needs_setup": true}` with no
+`error` field, which the page renders as a setup prompt. A synthesized default instead
+produces a red "Discovery Error" naming a directory the user never chose, which reads as a
+broken app rather than an unanswered question. Because `""` would make `git -C ""` operate
+on the backend's own working directory, the unresolved state also short-circuits worktree
+discovery, upstream-remote resolution, fallback-remote loading, build-pending detection,
+sync, and both background loops.
+
+Every OTHER route that resolves a worktree (`/worktree`, `/disk`, `/prune-candidates`,
+`/prune-run`, the pod routes, `/rebase`, `/make-live`) reaches `_discover_worktrees` too, so
+both unresolved states are converted once in `hmac_proxy_middleware` into a `409`:
+`RepoNotConfigured` → `{"ok": false, "code": "repo_not_configured"}`, and `RepoUnreadable`
+(a checkout was named but git cannot enumerate it) → `{"ok": false, "code":
+"repo_unreadable"}`. The boundary lives in the middleware rather than per handler so a newly
+added route cannot forget the case and answer a click with an uncaught 500. The page
+suppresses the fleet toolbar, the row-action how-to, and the stat-card counts in BOTH states
+— the fleet is unknown either way, so a count would assert a number nobody measured — which
+means those routes are not offered in the first place; the 409 is the backstop for a direct
+API caller.
+
+`/fleet` is the one route that distinguishes them: `needs_setup` for the unconfigured state,
+an `error` string for the unreadable one, which the page renders as the Discovery Error
+banner naming the path (the user chose it).
+
+When a checkout WAS named and git cannot read it, the error names the mechanism that
+supplied the path (`_repo_source_hint`) — the remedy is to edit that one, and listing both
+leaves the user guessing which they set.
+
 ## Routes
 
 Public routes are under `/apps/dev-fleet/api/*` (gateway proxy, session auth via token
@@ -35,7 +93,7 @@ verification. Route names below are relative to that prefix.
 | Route | Description |
 |-------|-------------|
 | `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (launchd: job PID; foreground last resort: run-marker pid; `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. (The bare `/health` carries the same body but is HMAC-exempt and reached only by the gateway's own internal liveness poll.) |
-| `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s). `?fresh=1` forces cache bypass. |
+| `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s). `?fresh=1` forces cache bypass. Answers `{worktrees: [], needs_setup: true}` when no main checkout was found (see Main Checkout Discovery) and `{worktrees: [], error}` when a named checkout is unreadable. |
 | `/apps/dev-fleet/api/worktree?name=` | Lazy per-branch detail: PR, commits, disk usage |
 | `/apps/dev-fleet/api/pod/logs?name=&n=` | Pod journal tail (recent N lines, default 120) |
 | `/apps/dev-fleet/api/run?id=` | Async run status + streamed output (last 60 lines) |

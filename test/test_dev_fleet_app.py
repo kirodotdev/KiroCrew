@@ -503,12 +503,25 @@ def _steps_from_script(script):
     return [s["label"] for s in _json.loads(_json.loads(m.group(1)))]
 
 
+#: The main checkout the sync tests run against. Pinned rather than ambient so the
+#: sync's refusal path (no checkout discovered) cannot decide their outcome.
+_SYNC_REPO = "/fake/main-checkout"
+
+
 async def _run_sync(mod, locked):
     """Drive _sync_start_locked with the probe stubbed; return its result dict
-    plus the generated script (None when the sync refused)."""
+    plus the generated script (None when the sync refused).
+
+    MAIN_REPO is pinned because the sync refuses outright when no checkout was
+    discovered, and these tests are about the sync's own behaviour: leaving it
+    ambient makes them pass or fail on whether the HOST running them happens to
+    sit in a Kiro Crew checkout. Assertions that quote the repo path must use
+    ``_SYNC_REPO`` rather than reading ``mod.MAIN_REPO``.
+    """
     mod._UPSTREAM_REMOTE = "origin"
     mod._SYNC_RID = None
-    with patch.object(mod, "_git", new_callable=AsyncMock, return_value="main"), \
+    with patch.object(mod, "MAIN_REPO", _SYNC_REPO), \
+         patch.object(mod, "_git", new_callable=AsyncMock, return_value="main"), \
          patch.object(mod, "_venv_python", return_value=Path("/fake/.venv/bin/python")), \
          patch.object(mod, "_trusted_bin", side_effect=lambda n: f"/usr/bin/{n}"), \
          patch.object(mod, "_write_locked_console_scripts", return_value=locked), \
@@ -563,8 +576,8 @@ async def test_refusal_remedy_is_cwd_independent_and_quoted():
     # The install target is named explicitly, never left to the shell's cwd —
     # including in the prose, so the message never shows the misleading form.
     assert "pip install -e ." not in err
-    assert f'pip install -e "{mod.MAIN_REPO}"' in err
-    assert f'git -C "{mod.MAIN_REPO}"' in err
+    assert f'pip install -e "{_SYNC_REPO}"' in err
+    assert f'git -C "{_SYNC_REPO}"' in err
 
 
 @pytest.mark.asyncio
@@ -2246,6 +2259,250 @@ async def test_fleet_handler_missing_repo_returns_error_payload():
             assert body["worktrees"] == []
             assert "main checkout not found" in body["error"]
             assert "KIROCREW_DEVFLEET_REPO" in body["error"]
+
+
+# =============================================================================
+# main-checkout discovery (no invented default path)
+# =============================================================================
+
+
+def _make_checkout(root: Path) -> Path:
+    """Create a directory carrying every Kiro Crew checkout marker."""
+    (root / ".git").mkdir(parents=True)
+    (root / "src" / "kiro_crew").mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname = 'kiro-crew'\n")
+    return root
+
+
+def test_is_kirocrew_checkout_requires_every_marker(tmp_path):
+    """A bare git repo is refused: adopting it would run Pull+Build inside it."""
+    bare = tmp_path / "some-other-repo"
+    (bare / ".git").mkdir(parents=True)
+    assert mod._is_kirocrew_checkout(str(bare)) is False
+    assert mod._is_kirocrew_checkout(str(_make_checkout(tmp_path / "kirocrew"))) is True
+    assert mod._is_kirocrew_checkout("") is False
+
+
+def test_default_main_repo_returns_empty_when_nothing_is_found(monkeypatch):
+    """No checkout resolves to "" — never to a path nobody asked for.
+
+    A synthesized default makes a first run report a missing checkout the user
+    never chose, which reads as a broken app rather than an open question.
+    """
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    with patch.object(mod, "_own_source_checkout", return_value=None):
+        assert mod._default_main_repo() == ""
+
+
+def test_default_main_repo_skips_a_project_dir_that_is_not_kirocrew(monkeypatch, tmp_path):
+    """A project directory that is some other git repo is not adopted."""
+    other = tmp_path / "other"
+    (other / ".git").mkdir(parents=True)
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(other))
+    with patch.object(mod, "_own_source_checkout", return_value=None):
+        assert mod._default_main_repo() == ""
+
+
+def test_default_main_repo_falls_back_to_the_running_checkout(monkeypatch, tmp_path):
+    """A gateway running from source manages that source tree, unconfigured."""
+    own = _make_checkout(tmp_path / "kirocrew")
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    with patch.object(mod, "_own_source_checkout", return_value=str(own)):
+        assert mod._default_main_repo() == str(own)
+
+
+def test_discover_main_repo_honors_the_config_repo_path(monkeypatch):
+    """``dev_fleet.repo_path`` is a supported alternative to the env var."""
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    with patch.object(mod, "_load_dev_fleet_cfg", return_value={"repo_path": "/opt/kc"}):
+        assert mod._discover_main_repo() == "/opt/kc"
+
+
+def test_discover_main_repo_takes_an_explicit_path_verbatim(monkeypatch):
+    """A configured path is NOT marker-tested: a typo must surface as an error
+    naming that path, not be silently swapped for a discovered checkout."""
+    monkeypatch.setenv("KIROCREW_DEVFLEET_REPO", "/typo/kirocrew")
+    with patch.object(mod, "_load_dev_fleet_cfg", return_value={"repo_path": "/opt/kc"}):
+        assert mod._discover_main_repo() == "/typo/kirocrew"
+
+
+def test_discover_main_repo_finds_a_conventional_clone_location(monkeypatch, tmp_path):
+    """A real checkout in a conventional location is found without configuration."""
+    home = tmp_path / "home"
+    checkout = _make_checkout(home / "Repos" / "KiroCrew")  # brand-ok: clone dir name
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    with patch.object(mod, "_load_dev_fleet_cfg", return_value={}), \
+         patch.object(mod, "_own_source_checkout", return_value=None), \
+         patch.object(mod.Path, "home", staticmethod(lambda: home)):
+        assert mod._discover_main_repo() == str(checkout)
+
+
+def test_discover_main_repo_uses_the_filesystem_spelling(monkeypatch, tmp_path):
+    """The returned path is spelled the way the directory is, not the way the
+    probe list guesses — a case-variant does not match what git reports."""
+    home = tmp_path / "home"
+    checkout = _make_checkout(home / "repos" / "KIROCREW")
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    with patch.object(mod, "_load_dev_fleet_cfg", return_value={}), \
+         patch.object(mod, "_own_source_checkout", return_value=None), \
+         patch.object(mod.Path, "home", staticmethod(lambda: home)):
+        assert mod._discover_main_repo() == str(checkout)
+
+
+def test_discover_main_repo_ignores_an_unmarked_conventional_location(monkeypatch, tmp_path):
+    """An empty ~/kirocrew directory does not count as a checkout."""
+    home = tmp_path / "home"
+    (home / "kirocrew").mkdir(parents=True)
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    with patch.object(mod, "_load_dev_fleet_cfg", return_value={}), \
+         patch.object(mod, "_own_source_checkout", return_value=None), \
+         patch.object(mod.Path, "home", staticmethod(lambda: home)):
+        assert mod._discover_main_repo() == ""
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_without_a_repo_never_runs_git():
+    """`git -C ""` answers for the backend's own working directory, so an
+    unresolved repo must not reach git at all."""
+    run = AsyncMock(return_value=(0, "", ""))
+    with patch.object(mod, "MAIN_REPO", ""), patch.object(mod, "_run_cmd", new=run):
+        with pytest.raises(mod.RepoNotConfigured):
+            await mod._discover_worktrees()
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upstream_remote_without_a_repo_never_runs_git():
+    run = AsyncMock(return_value=(0, "", ""))
+    with patch.object(mod, "MAIN_REPO", ""), \
+         patch.object(mod, "_UPSTREAM_REMOTE", None), \
+         patch.object(mod, "_run_cmd", new=run):
+        assert await mod._upstream_remote() == "origin"
+    run.assert_not_awaited()
+
+
+def test_build_pending_without_a_repo_is_false():
+    """Path("") is Path("."), which would stat this process's own tree."""
+    with patch.object(mod, "MAIN_REPO", ""):
+        assert mod._build_pending() is False
+
+
+@pytest.mark.asyncio
+async def test_fleet_handler_reports_needs_setup_without_an_error():
+    """No checkout found is a setup state, not a failure: the payload carries
+    ``needs_setup`` and NO ``error``, so the page asks where the checkout is
+    instead of rendering a red banner against a path the user never chose."""
+    async def unconfigured():
+        raise mod.RepoNotConfigured("no Kiro Crew checkout found to manage")
+
+    with patch.object(mod, "_fleet_refresh", new=unconfigured), \
+         patch.object(mod, "_fleet_cached", new=unconfigured):
+        app = web.Application()
+        app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/fleet")
+            assert resp.status == 200
+            body = await resp.json()
+            assert body == {"worktrees": [], "needs_setup": True}
+
+
+@pytest.mark.asyncio
+async def test_sync_refuses_without_a_repo():
+    with patch.object(mod, "MAIN_REPO", ""):
+        res = await mod._sync_start_locked()
+    assert res["ok"] is False
+    assert "no Kiro Crew checkout" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_repo_answers_a_coded_409_not_a_500():
+    """A route that resolves worktrees must not answer a first-run click with an
+    uncaught 500 and a generic failure toast. The boundary lives in the
+    middleware, so a new route cannot forget the case, and the body carries a
+    machine-readable code rather than only prose."""
+    secret = "s" * 32
+
+    async def boom(request):
+        raise mod.RepoNotConfigured("no Kiro Crew checkout found to manage")
+
+    app = web.Application(middlewares=[mod.hmac_proxy_middleware])
+    app.router.add_get("/api/prune-candidates", boom)
+    with patch.object(mod, "_load_app_secret", return_value=secret):
+        async with TestClient(TestServer(app)) as client:
+            headers = _sign_request(secret, "GET", "/api/prune-candidates")
+            resp = await client.get("/api/prune-candidates", headers=headers)
+            assert resp.status == 409
+            body = await resp.json()
+    assert body["code"] == "repo_not_configured"
+    assert body["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_unreadable_repo_answers_a_coded_409_too():
+    """A named-but-unreadable checkout has the same consequence for every route
+    except /fleet — no fleet to act on — so it gets the same boundary with its own
+    code, instead of an uncaught 500 behind a "Prune preview failed" toast."""
+    secret = "s" * 32
+
+    async def boom(request):
+        raise mod.RepoUnreadable("main checkout not found: /opt/kc is missing or not a git checkout.")
+
+    app = web.Application(middlewares=[mod.hmac_proxy_middleware])
+    app.router.add_get("/api/prune-candidates", boom)
+    with patch.object(mod, "_load_app_secret", return_value=secret):
+        async with TestClient(TestServer(app)) as client:
+            headers = _sign_request(secret, "GET", "/api/prune-candidates")
+            resp = await client.get("/api/prune-candidates", headers=headers)
+            assert resp.status == 409
+            body = await resp.json()
+    assert body["code"] == "repo_unreadable"
+
+
+@pytest.mark.asyncio
+async def test_fleet_handler_still_reports_an_unreadable_repo_as_an_error():
+    """/fleet is the one route that distinguishes them: unreadable keeps the
+    error payload (the Discovery Error banner names the path the user chose)."""
+    async def boom():
+        raise mod.RepoUnreadable("main checkout not found: /opt/kc is missing or not a git checkout.")
+
+    with patch.object(mod, "_fleet_refresh", new=boom), \
+         patch.object(mod, "_fleet_cached", new=boom):
+        app = web.Application()
+        app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/fleet")
+            body = await resp.json()
+    assert body["worktrees"] == []
+    assert "main checkout not found" in body["error"]
+    assert "needs_setup" not in body
+
+
+def test_repo_source_hint_names_the_env_var(monkeypatch):
+    monkeypatch.setenv("KIROCREW_DEVFLEET_REPO", "/typo/kirocrew")
+    assert "KIROCREW_DEVFLEET_REPO" in mod._repo_source_hint()
+    assert "config.json" not in mod._repo_source_hint()
+
+
+def test_repo_source_hint_names_the_config_key(monkeypatch):
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    with patch.object(mod, "_load_dev_fleet_cfg", return_value={"repo_path": "/typo/kc"}):
+        hint = mod._repo_source_hint()
+    assert "config.json" in hint
+    assert "environment variable" not in hint
+
+
+def test_repo_source_hint_offers_both_when_neither_is_set(monkeypatch):
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+    with patch.object(mod, "_load_dev_fleet_cfg", return_value={}):
+        hint = mod._repo_source_hint()
+    assert "KIROCREW_DEVFLEET_REPO" in hint and "config.json" in hint
 
 
 # =============================================================================
@@ -6633,7 +6890,7 @@ def test_serving_install_reason_names_both_installs_and_a_remedy(tmp_path):
 
 
 def test_serving_install_reason_is_silent_with_no_checkout_to_manage(tmp_path):
-    """MAIN_REPO defaults to ~/kirocrew whether or not it exists.
+    """A path that is not a checkout is not something Dev Fleet manages.
 
     A desktop-bundle or pip install with no source checkout is the out-of-the-box
     case; warning it to "start the gateway from <path>" names a directory that is

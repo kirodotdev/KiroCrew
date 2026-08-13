@@ -429,7 +429,7 @@ interface Worktree {
   path?: string
   provision_run_id?: string | null
 }
-interface FleetData { worktrees: Worktree[]; error?: string; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; manual_restart?: string }
+interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; manual_restart?: string }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
@@ -1259,6 +1259,12 @@ export default function DevFleetPage() {
   // bundle wrong, so reading those first sends you down the wrong trail.
   const servingReason = fleet?.serving_install_reason || null
   const isDiscoveryError = !fleetError && !!fleet?.error
+  // Its own state, not an error: the backend found no Kiro Crew checkout to
+  // manage, which on a first run is simply a question nobody has answered yet.
+  const needsSetup = !fleetError && !!fleet?.needs_setup
+  // Either way the fleet is UNKNOWN, so the same chrome is wrong: counts would
+  // assert numbers nobody measured, and the row actions have nothing to act on.
+  const noFleet = needsSetup || isDiscoveryError
   const ql = q.trim().toLowerCase()
   const matchesRow = (w: Worktree) => !ql || (w.name + ' ' + (w.branch || '')).toLowerCase().includes(ql)
   const statusRank = (w: Worktree) => (w.is_main ? 0 : w.running ? 1 : (!w.has_dist ? 3 : 2))
@@ -1578,6 +1584,13 @@ export default function DevFleetPage() {
   ) : null
   let body: ReactNode
   if (loading && !fleet) body = <ContentSkeleton rows={5} />
+  else if (needsSetup) body = (
+    <div role="region" aria-labelledby="devfleet-setup-title" data-testid="devfleet-needs-setup" style={{ padding: 24, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card)' }}>
+      <h2 id="devfleet-setup-title" style={{ margin: 0, fontWeight: 600, fontSize: 15 }}>{i18nT('pages.devFleetPage.no_checkout_found')}</h2>
+      <p style={{ margin: '8px 0 0', color: 'var(--muted)', fontSize: 14 }}>{i18nT('pages.devFleetPage.no_checkout_found_help')}</p>
+      <p style={{ margin: '8px 0 0', fontFamily: 'ui-monospace, monospace', fontSize: 13, color: 'var(--text)', overflowWrap: 'anywhere' }}>{i18nT('pages.devFleetPage.no_checkout_found_env_example')}</p>
+    </div>
+  )
   else if (error) body = isDiscoveryError
     ? <div role="alert" style={{ padding: 24, borderRadius: 8, border: '1px solid var(--danger)', background: 'var(--danger-subtle, rgba(239,68,68,0.08))' }}><p style={{ margin: 0, fontWeight: 600, color: 'var(--danger)' }}>{i18nT('pages.devFleetPage.discovery_error')}</p><p style={{ margin: '8px 0 0', color: 'var(--text)', fontSize: 14 }}>{error}</p></div>
     : <EmptyState icon={<Server size={28} className="lucide-inline" />} title={i18nT('pages.devFleetPage.backend_unavailable')} subtitle={error} />
@@ -1687,12 +1700,16 @@ export default function DevFleetPage() {
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
           <PageHeader title={i18nT('pages.devFleetPage.dev_fleet')} subtitle={i18nT('pages.devFleetPage.manage_the_git_worktrees_of_your_main_checkout_s')} />
           <div className="flex-1 overflow-y-auto px-6 pb-8 min-h-0">
+            {/* The how-to describes row actions; with no readable fleet there are
+                no rows, and instructions for absent controls read as a broken page. */}
+            {!noFleet && (
             <p className="text-[12.5px] text-muted leading-relaxed mt-3 mb-1 max-w-[860px]">
               {i18nT('pages.devFleetPage.each_row_below_is_a_git_worktree_discovered_from')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.pull_build')}</span> {i18nT('pages.devFleetPage.on_the_main_row_to_fast_forward_it_from_origin_a')} <span className="text-text-strong">{i18nT('pages.devFleetPage.pod_2')}</span> {i18nT('pages.devFleetPage.boots_any_worktree_as_an_isolated_throwaway_gate')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span> {i18nT('pages.devFleetPage.moves_a_feature_branch_onto_the_latest_main_and')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.prune')}</span> {i18nT('pages.devFleetPage.safely_removes_worktrees_whose_pr_has_already_me')}
             </p>
+            )}
             {gatewayError && (
               <div
                 role="alert"
@@ -1751,14 +1768,24 @@ export default function DevFleetPage() {
                 </div>
               </div>
             )}
+            {/* Dashes, not zeros, whenever the fleet is unknown: "WORKTREES 0" is a
+                claim about a fleet that was never read, which is the same
+                false certainty the discovery fix exists to remove. */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-3.5">
-              <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={running} accent />
-              <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={wts.length} />
-              <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={needsProv} />
-              <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={diskGb} />
+              <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={noFleet ? '—' : running} accent />
+              <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={noFleet ? '—' : wts.length} />
+              <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={noFleet ? '—' : needsProv} />
+              <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={noFleet ? '—' : diskGb} />
             </div>
             <Card>
-              <CardTitle><span className="flex items-center gap-1.5">{i18nT('pages.devFleetPage.worktrees_count', { count: wts.length })}<InfoTip text={i18nT('pages.devFleetPage.every_git_worktree_of_the_main_checkout_pull_bui')} /></span></CardTitle>
+              {/* Same reasoning as the dashed stat cards: "(0)" is a count of a
+                  fleet that was never read, so the title drops it entirely. */}
+              <CardTitle><span className="flex items-center gap-1.5">{noFleet ? i18nT('pages.devFleetPage.worktrees') : i18nT('pages.devFleetPage.worktrees_count', { count: wts.length })}{!noFleet && <InfoTip text={i18nT('pages.devFleetPage.every_git_worktree_of_the_main_checkout_pull_bui')} />}</span></CardTitle>
+              {/* Filter, sort, Prune merged and Refresh all act on a fleet that
+                  could not be read. Rendering them beside the setup card or the
+                  discovery error invites a click whose only possible answer is a
+                  failure, in the states with the least context to interpret it. */}
+              {!noFleet && (
               <div className="flex flex-wrap gap-2.5 items-center mt-3 mb-1">
                 <div className="flex-1 min-w-[140px]">
                   <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />
@@ -1791,6 +1818,7 @@ export default function DevFleetPage() {
                 <Btn danger={!busy['__prune']} onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT(busy['__prune'] ? 'pages.devFleetPage.scanning_merged' : 'pages.devFleetPage.prune_merged'))}</Btn>
                 <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
               </div>
+              )}
               <div className="overflow-x-auto -mx-1 px-1">
                 {body}
               </div>

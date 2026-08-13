@@ -139,18 +139,187 @@ def _resolve_primary_checkout(path: str) -> str:
     return path
 
 
-def _default_main_repo() -> str:
-    """Resolve the main checkout hint from env (NO subprocess at import time —
-    this module is imported from the async route-registration path and a git
-    call here would block the event loop). The hint is normalized to the
-    PRIMARY checkout in dev_fleet_startup() via the subprocess executor."""
-    explicit = os.environ.get("KIROCREW_DEVFLEET_REPO")
+class RepoNotConfigured(RuntimeError):
+    """No Kiro Crew checkout could be found, so there is no fleet to manage.
+
+    Distinct from a discovery FAILURE, where a checkout was named and git could
+    not read it: nothing is broken here, the app simply has no checkout to point
+    at. Callers render a setup state asking where the checkout is, rather than an
+    error blaming a path.
+    """
+
+
+class RepoUnreadable(RuntimeError):
+    """A checkout was named but git cannot enumerate its worktrees.
+
+    Carries the same consequence as RepoNotConfigured for every route except
+    ``/fleet``: the fleet is unknown, so no action that needs a worktree can run.
+    Typed separately so the two states can be told apart — this one names the path
+    and asks the user to fix it, that one asks where the checkout is.
+    """
+
+
+def _own_source_checkout() -> str | None:
+    """The source checkout whose code this process is EXECUTING, or None.
+
+    Derived from the location of the loaded module, so it needs no configuration
+    and cannot go stale. None for a packaged or site-packages install, which is
+    not a checkout at all.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if parent.name == "src" and (parent / "kiro_crew").is_dir():
+            return str(parent.parent)
+    return None
+
+
+def _is_kirocrew_checkout(path: str) -> bool:
+    """Whether *path* is a Kiro Crew source checkout. Blocking — stats only.
+
+    Fail-closed: every marker must be present. ``.git`` alone is not enough
+    because adopting an unrelated repository would list ITS worktrees and run
+    Pull+Build, rebase and worktree-removal git commands inside it. ``.git`` is
+    tested as a path rather than a directory since a linked worktree's is a file.
+    """
+    if not path:
+        return False
+    try:
+        p = Path(path)
+        return (
+            (p / ".git").exists()
+            and (p / "src" / "kiro_crew").is_dir()
+            and (p / "pyproject.toml").is_file()
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+# Conventional clone locations, probed in this order and ONLY as a last resort.
+# A candidate is adopted solely when it passes _is_kirocrew_checkout, so an
+# absent or unrelated directory is skipped rather than assumed; no candidate is
+# ever named in a user-facing message, because a path the user did not choose is
+# noise to them. Names are matched case-insensitively against what is on disk,
+# so only the canonical spelling is listed here.
+_CHECKOUT_DIR_NAMES = frozenset({"kirocrew", "kiro-crew"})
+_CHECKOUT_PARENT_DIRS = (
+    "", "repos", "src", "projects", "dev", "git", "code", "workplace",
+)
+
+
+def _matching_child_dirs(base: Path, wanted: frozenset[str] | set[str]) -> list[Path]:
+    """Child directories of *base* whose name is in *wanted*, compared
+    case-insensitively and returned as the filesystem spells them. Sorted so a
+    directory holding two case-variants resolves deterministically.
+    """
+    try:
+        return sorted(
+            child for child in base.iterdir()
+            if child.name.lower() in wanted and child.is_dir()
+        )
+    except (OSError, ValueError):
+        return []
+
+
+def _candidate_checkouts() -> list[str]:
+    """Conventional clone locations under the user's home, in probe order.
+
+    EVERY path segment comes from a directory listing rather than from joining
+    the guessed spellings. On a case-insensitive filesystem a blind join succeeds
+    against a differently-cased directory and yields a path that does not match
+    the ones git reports for the same tree; matching on disk also finds a clone
+    whose case is not in the name list, on any OS.
+    """
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        return []
+    # One listing of home resolves every named parent to its real spelling.
+    parents: dict[str, list[Path]] = {}
+    for child in _matching_child_dirs(home, {p for p in _CHECKOUT_PARENT_DIRS if p}):
+        parents.setdefault(child.name.lower(), []).append(child)
+    found: list[str] = []
+    for parent in _CHECKOUT_PARENT_DIRS:
+        for base in ([home] if not parent else parents.get(parent, [])):
+            found.extend(str(p) for p in _matching_child_dirs(base, _CHECKOUT_DIR_NAMES))
+    return found
+
+
+def _configured_main_repo() -> str:
+    """The operator's explicit choice of main checkout, or ``""``.
+
+    Env wins over config so a one-off override needs no file edit. Both are
+    returned VERBATIM, with no marker test: the user named this path, so a typo
+    must surface as an error against THAT path instead of being silently replaced
+    by a discovered one.
+    """
+    explicit = os.environ.get("KIROCREW_DEVFLEET_REPO", "").strip()
     if explicit:
         return explicit
-    proj = os.environ.get("KIROCREW_PROJECT_DIR")
-    if proj and (Path(proj) / ".git").exists():
-        return proj
-    return str(Path.home() / "kirocrew")
+    configured = _load_dev_fleet_cfg().get("repo_path")
+    return configured.strip() if isinstance(configured, str) else ""
+
+
+def _repo_source_hint() -> str:
+    """Where the current MAIN_REPO came from, phrased as the remedy to apply.
+
+    Blocking (reads the config files) — executor ONLY. Being on an error path is
+    not a licence to read files on the event loop: a network-backed home stalls
+    every other request while this one composes its banner.
+    """
+    if os.environ.get("KIROCREW_DEVFLEET_REPO", "").strip():
+        return "It is set by the KIROCREW_DEVFLEET_REPO environment variable."
+    configured = _load_dev_fleet_cfg().get("repo_path")
+    if isinstance(configured, str) and configured.strip():
+        return "It is set by dev_fleet.repo_path in config.json."
+    return (
+        "Point Dev Fleet at your Kiro Crew checkout with the "
+        "KIROCREW_DEVFLEET_REPO environment variable, or with "
+        "dev_fleet.repo_path in config.json."
+    )
+
+
+def _discover_main_repo() -> str:
+    """Resolve the main checkout, or ``""`` when there is none to find.
+
+    Blocking (config read + stats) — executor only; ``dev_fleet_startup`` calls
+    it there. Order: the operator's explicit choice, the active project
+    directory, the checkout this gateway runs from, then conventional clone
+    locations. Every INFERRED candidate must pass the marker test, so the fleet
+    can only ever be pointed at a real Kiro Crew checkout.
+
+    ``""`` means "no checkout found" and is deliberately not a path: inventing
+    one made the out-of-the-box dashboard report a checkout as missing that the
+    user had never asked for, hiding the real question of where theirs lives.
+    """
+    configured = _configured_main_repo()
+    if configured:
+        return configured
+    for candidate in (
+        os.environ.get("KIROCREW_PROJECT_DIR", ""),
+        _own_source_checkout() or "",
+        *_candidate_checkouts(),
+    ):
+        if _is_kirocrew_checkout(candidate):
+            return candidate
+    return ""
+
+
+def _default_main_repo() -> str:
+    """The import-time main checkout hint.
+
+    Env and stat-only tiers of ``_discover_main_repo`` (NO subprocess and no file
+    reads — this module is imported from the async route-registration path, where
+    both would block the event loop). ``dev_fleet_startup`` then re-resolves via
+    the full discovery chain and normalizes the result to the PRIMARY checkout,
+    both on the subprocess executor.
+    """
+    explicit = os.environ.get("KIROCREW_DEVFLEET_REPO", "").strip()
+    if explicit:
+        return explicit
+    for candidate in (os.environ.get("KIROCREW_PROJECT_DIR", ""), _own_source_checkout() or ""):
+        if _is_kirocrew_checkout(candidate):
+            return candidate
+    return ""
 
 
 # --- configuration ---
@@ -171,6 +340,11 @@ async def _upstream_remote() -> str:
     global _UPSTREAM_REMOTE
     if _UPSTREAM_REMOTE is not None:
         return _UPSTREAM_REMOTE
+    if not MAIN_REPO:
+        # `git -C ""` runs against this process's working directory, so a repo
+        # that never resolved must not reach git at all — it would answer for
+        # whatever tree the backend happens to sit in.
+        return "origin"
     rc, out, _ = await _run_cmd(
         ["git", "-C", MAIN_REPO, "config", f"branch.{BASE_BRANCH}.remote"],
         timeout=5,
@@ -206,6 +380,9 @@ def _build_pending() -> bool:
     dashboard never told the user there was a build to apply.
     """
     try:
+        if not MAIN_REPO:
+            # Path("") is Path("."), which would stat this process's own tree.
+            return False
         dist = Path(MAIN_REPO) / "src" / "kiro_crew" / "static" / "dist"
         if not dist.exists():
             return False
@@ -405,12 +582,8 @@ def _running_checkout() -> Path | None:
     for a packaged/site-packages install, which is not a checkout at all — the
     caller must treat that as "cannot verify" rather than as a mismatch.
     """
-    # .../<checkout>/src/kiro_crew/apps/builtins/dev_fleet/server.py
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if parent.name == "src" and (parent / "kiro_crew").is_dir():
-            return parent.parent
-    return None
+    own = _own_source_checkout()
+    return Path(own) if own else None
 
 
 def _staged_target() -> str | None:
@@ -513,6 +686,8 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
 
 async def _load_fallback_repos() -> None:
     global _FALLBACK_REPOS
+    if not MAIN_REPO:
+        return
     repos: list[str] = []
     upstream = await _upstream_remote()
     rc, out, _err = await _run_cmd(["git", "-C", MAIN_REPO, "remote"], timeout=5)
@@ -1539,6 +1714,10 @@ def _parse_worktree_porcelain(raw: str) -> list[dict]:
 
 async def _discover_worktrees() -> list[dict]:
     """List git worktrees of MAIN_REPO."""
+    if not MAIN_REPO:
+        # Nothing to discover, and `git -C ""` would silently answer for this
+        # process's own working directory. The setup state is the caller's job.
+        raise RepoNotConfigured("no Kiro Crew checkout found to manage")
     rc, stdout, stderr = await _run_cmd(
         ["git", "-C", MAIN_REPO, "worktree", "list", "--porcelain"], timeout=10
     )
@@ -1553,7 +1732,7 @@ async def _discover_worktrees() -> list[dict]:
             # ~180-char preamble, so a tight cap would surface the diagnosis and
             # swallow the fix. Keep a generous bound purely to stop an unbounded
             # stderr reaching the UI.
-            raise RuntimeError(raw[:_SANDBOX_ERR_MAX])  # already prefixed by _run_cmd
+            raise RepoUnreadable(raw[:_SANDBOX_ERR_MAX])  # already prefixed by _run_cmd
         if raw.startswith(_UNRESOLVED_TOOL_PREFIX):
             # git never ran: the HOST has no git the resolver is willing to
             # execute. Checked before the .git probe because the probe's
@@ -1562,16 +1741,15 @@ async def _discover_worktrees() -> list[dict]:
             # debug a healthy checkout (#2530). The trusted-PATH detail is
             # operator-diagnostic, so it goes to the log, not the banner.
             logger.warning("dev-fleet: %s", raw)
-            raise RuntimeError(_unresolved_tool_message("git"))
+            raise RepoUnreadable(_unresolved_tool_message("git"))
         # Every other git failure was previously swallowed into a silent [] —
         # which the UI renders as the "No worktrees found / Nothing under the
         # worktrees root yet" empty state. When MAIN_REPO is wrong that empty
-        # state is a lie: the fleet is not empty, it is unreadable. This is the
-        # default condition on packaged installs, where KIROCREW_PROJECT_DIR
-        # points at the app bundle (no .git) and discovery falls through to the
-        # hardcoded ~/kirocrew — raise instead, so api_dev_fleet_fleet's
-        # existing error path renders the Discovery Error banner with the path
-        # it tried and the remedy.
+        # state is a lie: the fleet is not empty, it is unreadable. Reaching here
+        # means a checkout WAS named — discovery only ever adopts a path that
+        # carries the Kiro Crew markers, so an unverifiable one came from the
+        # operator's own env var or config — so name it and raise, and
+        # api_dev_fleet_fleet's error path renders the Discovery Error banner.
         # The .git probe is a filesystem stat — on a wedged network mount it
         # can block indefinitely, and this branch is reachable precisely when
         # the checkout is unhealthy (git already failed or timed out against
@@ -1581,14 +1759,19 @@ async def _discover_worktrees() -> list[dict]:
             subprocess_executor(), (Path(MAIN_REPO) / ".git").exists
         )
         if not repo_is_git:
-            raise RuntimeError(
+            # Name the mechanism that supplied the path: the remedy is to edit
+            # THAT one, and a message listing both leaves the user guessing which
+            # of the two they set. Resolved on the executor with the probe above —
+            # it reads config files, and a network-backed home would otherwise
+            # stall the gateway loop on the way to rendering an error banner.
+            hint = await loop.run_in_executor(subprocess_executor(), _repo_source_hint)
+            raise RepoUnreadable(
                 f"main checkout not found: {MAIN_REPO} is missing or not a git "
-                "checkout. Set KIROCREW_DEVFLEET_REPO to your Kiro Crew checkout, "
-                "or clone it to ~/kirocrew."
+                f"checkout. {hint}"
             )
         # The repo exists but git failed for some other reason (corrupt repo,
         # permissions): surface git's own message, redacted and bounded.
-        raise RuntimeError(
+        raise RepoUnreadable(
             f"git worktree discovery failed in {MAIN_REPO}: "
             f"{_redact(raw)[:_GIT_ERR_MAX] or 'unknown git error'}"
         )
@@ -1829,11 +2012,10 @@ def _serving_install_reason_sync(
         if pkg == root or root in pkg.parents:
             return None
     if not _is_checkout(main_repo):
-        # Nothing is actually being managed. MAIN_REPO defaults to ~/kirocrew
-        # whether or not it exists, so a desktop-bundle or pip install with no
-        # source checkout — the out-of-the-box case — would otherwise get a
-        # permanent warning whose remedy ("start the gateway from <path>") names
-        # a directory that is not there. A dead-end instruction on every visit is
+        # Nothing is actually being managed: a desktop-bundle or pip install with
+        # no source checkout — the out-of-the-box case — would otherwise get a
+        # permanent warning whose remedy ("start the gateway from <path>") names a
+        # directory that is not there. A dead-end instruction on every visit is
         # how a signal gets trained away.
         return None
     return (
@@ -3058,6 +3240,8 @@ async def _sync_start_locked() -> dict:
     """Start the sync run. Caller holds _SYNC_LOCK."""
     global _SYNC_RID  # noqa: F824 (assigned below after await)
 
+    if not MAIN_REPO:
+        return {"ok": False, "error": "no Kiro Crew checkout found to manage"}
     await _warm_build_path()
     head = await _git(MAIN_REPO, "symbolic-ref", "--short", "HEAD")
     if head is None:
@@ -3521,6 +3705,12 @@ _AUTO_PRUNE_DEFAULT_INTERVAL_S = 3600
 
 async def _status_refresher() -> None:
     """Background task: periodically fetch upstream + refresh fleet cache."""
+    if not MAIN_REPO:
+        # No checkout to fetch or cache. Returning ends the task instead of
+        # logging a RepoNotConfigured traceback on every cycle forever; the
+        # resolved value only changes on restart, so there is nothing to wait for.
+        logger.info("dev-fleet: no Kiro Crew checkout found, status refresher idle")
+        return
     while True:
         try:
             remote = await _upstream_remote()
@@ -3608,7 +3798,10 @@ async def _auto_prune_reaper() -> None:
     """
     while True:
         enabled, interval = _auto_prune_cfg()
-        if enabled:
+        # MAIN_REPO is checked alongside the opt-in so an enabled reaper with no
+        # checkout idles quietly instead of logging a RepoNotConfigured
+        # traceback every cycle.
+        if enabled and MAIN_REPO:
             try:
                 res = await _auto_prune_once()
                 had_error = bool(res["failed"] or res.get("error"))
@@ -3634,6 +3827,18 @@ async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
     fresh = request.query.get("fresh") == "1"
     try:
         data = (await _fleet_refresh()) if fresh else (await _fleet_cached())
+    except RepoNotConfigured:
+        # Not an error: no checkout has been found yet. Reported as its own state
+        # (and WITHOUT an `error` field) so the page can ask where the checkout is
+        # instead of rendering a failure against a path the user never chose.
+        return web.json_response({"worktrees": [], "needs_setup": True})
+    except RepoUnreadable as exc:
+        # A checkout WAS named and git cannot read it: the page renders this as the
+        # Discovery Error banner, naming the path because the user chose it.
+        # Redacted like every other display string this module emits (and like the
+        # middleware's copy of the same exception) — git stderr can carry a remote
+        # URL with credentials in it.
+        return web.json_response({"worktrees": [], "error": _redact(str(exc))})
     except RuntimeError as exc:
         return web.json_response(
             {"worktrees": [], "error": str(exc)},  # _run_cmd already prefixes
@@ -3870,9 +4075,15 @@ async def dev_fleet_startup(app: web.Application) -> None:
     """Start the background fleet refresher on app startup."""
     global _refresher_task, _warm_task, _reaper_task, MAIN_REPO
     loop = asyncio.get_running_loop()
-    MAIN_REPO = await loop.run_in_executor(
-        subprocess_executor(), _resolve_primary_checkout, MAIN_REPO
-    )
+    # Full discovery here rather than at import: it reads config.json and stats
+    # candidate directories, both of which would block the event loop on the
+    # route-registration path. Then normalize to the primary checkout, so a hint
+    # naming a linked worktree still manages the whole fleet.
+    MAIN_REPO = await loop.run_in_executor(subprocess_executor(), _discover_main_repo)
+    if MAIN_REPO:
+        MAIN_REPO = await loop.run_in_executor(
+            subprocess_executor(), _resolve_primary_checkout, MAIN_REPO
+        )
     await _load_trusted_credential_helpers()
     await _load_fallback_repos()
     await _upstream_remote()
@@ -3883,7 +4094,10 @@ async def dev_fleet_startup(app: web.Application) -> None:
         _refresher_task = asyncio.create_task(_status_refresher())
     if _reaper_task is None or _reaper_task.done():
         _reaper_task = asyncio.create_task(_auto_prune_reaper())
-    _warm_task = asyncio.create_task(_fleet_refresh())
+    if MAIN_REPO:
+        # Skipped when unresolved: the warm-up would only raise
+        # RepoNotConfigured into a task nobody awaits.
+        _warm_task = asyncio.create_task(_fleet_refresh())
 
 
 async def dev_fleet_cleanup(app: web.Application) -> None:
@@ -3984,7 +4198,27 @@ async def hmac_proxy_middleware(request: web.Request, handler) -> web.Response:
     if not _hmac_mod.compare_digest(sig_received, expected_sig):
         return _deny("invalid proxy signature")
 
-    return await handler(request)
+    try:
+        return await handler(request)
+    except RepoNotConfigured as exc:
+        # One boundary for every route rather than a catch per handler: any route
+        # that resolves a worktree goes through _discover_worktrees, and a missed
+        # handler would answer a first-run click with an uncaught 500 and a
+        # generic "failed" toast — the worst possible message in the state that
+        # has the least context. /fleet catches both of these first and keeps its
+        # own payload shapes, so neither reaches here from /fleet.
+        return web.json_response(
+            {"ok": False, "code": "repo_not_configured", "error": str(exc)},
+            status=409,
+        )
+    except RepoUnreadable as exc:
+        # Same consequence, different cause: a checkout was named and git cannot
+        # read it, so there is still no fleet to act on. Distinct code so a client
+        # can tell "tell me where it is" from "the path you gave me is broken".
+        return web.json_response(
+            {"ok": False, "code": "repo_unreadable", "error": _redact(str(exc))},
+            status=409,
+        )
 
 
 # =============================================================================
