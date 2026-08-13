@@ -53,7 +53,15 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   }
   if (group.length) raw.push({ kind: 'group', msgs: group, startIdx: groupStart })
 
-  // Phase 2: group into turns (user message → next user message)
+  // Phase 2: group into turns (user message → next user message).
+  // Track whether the last subagent completion had synthesisPending set — if so,
+  // the assistant response in its turn is a redundant per-completion summary that
+  // synthesis will restate. Hide it from the transcript so the user only sees the
+  // completion card + the final synthesis. This check lives here (not in a
+  // pre-filter) because TurnBlock's visibility system (isVisibleInline, etc.)
+  // is the authority on what stays visible; we suppress ONLY when the backend
+  // explicitly marked the completion as having pending synthesis.
+  let _lastSubagentHadSynthesis = false
   const turns: DisplayItem[] = []
   let turnItems: TurnItem[] = []
   const hasWorkingSteps = (items: TurnItem[]) =>
@@ -76,8 +84,21 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // input, so the agent's reply belongs BELOW the card, not beside it.
     if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'nudge' || item.msg.role === 'subagent')) {
       if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
+      // Track whether this subagent completion has synthesis pending
+      _lastSubagentHadSynthesis = item.msg.role === 'subagent' &&
+        !!(item.msg.meta as Record<string, unknown> | undefined)?.synthesisPending
       turns.push(item)
+    } else if (
+      _lastSubagentHadSynthesis &&
+      item.kind === 'single' &&
+      (item.msg.role === 'assistant' || item.msg.role === 'streaming') &&
+      !isSubagentCompletionMessage(item.msg)
+    ) {
+      // Per-completion response with synthesis pending: skip it from the
+      // transcript. The synthesis turn will restate the findings.
+      _lastSubagentHadSynthesis = false
     } else {
+      _lastSubagentHadSynthesis = false
       turnItems.push(item)
     }
   }

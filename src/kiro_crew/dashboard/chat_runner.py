@@ -2904,6 +2904,11 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # (they drain one at a time and break any user-message merge), so this only
     # fires on the shape it was computed for.
     _row_meta = consumed[0].get("meta") if (is_subagent and len(consumed) == 1) else None
+    # When synthesis is pending, mark the completion so the frontend can collapse
+    # the per-completion assistant response that follows (it will be restated by
+    # the synthesis turn).
+    if is_subagent and slot._pending_synthesis and isinstance(_row_meta, dict):
+        _row_meta = {**_row_meta, "synthesisPending": True}
     slot.append(
         "subagent" if is_subagent else "inject" if (is_cron or is_recovery) else "user",
         next_msg,

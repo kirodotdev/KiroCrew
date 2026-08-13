@@ -51,6 +51,36 @@ describe('groupDisplayItems', () => {
     expect(turns.filter(isTurn)).toHaveLength(2)
   })
 
+  it('hides per-completion response when synthesisPending meta is set', () => {
+    const completion = { ...msg('subagent', COMPLETION), meta: { subagentCompletion: {}, synthesisPending: true } }
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      msg('assistant', 'spawned'),
+      completion as ChatMessage,
+      msg('assistant', 'per-completion hidden'),
+      msg('assistant', 'synthesis visible'),
+    ])
+    const assistants = turns
+      .filter(t => t.kind === 'single' && (t as { msg: ChatMessage }).msg.role === 'assistant')
+      .map(t => (t as { msg: ChatMessage }).msg.content)
+    expect(assistants).toContain('spawned')
+    expect(assistants).toContain('synthesis visible')
+    expect(assistants).not.toContain('per-completion hidden')
+  })
+
+  it('keeps per-completion response when synthesisPending is not set', () => {
+    const completion = msg('subagent', COMPLETION)
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'),
+      completion,
+      msg('assistant', 'keep this'),
+    ])
+    const assistants = turns
+      .filter(t => t.kind === 'single' && (t as { msg: ChatMessage }).msg.role === 'assistant')
+      .map(t => (t as { msg: ChatMessage }).msg.content)
+    expect(assistants).toContain('keep this')
+  })
+
   it('preserves the original message index on singles', () => {
     // idx must be the index into the INPUT array, not into the filtered output —
     // callers map display rows back to messages with it.
