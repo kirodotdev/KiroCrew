@@ -413,6 +413,80 @@ class TestLockRatchet:
         assert not _touches_map_structure(scan)
 
 
+class TestNoLockAcrossFlushAwait:
+    """The deferred flush must never hold ``_MAP_LOCK`` across its await.
+
+    Extends property 4b to the flush path: serialization happens inside the
+    guarded sync helpers, and only the already-serialized payload crosses into
+    ``asyncio.to_thread``. Two shapes would break that, and both are ratcheted
+    structurally: an ``async def`` in the module decorated ``@_guarded`` (the
+    wrapper would take the lock only to build the coroutine object — a no-op
+    that reads as protection), and a ``with _MAP_LOCK`` block inside an
+    ``async def`` whose body awaits.
+    """
+
+    @staticmethod
+    def _async_defs(tree: ast.AST):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef):
+                yield node
+
+    def test_no_async_def_is_guarded(self):
+        offenders = []
+        tree = ast.parse((SRC / "session_map.py").read_text(encoding="utf-8"))
+        for fn in self._async_defs(tree):
+            decorators = {d.id for d in fn.decorator_list if isinstance(d, ast.Name)}
+            if "_guarded" in decorators:
+                offenders.append(fn.name)
+        assert offenders == [], (
+            f"async functions decorated @_guarded: {offenders}. The wrapper "
+            "releases the lock as soon as the coroutine OBJECT is built, so the "
+            "decoration is not protection — and making it real would hold the "
+            "lock across an await."
+        )
+
+    def test_no_map_lock_block_awaits(self):
+        offenders: list[str] = []
+        tree = ast.parse((SRC / "session_map.py").read_text(encoding="utf-8"))
+        for fn in self._async_defs(tree):
+            for node in ast.walk(fn):
+                if not isinstance(node, (ast.With, ast.AsyncWith)):
+                    continue
+                holds_map_lock = any(
+                    isinstance(item.context_expr, ast.Name)
+                    and item.context_expr.id == "_MAP_LOCK"
+                    for item in node.items
+                )
+                if not holds_map_lock:
+                    continue
+                for inner in ast.walk(node):
+                    if isinstance(inner, (ast.Await, ast.AsyncFor, ast.AsyncWith)):
+                        offenders.append(f"{fn.name}:{inner.lineno}")
+        assert offenders == [], (
+            f"_MAP_LOCK is held across an await at: {offenders}. Serialize "
+            "under the lock, write off-lock — a lock held across the flush "
+            "await lets a coroutine interleave while worker threads stall."
+        )
+
+    def test_ratchet_detects_a_lock_held_across_await(self):
+        tree = ast.parse(
+            "async def f(s):\n"
+            "    with _MAP_LOCK:\n"
+            "        payload = s._serialize()\n"
+            "        await asyncio.to_thread(s._write_payload, payload)\n"
+        )
+        fns = list(self._async_defs(tree))
+        assert len(fns) == 1
+        found = False
+        for node in ast.walk(fns[0]):
+            if isinstance(node, ast.With) and any(
+                isinstance(i.context_expr, ast.Name) and i.context_expr.id == "_MAP_LOCK"
+                for i in node.items
+            ):
+                found = found or any(isinstance(n, ast.Await) for n in ast.walk(node))
+        assert found
+
+
 class TestNoAwaitInsideBatch:
     """Property 4b: no ``batched_save`` block anywhere in the tree awaits."""
 

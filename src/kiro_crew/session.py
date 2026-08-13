@@ -3791,6 +3791,18 @@ class SessionManager:
                     ):
                         self._session_map.set(key, sid, provider="claude_code", cwd=_cwd_str)
 
+            # The set() calls above run on the loop and therefore DEFER their
+            # disk write; the gateway exits via os._exit, which never cancels
+            # tasks, so nothing downstream would ever land them. This is the
+            # shutdown durability point: await the off-loop flush so a wedged
+            # filesystem cannot hold the loop past the shutdown deadline.
+            try:
+                await self._session_map.aflush()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("close_all: session map flush failed", exc_info=True)
+
             sessions = dict(self._sessions)
             self._sessions.clear()
             self._compact_cooldown_until.clear()

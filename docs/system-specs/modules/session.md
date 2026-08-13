@@ -365,8 +365,22 @@ stored and new provider names for observability.
 
 **Atomic write:** tmp file + `os.replace()` prevents corruption on crash.
 
+**Deferred flush (event loop only):** a mutation made on the event loop marks
+the map dirty and schedules a debounced flush task; the task serializes the map
+under `_MAP_LOCK` into an immutable JSON payload, then performs the tmp+rename
+in a worker thread — the loop never pays the file write inline, and `_data`
+never crosses the thread boundary. Coalescing never drops a trailing mutation
+(the task loops until it observes a clean map), and a per-snapshot ticket keeps
+a slow in-flight write from landing an older map over a newer forced one.
+`SessionMap.flush()` (sync contexts) and `SessionMap.aflush()` (awaited, for
+loop-side shutdown paths — `SessionManager.close_all()` uses it) are the
+deterministic durability points; off the loop (CLI, tests, worker threads)
+every mutation still writes inline. Losing a pending
+flush on a crash leaves a well-formed older map, never a truncated file.
+
 **Auto-prune:** `SessionMap.get()` auto-removes entries whose `.json` file
-no longer exists. `SessionMap.prune()` bulk-removes all stale entries at
+no longer exists (the entry drops from memory immediately; the file write rides
+the deferred flush). `SessionMap.prune()` bulk-removes all stale entries at
 startup.
 
 **Mapped-session enumeration:** `SessionMap.mapped_sids_by_key()` returns session

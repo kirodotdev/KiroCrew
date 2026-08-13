@@ -7,6 +7,7 @@ generic ChannelLink mirror map) for bidirectional sync.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -62,6 +63,14 @@ MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 # describing one session (Slack's ``temporary`` / ``incognito`` threads) must
 # stay collectable — one leaked row per such thread would grow without bound.
 _DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG})
+
+# How long a deferred flush waits before serializing, so a burst of mutations
+# (a subagent wave calling ``set`` once per spawn) collapses into one write
+# instead of one write per mutation. Small on purpose: the window is also how
+# much recent state a crash can lose (the file stays a well-formed OLDER map —
+# see ``_write_payload``'s tmp+rename), and durability-critical points force
+# the write through :meth:`SessionMap.flush` rather than waiting it out.
+_FLUSH_DEBOUNCE_SECS = 0.05
 
 
 def _has_durable_flag(entry: dict) -> bool:
@@ -183,11 +192,17 @@ class SessionMap:
        stale snapshot. A throwaway ``SessionMap()`` is therefore READ-ONLY —
        see ``session_transfer._join_layer_b`` for what a detached write costs.
 
-    Writes still happen synchronously on the caller's thread, which on the event
-    loop is a stall every task shares (~0.8 ms at today's map sizes, growing
-    linearly with entry count). Moving them off the loop is issue #2405, and the
-    lock is what makes that possible to attempt at all — before it, offloading a
-    single write made the map racy instead of non-blocking.
+    On the event loop, a mutation does not pay the disk write inline: it marks
+    the map dirty and a debounced flush task serializes UNDER the lock into an
+    immutable payload, then writes tmp+rename in a worker thread — ``_data``
+    never crosses the thread boundary, and the lock is never held across the
+    await (the ratchet in ``test_session_map_locking.py`` checks that). Off the
+    loop (CLI, tests, worker threads) writes stay inline and synchronous.
+    :meth:`flush` (sync) and :meth:`aflush` (awaited) are the deterministic
+    durability points; losing a pending flush leaves a well-formed OLDER file,
+    never a truncated one. The lock is what
+    makes the offload safe at all — before it, offloading a single write made
+    the map racy instead of non-blocking.
 
     SCOPE: the lock is in-PROCESS. Two gateways writing one map file would still
     lose updates, and nothing here changes that — the data-home singleton is what
@@ -201,6 +216,22 @@ class SessionMap:
         self._thread_to_session: dict[str, str] = {}  # slack_thread_ts → session_key
         self._batch_depth = 0
         self._batch_dirty = False
+        # Deferred-flush state (all mutated under _MAP_LOCK). ``_dirty`` records
+        # that in-memory state is ahead of the file; ``_flush_task`` is the one
+        # loop task owed for it. ``_snapshot_seq`` tickets each serialized
+        # snapshot and ``_written_seq`` (guarded by ``_io_lock``, not _MAP_LOCK)
+        # refuses a STALE payload: an in-flight thread write racing a forced
+        # inline write must not land an older map over a newer one. Keeping the
+        # worker's write off _MAP_LOCK is what keeps loop-side MUTATIONS from
+        # waiting on its disk I/O; the inline write paths (batch exit, flush,
+        # load-time migration) do queue behind it on _io_lock — they already
+        # paid an inline write before deferral existed, so that wait replaces
+        # like with like.
+        self._dirty = False
+        self._flush_task: asyncio.Task[None] | None = None
+        self._snapshot_seq = 0
+        self._written_seq = 0
+        self._io_lock = threading.Lock()
         self._load()
 
     @contextmanager
@@ -233,6 +264,11 @@ class SessionMap:
                 self._batch_depth -= 1
                 if self._batch_depth == 0 and self._batch_dirty:
                     self._batch_dirty = False
+                    # The batch's inline write below IS the flush for anything
+                    # deferred before the block started, so consume the dirty
+                    # mark too — otherwise an already-scheduled flush task would
+                    # wake and rewrite the identical state.
+                    self._dirty = False
                     self._write()
 
     def _load(self) -> None:
@@ -246,7 +282,7 @@ class SessionMap:
         ``asyncio.to_thread``) would hold the lock across it, so a loop-side
         ``set_slack_link`` would block on a worker's disk read and stall every
         gateway task with it. The two shared effects it does have —
-        ``_rebuild_thread_index`` and the migration ``_save`` — take the lock
+        ``_rebuild_thread_index`` and the migration ``_write`` — take the lock
         themselves, and both are bounded (see the class threading contract).
         """
         self._thread_to_session = {}
@@ -321,7 +357,13 @@ class SessionMap:
             self._data = new_data
             self._rebuild_thread_index()
             if migrated:
-                self._save()
+                # Inline, not deferred: this is a one-time legacy-format repair
+                # running from __init__ on an instance no task should capture,
+                # and readers of the FILE (a fresh instance, a cotenant scan)
+                # rely on the migrated shape being durable once construction
+                # returns. It costs nothing on the steady state — an already
+                # migrated map never takes this branch.
+                self._write()
         else:
             self._data = {}
 
@@ -371,25 +413,206 @@ class SessionMap:
 
     @_guarded
     def _save(self) -> None:
+        """Record that the file is owed a write, and arrange for one.
+
+        Three contexts, three behaviours:
+
+        - inside a :meth:`batched_save` block: mark the batch dirty; the block
+          exit writes once for the whole sequence (unchanged).
+        - on a thread running an event loop: mark dirty and schedule ONE
+          debounced flush task. The task serializes under the lock and does the
+          disk write in a worker thread, so the loop never pays the write
+          inline (issue #2405). A mutation landing while a flush is in flight
+          re-marks dirty, and the task loops until it observes a clean map, so
+          a trailing mutation is never dropped.
+        - no running loop (CLI, tests, worker threads): write inline on the
+          caller's thread. Worker threads may block on disk; the loop is the
+          only caller that must not.
+        """
         if self._batch_depth:
             self._batch_dirty = True
             return
-        self._write()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write()
+            return
+        self._dirty = True
+        task = self._flush_task
+        # ``done()`` covers a task that exited exceptionally without clearing
+        # itself; the loop-identity check covers a stale task bound to a loop
+        # that no longer runs (tests create a loop per test) — such a task can
+        # never wake, so it must not suppress scheduling on the live loop.
+        if task is None or task.done() or task.get_loop() is not loop:
+            self._flush_task = loop.create_task(self._flush_async())
+
+    @_guarded
+    def _take_pending_snapshot(self) -> tuple[str, int] | None:
+        """Atomically claim the pending flush: serialize now, or report clean.
+
+        Returns ``(payload, seq)`` when a write is owed, consuming the dirty
+        mark. Returns ``None`` — and retires ``_flush_task`` in the SAME
+        critical section — when the map is clean: clearing the task while still
+        holding the lock is what makes "task exists" a reliable reason for
+        :meth:`_save` to skip scheduling, with no window where a new mutation
+        sees a task that has already decided to exit. Retirement is
+        identity-checked so a superseded task (one whose loop went stale and
+        was replaced by :meth:`_save`) cannot un-register its replacement.
+        """
+        if not self._dirty:
+            if self._flush_task is asyncio.current_task():
+                self._flush_task = None
+            return None
+        self._dirty = False
+        return self._serialize()
+
+    @_guarded
+    def _serialize(self) -> tuple[str, int]:
+        """Snapshot ``_data`` as an immutable JSON string with a ticket.
+
+        The string is the ONLY thing that crosses the thread boundary —
+        ``_data`` itself never does. The ticket orders this snapshot against
+        every other snapshot so :meth:`_write_payload` can refuse to land a
+        stale one over a newer one.
+        """
+        self._snapshot_seq += 1
+        return json.dumps(self._data), self._snapshot_seq
+
+    async def _flush_async(self) -> None:
+        """Debounce, serialize under the lock, write off the loop; repeat.
+
+        Loops because coalescing must not lose the last write: a mutation that
+        lands while ``to_thread`` is writing re-marks dirty, and the next
+        iteration picks it up. Exits only via :meth:`_take_pending_snapshot`
+        observing a clean map (which retires the task under the lock).
+
+        The lock is NEVER held across an await — serialization happens inside
+        the guarded helpers, the write happens off-lock in a worker thread.
+        Cancellation re-owes any claimed-but-unwritten snapshot and does NOT
+        write (a cancellation handler that did disk I/O on the loop would hold
+        up the very teardown that cancelled it): pending state is landed by the
+        shutdown path awaiting :meth:`aflush`, or rescheduled by the next
+        mutation. A task cancelled before its first step never runs this body
+        at all — the same two nets cover it, because nothing here consumed the
+        dirty mark. A write failure restores the mark and retires the task so
+        a later mutation retries.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_FLUSH_DEBOUNCE_SECS)
+                snapshot = self._take_pending_snapshot()
+                if snapshot is None:
+                    return
+                payload, seq = snapshot
+                await asyncio.to_thread(self._write_payload, payload, seq)
+        except asyncio.CancelledError:
+            self._restore_dirty()
+            raise
+        except Exception:
+            logger.exception("Deferred session-map flush failed; will retry on next mutation")
+            self._restore_dirty()
+
+    @_guarded
+    def _restore_dirty(self) -> None:
+        """A claimed snapshot never landed: re-owe the flush, retire the task."""
+        self._dirty = True
+        if self._flush_task is asyncio.current_task():
+            self._flush_task = None
+
+    @_guarded
+    def _claim_for_flush(self) -> tuple[str, int] | None:
+        """Claim pending state for a durability write, or report nothing owed.
+
+        The shared predicate behind :meth:`flush` and :meth:`aflush`. Progress-
+        based, not just the dirty mark: a flush task that has already CLAIMED a
+        snapshot (consuming the mark) but whose worker-thread write has not
+        landed leaves ``_snapshot_seq`` ahead of ``_written_seq``, and treating
+        that as clean would hand the caller a stale file. A stale read of
+        ``_written_seq`` (it advances under ``_io_lock``, not this lock) only
+        errs toward one redundant write, never toward skipping a needed one.
+        """
+        if self._batch_depth:
+            return None
+        if not self._dirty and self._snapshot_seq <= self._written_seq:
+            return None
+        self._dirty = False
+        return self._serialize()
+
+    @_guarded
+    def flush(self) -> None:
+        """Force any pending deferred write to disk, synchronously.
+
+        The deterministic durability point for SYNC contexts (no running loop,
+        worker threads, tests): after this returns, the file reflects every
+        mutation made so far (a no-op inside a :meth:`batched_save` block,
+        whose exit already writes). The write queues behind any in-flight
+        worker write on ``_io_lock`` and lands with a newer ticket, so an
+        in-flight payload can never regress it. On the event loop prefer
+        :meth:`aflush`: this method blocks its calling thread on disk I/O.
+        """
+        snapshot = self._claim_for_flush()
+        if snapshot is None:
+            return
+        payload, seq = snapshot
+        self._write_payload(payload, seq)
+
+    async def aflush(self) -> None:
+        """Awaitable durability point: land pending state without blocking the loop.
+
+        Same progress-based contract as :meth:`flush`, but the disk write runs
+        in a worker thread, so a shutdown path awaiting this stays cancellable
+        and a wedged filesystem cannot hold the loop. Cancellation mid-write
+        re-owes the state (erring toward one redundant write — the orphaned
+        thread write may still land, ordered by its ticket) and re-raises so
+        the caller's deadline stays honest.
+        """
+        snapshot = self._claim_for_flush()
+        if snapshot is None:
+            return
+        payload, seq = snapshot
+        try:
+            await asyncio.to_thread(self._write_payload, payload, seq)
+        except asyncio.CancelledError:
+            self._restore_dirty()
+            raise
 
     @_guarded
     def _write(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(self._data, f)
-            os.replace(tmp_path, str(self._path))
-        except Exception:
+        payload, seq = self._serialize()
+        self._write_payload(payload, seq)
+
+    def _write_payload(self, payload: str, seq: int) -> None:
+        """Land one serialized snapshot atomically; refuse to regress.
+
+        Runs on whatever thread the caller chose — the loop-side inline path
+        under ``_MAP_LOCK``, or a worker thread WITHOUT it (holding the map
+        lock across disk I/O in a thread would make a loop-side mutation wait
+        on the disk, the very stall the deferral removes). ``_io_lock`` orders
+        concurrent writers, and the ticket check drops a payload older than one
+        already on disk, so a slow in-flight flush cannot overwrite a newer
+        forced write. Both are PER-INSTANCE: they order this instance's own
+        writers against each other, not two instances sharing the file — that
+        remains covered by the class contract's rule 3 (a throwaway
+        ``SessionMap()`` is read-only, only the live map writes). tmp+rename
+        keeps a crash from ever leaving a truncated file: the worst case is a
+        well-formed OLDER map.
+        """
+        with self._io_lock:
+            if seq <= self._written_seq:
+                return
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_path, str(self._path))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            self._written_seq = seq
 
     def _resolve_alias(self, key: str) -> "tuple[str, dict | None]":
         """Resolve *key* through the map's alias folds; return (matched_key, entry).

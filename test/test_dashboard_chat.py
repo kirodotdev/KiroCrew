@@ -9901,6 +9901,9 @@ class TestForkSlot:
         monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         session_map = SessionMap()
         session_map.set("dashboard:src", "parent-kiro-sid-abc123")
+        # A loop-side mutation defers its disk write; the fresh-instance
+        # readback below needs the file current NOW.
+        session_map.flush()
 
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")

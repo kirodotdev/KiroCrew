@@ -1123,7 +1123,9 @@ class TestPrivacyModifiers:
         await h._apply_incognito_modifier("t1", "U1", "C1", slack, sessions, "t1")
         # Assert real durability rather than that set_flag was called: a FRESH
         # map must read both flags back off disk, which is the property the
-        # restart path actually depends on.
+        # restart path actually depends on. Loop-side mutations defer their
+        # disk write, so force the flush — the deterministic durability point.
+        sessions._session_map.flush()
         fresh = SessionMap()
         assert fresh.get_flag("t1", "temporary") is True
         assert fresh.get_flag("t1", "incognito") is True
