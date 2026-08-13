@@ -739,6 +739,11 @@ describe('DevFleetPage prune failures', () => {
     fireEvent.click(screen.getByText('Prune merged'))
     await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('Select wt-a'))
+    // The footer's "Remove selected" filters by the pruneSelected state, so the
+    // deselection must COMMIT (checkbox re-rendered unchecked) before the next
+    // click — otherwise, on a loaded runner, the click captures the stale
+    // still-selected closure and the run fires instead of "Nothing selected".
+    await waitFor(() => expect(screen.getByLabelText('Select wt-a')).not.toBeChecked())
     fireEvent.click(screen.getByText('Remove selected'))
     await waitFor(() => expect(screen.getByText('Nothing selected')).toBeInTheDocument())
     expect(runCalls).toBe(0)
