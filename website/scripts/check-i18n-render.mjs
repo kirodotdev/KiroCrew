@@ -77,6 +77,7 @@ import { serveDist } from './lib/serve-dist.mjs'
 import { stubDashboardApi, logPageProblems, json } from './lib/stub-dashboard-api.mjs'
 import { SURFACES, LOCALES, VIEWPORTS, FIXTURE_DETAIL_APP } from './lib/i18n-surfaces.mjs'
 import { browserBundle } from './lib/render-scan.mjs'
+import { browserBundleSettle } from './lib/settle.mjs'
 import {
   BUCKETS,
   BUCKET_MEANING,
@@ -91,6 +92,7 @@ import {
 } from './lib/render-verdict.mjs'
 
 const SCAN_SRC = fileURLToPath(new URL('./lib/render-scan.mjs', import.meta.url))
+const SETTLE_SRC = fileURLToPath(new URL('./lib/settle.mjs', import.meta.url))
 const LEDGER = fileURLToPath(new URL('../src/i18n/render-baseline.json', import.meta.url))
 const GLOSSARY = fileURLToPath(new URL('../src/i18n/glossary.json', import.meta.url))
 /**
@@ -701,6 +703,7 @@ async function main() {
   }
 
   const scanScript = browserBundle(readFileSync(SCAN_SRC, 'utf-8'))
+  const settleScript = browserBundleSettle(readFileSync(SETTLE_SRC, 'utf-8'))
   const dnt = JSON.parse(readFileSync(GLOSSARY, 'utf-8')).dnt
   const surfaces = ONLY_SURFACE ? SURFACES.filter(s => s.id === ONLY_SURFACE) : SURFACES
   const locales = ONLY_LOCALE ? LOCALES.filter(l => l.code === ONLY_LOCALE) : LOCALES
@@ -714,7 +717,7 @@ async function main() {
   /** Surfaces this branch added — no base measurement exists for them. */
   let newSurfaces = new Set()
   try {
-    head = await sweep(browser, DIST, { scanScript, dnt, surfaces, locales, label: 'HEAD' })
+    head = await sweep(browser, DIST, { scanScript, settleScript, dnt, surfaces, locales, label: 'HEAD' })
 
     // The diff-scoped half. Everything about it is derived at runtime from two
     // trees; nothing is read from a committed number, which is the whole point.
@@ -728,7 +731,7 @@ async function main() {
       // base's. If the base tree's own scanner were used instead, any change to the
       // detector would read as a product regression (or mask one).
       const baseSweep = await sweep(browser, baseDist, {
-        scanScript, dnt, surfaces, locales, label: `base ${scope.sha.slice(0, 8)}`,
+        scanScript, settleScript, dnt, surfaces, locales, label: `base ${scope.sha.slice(0, 8)}`,
       })
       baseAll = baseSweep.all
       // A surface is NEW — base 0 — only when the base bundle had no route for its
@@ -780,7 +783,7 @@ async function main() {
  * difference between them can then only come from the bundles, never from how they
  * were measured.
  */
-async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label }) {
+async function sweep(browser, dist, { scanScript, settleScript, dnt, surfaces, locales, label }) {
   const { srv, base } = await serveDist(dist)
   /** @type {Array<{surface: string, locale: string, viewport: string, finding: object}>} */
   const all = []
@@ -790,6 +793,13 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
    * added the route" from "this branch only added the registry entry".
    */
   const unresolved = new Set()
+  /**
+   * Surface renders that never reached layout quiescence within the settle frame cap, so
+   * they were measured mid-animation -- the #1555 failure mode. Collected and reported
+   * loudly rather than trusted silently: a capped measurement is not reliable and, if it
+   * differs between HEAD and base, would flake [vs-base].
+   */
+  const capped = []
   let pseudoSeen = false
 
   try {
@@ -867,25 +877,77 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
               + 'the wrong shape for this surface (see lib/boot-api.mjs for the two shapes that '
               + 'error-boundary the whole shell). Re-run with --verbose to see the page errors.')
           }
-          // Panels that fetch after mount need a beat more; a half-rendered surface
-          // under-reports rather than failing loudly.
-          await page.waitForTimeout(surface.settle || 250)
-          // Every width this gate reports is a text measurement, and text measures
-          // differently in the fallback face than in the real one. Scanning before
-          // the webfonts land made the layout bucket differ by 2 between identical
-          // runs (artifacts.layout 4 vs 2), which would have made the whole gate
-          // flaky rather than wrong. Two rAF ticks after that let the resulting
-          // reflow finish before anything is read.
+          // Wait for the webfonts, THEN for the layout to actually stop moving, before
+          // reading any width. #1555: framer-motion drives width/layout animations in JS (a
+          // requestAnimationFrame loop writing inline style), not as CSS transitions, so the
+          // context reducedMotion:'reduce' above is inert for any component that does not
+          // itself call useReducedMotion() -- most do not, and there is no global
+          // <MotionConfig>. A fixed waitForTimeout therefore RACED those springs and the
+          // webfont reflow, so the `layout` bucket flaked run to run (the historical
+          // "artifacts.layout 4 vs 2"). Waiting on the GEOMETRY going quiescent is
+          // animation-engine-agnostic and reads the settled layout a user sees. surface.settle
+          // stays on as the async-mount FLOOR (panels that fetch after mount still get their
+          // beat), and a frame cap means an unending animation degrades to a measurement,
+          // never a hang. See lib/settle.mjs.
           await page.evaluate(() => document.fonts.ready)
-          await page.evaluate(() => new Promise(r => requestAnimationFrame(
-            () => requestAnimationFrame(() => r(null)),
-          )))
+          await page.addScriptTag({ content: settleScript })
+          const settle = await page.evaluate(
+            ({ minMs }) => window.__I18N_SETTLE.waitForLayoutStable(
+              window.__I18N_SETTLE.geometrySignature, { framesStable: 4, maxFrames: 300, minMs },
+            ),
+            { minMs: surface.settle || 250 },
+          )
+          if (settle.reason === 'cap') {
+            // The layout was still moving when the frame cap hit, so this surface was
+            // measured mid-animation. Record it; a silent capped measurement is exactly the
+            // #1555 flake with the diagnostics thrown away.
+            capped.push(`${surface.id} · ${locale.code} · ${viewport.id} (${settle.frames} frames)`)
+          }
           if (pageErrors.length) {
             die(`[${label}] ${surface.url} (${locale.code}) threw while rendering, so its `
               + 'findings would be the error boundary\'s own English copy rather than the '
               + `product's:\n${pageErrors.slice(0, 3).map(e => `      ${e}`).join('\n')}`
               + '\n    Fix the fixture shape in FIXTURE_OVERRIDES, or drop the surface from '
               + 'lib/i18n-surfaces.mjs with a comment saying why.')
+          }
+          // #1555 residual: 'Space Grotesk' / 'JetBrains Mono' load from the Google Fonts CDN with
+          // font-display:swap, and the font stylesheet applies asynchronously (rel=preload ->
+          // onload -> stylesheet). The bare `document.fonts.ready` before the settle can resolve
+          // while text is still in a WIDER fallback, and the settle then goes quiescent on that
+          // fallback layout, so the scan buckets fallback widths as phantom `layout` overflow --
+          // the residual flake (0/84 on fast hardware naturally, 8/8 with the font requests
+          // blocked). By here the settle's render activity has applied the stylesheet, so poll
+          // until the primary UI faces are actually loaded, bounded so a dead CDN cannot hang the
+          // gate. Reading scrollWidth in the scan forces the font-swap reflow, so no separate flush
+          // is needed. Self-hosting the fonts is the durable fix -- it removes the CDN race
+          // entirely; see the #1555 write-up.
+          const fontStatus = await page.evaluate(async () => {
+            // Fixed families (never interpolate untrusted/dynamic text into the font shorthand).
+            const families = ['Space Grotesk', 'JetBrains Mono']
+            // Google Fonts splits each family into unicode-range SUBSETS (basic latin, latin-ext,
+            // ...). The pseudolocale's accented glyphs live in a DIFFERENT subset from basic latin,
+            // so a default-text check() can report "loaded" off the latin subset while the accented
+            // subset is still swapping -- and the flake would survive. Check/load against the unique
+            // characters actually on the page, so we wait for exactly the subsets the rendered text
+            // uses; glyphs a family does not cover simply do not block it.
+            const sample = [...new Set(document.body.innerText.replace(/\s/g, ''))].join('').slice(0, 800) || 'Ag'
+            const ready = () => families.every(f => document.fonts.check(`1em "${f}"`, sample))
+            const deadline = Date.now() + 10000
+            while (!ready() && Date.now() < deadline) {
+              await Promise.all(families.map(f => document.fonts.load(`1em "${f}"`, sample).catch(() => {})))
+              await new Promise(r => setTimeout(r, 100))
+            }
+            return { missing: families.filter(f => !document.fonts.check(`1em "${f}"`, sample)) }
+          })
+          if (fontStatus.missing.length) {
+            // Fail LOUD as infrastructure (exit 2), never as silent PR findings: a fallback-font
+            // measurement would charge phantom `layout` overflow against an unrelated PR, which is
+            // exactly the #1555 report. This is a network/CDN problem, not a code defect.
+            die(`[${label}] ${surface.url} (${locale.code}) was measured before its webfonts `
+              + `loaded (missing: ${fontStatus.missing.join(', ')}). The gate host could not reach `
+              + `the Google Fonts CDN (fonts.gstatic.com) within 10s, so text renders in a wider `
+              + `fallback and any layout findings would be font artifacts, not real overflow. `
+              + `Restore network access or self-host the fonts (#1555), then re-run.`)
           }
           await page.addScriptTag({ content: scanScript })
 
@@ -928,7 +990,13 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
   // value comparison over all 9 shipped catalogs. The guard that used to stand here
   // required a real locale precisely so this assertion could not go quiet; that
   // requirement now belongs to that script, which the i18n runner fails closed on.
-  return { all, unresolved }
+  if (capped.length) {
+    group(`[${label}] WARNING: ${capped.length} render(s) never reached layout quiescence within `
+      + 'the settle frame cap and were measured mid-animation (the #1555 failure mode). Give the '
+      + 'offending component a useReducedMotion guard, or the surface a larger `settle` in '
+      + 'lib/i18n-surfaces.mjs. A capped measurement is not reliable:', capped)
+  }
+  return { all, unresolved, capped }
 }
 
 /**
