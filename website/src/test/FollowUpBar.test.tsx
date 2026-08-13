@@ -280,6 +280,24 @@ describe('FollowUpBar', () => {
       expect(wrapper?.className).toContain('followup-chip')
     })
 
+    it('lets the wrapped button flex inside the cap so the send segment cannot overlap the next chip', () => {
+      // Regression: in the scroll layout the button carried both `shrink-0` and
+      // the width cap, so it claimed the wrapper's full width and pushed the
+      // send segment past the wrapper box — over the next chip. The button must
+      // instead flex (`flex-1 min-w-0`) and leave the cap + `shrink-0` to the
+      // wrapper alone, which stays the sole capped flex item.
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} onSend={() => {}} layout="scroll" />)
+      const btn = screen.getByRole('button', { name: LONG })
+      expect(btn.className).toContain('flex-1')
+      expect(btn.className).toContain('min-w-0')
+      expect(btn.className).not.toContain('followup-chip')
+      expect(btn.className).not.toContain('shrink-0')
+      // The wrapper remains the capped, non-shrinking flex item.
+      const wrapper = btn.parentElement
+      expect(wrapper?.className).toContain('followup-chip')
+      expect(wrapper?.className).toContain('shrink-0')
+    })
+
     it('backs the cap class with a real max-width rule', () => {
       // jsdom does not load index.css, so the class assertions above would pass
       // with the rule deleted. Read the stylesheet directly.
