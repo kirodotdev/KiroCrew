@@ -69,6 +69,17 @@ describe('useImeGuard', () => {
     expect(result.current.isComposing(key())).toBe(false)
   })
 
+  it('the bare composition binding carries ONLY the composition handlers', () => {
+    // Pins the docblock's claim: `composition` does not auto-reset. A consumer that
+    // needs abandoned-composition recovery wires `reset()` itself, or consumes
+    // `useComposerDraft`, whose composition binding adds the blur reset. Adding a
+    // handler here changes every `{...ime.composition}` spread in the tree — do it
+    // deliberately, with the consumer audit, not by accident.
+    const { result } = renderHook(() => useImeGuard())
+    expect(Object.keys(result.current.composition).sort())
+      .toEqual(['onCompositionEnd', 'onCompositionStart'])
+  })
+
   it('clears pending timer on unmount (no stale timer callbacks after teardown)', () => {
     vi.useFakeTimers()
     const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout')

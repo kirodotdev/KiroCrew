@@ -42,6 +42,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type FocusEvent,
   type KeyboardEvent,
   type MutableRefObject,
   type SetStateAction,
@@ -130,8 +131,19 @@ export interface ComposerDraft {
   setDraft: Dispatch<SetStateAction<string>>
   /** Attach to the textarea so it grows with content up to `maxHeight`. */
   textareaRef: MutableRefObject<HTMLTextAreaElement | null>
-  /** Spread onto the input so the IME guard can see composition start/end. */
-  composition: { onCompositionStart: () => void; onCompositionEnd: () => void }
+  /**
+   * Spread onto the input so the IME guard can see composition start/end, and so
+   * an abandoned composition recovers on blur. A composition abandoned WITHOUT a
+   * `compositionend` (focus moves away mid-composition, an OS-level IME cancel)
+   * leaves the guard latched; the `onBlur` half clears it, so Enter works again
+   * when focus returns. A surface with its own blur behaviour composes the two —
+   * spreading this AFTER an own `onBlur` would silently drop that handler.
+   */
+  composition: {
+    onCompositionStart: () => void
+    onCompositionEnd: () => void
+    onBlur: <T extends HTMLElement>(e: FocusEvent<T>) => void
+  }
   /**
    * Whether this key event is an IME committing a candidate rather than a real
    * keypress. Exposed for a surface whose key handler is too rich to delegate to
@@ -303,6 +315,15 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
     e: KeyboardEvent<T>,
     submit: () => void,
   ) => {
+    // Escape while a composition is latched means the user cancelled the IME, and
+    // some IME/browser pairs deliver no `compositionend` for that cancel. Clear the
+    // latch and fall through untouched — no submit, no preventDefault — so the
+    // surface's own Escape behaviour (closing a panel, dismissing a picker) still
+    // runs.
+    if (e.key === 'Escape') {
+      ime.reset()
+      return
+    }
     if (e.key !== 'Enter' || e.shiftKey) return
     // An IME sends a final Enter to COMMIT the candidate the user just chose. Reading
     // that as a submit sends a half-written question and is unrecoverable — the text is
@@ -317,7 +338,12 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
     draft,
     setDraft,
     textareaRef,
-    composition: ime.composition,
+    composition: {
+      ...ime.composition,
+      // Focus leaving the box mid-composition means no `compositionend` is coming.
+      // Clear the latch, or the guard eats every Enter for the component's life.
+      onBlur: () => { ime.reset() },
+    },
     isComposing,
     mergeIntoDraft,
     picked,

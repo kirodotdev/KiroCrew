@@ -8,7 +8,7 @@
  * reimplementation gets wrong — not the code shape.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { StrictMode, type KeyboardEvent } from 'react'
+import { StrictMode, type FocusEvent, type KeyboardEvent } from 'react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { renderHook, act } from '@testing-library/react'
@@ -439,6 +439,60 @@ describe('useComposerDraft', () => {
       } finally {
         vi.useRealTimers()
       }
+    })
+
+    /**
+     * The recovery half of the guard's contract. A composition abandoned WITHOUT a
+     * `compositionend` (focus moves away mid-composition, an OS-level IME cancel,
+     * Escape in some IME/browser pairs) leaves the latch set. Without a recovery
+     * path every later Enter takes the composing early-return — which neither
+     * submits nor prevents default — so the surface silently inserts newlines and
+     * can never send again until it remounts.
+     */
+    describe('abandoned-composition recovery', () => {
+      const blurEvent = () =>
+        ({} as unknown as FocusEvent<HTMLTextAreaElement>)
+
+      it('submits again after a composition abandoned by blur', () => {
+        const { result } = setup()
+        const submit = vi.fn()
+        act(() => result.current.composition.onCompositionStart())
+        // No compositionEnd — focus just leaves the box mid-composition.
+        act(() => result.current.composition.onBlur(blurEvent()))
+        act(() => result.current.submitOnEnter(keyEvent(), submit))
+        expect(submit).toHaveBeenCalledTimes(1)
+      })
+
+      it('submits again after a composition abandoned by Escape', () => {
+        const { result } = setup()
+        const submit = vi.fn()
+        act(() => result.current.composition.onCompositionStart())
+        act(() => result.current.submitOnEnter(keyEvent({ key: 'Escape', keyCode: 27 }), submit))
+        expect(submit).not.toHaveBeenCalled()
+        act(() => result.current.submitOnEnter(keyEvent(), submit))
+        expect(submit).toHaveBeenCalledTimes(1)
+      })
+
+      it('leaves Escape itself to the surface: no submit, no preventDefault', () => {
+        // A surface's own Escape behaviour (closing the panel, dismissing a picker)
+        // must still run — the reset is a side effect, not a claim on the key.
+        const { result } = setup()
+        const submit = vi.fn()
+        const e = keyEvent({ key: 'Escape', keyCode: 27 })
+        act(() => result.current.submitOnEnter(e, submit))
+        expect(submit).not.toHaveBeenCalled()
+        expect(e.preventDefault).not.toHaveBeenCalled()
+      })
+
+      it('still blocks a genuine composition Enter after recovery is wired', () => {
+        // Recovery must not loosen the guard: between compositionStart and blur or
+        // Escape, an Enter is an IME commit and must not send.
+        const { result } = setup()
+        const submit = vi.fn()
+        act(() => result.current.composition.onCompositionStart())
+        act(() => result.current.submitOnEnter(keyEvent(), submit))
+        expect(submit).not.toHaveBeenCalled()
+      })
     })
   })
 })

@@ -105,4 +105,29 @@ describe('SideChat Enter key', () => {
     await settle()
     expect(sideTurn).not.toHaveBeenCalled()
   })
+
+  /**
+   * Recovery: a composition abandoned without a compositionEnd (focus moved away,
+   * an OS-level IME cancel) must not latch the guard forever. Before the recovery
+   * wiring, this panel could never send again until it remounted — the guard that
+   * exists to save one message ate all of them.
+   */
+  it('sends again after a composition abandoned by blur', async () => {
+    const box = render()
+    fireEvent.compositionStart(box)
+    // No compositionEnd — focus just leaves the box mid-composition.
+    fireEvent.blur(box)
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))
+    expect(sideTurn.mock.calls[0][1]).toBe('a question')
+  })
+
+  it('sends again after a composition abandoned by Escape', async () => {
+    const box = render()
+    fireEvent.compositionStart(box)
+    fireEvent.keyDown(box, { key: 'Escape' })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))
+    expect(sideTurn.mock.calls[0][1]).toBe('a question')
+  })
 })
