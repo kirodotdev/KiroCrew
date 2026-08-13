@@ -417,6 +417,23 @@ interacts with cron's auto-pause.
 ask_supervisor(wall, question, attempts[], options[])
 ```
 
+**Revision-3 addendum — an escalation is a durable STATE OBJECT, not a sent
+message** (convergent with LoopX's "concrete user gate", credited: the
+open-source loop-engineering kernel independently reached the same design).
+Phase 0's Finding 12 showed the send-shaped version failing exactly as a send
+fails: delivery degraded silently and a well-behaved agent waited politely for
+4.5 hours on a question that had never arrived. A gate object fixes the class,
+not the instance: `ask_supervisor` WRITES a pending gate into the job's state
+(question, wall, attempts, options, created_at), the dashboard renders every
+open gate — visibility no longer depends on any one channel delivering — and
+the "delivery receipt" Phase 1 asked for becomes trivial: the receipt is the
+gate existing in state. Two properties carry over from Phase 0 observations:
+a gate blocks only the lane that needs the answer (copywriting-warden's
+cycle 6 kept assessing while its PR lane was gated — that behaviour becomes
+the mechanism, matching LoopX's audited safe-fallback rule), and an unanswered
+gate past its SLA still triggers the file-publicly fallback rather than
+indefinite waiting.
+
 **`wall` classifies what stopped the agent, and it decides whether the attempts
 gate applies.** Revision 1 required two distinct prior attempts unconditionally.
 That is wrong for one of the two kinds of wall an agent can hit, and the two are
@@ -684,6 +701,20 @@ adds nothing but a different reset policy — accumulating instead of rolling �
 supervisor top-ups. That is a small, safe change with no behavioural theory
 attached, and it is the only part of revision 1's Phase 3 that is unambiguously
 worth building.
+
+**Revision-3 addendum — debit after validated writeback, not at wake**
+(convergent with LoopX's "quota spend only after a completed, validated slice";
+its complementary rule — quiet skips, preflight failures and dry-runs do not
+spend — independently reproduces this RFC's §4/§7 position that honest idle
+must never cost the agent anything). Debiting at wake makes the ceiling a tax
+on being scheduled; debiting after the wake's `agent_sleep` record lands makes
+it a tax on *claimed work*, which is the thing worth bounding. Concretely: a
+wake that dies to timeout or transient error consumes no budget (it already
+lost its work — Phase 0 lost two wakes this way); a wake that completes debits
+one slot when its `did` record persists. This also gives Phase 3a its audit
+hook for free: every debit points at a `did`, so the balance is a countable
+claim log rather than a wake counter, and Finding 7's audit view can render
+spend against evidence directly.
 
 Dormancy stays as revision 1 specified: **zero balance auto-pauses the job and
 leaves the life directory intact**, resumable only by a human. An agent that ran
