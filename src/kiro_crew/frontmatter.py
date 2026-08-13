@@ -13,7 +13,10 @@ belongs to a block scalar, and honoring it once broke
 leniency (it is a fail-closed gate, and narrowing what it reads as
 ``always:``/``triggers:`` would turn refusals into acceptances). So the
 scanner logic lives here exactly once, and each caller names its accepted
-grammar explicitly via a :class:`FrontmatterDialect`.
+grammar explicitly via a :class:`FrontmatterDialect`. The skill-provider
+preview (``dashboard/handlers/discover.py``) deliberately shares
+:data:`SKILL_LOADER` rather than owning a dialect: what the preview shows
+must match what the skills loader computes after install.
 
 This is deliberately NOT a YAML parser and must not grow into one: values are
 single-line strings apart from the minimal block-scalar folding below, and no
@@ -41,20 +44,16 @@ _COLUMN0_BLOCK_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 # whitespace (including blank lines) may precede the opening fence.
 _LEADING_WS_BLOCK_RE = re.compile(r"^\s*---\n(.*?)\n---", re.DOTALL)
 
-# How the frontmatter block is located within the document. Each mode
-# reproduces one caller's historical fence-matching behavior byte for byte;
-# they are not interchangeable (e.g. "prefix_find" slices the block at a
-# fixed offset of 4, so an opener with trailing text bleeds into the block).
-Extraction = Literal["column0_fence", "line_scan", "leading_ws_fence", "prefix_find"]
+# How the frontmatter block is located within the document. Each mode is the
+# fence grammar of the dialects that name it; they are not interchangeable.
+Extraction = Literal["column0_fence", "line_scan", "leading_ws_fence"]
 
 # Whether an indented ``key: value`` line is a field or prose.
 # - "reject_indented": any leading whitespace (space or tab) makes the line
 #   prose. The skills loader depends on this: an indented occurrence belongs
 #   to the enclosing block scalar, not the frontmatter.
-# - "reject_space_indented": only a leading space disqualifies; a tab-indented
-#   key is (historically) accepted.
 # - "accept_indented": indentation is ignored; the key is stripped and used.
-IndentPolicy = Literal["reject_indented", "reject_space_indented", "accept_indented"]
+IndentPolicy = Literal["reject_indented", "accept_indented"]
 
 
 @dataclass(frozen=True)
@@ -119,15 +118,6 @@ SKILL_UPDATE = FrontmatterDialect(
     strip_quotes=False,
     first_key_wins=True,
     resolve_block_scalars=True,
-)
-
-# ``dashboard/handlers/discover.py`` skill-provider preview. Opener located by
-# prefix + fixed offset, tab-indented keys accepted, values kept verbatim,
-# no block-scalar resolution.
-PROVIDER_PREVIEW = FrontmatterDialect(
-    extraction="prefix_find",
-    indent_policy="reject_space_indented",
-    strip_quotes=False,
 )
 
 
@@ -214,8 +204,7 @@ def split_frontmatter(text: str, dialect: FrontmatterDialect) -> tuple[dict[str,
     that consumes it: the stripped text after the closing fence line). The
     other modes return an arbitrary unconsumed remainder — ``column0_fence``
     and ``leading_ws_fence`` cut immediately after the ``---`` closer token
-    (mid-line when the closer carries trailing text), and ``prefix_find``'s
-    remainder still BEGINS with the ``\\n---`` closer — so do not render it
+    (mid-line when the closer carries trailing text) — so do not render it
     as a document body.
     """
     lines, body = _extract_block(text, dialect.extraction)
@@ -254,17 +243,6 @@ def _extract_block(
                 body = "\n".join(lines[index + 1 :]).strip() if want_body else ""
                 return lines[1:index], body
         return None, text
-    if extraction == "prefix_find":
-        # Opener by prefix, block sliced at the fixed offset of 4. When the
-        # opener line carries trailing text the slice starts mid-line —
-        # preserved verbatim from the original (the junk becomes a prose
-        # line, or a degenerate key when it contains a colon).
-        if not text.startswith("---"):
-            return None, text
-        end = text.find("\n---", 3)
-        if end == -1:
-            return None, text
-        return text[4:end].split("\n"), (text[end:] if want_body else "")
     # A new Extraction literal must get its own branch: falling through to
     # any existing mode would silently hand it that mode's grammar.
     raise ValueError(f"unknown frontmatter extraction mode: {extraction!r}")
@@ -282,8 +260,6 @@ def _parse_block_lines(lines: list[str], dialect: FrontmatterDialect) -> dict[st
         # line[:1] is "" for an empty line and "".isspace() is False, so the
         # guards only fire on genuinely indented lines.
         if dialect.indent_policy == "reject_indented" and line[:1].isspace():
-            continue
-        if dialect.indent_policy == "reject_space_indented" and line.startswith(" "):
             continue
         key, _, raw = line.partition(":")
         key = key.strip()

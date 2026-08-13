@@ -1,12 +1,15 @@
-"""Snapshot tests pinning the consolidated frontmatter parser to the four
+"""Snapshot tests pinning the consolidated frontmatter parser to the
 grammars its call sites historically accepted.
 
-The expected values below were captured by running the four pre-consolidation
+The expected values below were captured by running the pre-consolidation
 parsers (``SkillsLoader._parse_frontmatter``, ``onboarding_import._frontmatter``,
-``history._frontmatter_value``, and the ``discover.py`` handler copy) against
-this corpus. They are the oracle for the refactor: a change in any expectation
-means a caller's accepted-input surface moved, which is a behavior change with
-its own review — not a refactor.
+and ``history._frontmatter_value``) against this corpus. They are the oracle
+for the refactor: a change in any expectation means a caller's accepted-input
+surface moved, which is a behavior change with its own review — not a
+refactor. The skill-provider preview (``dashboard/handlers/discover.py``)
+deliberately carries no dialect of its own: it shares SKILL_LOADER so the
+preview description matches the installed one (the endpoint-level pin lives
+in ``test_skill_discover.py``).
 """
 
 from __future__ import annotations
@@ -18,7 +21,6 @@ import pytest
 from kiro_crew import history
 from kiro_crew.frontmatter import (
     ONBOARDING_IMPORT,
-    PROVIDER_PREVIEW,
     SKILL_LOADER,
     SKILL_UPDATE,
     FrontmatterDialect,
@@ -199,41 +201,6 @@ HISTORY_EXPECTED: dict[str, dict[str, str]] = {
     "value_whitespace": {"k": "padded value"},
 }
 
-DISCOVER_EXPECTED: dict[str, dict[str, str]] = {
-    "bare_open_fence": {},
-    "block_scalar_blank_fold": {"description": ">"},
-    "block_scalar_chomped": {"description": ">-", "name": "x"},
-    "block_scalar_folded": {"description": ">"},
-    "block_scalar_junk_keys": {"description": "|"},
-    "block_scalar_literal": {"description": "|"},
-    "block_scalar_quoted_inside": {"k": "|"},
-    "body_padding": {"k": "v"},
-    "closer_indented": {},
-    "closer_trailing_junk": {"name": "x"},
-    "colon_in_value": {"url": "http://example.com:8080"},
-    "crlf": {"name": "x"},
-    "duplicate_keys": {"k": "second"},
-    "duplicate_plain_then_scalar": {"k": "|"},
-    "duplicate_scalar_then_plain": {"k": "plain"},
-    "empty_block": {},
-    "empty_text": {},
-    "empty_value": {"key": ""},
-    "four_dash_fences": {"key": "v"},
-    "indented_shadow_before": {"k": "real"},
-    "leading_ws_before_opener": {},
-    "mismatched_quotes": {"k": "\"a'"},
-    "no_closer": {},
-    "no_colon_line": {"name": "x"},
-    "opener_junk_with_colon": {"": "y", "name": "x"},
-    "opener_trailing_junk": {"name": "x"},
-    "plain_prose": {},
-    "quoted_values": {"desc": "'single'", "multi": '""double""', "name": '"quoted"'},
-    "simple": {"description": "hello", "name": "x"},
-    "space_indented_key": {"name": "x"},
-    "tab_indented_key": {"name": "x", "steps": "tabbed"},
-    "value_whitespace": {"k": "padded value"},
-}
-
 HISTORY_PROBE_KEYS = ("name", "description", "k", "key", "steps", "url", "multi", "more", "Steps", "")
 
 
@@ -327,18 +294,12 @@ class TestSkillUpdateDialect:
         assert history._frontmatter_value("", "description") == ""
 
 
-class TestProviderPreviewDialect:
-    @pytest.mark.parametrize("case_id", sorted(CORPUS))
-    def test_snapshot(self, case_id: str) -> None:
-        assert parse_frontmatter(CORPUS[case_id], PROVIDER_PREVIEW) == DISCOVER_EXPECTED[case_id]
-
-
 class TestDialectContracts:
-    """The four dialects stay distinct — collapsing any two axes silently
+    """The three dialects stay distinct — collapsing any two axes silently
     changes some caller's accepted-input surface."""
 
     def test_presets_are_distinct(self) -> None:
-        presets = [SKILL_LOADER, ONBOARDING_IMPORT, SKILL_UPDATE, PROVIDER_PREVIEW]
+        presets = [SKILL_LOADER, ONBOARDING_IMPORT, SKILL_UPDATE]
         keys = {
             (p.extraction, p.indent_policy, p.strip_quotes, p.first_key_wins,
              p.resolve_block_scalars)
@@ -358,13 +319,12 @@ class TestDialectContracts:
     def test_quote_stripping_is_per_dialect(self) -> None:
         text = '---\nk: "v"\n---\n'
         assert parse_frontmatter(text, SKILL_LOADER)["k"] == "v"
-        assert parse_frontmatter(text, PROVIDER_PREVIEW)["k"] == '"v"'
+        assert parse_frontmatter(text, SKILL_UPDATE)["k"] == '"v"'
 
     def test_block_scalar_resolution_is_per_dialect(self) -> None:
         text = "---\nk: |\n  content\n---\n"
         assert parse_frontmatter(text, SKILL_LOADER)["k"] == "content"
         assert parse_frontmatter(text, SKILL_UPDATE)["k"] == "content"
-        assert parse_frontmatter(text, PROVIDER_PREVIEW)["k"] == "|"
         assert parse_frontmatter(text, ONBOARDING_IMPORT)["k"] == "|"
 
     def test_quote_strip_never_applies_to_a_resolved_scalar(self) -> None:
@@ -374,7 +334,7 @@ class TestDialectContracts:
         assert parse_frontmatter(text, SKILL_LOADER)["k"] == '"quoted"'
 
     def test_split_returns_text_unchanged_without_block(self) -> None:
-        for dialect in (SKILL_LOADER, ONBOARDING_IMPORT, SKILL_UPDATE, PROVIDER_PREVIEW):
+        for dialect in (SKILL_LOADER, ONBOARDING_IMPORT, SKILL_UPDATE):
             assert split_frontmatter("plain prose", dialect) == ({}, "plain prose")
 
     def test_custom_dialect_axes_compose(self) -> None:
@@ -402,13 +362,11 @@ class TestDialectContracts:
 
     def test_line_scan_body_is_the_only_renderable_body(self) -> None:
         # line_scan's body contract: stripped text after the closer line.
-        # The other three modes' remainders are pinned here as NOT renderable:
-        # prefix_find's still begins with the closer token, and the two fence
-        # modes cut immediately after "---" — mid-line when the closer
+        # The two fence modes' remainders are pinned here as NOT renderable:
+        # they cut immediately after "---" — mid-line when the closer
         # carries trailing text.
         text = "---\nk: v\n---\nbody\n"
         assert split_frontmatter(text, ONBOARDING_IMPORT)[1] == "body"
-        assert split_frontmatter(text, PROVIDER_PREVIEW)[1].startswith("\n---")
         assert split_frontmatter(text, SKILL_LOADER)[1] == "\nbody\n"
         assert split_frontmatter(text, SKILL_UPDATE)[1] == "\nbody\n"
         junk_closer = "---\nk: v\n---junk\nbody\n"
