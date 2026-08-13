@@ -307,6 +307,65 @@ function swVersionPlugin(): Plugin {
 }
 
 /**
+ * Post-build plugin: writes `build-id.json` into the build's output dir,
+ * stamping the build identity of the SPA bundle. Runs during `vite build`
+ * only (not the dev server). It writes into the RESOLVED `config.build.outDir`
+ * so the stamp rides atomicPublishPlugin's scratch-and-publish (see below),
+ * and the file is staged into the Python package by the same
+ * `cp -R website/dist ...` every packaging path already runs.
+ *
+ * WHY: the gateway serves a gitignored, build-copied `dist/`. Nothing verifies
+ * that the served bundle matches the backend it belongs to, so a restart that
+ * did not rebuild/copy the frontend serves an OLD bundle silently. The backend
+ * reads this stamp at startup and warns (never shuts down) when the dist was
+ * built from a different commit than the running backend — see
+ * src/kiro_crew/dashboard/stale_bundle_guard.py.
+ *
+ * The `buildId`/`commit` reuse the exact identity swVersionPlugin computes
+ * (`${pkg.version}-${gitShortSha}`), with the same git-unavailable tolerance:
+ * if git is unavailable, `commit` is "" and the backend guard skips silently
+ * rather than false-warning.
+ */
+function buildIdPlugin(): Plugin {
+  // The resolved outDir, captured in configResolved: atomicPublishPlugin
+  // (enforce: 'post') builds into a scratch sibling of the live dist and
+  // publishes it in its own post-order closeBundle, AFTER this hook runs. A
+  // hardcoded `dist/build-id.json` would stamp the OLD live tree, which the
+  // scratch publish then replaces with an unstamped bundle — the stamp would
+  // never reach the published dist and the backend guard would silently skip.
+  // Writing into config.build.outDir (the scratch dir) means the stamp rides
+  // the atomic publish, exactly as swVersionPlugin stamps sw.js.
+  let outDir = ''
+  return {
+    name: 'kirocrew-build-id',
+    apply: 'build',
+    configResolved(config) {
+      outDir = path.resolve(config.root, config.build.outDir)
+    },
+    closeBundle() {
+      const outPath = path.resolve(outDir, 'build-id.json')
+      // Full SHA for the equality check; short SHA for the human-facing id,
+      // matching swVersionPlugin's `${version}-${shortSha}` scheme. Falls back
+      // to version alone if git is unavailable (CI edge case) — an empty
+      // commit tells the backend guard to skip rather than warn.
+      let sha = ''
+      try { sha = execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim() } catch {}
+      const buildId = sha ? `${pkg.version}-${sha.slice(0, 7)}` : pkg.version
+      try {
+        writeFileSync(
+          outPath,
+          JSON.stringify({ buildId, commit: sha, builtAt: new Date().toISOString() }, null, 2) + '\n',
+        )
+      } catch (e: unknown) {
+        // outDir missing (library mode, test builds) is the only tolerated
+        // case; anything else is a real bug — surface it.
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+      }
+    },
+  }
+}
+
+/**
  * Edition-extension seam: resolves the virtual module `virtual:kirocrew-edition`
  * — imported once by `src/extensions.ts` — to a downstream edition's own
  * composition-root module, WITHOUT the edition having to overlay/shadow any core
@@ -698,7 +757,7 @@ export default defineConfig({
       readFile: (f: string) => readFileSync(f, 'utf-8'),
       exists: existsSync,
     }),
-    react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
+    react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },
