@@ -14,6 +14,7 @@
   {
     "name": "agent-dashboard",
     "gitUrl": "https://github.com/brunokktro/agent-dashboard",
+    "repo": "https://github.com/brunokktro/agent-dashboard",
     "branch": "main"
   }
 ]
