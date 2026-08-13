@@ -702,7 +702,13 @@ function convoCols(navigable: string): Col<CostConvo>[] {
       hide: 'max-[900px]:hidden',
       sort: v => v.turns_to_compaction ?? null,
       color: v => (v.turns_to_compaction == null ? undefined : headroomColor(v.turns_to_compaction)),
-      render: v => (v.turns_to_compaction == null ? '—' : fmtNumber(v.turns_to_compaction)),
+      render: v =>
+        v.turns_to_compaction == null
+          ? '—'
+          : i18nT('pages.telemetryPanel.turns_to_compaction', {
+              count: v.turns_to_compaction,
+              n: fmtNumber(v.turns_to_compaction),
+            }),
     },
   ]
 }
@@ -822,7 +828,10 @@ function SpendTab({ c }: { c: Cost }) {
           {
             label: i18nT('pages.telemetryPanel.vs_previous_period'),
             value: fmtDelta(c.delta_pct),
-            sub: `${fmtNumber(c.prior_credits)} · ${fmtNumber(c.prior_turns)}`,
+            sub: i18nT('pages.telemetryPanel.prior_credits_turns', {
+              credits: fmtNumber(c.prior_credits),
+              turns: fmtNumber(c.prior_turns),
+            }),
           },
           {
             label: i18nT('pages.telemetryPanel.per_turn_col'),

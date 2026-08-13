@@ -253,8 +253,22 @@ describe('TelemetryPanel — where the alarm colour goes', () => {
     const ths = Array.from(document.querySelectorAll('thead th'))
     const idx = ths.findIndex(th => th.textContent?.startsWith('To 90%'))
     const cell = document.querySelectorAll('tbody tr')[0].children[idx] as HTMLElement
-    expect(cell.textContent).toBe('1')
+    // The cell spells out its unit, and 1 takes the SINGULAR form — the column
+    // header alone ("To 90%") says nothing about what the bare number counts,
+    // and a plural key regressing to a lone `_other` would render "1 turns".
+    expect(cell.textContent).toBe('1 turn')
     expect(cell.style.color).toBe('var(--danger)')
+  })
+
+  it('spells out the turn unit in the To 90% cell for plural counts', async () => {
+    await mount(
+      only({ cost: cost({ conversations: [convo({ peak_pct: 95, turns_to_compaction: 40 })] }) }),
+    )
+    await waitFor(() => expect(screen.getByText('A named conversation')).toBeInTheDocument())
+    const ths = Array.from(document.querySelectorAll('thead th'))
+    const idx = ths.findIndex(th => th.textContent?.startsWith('To 90%'))
+    const cell = document.querySelectorAll('tbody tr')[0].children[idx] as HTMLElement
+    expect(cell.textContent).toBe('40 turns')
   })
 })
 

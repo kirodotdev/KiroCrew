@@ -93,6 +93,16 @@ describe('TelemetryPanel — conversations by spend', () => {
     expect(link.getAttribute('href')).toContain('sid=chat-1-1700000000')
   })
 
+  it("labels the previous-period pair with its units, not two bare numbers", async () => {
+    await mount([convo({ title: 'Telemetry cost page' })])
+    await screen.findByRole('link', { name: 'Telemetry cost page' })
+    // The 'vs previous period' stat's sub-line used to render `500 · 50` — two
+    // figures with nothing saying what either one counts. Label-before-number
+    // on purpose: the unit words carry no plural agreement, so a prior window
+    // of exactly 1 turn cannot render "1 turns" in any locale.
+    expect(screen.getByText('credits 500 · turns 50')).toBeInTheDocument()
+  })
+
   it('renders an unnamed conversation as text, never as a link', async () => {
     await mount([convo()])
     // The row is present…
