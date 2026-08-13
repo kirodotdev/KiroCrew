@@ -344,8 +344,8 @@ export function BrowserPanel() {
                 <button
                   onClick={handleSaveExtension}
                   disabled={!token || token === '••••••••' || saveMut.isPending}
-                  className="px-4 py-2 text-[13px] font-medium rounded border border-border bg-card hover:bg-bg-hover disabled:opacity-50 transition-colors"
-                  style={{ color: 'var(--text)', marginBottom: 4 }}
+                  className="px-4 py-2 text-sm font-medium rounded-md border border-border bg-bg-elevated hover:bg-bg-hover disabled:opacity-50 transition-colors"
+                  style={{ color: 'var(--text)', marginBottom: 6 }}
                 >
                   {saveMut.isPending ? i18nT('pages.settings.browserPanel.saving') : i18nT('pages.settings.browserPanel.save')}
                 </button>
