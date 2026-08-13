@@ -49,6 +49,22 @@ untouched.
 the cache; a metadata-only rewrite does not. This makes staleness exact and free
 to check — one `stat`, no content comparison.
 
+**The pass flushes the slot before it captures `sig`.** `_ChatSlot.append` marks a
+slot dirty and leaves the disk write to the 5s `_flush_loop`, and this pass is
+dispatched from `_finish_queue_cycle` in the same synchronous block that appended
+the turn's final assistant message. So at dispatch the transcript is always
+missing the very turn being summarised, and a signature taken then is invalidated
+the moment the loop fires — mid-model-call, since that call takes seconds. Every
+write was refused, on every turn, and the "don't advance the turn mark, the next
+turn retries" recovery could not converge because each turn reproduces it.
+`state.flush_slot_now(slot)` lands the pending write first, so the signature
+stamps the transcript the summary actually describes.
+
+Clearing the dirty bit is part of that, not incidental: a flush that wrote the
+bytes but left the slot dirty would be re-saved by the loop moments later, moving
+the mtime again. `flush_slot_now` is shared with `_flush_dirty_slots` so the
+generation-compare bookkeeping that makes the clear safe lives in one place.
+
 **It is a different file from the one-line summary.** `.summaries/<key>.json`
 holds the on-demand one-line description shown in the sessions list, written by
 `set_cached_summary`, which overwrites the whole file. The two artifacts have

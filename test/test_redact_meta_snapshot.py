@@ -186,6 +186,12 @@ def _flush_harness(save_fn):
     class _State:
         conversation_log = True
 
+        # The dirty-bit bookkeeping these tests pin now lives in
+        # ``flush_slot_now``, which ``_flush_dirty_slots`` calls per slot. Bind
+        # the REAL method so they still exercise production logic rather than a
+        # reimplementation of it.
+        flush_slot_now = DashboardState.flush_slot_now
+
         def __init__(self) -> None:
             self._slots = {"chat-1-test": slot}
 

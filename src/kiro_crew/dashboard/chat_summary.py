@@ -225,6 +225,22 @@ async def generate_session_summary(
         logger.debug("Session summary skipped for %s: %s", key, skip)
         return False
 
+    # Land this slot's pending transcript write BEFORE capturing the signature.
+    # ``_ChatSlot.append`` only marks the slot dirty; the bytes reach disk on the
+    # 5s ``_flush_loop``. This pass is dispatched from ``_finish_queue_cycle`` in
+    # the same synchronous block that just appended the turn's final assistant
+    # message, so the flush is always still pending here: the signature would be
+    # captured from a transcript that is about to change, and the write guard
+    # would refuse EVERY summary, on every turn. Not advancing the turn mark does
+    # not recover it either -- the next turn reproduces the same ordering.
+    #
+    # Slot-scoped rather than flushing every dirty slot: a summary has no
+    # business writing other sessions' transcripts. ``flush_slot_now`` carries
+    # the flush loop's dirty-bit bookkeeping, which matters here — a write that
+    # left the slot dirty would just be re-saved by the loop moments later,
+    # moving the mtime again and refusing the payload regardless.
+    await asyncio.to_thread(state.flush_slot_now, slot)
+
     # Capture the cache signature BEFORE reading the transcript. The signature
     # must be at least as old as the snapshot it stamps: any append landing
     # after this point advances the mtime, so the write guard in

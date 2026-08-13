@@ -3148,38 +3148,55 @@ class DashboardState:
                 pass
             await asyncio.get_running_loop().run_in_executor(None, self._flush_dirty_slots)
 
+    def flush_slot_now(self, slot: _ChatSlot) -> None:
+        """Write ONE dirty slot to disk, with the flush loop's bookkeeping.
+
+        Shared with :meth:`_flush_dirty_slots` so the generation-compare contract
+        below lives in exactly one place. Callers that need a slot's pending
+        appends to be ON DISK before they read its transcript use this instead of
+        waiting up to ``_FLUSH_INTERVAL`` for the loop: the session-summary pass
+        stamps a cache signature from the transcript's mtime, so a pending write
+        landing afterwards invalidates the signature it just captured.
+
+        Clearing ``_dirty`` matters as much as the write. A caller that only
+        wrote the bytes would leave the slot dirty, the loop would re-save it
+        moments later, and the mtime would move again anyway.
+        """
+        if not self.conversation_log or not slot._dirty or not slot.messages:
+            return
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        # Clear the dirty bit only if NOTHING re-marked the slot while this save
+        # was running. This can run on an executor thread while the event loop
+        # keeps mutating the slot underneath it, so a plain post-save
+        # `_dirty = False` would overwrite a mark set DURING the save (e.g.
+        # _flush_file_changes attaching file_changes) — the stale snapshot would
+        # be the last thing written and every later pass would skip the slot, so
+        # the late mutation would never reach disk.
+        #
+        # The generation compare is used instead of consuming the bit up front
+        # because `_dirty` must stay True for the whole save: `chat_fork` reads
+        # it as "unpersisted state exists" (a False read makes it fork from
+        # stale disk), and `_save_slot_to_history`'s resumed-slot no-op guard is
+        # written assuming a dirty slot still reads dirty during the save.
+        # See the `_dirty` property for both contracts.
+        gen = slot._dirty_gen
+        try:
+            _save_slot_to_history(self, slot)
+        except Exception:
+            # Leave _dirty set so the next 5s pass retries.
+            logger.warning("Flush failed for slot %s", slot.key, exc_info=True)
+        else:
+            if slot._dirty_gen == gen:
+                slot._dirty = False
+
     def _flush_dirty_slots(self) -> None:
         """Write any slot with new messages to its JSONL file."""
         if not self.conversation_log:
             return
-        from kiro_crew.dashboard.chat import _save_slot_to_history
 
         for slot in list(self._slots.values()):
-            if not slot._dirty or not slot.messages:
-                continue
-            # Clear the dirty bit only if NOTHING re-marked the slot while this
-            # save was running. This runs on an executor thread and the event loop
-            # keeps mutating the slot underneath it, so a plain post-save
-            # `_dirty = False` would overwrite a mark set DURING the save (e.g.
-            # _flush_file_changes attaching file_changes) — the stale snapshot
-            # would be the last thing written and every later pass would skip the
-            # slot, so the late mutation would never reach disk.
-            #
-            # The generation compare is used instead of consuming the bit up front
-            # because `_dirty` must stay True for the whole save: `chat_fork` reads
-            # it as "unpersisted state exists" (a False read makes it fork from
-            # stale disk), and `_save_slot_to_history`'s resumed-slot no-op guard
-            # is written assuming a dirty slot still reads dirty during the save.
-            # See the `_dirty` property for both contracts.
-            gen = slot._dirty_gen
-            try:
-                _save_slot_to_history(self, slot)
-            except Exception:
-                # Leave _dirty set so the next 5s pass retries.
-                logger.warning("Flush failed for slot %s", slot.key, exc_info=True)
-            else:
-                if slot._dirty_gen == gen:
-                    slot._dirty = False
+            self.flush_slot_now(slot)
         # Snapshot the live tab set so a gateway restart can restore exactly
         # the tabs the user had open, regardless of last-message age. Without
         # this, restore_recent_sessions only brings back sessions whose

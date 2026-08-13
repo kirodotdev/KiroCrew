@@ -14,6 +14,7 @@ from chat_test_helpers import move_transcript_past
 
 from kiro_crew.config.loader import KiroCrewConfig, SessionSummaryConfig
 from kiro_crew.dashboard import chat_summary
+from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.history import ConversationLog
@@ -49,6 +50,20 @@ class _FakeState:
 
     def push_session_summary(self, key):
         self.pushed.append(key)
+
+    def flush_slot_now(self, slot):
+        """Mirror DashboardState.flush_slot_now: write, then clear the bit.
+
+        Clearing matters to what the pass under test relies on — a flush that
+        left the slot dirty would be re-saved by the 5s loop and move the mtime
+        again, so a stub that only wrote would hide the very bug this exercises.
+        """
+        if not slot._dirty or not slot.messages:
+            return
+        gen = slot._dirty_gen
+        _save_slot_to_history(self, slot)
+        if slot._dirty_gen == gen:
+            slot._dirty = False
 
 
 def _cfg(**overrides):
@@ -181,6 +196,87 @@ class TestGating:
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is True
         assert "request 0" in prompts[0]  # only on disk, not in slot.messages
 
+    async def test_the_turn_being_summarised_is_flushed_before_the_signature(
+        self, env, monkeypatch
+    ):
+        """The reason the panel stayed empty on every real session.
+
+        ``_ChatSlot.append`` marks the slot dirty; the bytes reach disk on the 5s
+        flush loop. This pass is dispatched from ``_finish_queue_cycle`` in the
+        same block that appended the turn's final assistant message, so the write
+        lands AFTER dispatch. A signature captured before it is stale the moment
+        the flush fires, and ``set_cached_intent_summary`` then refuses the
+        payload — on every turn, forever, since the next turn repeats it.
+
+        Here the slot carries a turn its transcript does not, which is exactly
+        the dirty-slot state at dispatch. The pass must flush it, then stamp the
+        post-flush mtime.
+        """
+        state, slot = env
+        log = state.conversation_log
+        # A turn the transcript does not have yet: dirty, unflushed. Assigning
+        # .messages bypasses _ChatSlot.append, which is what sets the bit in
+        # production, so set it explicitly — otherwise the flush is skipped and
+        # this test cannot distinguish the two behaviours.
+        slot.messages = _turns() + [
+            {"role": "user", "content": "the newest ask"},
+            {"role": "assistant", "content": "the reply that has not reached disk"},
+        ]
+        slot._dirty = True
+        _stub_llm(monkeypatch, _GOOD_REPLY)
+
+        assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is True
+        # Stored AND readable as current: the signature matches the transcript
+        # that exists after the flush, so the strict reader serves it.
+        assert log.get_cached_intent_summary(state.hkey) is not None
+        # The unflushed turn reached disk, so the summary describes the whole
+        # session rather than everything except the turn that triggered it.
+        assert "the newest ask" in "".join(
+            m.get("content", "") for m in log.read_messages_chained(state.hkey)
+        )
+
+    async def test_the_flush_loop_firing_mid_model_call_does_not_lose_the_summary(
+        self, env, monkeypatch
+    ):
+        """The production symptom, reproduced.
+
+        The 5s flush loop is what actually invalidated the signature: it fires
+        while the model call is in flight, writes the dirty slot, and advances
+        the mtime past a signature captured before dispatch. The write guard then
+        refuses the payload and the panel never fills.
+
+        The stub below flushes the slot mid-call, standing in for that loop.
+        Flushing first makes it a no-op — the slot is already clean — so the
+        signature still matches at write time.
+        """
+        state, slot = env
+        log = state.conversation_log
+        slot.messages = _turns() + [
+            {"role": "user", "content": "the newest ask"},
+            {"role": "assistant", "content": "the reply that has not reached disk"},
+        ]
+        # Assigning .messages bypasses _ChatSlot.append, which is what sets the
+        # dirty bit in production. Set it explicitly or the flush stand-in below
+        # is inert and the test passes whether or not the fix is present.
+        slot._dirty = True
+
+        async def flush_then_reply(*args, **kwargs):
+            # Stand-in for _flush_dirty_slots firing during the model call. It
+            # mirrors that loop's guard: a CLEAN slot is skipped. So once the
+            # pass has flushed, this writes nothing and the signature holds;
+            # without the flush the slot is still dirty here and the write lands
+            # mid-call, moving the mtime out from under the captured signature.
+            if slot._dirty:
+                sig_before = log.session_mtime(state.hkey)
+                _save_slot_to_history(state, slot, force=True)
+                move_transcript_past(log, state.hkey, sig_before)
+            return _GOOD_REPLY
+
+        monkeypatch.setattr(chat_summary, "run_bg_oneliner", flush_then_reply)
+
+        assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is True
+        assert log.get_cached_intent_summary(state.hkey) is not None
+
     async def test_an_append_during_the_transcript_read_refuses_the_write(
         self, env, monkeypatch
     ):
@@ -211,7 +307,12 @@ class TestGating:
         state, slot = env
         log = state.conversation_log
         log.delete_session(state.hkey)
-        _write_transcript(log, state.hkey, [{"role": "user", "content": "just one"}])
+        one_turn = [{"role": "user", "content": "just one"}]
+        _write_transcript(log, state.hkey, one_turn)
+        # The slot's in-memory window is the same conversation as its transcript:
+        # the pass flushes the window to disk before counting, so a fixture that
+        # left a longer window here would be counting a different session.
+        slot.messages = list(one_turn)
         called = []
         _stub_llm(monkeypatch, _GOOD_REPLY, called)
         ok = await chat_summary.generate_session_summary(state, slot, cfg=_cfg(min_user_turns=2))
@@ -241,15 +342,14 @@ class TestGating:
         state, slot = env
         log = state.conversation_log
         log.delete_session(state.hkey)
-        _write_transcript(
-            log,
-            state.hkey,
-            [
-                {"role": "user", "content": "real ask"},
-                {"role": "user", "content": "[Subagent completion event] done"},
-                {"role": "user", "content": '[Cron notification from "x"] fired'},
-            ],
-        )
+        rows = [
+            {"role": "user", "content": "real ask"},
+            {"role": "user", "content": "[Subagent completion event] done"},
+            {"role": "user", "content": '[Cron notification from "x"] fired'},
+        ]
+        _write_transcript(log, state.hkey, rows)
+        # Window and transcript are one conversation — see the note above.
+        slot.messages = list(rows)
         called = []
         _stub_llm(monkeypatch, _GOOD_REPLY, called)
         ok = await chat_summary.generate_session_summary(state, slot, cfg=_cfg(min_user_turns=2))
