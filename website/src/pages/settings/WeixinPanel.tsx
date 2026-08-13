@@ -4,6 +4,7 @@ import { QrCode, Loader2, Check, TriangleAlert, RefreshCw } from 'lucide-react'
 import { api, type WeixinConfigSave } from '../../api/client'
 import { WeixinLogo } from '../../components/WeixinLogo'
 import SimpleSelect from '../../components/SimpleSelect'
+import { SettingsToggle } from '../../components/settings'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
@@ -259,21 +260,24 @@ export function WeixinPanel() {
       </div>
 
       {/* enable + access policy */}
-      <label
-        htmlFor="weixin-enabled-toggle"
-        className="flex items-center gap-2.5 cursor-pointer"
-      >
-        <input
-          id="weixin-enabled-toggle"
-          type="checkbox"
+      {/* Every other channel panel renders its enable switch as SettingsToggle;
+          the shared component owns the label association (visible text doubles
+          as the switch's accessible name) and the keyboard/AT semantics.
+          data-testid lives on this wrapper because SettingsToggle exposes only
+          data-setting-label — same move as weixin-dm-policy below. */}
+      {/* max-w: this panel has no SettingsCard, so an uncapped row would make
+          the whole pane width a Clickable save surface (this panel autosaves —
+          a stray click in the empty gap would silently disable the channel)
+          and push the switch far from its label. Content-scaling matches the
+          dm-policy select below. */}
+      <div data-testid="weixin-enabled" className="max-w-[380px]">
+        <SettingsToggle
+          label={i18nT('pages.settings.weixinPanel.enable_the_wechat_channel')}
           checked={!!data?.enabled}
           disabled={readOnly}
-          onChange={e => save({ enabled: e.target.checked })}
-          data-testid="weixin-enabled"
-          aria-label={i18nT('pages.settings.weixinPanel.enable_the_wechat_channel')}
+          onChange={v => save({ enabled: v })}
         />
-        <span className="text-[13px] text-text">{i18nT('pages.settings.weixinPanel.enable_the_wechat_channel')}</span>
-      </label>
+      </div>
 
       <div>
         {/* Not a <label>: SimpleSelect renders a button, so `htmlFor` would point

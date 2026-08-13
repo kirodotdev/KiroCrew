@@ -73,6 +73,85 @@ describe('WeixinPanel — DM policy picker', () => {
 })
 
 
+describe('WeixinPanel — enable toggle', () => {
+  const ENABLE_SWITCH = { name: 'Enable the WeChat channel' }
+
+  it('renders the shared switch, not a bare checkbox', async () => {
+    renderWithProviders(<WeixinPanel />)
+    const toggle = await screen.findByRole('switch', ENABLE_SWITCH)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    // The bare <input type="checkbox"> this replaced would satisfy no switch
+    // role; the shared component also carries the visible label as the
+    // accessible name, which the role+name query above already proves.
+    expect(toggle.tagName).not.toBe('INPUT')
+  })
+
+  it('toggling saves the flipped enabled value immediately', async () => {
+    // Same contract as every control on this panel: no Save button, so the
+    // switch must persist on change.
+    const save = vi
+      .spyOn(api, 'saveWeixinConfig')
+      .mockResolvedValue({ ok: true, restart_required: false })
+    renderWithProviders(<WeixinPanel />)
+
+    const toggle = await screen.findByRole('switch', ENABLE_SWITCH)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ enabled: false }))
+  })
+
+  it('toggles from the keyboard', async () => {
+    // The shared component owns keyboard semantics; this pins that the
+    // migration kept them (the old checkbox got Space handling for free).
+    const save = vi
+      .spyOn(api, 'saveWeixinConfig')
+      .mockResolvedValue({ ok: true, restart_required: false })
+    renderWithProviders(<WeixinPanel />)
+
+    const toggle = await screen.findByRole('switch', ENABLE_SWITCH)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    fireEvent.keyDown(toggle, { key: ' ' })
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ enabled: false }))
+  })
+
+  it('clicking the row (not the switch) saves exactly once', async () => {
+    // SettingsToggle's row is a second activation surface; its inner-switch
+    // stopPropagation is what keeps a row click from double-saving.
+    const save = vi
+      .spyOn(api, 'saveWeixinConfig')
+      .mockResolvedValue({ ok: true, restart_required: false })
+    renderWithProviders(<WeixinPanel />)
+
+    const toggle = await screen.findByRole('switch', ENABLE_SWITCH)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    fireEvent.click(screen.getByText('Enable the WeChat channel'))
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ enabled: false }))
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it('is disabled when the config is read-only', async () => {
+    vi.spyOn(api, 'getWeixinConfig').mockResolvedValue({ ...CONFIG, read_only: true })
+    const save = vi
+      .spyOn(api, 'saveWeixinConfig')
+      .mockResolvedValue({ ok: true, restart_required: false })
+    renderWithProviders(<WeixinPanel />)
+
+    const toggle = await screen.findByRole('switch', ENABLE_SWITCH)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-disabled', 'true'))
+    fireEvent.click(toggle)
+    fireEvent.keyDown(toggle, { key: ' ' })
+    // The row wrapper is its own activation surface and must be inert too.
+    fireEvent.click(screen.getByText('Enable the WeChat channel'))
+
+    // A disabled switch must ignore both activation paths.
+    expect(save).not.toHaveBeenCalled()
+  })
+})
+
+
 describe('WeixinPanel — session folder', () => {
   it('enabling the toggle saves the default name immediately', async () => {
     // This panel has no Save button, so a toggle that only reveals the field
