@@ -388,6 +388,19 @@ _ON_LOOP_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _ON_LOOP_FALSY = frozenset({"0", "false", "no", "off"})
 
 
+def on_loop_persist_strict() -> bool:
+    """Public alias of :func:`_on_loop_persist_strict` for other modules.
+
+    The strictness knob (``KIROCREW_STRICT_ON_LOOP_PERSIST`` /
+    ``KIROCREW_DEV_MODE``) governs the on-loop persistence discipline for every
+    store, not just this module's conversation log; consumers that enforce the
+    same offload rule on their own SQLite databases (e.g. the auto_research
+    campaigns DB) read the shared setting through this alias instead of
+    importing a private name.
+    """
+    return _on_loop_persist_strict()
+
+
 def _check_on_loop_persist_discipline(key: str) -> None:
     """Enforce (strict) or diagnose (production) an on-loop ``_locked`` entry.
 

@@ -552,6 +552,14 @@ def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
     # would leak into every later test's port resolution. Clear it per test;
     # a test that wants it sets it via monkeypatch (which still wins).
     monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
+    # Match CI on a dev box for the off-loop-IO strictness knob too: a developer
+    # with KIROCREW_DEV_MODE=1 (or KIROCREW_STRICT_ON_LOOP_PERSIST=1) exported
+    # would otherwise flip history's _locked guard AND the auto_research
+    # campaigns-DB guard strict for the whole suite, failing tests that call
+    # sync helpers directly on the loop as harness convenience. Tests that
+    # exercise strict mode set the env themselves via monkeypatch (which wins).
+    monkeypatch.delenv("KIROCREW_DEV_MODE", raising=False)
+    monkeypatch.delenv("KIROCREW_STRICT_ON_LOOP_PERSIST", raising=False)
     monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
 
 
