@@ -4522,6 +4522,29 @@ _WRITE_PROTECTED_HOME_PATHS += [
     f"{prefix}/apps/ops-mission-control/data/incidents/index.json"
     for prefix in _CREW_HOME_PREFIXES
 ]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The Connections tool-alias OWNERSHIP RECORD, third instance of the same class as the
+    # two above and with the same read/write asymmetry. It holds no secret and the rebuild
+    # reads it on every run, so classifying it sensitive would break the feature — but it is
+    # an INPUT TO AN AUTHORIZATION DECISION, and by its own module's invariant 2 it is the
+    # thing that AUTHORIZES DELETION: ``alias_record.load_claimed`` returns the pairs the
+    # alias pass may strip from the agent spec, and nothing else grants that permission.
+    #
+    # An agent that can write this file can forge a ``committed`` record naming a
+    # ``@slug/tool -> alias`` triple the user hand-wrote, together with the fingerprint of
+    # the spec currently on disk (the spec is readable, so the fingerprint is computable).
+    # The next rebuild then resolves the forgery as its own emission and deletes the user's
+    # alias — laundering the edit through Kiro Crew's own trusted writer, which is what makes
+    # it worse than editing the spec directly: the deletion is performed and persisted by the
+    # legitimate owner of that file. The generation fingerprint cannot defend this, because a
+    # forger reads the same spec it does. Found in review (GPT 5.6).
+    #
+    # ``alias_record._write`` opens the path directly via ``atomic_write`` and does not route
+    # through this gate, so both record writes still work; only the agent's own file-edit and
+    # shell tools are refused.
+    f"{prefix}/connections-tool-aliases.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 # ── Bash-layer protection for write-protected leaves ──
 # Leaf files under the crew home that a bash command must not be able to
@@ -4564,6 +4587,15 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # already covered on the tool path. Widen this only via the SHARED matcher (so
 # credentials benefit too), not with marker-only special cases.
 #
+# ONE ENTRY IS EXEMPT from that anchoring limit, and the exemption is about
+# severity rather than parser completeness: the alias ownership record's residual
+# threat is not a skipped copy but the DELETION of a user-authored alias by Kiro
+# Crew's own trusted writer, so its filename is additionally matched
+# anchor-independently as a bare path segment (see
+# ``_BARE_TOKEN_PROTECTED_LEAVES`` below). That widening is affordable only
+# because the name is globally distinctive; it is NOT a template for the other
+# leaves, and the anchoring limit above still describes them.
+#
 # ``rotation.yaml`` is the second entry, and it meets the bar the scope note sets rather than
 # being a special case: it is an INPUT TO AN AUTHORIZATION DECISION, not merely a
 # security-relevant setting. An agent that rewrites it to name its own login makes
@@ -4585,11 +4617,56 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # agent that rewrites it can have the gate approve one signal while the sink mutates another.
 # Reads stay allowed for the same reason as the schedule — it is the board every instance
 # renders, and it holds no secret.
+#
+# The Connections tool-alias OWNERSHIP RECORD is the fourth, and it clears the same bar: by
+# its module's invariant 2 it is the grant that AUTHORIZES DELETION —
+# ``alias_record.load_claimed`` returns the pairs the alias pass may strip from the agent
+# spec, and nothing else confers that permission. A shell-planted ``committed`` record can
+# name a ``@slug/tool -> alias`` triple the user hand-wrote alongside the fingerprint of the
+# spec on disk (readable, so computable), and the next rebuild deletes the user's alias as
+# its own emission. Nothing downstream neutralizes the forgery, since the fingerprint check
+# reads the same spec the forger does. The tool-path gate above is the primary control; this
+# closes the shell path so a redirect (``echo … > ~/.kiro/crew/connections-tool-aliases.json``)
+# cannot reach what the file-edit tool is already refused. ``alias_record._write`` writes the
+# path directly through ``atomic_write`` in Python, not via bash, so both record writes are
+# unaffected. Reads stay allowed on the tool path for the same reason as the two entries
+# above: the record holds no secret.
 _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
     ".data-home-ready",
     "apps/ops-mission-control/data/rotation.yaml",
     "apps/ops-mission-control/data/incidents/index.json",
+    "connections-tool-aliases.json",
 )
+
+# ── Anchor-INDEPENDENT leaf matching ──
+# Every pattern above (POSIX and Windows alike) is HOME-ANCHORED, so one ``cd``
+# defeats all of them: ``cd ~/.kiro/crew && echo forged >
+# connections-tool-aliases.json`` names no home, no crew prefix and no
+# separator, and reaches the very file the anchored entry exists to fence.
+#
+# For the alias ownership record that gap is not a residual limit to accept, the
+# way it is for credential paths: this filename IS the deletion grant.
+# ``alias_record.load_claimed`` returns the ``@slug/tool -> alias`` pairs the
+# rebuild may STRIP from the agent spec, and nothing else confers that
+# permission — so a forged ``committed`` record makes Kiro Crew's own trusted
+# writer delete an alias the user hand-wrote. The invariant is therefore about
+# the FILENAME and not about how a command spells the way to it: ANY shell
+# command naming this file as a path segment is refused. Anchoring is not part
+# of the contract — relative, ``cd``-prefixed, subdir-relative, either
+# separator, quoted or not, all refused identically.
+#
+# SCOPE: bare-token matching is for THIS filename ONLY, because it is globally
+# distinctive — a long hyphenated name that occurs nowhere in ordinary command
+# lines, so the false-positive cost is confined to commands that genuinely mean
+# this record. A generic leaf must NEVER be added here: unanchored
+# ``index.json`` or ``config.json`` would refuse a large fraction of routine
+# commands in any repository. ``.data-home-ready`` is distinctive enough to
+# qualify on that test but is deliberately left ANCHORED, because its realistic
+# residual threat is skipping a one-time session-data copy — the low-severity
+# case the scope note above already accepts on purpose — so it does not earn the
+# wider blast radius. The other two leaves are not distinctive at all (their
+# distinguishing part is the ``apps/.../data/`` subpath) and must stay anchored.
+_BARE_TOKEN_PROTECTED_LEAVES: tuple[str, ...] = ("connections-tool-aliases.json",)
 
 # Regex for bash commands that read sensitive paths.
 # Matches: cat, head, tail, less, more, strings, xxd, base64, cp, scp, open,
@@ -4626,7 +4703,7 @@ _SCRIPT_OPEN = r"(?:python|ruby|perl)\S*\s.*open\s*\("
 def _build_sensitive_regex() -> re.Pattern[str]:
     """Build a compiled regex matching bash reads OR writes of sensitive paths.
 
-    Three matching strategies, OR'd:
+    Matching strategies, OR'd:
       1. a READ verb / WRITE verb / script-open / shell-redirect followed by a
          sensitive path (the original verb-anchored form);
       2. a verb-INDEPENDENT catch-all: a sensitive path appearing ANYWHERE in
@@ -4636,6 +4713,11 @@ def _build_sensitive_regex() -> re.Pattern[str]:
          already blocked by is_sensitive_path on the file-read title, so flagging
          any command that *names* the trust-root/credential path is correct and
          fail-safe.
+      3. a write-protected LEAF under the crew home, in POSIX and in
+         Windows-native spelling, matched verb-independently;
+      4. an anchor-INDEPENDENT bare path SEGMENT for the distinctive leaves in
+         ``_BARE_TOKEN_PROTECTED_LEAVES`` — the only strategy that survives a
+         ``cd`` into the crew home followed by a relative filename.
     The home anchor accepts ``~`` / ``$HOME`` / the literal ``Path.home()`` AND a
     generic ``/home/<user>`` / ``/Users/<user>`` literal so an unexpanded
     ``/home/$USER/...`` or another user's literal path is still caught.
@@ -4736,6 +4818,46 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"{appdata_var}(?:{win_sep}\.\.{win_sep}Roaming)*"
         rf"{win_gsep}(?:{appdata_remainders})(?:{win_sep}|\s|$|['\"])"
     )
+    # Windows-native spelling of the write-protected leaves. The POSIX leaf
+    # branch above anchors on ``/`` separators, so on Windows the resolved home
+    # literal (``C:\Users\u``) never matches it and ``echo forged >
+    # C:\Users\u\.kiro\crew\connections-tool-aliases.json`` reaches the very file
+    # the leaf list exists to fence — the same bypass the fenced DIRS already
+    # close through ``win_sensitive_path``. Built from the same anchors and
+    # generalized separator, so both spellings of every leaf are gated
+    # identically and a leaf added to the tuple is covered in both.
+    win_wp_prefixes = "|".join(
+        win_gsep.join(re.escape(part) for part in p.split("/"))
+        for p in _CREW_HOME_PREFIXES
+    )
+    win_wp_leaves = "|".join(
+        win_gsep.join(re.escape(part) for part in leaf.split("/"))
+        for leaf in _WRITE_PROTECTED_BASH_LEAVES
+    )
+    win_write_protected_path = (
+        rf"{win_home_alts}{win_gsep}(?:{win_wp_prefixes}){win_gsep}"
+        rf"(?:{win_wp_leaves})(?:{win_sep}|\s|$|['\"])"
+    )
+    # Bare path-SEGMENT match for the globally distinctive leaves. Both branches
+    # above require a home anchor and a crew prefix, so both are defeated by a
+    # single ``cd``; this one requires neither, which is the whole point — the
+    # filename authorizes deletion, so naming it is the signal regardless of how
+    # the command spells the way there.
+    #
+    # The boundary is expressed as filename-character NEGATIVES rather than the
+    # ``[\s'\"=:,;]`` token anchor the branches above use, because a bare
+    # relative spelling is normally preceded by a path SEPARATOR (``./name``,
+    # ``.\name``, ``sub/name``) or by a redirect operator with no intervening
+    # space (``>name``) — none of which that class admits. Excluding
+    # alphanumerics, ``_``, ``-`` and ``.`` before the name keeps a DIFFERENT
+    # file whose name merely ends with this one out (``my-connections-tool-
+    # aliases.json`` stays allowed); excluding name characters after it keeps
+    # ``…jsonx`` out. A trailing ``.`` or separator is deliberately still a
+    # match, so a suffixed spelling (``…json.tmp``) and the mkdir-as-directory
+    # form are covered — over-matching is the safe direction for a gate that
+    # blocks on naming alone.
+    bare_leaves = "|".join(re.escape(leaf) for leaf in _BARE_TOKEN_PROTECTED_LEAVES)
+    bare_protected_path = rf"(?<![\w.\-])(?:{bare_leaves})(?![\w\-])"
     return re.compile(
         # (1) verb/redirect-anchored, OR (2) verb-independent: the sensitive path
         # appears anywhere as a token.  The token anchor accepts start-of-string
@@ -4754,9 +4876,14 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # (4) Windows-native spelling, verb-independent (same token anchor):
         # covers quoted backslash paths AND embedded-script literals that the
         # tokenizing passes cannot see. (5) the %APPDATA% alias of the fenced
-        # Roaming stores.
+        # Roaming stores. (6) the write-protected leaves in that same native
+        # spelling, which branch (3) cannot see. (7) the distinctive leaves as a
+        # bare path SEGMENT, with no anchor at all, because branches (3) and (6)
+        # both fall to a ``cd`` plus a relative name.
         rf"|(?:^|.*[\s'\"=:,;]){win_sensitive_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){appdata_sensitive_path})",
+        rf"|(?:^|.*[\s'\"=:,;]){appdata_sensitive_path}"
+        rf"|(?:^|.*[\s'\"=:,;]){win_write_protected_path}"
+        rf"|{bare_protected_path})",
         re.IGNORECASE,
     )
 

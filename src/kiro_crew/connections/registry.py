@@ -88,10 +88,18 @@ class Provider(_RequiredProviderFields, total=False):
     that re-routes after sign-in and can land the user somewhere else. A URL
     cannot be made reliable against that from our side, so the card states the
     path too and the user always has a way through.
+
+    ``tool_aliases`` maps a tool this provider exposes to the name it should take
+    when another mounted provider exposes the same name. It is a DECLARATION, not
+    an instruction: an alias fires only when the collision is real (see
+    :mod:`kiro_crew.connections.tool_aliases`), so declaring one does not rename
+    anything on its own. Optional because a provider whose tool names are already
+    unique across the launch set needs none.
     """
 
     client_id: str
     revoke_manual_path: str
+    tool_aliases: dict[str, str]
 
 
 class RegistryValidationError(ValueError):
@@ -102,6 +110,13 @@ class RegistryValidationError(ValueError):
 # same file the loader reads, instead of re-deriving the path and diverging.
 REGISTRY_PATH = Path(__file__).with_name("registry.json")
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# Both sides of a ``tool_aliases`` entry name an MCP tool -- the key names the
+# tool the server ships, the value the name it takes on a collision -- so both are
+# restricted to the character set real MCP tool names use: no slashes (which would
+# read as a server/tool split), no whitespace, no "@" (which prefixes a server
+# ref). Validating the KEY too keeps an unmatchable declaration (" list_issues")
+# from silently never firing.
+_TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 _ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Name suffixes that can only mean "somewhere on this network". Matched as plain
 # strings against the DIALLED host (see canonical_host), so no resolver is
@@ -147,7 +162,9 @@ _L0_EXPECTATION_FIELDS = {"authorization_server", "dcr", "pkce", "verified_on"}
 # Optional because only non-DCR providers need a pre-registered OAuth client.
 # See Provider.client_id: GitHub is the sole intended consumer and stays unset
 # until the Kiro app is registered, so absence must remain a valid entry shape.
-_OPTIONAL_PROVIDER_FIELDS = {"client_id", "revoke_manual_path"}
+# ``tool_aliases`` is optional for the same class of reason: a provider whose
+# tool names do not collide with any other mounted provider declares none.
+_OPTIONAL_PROVIDER_FIELDS = {"client_id", "revoke_manual_path", "tool_aliases"}
 
 
 def _validation_error(index: int, message: str) -> RegistryValidationError:
@@ -289,6 +306,50 @@ def _validate_provider(raw: object, index: int) -> Provider:
                     index, f"{optional} must be a non-empty string when present"
                 )
 
+    # Bound before the ``tool_aliases`` block below, which validates each alias
+    # against this provider's own slug prefix.
+    slug = raw["slug"]
+    if not isinstance(slug, str) or not _SLUG_PATTERN.fullmatch(slug):
+        raise _validation_error(index, "slug must contain lowercase letters, numbers, and hyphens")
+
+    if "tool_aliases" in raw:
+        # A malformed alias map would reach the emitted agent spec, where an
+        # empty or non-string alias makes kiro-cli reject the whole spec and the
+        # agent loses every tool. Validate the shape here, at load, rather than
+        # letting it fail at the far end.
+        alias_map = raw["tool_aliases"]
+        if not isinstance(alias_map, dict) or not alias_map:
+            raise _validation_error(index, "tool_aliases must be a non-empty object when present")
+        for tool, alias in alias_map.items():
+            if not isinstance(tool, str) or not _TOOL_NAME_PATTERN.fullmatch(tool):
+                raise _validation_error(
+                    index,
+                    "tool_aliases keys must be tool names of letters, digits, "
+                    "underscores, and hyphens",
+                )
+            if not isinstance(alias, str) or not _TOOL_NAME_PATTERN.fullmatch(alias):
+                raise _validation_error(
+                    index,
+                    f"tool_aliases[{tool}] must be a tool name of letters, digits, "
+                    "underscores, and hyphens",
+                )
+            if alias != f"{slug}_{tool}":
+                # The emission pass recognises its OWN previously-written aliases
+                # by re-deriving this exact name from the ref, which is what lets a
+                # withdrawn declaration's stale entry be cleaned up WITHOUT the
+                # prefix test that would also claim a user's hand-written alias.
+                # An alias that is not its own derivation would be emitted and then
+                # never recognised, so it would outlive its own declaration.
+                raise _validation_error(
+                    index,
+                    f"tool_aliases[{tool}] must be exactly '{slug}_{tool}' so the "
+                    "emission pass can re-derive it and recognise its own output",
+                )
+        # No uniqueness check is needed: with every alias pinned to
+        # ``<slug>_<tool>``, two tools in one provider cannot collapse onto one
+        # alias (their keys differ, so their aliases differ) and two providers
+        # cannot collide (their slugs differ). Derivation subsumes it.
+
     for field in ("name", "slug", "mcp_url", "revoke_page_url", "docs_url", "gotcha_copy"):
         value = raw[field]
         if not isinstance(value, str) or not value.strip():
@@ -298,10 +359,6 @@ def _validate_provider(raw: object, index: int) -> Provider:
         raise _validation_error(index, "revoke_verified_note must be a non-empty string")
 
     _iso_date(raw["revoke_verified_on"], index, "revoke_verified_on")
-
-    slug = cast(str, raw["slug"])
-    if not _SLUG_PATTERN.fullmatch(slug):
-        raise _validation_error(index, "slug must contain lowercase letters, numbers, and hyphens")
 
     for field in ("mcp_url", "revoke_page_url", "docs_url"):
         if not cast(str, raw[field]).startswith("https://"):

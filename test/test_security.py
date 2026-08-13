@@ -3847,6 +3847,37 @@ class TestWindowsPathShapes:
         for cmd in cmds:
             assert is_sensitive_bash_command(cmd) is not None, cmd
 
+    @pytest.mark.parametrize("leaf", security._WRITE_PROTECTED_BASH_LEAVES)
+    def test_native_spelling_of_write_protected_leaf_is_blocked_on_any_host(
+        self, leaf: str
+    ) -> None:
+        # The write-protected leaf branch is POSIX-separator anchored, so on a
+        # Windows host the resolved home literal (``C:\Users\u``) spells every
+        # leaf with backslashes and reached the fenced file unblocked. Each leaf
+        # is an input to an authorization decision (migration completion, the
+        # on-call schedule, the incident index, the alias ownership record), so
+        # the native spelling has to be gated in the raw text like the fenced
+        # dirs already are -- host-independently, since the raw pass never
+        # depends on the runner's OS.
+        win_leaf = leaf.replace("/", "\\")
+        for prefix in security.crew_home_prefixes():
+            win_prefix = prefix.replace("/", "\\")
+            for anchor in ("C:\\Users\\u", "%USERPROFILE%", "$env:USERPROFILE"):
+                target = f"{anchor}\\{win_prefix}\\{win_leaf}"
+                for cmd in (
+                    f'echo forged > "{target}"',
+                    f'copy /Y evil.json "{target}"',
+                    f"python -c \"open(r'{target}','w')\"",
+                    f'del "{target}"',
+                ):
+                    assert is_sensitive_bash_command(cmd) is not None, cmd
+        # Adding a leaf must not fence the whole crew home: unrelated content in
+        # the same native spelling stays writable.
+        assert (
+            is_sensitive_bash_command('echo x > "C:\\Users\\u\\.kiro\\crew\\sessions.db"')
+            is None
+        )
+
     def test_appdata_alias_of_fenced_store_is_blocked(self) -> None:
         # %APPDATA% points INTO AppData\Roaming, so this spelling names the
         # store without the AppData\Roaming text the home-anchored branch
@@ -3910,6 +3941,98 @@ class TestWindowsPathShapes:
         for fenced in (".aws\\credentials", "AppData\\Roaming\\kiro-cli\\data.sqlite3"):
             cmd = f"type '{home}\\{fenced}'"
             assert is_sensitive_bash_command(cmd) is not None, cmd
+
+
+class TestBareTokenProtectedLeaves:
+    """The distinctive leaves are refused by NAME, with no anchor required.
+
+    Every other leaf branch needs a home anchor plus a crew prefix, so one ``cd`` walks
+    around all of them: after ``cd ~/.kiro/crew`` a relative ``echo forged >
+    connections-tool-aliases.json`` names no home, no prefix and no separator. For the
+    alias ownership record that is not a residual limit to accept the way it is for
+    credential paths -- the file IS the deletion grant (``alias_record.load_claimed``
+    returns the pairs the rebuild may strip from the spec), so the contract is about the
+    FILENAME: any command naming it as a path segment is refused, and anchoring is not
+    part of the contract.
+    """
+
+    def test_relative_redirect_after_cd_is_blocked(self) -> None:
+        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
+            for cmd in (
+                f"cd ~/.kiro/crew && echo forged > {leaf}",
+                f"cd $HOME/.kiro/crew; echo forged >> {leaf}",
+                # no space between the operator and the target
+                f"cd ~/.kirocrew && echo forged >{leaf}",
+                f"cd ~/.kiro/crew && echo forged > '{leaf}'",
+            ):
+                assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_bare_name_with_any_verb_is_blocked(self) -> None:
+        # Verb-independent, like the anchored branches: naming the file is the signal,
+        # so a novel or forgotten write verb cannot slip past an enumerated list.
+        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
+            for cmd in (
+                f"tee {leaf}",
+                f"touch {leaf}",
+                f"rm -f {leaf}",
+                f"mv /tmp/forged.json {leaf}",
+                f"cp /tmp/forged.json {leaf}",
+                f"cat {leaf}",
+                f"python -c \"open('{leaf}','w')\"",
+                f"install -m 600 /tmp/forged.json {leaf}",
+            ):
+                assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_subdir_relative_spellings_are_blocked(self) -> None:
+        # A path SEPARATOR before the name is the common bare-relative spelling and is
+        # outside the ``[\s'\"=:,;]`` token anchor the anchored branches use.
+        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
+            for cmd in (
+                f"echo forged > ./{leaf}",
+                f"tee ./{leaf}",
+                f"cp /tmp/f.json crew/{leaf}",
+                f"echo forged > ../crew/{leaf}",
+            ):
+                assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_windows_relative_spelling_is_blocked(self) -> None:
+        # Host-independent: the raw pass never depends on the runner's OS, and a
+        # backslash-relative name carries no anchor for the Windows leaf branch either.
+        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
+            for cmd in (
+                f"echo forged > .\\{leaf}",
+                f'copy /Y evil.json ".\\{leaf}"',
+                f"echo forged > crew\\{leaf}",
+                f"python -c \"open(r'.\\{leaf}','w')\"",
+            ):
+                assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_unrelated_names_and_crew_content_stay_allowed(self) -> None:
+        # Bare-token matching is deliberately narrow: it fences ONE distinctive
+        # filename, not the crew home and not every name that contains it.
+        assert is_sensitive_bash_command("touch ~/.kiro/crew/sessions.db") is None
+        assert is_sensitive_bash_command("touch ~/.kirocrew/sessions.db") is None
+        assert is_sensitive_bash_command("cat ~/.kiro/crew/config.json") is None
+        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
+            # a DIFFERENT file whose name merely ends with the protected one
+            assert is_sensitive_bash_command(f"touch my-{leaf}") is None
+            assert is_sensitive_bash_command(f"cat legacy-{leaf}") is None
+            # a longer name that merely starts with it
+            assert is_sensitive_bash_command(f"cat {leaf}x") is None
+            assert is_sensitive_bash_command(f"cat {leaf}5") is None
+
+    def test_generic_leaves_are_not_bare_matched(self) -> None:
+        # SCOPE GUARD: bare-token matching is only safe for a globally distinctive
+        # name. Admitting a generic leaf (``index.json``, ``config.json``,
+        # ``rotation.yaml``) would refuse a large fraction of ordinary commands, so the
+        # tuple must never grow one -- and the anchored forms must keep working.
+        for generic in ("index.json", "config.json", "rotation.yaml", ".data-home-ready"):
+            assert generic not in security._BARE_TOKEN_PROTECTED_LEAVES
+            assert is_sensitive_bash_command(f"touch {generic}") is None
+        for leaf in security._WRITE_PROTECTED_BASH_LEAVES:
+            for prefix in security.crew_home_prefixes():
+                anchored = f"echo forged > ~/{prefix}/{leaf}"
+                assert is_sensitive_bash_command(anchored) is not None, anchored
 
 
 class TestDeniedCommandsKeystone:

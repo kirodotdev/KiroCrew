@@ -17,6 +17,14 @@ from kiro_crew.connections.registry import (
     is_local_host,
     stale_l0_baselines,
 )
+from kiro_crew.connections.tool_aliases import (
+    declared_tool_aliases,
+    derived_alias,
+    exposed_declared_tools,
+    natural_tool_names,
+    resolve_tool_aliases,
+    statically_visible_tool_names,
+)
 
 __all__ = [
     "L0_VERIFICATION_MAX_AGE_DAYS",
@@ -27,11 +35,17 @@ __all__ = [
     "REVOKE_VERIFICATION_MAX_AGE_DAYS",
     "RegistryValidationError",
     "SmokeFixture",
+    "declared_tool_aliases",
+    "derived_alias",
+    "exposed_declared_tools",
     "get_all_providers",
     "get_all_registry_providers",
     "get_provider",
     "get_tier",
     "get_visible_providers",
     "is_local_host",
+    "natural_tool_names",
+    "resolve_tool_aliases",
     "stale_l0_baselines",
+    "statically_visible_tool_names",
 ]
