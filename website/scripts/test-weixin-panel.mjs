@@ -60,6 +60,7 @@ let wxConnected = false
 let wxCredential = false
 let dmPolicy = 'open'
 let allowed = []
+let sessionFolder = ''
 const calls = { start: 0, status: 0, save: [] }
 
 const browser = await chromium.launch()
@@ -95,6 +96,7 @@ await page.route('**/api/**', async route => {
       credential_set: wxCredential, enabled: false,
       account_id: wxConnected ? 'a5ace6fd482e@im.bot' : '',
       dm_policy: dmPolicy, allowed_user_ids: allowed,
+      session_folder: sessionFolder,
     })
   }
   if (p === '/api/weixin/config' && method === 'PUT') {
@@ -102,6 +104,7 @@ await page.route('**/api/**', async route => {
     calls.save.push(body)
     if ('dm_policy' in body) dmPolicy = body.dm_policy
     if ('allowed_user_ids' in body) allowed = body.allowed_user_ids
+    if ('session_folder' in body) sessionFolder = body.session_folder
     return json(route, { ok: true, restart_required: true })
   }
   if (p === '/api/channels/weixin/qr/start') {
@@ -248,7 +251,55 @@ assert(
 assert(await page.locator('[data-testid="weixin-allowlist"]').isVisible(), 'Allow-list editor appears for allowlist policy')
 await page.screenshot({ path: join(OUT, 'weixin-panel-allowlist.png') })
 
-// 7) No secret ever reaches the client
+// 7) Session folder — the same switch, in the same place, as every other channel
+// panel. Placement is asserted against the allowlist rather than by pixel: this
+// section used to sit ABOVE the allowlist, mid-panel, where it read as part of
+// the access-policy block and users looking for it at the bottom (where the six
+// other channels put it) concluded WeChat lacked the setting entirely.
+const folderBlock = page.locator('[data-testid="weixin-session-folder"]')
+assert(await folderBlock.count() > 0, 'Session-folder section renders')
+const orderOk = await page.evaluate(() => {
+  const a = document.querySelector('[data-testid="weixin-allowlist"]')
+  const f = document.querySelector('[data-testid="weixin-session-folder"]')
+  // DOCUMENT_POSITION_FOLLOWING (4): the folder block comes after the allowlist.
+  return !!a && !!f && (a.compareDocumentPosition(f) & 4) !== 0
+})
+assert(orderOk, 'Session-folder section sits below the allow-list, at the panel bottom')
+const folderSwitch = folderBlock.getByRole('switch', { name: 'File sessions in a folder' })
+assert(await folderSwitch.count() > 0, 'Uses the shared switch (role=switch), not a bare checkbox')
+assert(
+  await folderBlock.evaluate(el => el.className.includes('border-t')),
+  'Divider rule separates it from the block above, as in BotChannelPanel',
+)
+await folderSwitch.click()
+await page.waitForFunction(
+  () => !!document.querySelector('[data-testid="weixin-session-folder"] input[type="text"]'),
+  null, { timeout: 10000 },
+)
+assert(
+  calls.save.some(b => b.session_folder === 'WeChat'),
+  'Turning it on PUT the default folder name immediately (this panel has no Save button)',
+)
+// Let the switch finish its colour/knob transition before capturing. Without this
+// the shot lands mid-animation and shows an off-looking switch above a visible
+// name field — a state the component cannot render at rest, so the evidence
+// contradicts the code.
+await page.waitForFunction(
+  () => {
+    const sw = document.querySelector('[data-testid="weixin-session-folder"] [role="switch"]')
+    if (!sw || sw.getAttribute('aria-checked') !== 'true') return false
+    const knob = sw.firstElementChild
+    return !!knob && getComputedStyle(knob).transform !== 'none'
+      ? getComputedStyle(knob).transform.includes('18')
+      : true
+  },
+  null, { timeout: 5000 },
+)
+await page.waitForTimeout(250)
+await page.screenshot({ path: join(OUT, 'weixin-panel-session-folder.png') })
+await folderBlock.screenshot({ path: join(OUT, 'weixin-panel-session-folder-crop.png') })
+
+// 8) No secret ever reaches the client
 const html = await page.content()
 assert(!/ilink_bot_token|WEIXIN_TOKEN/i.test(html), 'No credential material rendered in the DOM')
 
