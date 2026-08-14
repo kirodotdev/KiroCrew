@@ -86,6 +86,8 @@
   "components.pullRequestPanel.files_changed",
   "components.queueStack.sub_agent_result",
   "components.skillBrowserModal.file",
+  "components.worktreePanel.body_clean_ahead",
+  "components.worktreePanel.n_trees",
   "pages.agentsPage.prompt",
   "pages.aidlc.taskDetailPanel.task_2",
   "pages.appsPage.agent",

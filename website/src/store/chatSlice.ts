@@ -4,7 +4,7 @@ import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetc
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
-import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity } from '../types'
+import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, WorktreeBinding } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
@@ -1145,7 +1145,7 @@ export const warmSlotCache = createAsyncThunk(
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; color_index?: number | null; project?: string | null; activate?: boolean } | string | undefined,
+  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; color_index?: number | null; project?: string | null; worktree?: WorktreeBinding; activate?: boolean } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -1158,6 +1158,7 @@ export const createSlot = createAsyncThunk<
     const folderId = typeof opts === 'string' ? undefined : opts?.folder_id
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
     const project = typeof opts === 'string' ? undefined : opts?.project
+    const worktree = typeof opts === 'string' ? undefined : opts?.worktree
     // `activate: false` creates the session WITHOUT stealing focus, so a caller
     // that must finish setting the slot up (e.g. scoping it to a worktree) can
     // do so before the user is able to type into it. Defaults to true — every
@@ -1191,8 +1192,15 @@ export const createSlot = createAsyncThunk<
     // create payload instead.)
     if (project) {
       slot.project = project
+      if (worktree) slot.worktree = worktree
+      // Forward the binding only when there is one, so scoping a plain project
+      // issues the same call it always did rather than an explicit undefined.
+      const scopeProject = () =>
+        worktree
+          ? api.chatSlotProject(slot.key, project, worktree)
+          : api.chatSlotProject(slot.key, project)
       if (activate) {
-        api.chatSlotProject(slot.key, project).catch(() => {})
+        scopeProject().catch(() => {})
       } else {
         // Background create (activate: false): the caller is setting this slot up
         // and the user must not be able to reach it half-configured. Publishing it
@@ -1201,7 +1209,7 @@ export const createSlot = createAsyncThunk<
         // Await the scope, and if it fails delete the session server-side rather
         // than publish an unscoped one.
         try {
-          await api.chatSlotProject(slot.key, project)
+          await scopeProject()
         } catch (err) {
           await api.deleteChatSlot(slot.key).catch(() => {})
           throw err

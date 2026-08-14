@@ -3100,6 +3100,32 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "workspace": ws_name})
 
 
+def _sanitize_worktree_binding(raw: object, project: str) -> dict[str, str]:
+    """Normalize a client-supplied ``worktree`` binding, or return ``{}``.
+
+    Labelling only: it records which repository and branch the session's project
+    directory belongs to so the sidebar can show it and so folder matching has a
+    repository to match on. No filesystem operation trusts it — the worktree
+    endpoints re-derive the repo from the slot-project allow-list and ask git what
+    is actually registered.
+
+    The binding is dropped unless its ``path`` is the project being set, so a stale
+    label cannot outlive the project it described.
+    """
+    if not isinstance(raw, dict) or not project:
+        return {}
+    binding = {
+        key: raw[key]
+        for key in ("repo", "branch", "base", "path")
+        if isinstance(raw.get(key), str) and raw[key].strip()
+    }
+    if not binding.get("path") or not binding.get("repo"):
+        return {}
+    if os.path.normcase(os.path.normpath(binding["path"])) != os.path.normcase(project):
+        return {}
+    return {key: value.strip()[:500] for key, value in binding.items()}
+
+
 async def api_chat_slot_project(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/project — set project directory for file search scoping."""
     state: DashboardState = request.app["state"]
@@ -3130,6 +3156,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             return web.json_response({"error": "Access denied"}, status=403)
     old_project = slot.project
     slot.project = project
+    slot.worktree = _sanitize_worktree_binding(body.get("worktree"), project)
     logger.info("Slot %s project set to %r", name, project)
     sel().log_api_access(
         caller=request.get("user", "dashboard"),
@@ -3137,8 +3164,11 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         outcome="allowed",
         resources=f"slot={name} project={project}",
     )
-    # Track recent projects
-    if project:
+    # Track recent projects. A worktree is deliberately excluded: it is a
+    # short-lived checkout this feature reclaims, not a project you would pick
+    # again from a list, and recording every tree you enter buries the handful of
+    # real projects the picker exists to offer.
+    if project and not slot.worktree:
         try:
             await asyncio.to_thread(_save_recent_project, project)
         except Exception:
@@ -3158,7 +3188,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # same killpg constraint that deferred the reset applies to it.
         schedule_eager_spawn(state, slot)
     state.push_slots_update()
-    return web.json_response({"ok": True, "project": project})
+    return web.json_response({"ok": True, "project": project, "worktree": slot.worktree})
 
 
 # Fields carried per follow-up item on the wire. Kept explicit so a future

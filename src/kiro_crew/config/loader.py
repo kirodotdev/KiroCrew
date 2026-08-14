@@ -2592,6 +2592,23 @@ class DashboardConfig:
             "backend it is a no-op.",
         ),
     )
+    worktrees_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Worktree Sessions (beta)",
+            "Let a chat session work in a git worktree — a separate checkout of "
+            "the same repository on its own branch — so several sessions can edit "
+            "one repository at the same time without overwriting each other's "
+            "files or fighting over the checked-out branch. Adds a Worktrees "
+            "control to the composer for creating trees, moving this session "
+            "between them, and reclaiming the ones whose work has landed. "
+            "Off by default while the feature is in beta. Turning it off hides the "
+            "control and refuses its endpoints, and leaves every worktree already "
+            "on disk untouched — nothing is deleted, `git worktree` still works "
+            "from a terminal, and the follow-up card's own "
+            "\"Start in new worktree\" button is unaffected.",
+        ),
+    )
     quick_send: bool = field(
         default=False,
         metadata=_meta(
@@ -6103,6 +6120,9 @@ class KiroCrewConfig:
                 cautious_boot=_safe_bool(dashboard_data.get("cautious_boot"), True),
                 auto_open_browser=dashboard_data.get("auto_open_browser", True),
                 prevent_sleep=_safe_bool(dashboard_data.get("prevent_sleep"), False),
+                worktrees_enabled=_safe_bool(
+                    dashboard_data.get("worktrees_enabled"), False
+                ),
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
                 mcp_app_panel=dashboard_data.get("mcp_app_panel", False),

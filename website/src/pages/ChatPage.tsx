@@ -31,7 +31,7 @@ import {
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
-import { sseSlotTitle, triggerRefresh } from '../store/dashboardSlice'
+import { fetchSlots, sseSlotTitle, triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { PlanStepInput } from '../api/client'
@@ -80,6 +80,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import AgentDropdownList, { ManageAgentsFooter } from '../components/AgentDropdownList'
 import ProjectPicker from '../components/ProjectPicker'
+import { WorktreePanel } from '../components/WorktreePanel'
 import InboundLinkChip from '../components/InboundLinkChip'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import {
@@ -1470,6 +1471,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [flushDrafts])
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const [worktreePanelOpen, setWorktreePanelOpen] = useState(false)
+  const [worktreeBtnRect, setWorktreeBtnRect] = useState<DOMRect | null>(null)
   const [projectBtnRect, setProjectBtnRect] = useState<DOMRect | null>(null)
 
   // Prevent Chrome from navigating to dropped files.
@@ -4322,7 +4325,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // so a turn sent in that window would run in the default directory — agent
       // tools writing to the wrong checkout. It also means a scoping failure can
       // render its error on the still-mounted card instead of unmounting it.
-      const slot = await dispatch(createSlot({ mode, project: path, activate: false })).unwrap()
+      const slot = await dispatch(createSlot({
+        mode,
+        project: path,
+        // Label the session with the repo it came from. `project` is the worktree
+        // path, which cannot answer "which repository is this" — the sidebar chip
+        // and the worktree panel both need the main checkout.
+        worktree: { repo, branch: res.branch || followupBranchFor(item), base: res.base, path },
+        activate: false,
+      })).unwrap()
       slotKey = slot?.key || ''
     } catch {
       // The worktree exists but the session does not. Say so, and name the path:
@@ -4676,7 +4687,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // (no git, path gone, not a repo) leaves the chip showing the folder name
   // alone, which is the pre-existing behaviour.
   const _slotProject = currentSlot?.project || ''
-  const { data: projectGit, isError: projectGitError } = useQuery({
+  const { data: projectGit, isError: projectGitError, isSuccess: projectGitLoaded } = useQuery({
     queryKey: ['project-git', _slotProject],
     queryFn: () => api.projectGit(_slotProject),
     enabled: !!_slotProject,
@@ -4717,6 +4728,105 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     try { localStorage.setItem(key, '1') } catch { return }
     tabsCtl.openFolder(_slotProject, activeSlot)
   }, [activeSlot, _slotProject, tabsCtl])
+
+  // Which repository the worktree panel should list. A session created by the
+  // follow-up card carries the binding explicitly; any other session scoped
+  // anywhere inside a git repo resolves to that repo's root. Gating on the
+  // binding alone would hide the panel from a session sitting in the MAIN
+  // checkout, which is exactly where "what trees does this repo have" is asked.
+  // Worktree Sessions is a beta surface behind `dashboard.worktrees_enabled`,
+  // so an instance that has not opted in shows no Worktrees control at all.
+  // Shares the ['kirocrewConfig'] cache with the other config readers.
+  const { data: worktreesEnabled = false } = useQuery<
+    { dashboard?: { worktrees_enabled?: boolean } }, Error, boolean
+  >({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    select: (c) => c.dashboard?.worktrees_enabled ?? false,
+  })
+  const worktreeRepo = !worktreesEnabled
+    ? ''
+    : currentSlot?.worktree?.repo
+      || (!projectGitError && projectGit?.repo ? projectGit.repoRoot || '' : '')
+
+  // Whether this session's directory is a git work tree, as a tri-state: the
+  // picker states the verdict only once it is known, so a directory is never
+  // accused of not being a repository while the probe is still in flight. A
+  // worktree-bound slot is a repository by construction.
+  const projectIsRepo: boolean | null = currentSlot?.worktree?.repo
+    ? true
+    : !_slotProject || projectGitError
+      ? false
+      : projectGitLoaded
+        ? !!projectGit?.repo
+        : null
+
+  // Opt-in written from the project picker's footer. The endpoint applies only
+  // the keys present in the body, so a one-key PUT cannot disturb the rest of
+  // the dashboard config. Invalidating ['kirocrewConfig'] is what makes the
+  // shelf control appear or vanish without a reload.
+  const worktreesEnabledMut = useMutation({
+    mutationFn: (v: boolean) => api.updateDashboardConfig({ worktrees_enabled: v }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboardConfig'] })
+    },
+  })
+
+  /**
+   * Create a worktree on `branch` and open a session already scoped to it.
+   *
+   * The worktree comes FIRST: if git refuses (branch exists, not a repo) there
+   * must be no empty session left for the user to clean up. `activate: false`
+   * for the same reason the follow-up path uses it — a session must be scoped
+   * before the composer can accept a turn, or agent tools would write into the
+   * default checkout.
+   */
+  const createWorktreeSession = useCallback(async (branch: string) => {
+    if (!worktreeRepo) throw new Error('This session has no git repository to branch from.')
+    const res = await api.createWorktree(worktreeRepo, branch)
+    const path = res?.path
+    if (!path) throw new Error(res?.error || 'Worktree creation returned no path.')
+    const slot = await dispatch(createSlot({
+      mode,
+      project: path,
+      worktree: { repo: worktreeRepo, branch: res.branch || branch, base: res.base, path },
+      activate: false,
+    })).unwrap()
+    const slotKey = slot?.key || ''
+    if (!slotKey) {
+      throw new Error(
+        `Worktree created at ${path}, but no session was returned. `
+        + 'Try again — the existing worktree will be reused.',
+      )
+    }
+    setWorktreePanelOpen(false)
+    dispatch(switchSlot(slotKey))
+  }, [worktreeRepo, mode, dispatch])
+
+  /**
+   * Move the ACTIVE session into `entry` — Claude Code's `EnterWorktree`, and
+   * `ExitWorktree` when `entry` is the main checkout.
+   *
+   * Re-scoping the session is the whole move: the project endpoint schedules a
+   * cold start at the next turn boundary, so the agent's cwd, its project-level
+   * steering and its file tools all follow. The tree it leaves is untouched —
+   * switching is not a handoff, and nothing about the old tree changes.
+   */
+  const enterWorktree = useCallback(async (entry: {
+    path: string; branch: string; is_main: boolean
+  }) => {
+    if (!activeSlot || !worktreeRepo) return
+    const binding = entry.is_main
+      ? undefined
+      : { repo: worktreeRepo, branch: entry.branch, path: entry.path }
+    await api.chatSlotProject(activeSlot, entry.path, binding)
+    // The slot list is the source of truth for `worktree`/`project`; refetch so
+    // the shelf, the sidebar chip and this popover's "this session" marker all
+    // move together instead of waiting for the next push.
+    void dispatch(fetchSlots())
+  }, [activeSlot, worktreeRepo, dispatch])
+
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
@@ -6802,6 +6912,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 setProjectBtnRect(rect)
                 setProjectPickerOpen(o => !o)
               }}
+              onWorktreeClick={worktreeRepo ? (rect) => {
+                setWorktreeBtnRect(rect)
+                setWorktreePanelOpen(o => !o)
+              } : undefined}
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
@@ -6986,7 +7100,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onOpenChange={setProjectPickerOpen}
               anchorRect={projectBtnRect}
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
+              worktreesEnabled={worktreesEnabled}
+              onWorktreesEnabledChange={v => worktreesEnabledMut.mutate(v)}
+              projectIsRepo={projectIsRepo}
             />
+            {worktreePanelOpen && worktreeRepo && (
+              <WorktreePanel
+                repo={worktreeRepo}
+                activePath={currentSlot?.worktree?.path}
+                anchorRect={worktreeBtnRect}
+                onCreate={createWorktreeSession}
+                onEnter={enterWorktree}
+                onClose={() => setWorktreePanelOpen(false)}
+              />
+            )}
             {/* Reasoning effort dropdown portal */}
             {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>

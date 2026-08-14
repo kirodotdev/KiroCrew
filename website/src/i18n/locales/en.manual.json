@@ -1158,9 +1158,9 @@
       "voice_input": "Voice input",
       "queue": "Queue",
       "queue_desc": "Run after the current work finishes",
-      "steer_desc": "Act on this right away"
-    },
-    "chatPane": {
+      "steer_desc": "Act on this right away",
+      "worktrees": "Worktrees"
+    },    "chatPane": {
       "forked_from": "Forked from {{name}}"
     },
     "cliPanel": {

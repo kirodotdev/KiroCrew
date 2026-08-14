@@ -4642,7 +4642,8 @@
       "upload_file": "ফাইল আপলোড করুন",
       "use_a_skill": "একটি স্কিল ব্যবহার করুন",
       "used": "ব্যবহৃত",
-      "voice_input": "ভয়েস ইনপুট"
+      "voice_input": "ভয়েস ইনপুট",
+      "worktrees": "Worktrees"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -5638,7 +5639,10 @@
       "search_recent_projects": "সাম্প্রতিক প্রকল্প খুঁজুন",
       "search_recent_projects_2": "সাম্প্রতিক প্রকল্প খুঁজুন…",
       "select": "নির্বাচন করুন",
-      "subdirectories": "সাবডিরেক্টরি"
+      "subdirectories": "সাবডিরেক্টরি",
+      "let_this_session_work_in_its_own_branch_checkout": "Work in a private branch checkout of this directory",
+      "this_folder_is_not_a_git_repository_pick_the_rep": "Not a git repository — pick the repository folder itself, not the folder above it",
+      "worktree_sessions": "Worktree sessions"
     },
     "publishHub": {
       "back": "পিছনে",
@@ -6469,6 +6473,55 @@
       "refresh": "রিফ্রেশ",
       "title": "Git",
       "uncommitted": "{{count}}টি আনকমিটেড"
+    },
+    "worktreePanel": {
+      "back": "Back",
+      "body_clean_ahead_one": "Clean, but the verdict is {{verdict}} — {{count}} commit has not landed on the base branch.",
+      "body_clean_ahead_other": "Clean, but the verdict is {{verdict}} — {{count}} commits have not landed on the base branch.",
+      "body_clean_no_unlanded": "Clean, with no unlanded commits. Verdict: {{verdict}}.",
+      "body_dirty": "live only in this directory. Deleting it loses them permanently.",
+      "body_dirty_unknown": "Whether this tree is clean could not be determined, so it may hold work that exists nowhere else. Removing it anyway is not reversible.",
+      "branch_ref_kept_directory_only": "branch ref kept, directory only",
+      "cancel": "Cancel",
+      "close": "Close",
+      "could_not_create_the_worktree": "could not create the worktree",
+      "could_not_list_worktrees": "could not list worktrees",
+      "could_not_switch_worktree": "could not switch worktree",
+      "create": "Create",
+      "create_worktree": "Create worktree",
+      "delete_lose_changes": "Delete, lose changes",
+      "enter_main_checkout": "Enter main checkout",
+      "enter_tree": "Enter {{name}}",
+      "leave_this_worktree_before_removing_it": "Leave this worktree before removing it",
+      "main_checkout": "main checkout",
+      "move_this_session_into": "Move this session into {{path}}",
+      "n_trees_one": "{{count}} tree",
+      "n_trees_other": "{{count}} trees",
+      "new_branch_leave_empty_for_a_generated_name": "new branch — leave empty for a generated name",
+      "new_worktree_branch": "New worktree branch",
+      "no_worktrees_for_this_repository_yet": "No worktrees for this repository yet.",
+      "reading_git_state": "Reading git state…",
+      "recyclable_removes_without_asking": "Recyclable — removes without asking",
+      "refresh": "Refresh",
+      "remove": "Remove",
+      "removal_failed": "removal failed",
+      "remove_asks_first": "Remove (asks first)",
+      "remove_branch": "Remove {{branch}}",
+      "remove_tree": "Remove {{name}}",
+      "state_clean": "clean",
+      "state_dirty": "dirty",
+      "state_unknown": "unknown",
+      "this_session": "this session",
+      "this_session_is_already_here": "This session is already here",
+      "uncommitted_changes": "Uncommitted changes",
+      "verdict_active": "active",
+      "verdict_empty": "empty",
+      "verdict_fresh": "fresh",
+      "verdict_merged": "merged",
+      "verdict_merged_dirty": "merged · dirty",
+      "verdict_no_base": "no base",
+      "verdict_unknown": "unknown",
+      "worktrees": "Worktrees"
     }
   },
   "hooks": {
@@ -8058,7 +8111,8 @@
       "crew_mode": "Crew Mode — বিষয়গুলি সমান্তরাল উপ-সেশনে চলে",
       "crew": "Crew",
       "autopilot_desc": "একটি কাজ, ধাপে ধাপে — আগে পরিকল্পনা, আপনার অনুমোদন, তারপর ধাপে ধাপে সম্পাদন।",
-      "crew_desc": "একসাথে কয়েকটি কাজ — প্রতিটি বিষয় নিজের সাব-সেশনে চলে এবং শেষ হলেই উত্তর দেয়।"
+      "crew_desc": "একসাথে কয়েকটি কাজ — প্রতিটি বিষয় নিজের সাব-সেশনে চলে এবং শেষ হলেই উত্তর দেয়।",
+      "worktree_chip_title": "worktree {{path}}\nbranch {{branch}}"
     },
     "connectionsPage": {
       "access": "অ্যাক্সেস",
@@ -10216,7 +10270,9 @@
         "which_model_new_sessions_start_with_pick_a_model": "কোনো এজেন্ট নিজের মডেল না বাঁধলে নতুন সেশন কোন মডেল দিয়ে শুরু হবে। প্রতিটি এজেন্টের জন্য মডেল ঠিক করতে এজেন্ট সক্ষমতা → এজেন্ট-এ যাও, বা কোনো নির্দিষ্ট সেশনে তা বদলাতে সেই সেশনের ভিতরে একটি মডেল বেছে নাও।",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "প্যারেন্ট সেশনে সাবএজেন্টের সমাপ্তি ইভেন্ট ইনজেক্ট করার সময় তার স্ট্রিমের কোন অংশ রাখা হবে। Head শুরুর অংশ রাখে (ডিফল্ট, পুরোনো আচরণের সঙ্গে মেলে)। Tail চূড়ান্ত সারসংক্ষেপ রাখে। Both দুই প্রান্ত থেকেই একটি অংশ রাখে এবং মাঝে একটি মার্কার বসায়।",
         "widget_density": "উইজেট ঘনত্ব",
-        "your_role": "আপনার ভূমিকা"
+        "your_role": "আপনার ভূমিকা",
+        "let_a_session_work_in_a_git_worktree_so_several_s": "Let a session work in a git worktree — its own checkout of the repository on its own branch — so several sessions can edit one repository without overwriting each other. Adds a Worktrees control to the composer. Turning it off hides the control and leaves every worktree on disk untouched.",
+        "worktree_sessions_beta": "Worktree sessions (beta)"
       },
       "computerUsePanel": {
         "accessibility": "সহজগম্যতা",

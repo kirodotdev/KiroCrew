@@ -851,6 +851,7 @@ class _ChatSlot:
         "mode",
         "workspace",
         "project",
+        "worktree",
         "created_at",
         "messages",
         "total_messages",
@@ -981,6 +982,14 @@ class _ChatSlot:
         self.mode = mode
         self.workspace = workspace
         self.project: str = ""
+        # Set when ``project`` is a git worktree this session owns:
+        # ``{repo, branch, base, path}``. ``repo`` is the MAIN checkout, which is
+        # what answers "which repository does this session belong to" — `project`
+        # cannot, because a worktree's path is not the repository's path. Live git
+        # state (branch head, dirty, ahead/behind) is deliberately NOT stored here;
+        # it is read from disk on demand, since a stored copy goes stale the moment
+        # the user edits a file.
+        self.worktree: dict[str, str] = {}
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.messages: list[dict[str, Any]] = []
         # (content revision, links) cache for the sidebar PR chips scan.
@@ -2129,6 +2138,7 @@ class _ChatSlot:
             "surface": self.mode,
             "workspace": self.workspace,
             "project": self.project,
+            "worktree": dict(self.worktree),
             # Artifact companion binding. Flows into GET
             # /api/chat/slots and the WS `slots` snapshot — the frontend
             # resolves the active bound session for an artifact from here.

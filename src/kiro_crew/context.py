@@ -718,6 +718,78 @@ def _group_included(groups: frozenset[str] | None, group: str) -> bool:
     return groups is None or group in groups
 
 
+_GIT_ROOT_WALK_LIMIT = 64
+_GIT_LABEL_CAP = 120
+_MAX_GIT_LINE_SESSIONS = 64
+
+
+def _project_git_line(project: str) -> str:
+    """One line naming the branch and the worktree ``project`` sits in, or ``""``.
+
+    Without this the agent cannot tell a linked worktree from the main checkout —
+    to it both are just a directory path — so it has no way to keep a session's
+    work on that session's own branch when several sessions share a repository.
+
+    Pure filesystem: a bounded upward walk and two small reads, no subprocess,
+    because this runs inline on every prompt assembly and a git spawn per turn is
+    not affordable. A linked worktree's ``.git`` is a FILE holding a ``gitdir:``
+    pointer where the main checkout's is a directory, which is both how the two
+    are told apart and how the linked tree's own HEAD is located.
+
+    Best-effort by contract: an unreadable or unexpected layout yields ``""``
+    rather than a guess, because a wrong branch name is worse than no branch
+    name. Reading a single ``readline`` also bounds the label to one line, so a
+    hand-crafted HEAD cannot smuggle extra prompt lines through the ref name.
+
+    Upstream PR #1618 arrived at the same filesystem approach independently.
+    """
+    try:
+        root = ""
+        cur = os.path.realpath(os.path.expanduser(project))
+        for _ in range(_GIT_ROOT_WALK_LIMIT):
+            if os.path.exists(os.path.join(cur, ".git")):
+                root = cur
+                break
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        if not root:
+            return ""
+        dotgit = os.path.join(root, ".git")
+        linked = os.path.isfile(dotgit)
+        if linked:
+            with open(dotgit, encoding="utf-8", errors="replace") as fh:
+                pointer = fh.readline(4096).strip()
+            if not pointer.startswith("gitdir:"):
+                return ""
+            gitdir = pointer[len("gitdir:") :].strip()
+            if not gitdir:
+                return ""
+            if not os.path.isabs(gitdir):
+                gitdir = os.path.normpath(os.path.join(root, gitdir))
+            head_path = os.path.join(gitdir, "HEAD")
+        else:
+            head_path = os.path.join(dotgit, "HEAD")
+        with open(head_path, encoding="utf-8", errors="replace") as fh:
+            head = fh.readline(4096).strip()
+        kind = "a linked worktree" if linked else "the main checkout"
+        if head.startswith("ref:"):
+            ref = head[len("ref:") :].strip()
+            prefix = "refs/heads/"
+            branch = ref[len(prefix) :] if ref.startswith(prefix) else ref
+            line = f"Git: branch `{branch[:_GIT_LABEL_CAP]}` in {kind} of {root}"
+        elif re.fullmatch(r"[0-9a-f]{7,64}", head, re.IGNORECASE):
+            line = f"Git: detached HEAD at `{head[:12]}` in {kind} of {root}"
+        else:
+            return ""
+        if linked:
+            return line + ". Keep this session's work on this branch — sibling worktrees of the same repository hold other branches."
+        return line + "."
+    except OSError:
+        return ""
+
+
 def _build_context_scope_section(groups: frozenset[str] | None) -> str:
     """Name the groups a parent withheld, or ``""`` when nothing was withheld.
 
@@ -1511,6 +1583,13 @@ class ContextBuilder:
         self.lessons = lessons or LessonStore()
         self.conversation_log = conversation_log
         self.channel_history = channel_history
+        # Last git line injected per session key, so a worktree or branch change
+        # is ANNOUNCED rather than silently swapped under the agent. Keyed by
+        # session key, which survives a project change (the ACP process does not),
+        # so the switch is still detectable on the cold-started turn. Bounded and
+        # cleared wholesale like the worktree listing cache — a stale miss costs
+        # one un-announced switch, while unbounded growth costs a leak.
+        self._last_git_line: dict[str, str] = {}
         if bot_name:
             self._bot_name = bot_name
         else:
@@ -2478,13 +2557,42 @@ class ContextBuilder:
         # Project context — inject on every message so the LLM always knows
         # the active project, even when set/changed after session start.
         if project and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
-            parts.append(
+            block = (
                 f"[PROJECT] Active project directory: {project}\n"
                 "This is the codebase you are working in for this session. "
                 "File search, @-mentions, and code references are scoped to "
                 "this directory. Prefer files and patterns from this project "
-                "when answering questions.\n\n"
+                "when answering questions.\n"
             )
+            # Branch and worktree awareness. Re-read every turn rather than
+            # derived from the session's stored binding, so a `git checkout` in a
+            # terminal is caught too — this tracks the state on disk, not the
+            # actions this product took. When it differs from what this session
+            # was last told, the change itself is the message: an agent that
+            # merely sees a new branch has to infer the switch, and inferring it
+            # wrongly means committing a ticket's work onto another ticket's
+            # branch. Only announced once the session has a previous reading, so
+            # a first turn never claims a switch that did not happen.
+            git_line = _project_git_line(project)
+            if git_line:
+                previous = self._last_git_line.get(session_key or "")
+                if previous and previous != git_line:
+                    block += (
+                        "⚠ WORKTREE SWITCHED since your last turn — your working "
+                        "directory moved with it:\n"
+                        f"    before: {previous}\n"
+                        f"    now:    {git_line}\n"
+                        "Work in the previous checkout is untouched; nothing was "
+                        "moved or lost. Treat files you read earlier as belonging "
+                        "to the previous tree and re-read anything you rely on.\n"
+                    )
+                else:
+                    block += git_line + "\n"
+                if session_key:
+                    if len(self._last_git_line) >= _MAX_GIT_LINE_SESSIONS:
+                        self._last_git_line.clear()
+                    self._last_git_line[session_key] = git_line
+            parts.append(block + "\n")
 
         # Resource pressure — inject a compact advisory ONLY when host memory is
         # tight/critical, so the model can choose the lighter path for heavy work
