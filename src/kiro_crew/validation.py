@@ -1709,6 +1709,42 @@ ARTIFACT_FOLDER_DELETE_SCHEMA = ToolSchema(
     ],
 )
 
+# Chat (sidebar) folders. Same reference model as the artifact folders above —
+# a folder is addressed by id OR by a ``/``-separated human path — so the two
+# bounds are shared. Folder names cap at 100 chars server-side
+# (chat_folders.api_chat_folder_create truncates); reject longer input here
+# instead of silently filing the session under a truncated name.
+CHAT_FOLDER_TREE_SCHEMA = ToolSchema(
+    tool_name="chat_folder_tree",
+    fields=[],
+)
+
+CHAT_FOLDER_CREATE_SCHEMA = ToolSchema(
+    tool_name="chat_folder_create",
+    fields=[
+        FieldSpec("name", str, required=True, max_len=_ARTIFACT_FOLDER_NAME_MAX),
+        FieldSpec("parent", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
+CHAT_FOLDER_MOVE_SCHEMA = ToolSchema(
+    tool_name="chat_folder_move",
+    fields=[
+        FieldSpec("folder", str, required=True, max_len=_ARTIFACT_FOLDER_REF_MAX),
+        FieldSpec("new_parent", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
+CHAT_FOLDER_MOVE_SESSION_SCHEMA = ToolSchema(
+    tool_name="chat_folder_move_session",
+    fields=[
+        # A session reference is a slot key, a ``dashboard:`` session key, or an
+        # exact session title — none share a charset, so only bound the length.
+        FieldSpec("session", str, required=True, max_len=512),
+        FieldSpec("folder", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
 ARTIFACT_MOVE_SCHEMA = ToolSchema(
     tool_name="artifact_move",
     fields=[
@@ -2531,6 +2567,21 @@ def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
         max_val=_cu_types.MAX_SCREEN_COORD,
     )
 
+
+# ── Tool Schemas (MCP Dashboard — server ``kirocrew-dashboard``) ──
+#
+# Registered separately from MCP_CORE_SCHEMAS because the dashboard-control tools
+# ship in their own MCP server: core is the always-present surface, and a
+# capability the user opts into does not belong in every session's context. The
+# registry must exist for the same reason the core one does — call_tool_with_logging
+# routes validation through it, and a tool absent from its server's registry has
+# its args passed through raw.
+MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
+    "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
+    "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
+    "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
+    "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
+}
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
     _cu_types.TOOL_LIST_APPS: ToolSchema(tool_name=_cu_types.TOOL_LIST_APPS, fields=[]),

@@ -185,6 +185,20 @@ async def _unhide_folder(state: DashboardState, folder_id: str) -> bool:
     return await state.mutate_folders(_clear)
 
 
+def _audit_origin(request: web.Request) -> str:
+    """SEL ``source`` for a folder mutation: ``"mcp"`` for a tool, else ``"dashboard"``.
+
+    These endpoints are now driven by BOTH the browser and the
+    ``chat_folder_*`` MCP tools (``/api/chat`` is a mixed-internal path), and an
+    audit line that labels every write ``dashboard`` cannot answer "did I move
+    that session, or did the agent?". Same header test as
+    ``handlers/artifacts.py`` uses for artifact lifecycle events — the header is
+    already validated by the token-auth middleware, so its presence is a
+    trustworthy origin marker rather than a claim from the body.
+    """
+    return "mcp" if request.headers.get("X-Internal-Secret") is not None else "dashboard"
+
+
 async def api_chat_folders(request: web.Request) -> web.Response:
     """GET /api/chat/folders — list all project folders (with archived-session counts)."""
     state: DashboardState = request.app["state"]
@@ -296,8 +310,8 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         )
     state.push_slots_update()
     sel().log_api_access(
-        caller="dashboard", operation="chat.folder_create",
-        outcome="allowed", source="dashboard", resources=str(folder["id"]),
+        caller=_audit_origin(request), operation="chat.folder_create",
+        outcome="allowed", source=_audit_origin(request), resources=str(folder["id"]),
     )
     return web.json_response(folder, status=201)
 
@@ -425,8 +439,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         )
     state.push_slots_update()
     sel().log_api_access(
-        caller="dashboard", operation="chat.folder_update",
-        outcome="allowed", source="dashboard", resources=fid,
+        caller=_audit_origin(request), operation="chat.folder_update",
+        outcome="allowed", source=_audit_origin(request), resources=fid,
     )
     return web.json_response(folder)
 
@@ -486,8 +500,8 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         raise
     state.push_slots_update()
     sel().log_api_access(
-        caller="dashboard", operation="chat.folder_delete",
-        outcome="allowed", source="dashboard", resources=fid,
+        caller=_audit_origin(request), operation="chat.folder_delete",
+        outcome="allowed", source=_audit_origin(request), resources=fid,
     )
     return web.json_response({"ok": True})
 
@@ -524,8 +538,8 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
-        caller="dashboard", operation="chat.slot_folder",
-        outcome="allowed", source="dashboard", resources=name,
+        caller=_audit_origin(request), operation="chat.slot_folder",
+        outcome="allowed", source=_audit_origin(request), resources=name,
     )
     return web.json_response({"ok": True, "folder_id": slot.folder_id})
 

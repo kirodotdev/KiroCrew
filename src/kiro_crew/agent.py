@@ -501,6 +501,23 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
     # reached for it. For a tool that can click in an already-authenticated
     # application that would be a complete gate bypass.
     "kirocrew-computer": {"invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-computer")},
+    # Dashboard control (sidebar folder tree + which sessions sit in it).
+    # ``opt_in``: an ASSIGNABLE SET, not an always-on capability. The two loops
+    # that write specs skip it, so the default agent's spec carries neither the
+    # entry nor an ``@kirocrew-dashboard`` ref in ``tools`` — and kiro-cli loads a
+    # server only when something references it, so a default session spends no
+    # context on tools it never uses. An agent that should reorganize the
+    # dashboard is granted the set in its own spec, and a refresh keeps that
+    # grant's command current without ever re-granting it.
+    #
+    # No ``autoApprove`` key, for the same reason the computer server has none:
+    # an autoApproved MCP tool is approved inside kiro-cli and never reaches
+    # ``hooks.on_tool_call``, so the deny floor and governance ceiling would be
+    # bypassed for tools that write to the user's session layout.
+    "kirocrew-dashboard": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-dashboard"),
+        "opt_in": True,
+    },
 }
 
 
@@ -1584,6 +1601,12 @@ def build_agent_config() -> dict:
     mcp = config.setdefault("mcpServers", {})
     registry_mode = _mcp_registry_mode()
     for name, spec in _MANAGED_MCP_SERVERS.items():
+        # An opt-in server is an assignable set: it belongs to the agents whose
+        # own spec references it, so a freshly built default spec must not carry
+        # it. kiro-cli loads a server only when ``tools`` names it, and the
+        # shipped template names only the always-on ones.
+        if spec.get("opt_in"):
+            continue
         if "invocation_fn" in spec:
             cmd, args = spec["invocation_fn"]()
         else:
@@ -1637,6 +1660,18 @@ def _refresh_dynamic_fields(config: dict) -> None:
     registry_mode = _mcp_registry_mode()
     for name, spec in _MANAGED_MCP_SERVERS.items():
         is_new = name not in mcp
+        # An opt-in server is granted by the spec itself, so a refresh keeps an
+        # entry the user put there current but never introduces one: adding it
+        # back would re-grant a set on every gateway start.
+        if is_new and spec.get("opt_in"):
+            continue
+        if not is_new and not isinstance(mcp.get(name), dict):
+            # A hand-written entry that is not an object at all. Refreshing it
+            # would raise (item assignment on a str), and rewriting it would
+            # discard whatever the user meant to say. Leave it untouched and let
+            # doctor report it — this pass repairs OUR fields, it does not
+            # adjudicate malformed user input.
+            continue
         entry = mcp.setdefault(name, {})
         if "invocation_fn" in spec:
             entry["command"], entry["args"] = spec["invocation_fn"]()

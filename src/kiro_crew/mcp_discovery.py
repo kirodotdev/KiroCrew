@@ -827,6 +827,7 @@ _MANAGED_SERVER_SUBCOMMANDS = {
     "kirocrew-core": "mcp-core",
     "kirocrew-cron": "mcp-cron",
     "kirocrew-computer": "mcp-computer",
+    "kirocrew-dashboard": "mcp-dashboard",
 }
 _MANAGED_SERVER_NAMES = set(_MANAGED_SERVER_SUBCOMMANDS)
 
@@ -837,6 +838,7 @@ _MANAGED_SERVER_TOOL_MODULES = {
     "kirocrew-core": "kiro_crew.mcp_core",
     "kirocrew-cron": "kiro_crew.mcp_cron",
     "kirocrew-computer": "kiro_crew.mcp_computer",
+    "kirocrew-dashboard": "kiro_crew.mcp_dashboard",
 }
 
 

@@ -54,7 +54,9 @@ from kiro_crew.embeddings import (
     verify_vendored_libs,
 )
 from kiro_crew.kiro_cli import mcp_governance_may_apply
+from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
+from kiro_crew.mcp_cleanup import OPT_IN_BIN_MCP_SERVERS as _OPT_IN_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
 from kiro_crew.platform import (
     PlatformCompositionError,
@@ -116,7 +118,7 @@ _CLAUDE_ACP_BIN = "claude-agent-acp"
 # already-authenticated application must stay behind a prompt), and a diagnostic
 # command must not silently undo that.  Doctor still repairs the ``tools`` entry,
 # which only makes the server's tools *reachable*, never pre-approved.
-_NO_BLANKET_ALLOW_MCPS = frozenset({CU_MCP_SERVER})
+_NO_BLANKET_ALLOW_MCPS = frozenset({CU_MCP_SERVER}) | frozenset(_OPT_IN_MCPS)
 
 
 def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
@@ -151,12 +153,50 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
     for name in _MANAGED_MCPS:
         ref = f"@{name}"
         if name not in mcps:
+            # An opt-in set is granted per agent, so its absence from THIS spec is
+            # the normal state, not a broken install. Say nothing and probe
+            # nothing; the always-on servers below are the ones whose absence
+            # means `kirocrew setup` did not finish.
+            if name in _OPT_IN_MCPS:
+                if ref in tools:
+                    # Half a grant: the ref mounts a server the spec never
+                    # defines, so kiro-cli has nothing to launch. Report it —
+                    # repairing it either way would decide a grant for the user.
+                    print(
+                        f"  {ref}: ⚠️  referenced in tools but absent from mcpServers "
+                        "— add the server entry, or drop the ref"
+                    )
+                continue
             print(f"  {ref}: ❌ missing from mcpServers (re-run `kirocrew setup`)")
             issues.append(f"{ref} config")
             continue
-        if ref not in tools:
+        if not isinstance(mcps.get(name), dict):
+            # A hand-written entry that is not an object. Every read below —
+            # command, args, env — would raise on it, and doctor exists to
+            # diagnose a broken config rather than die on one. An opt-in name is
+            # the one a human types, so say what is wrong and move on; a
+            # malformed ALWAYS-ON entry is a broken install and counts as an issue.
+            print(f"  {ref}: ❌ malformed entry in mcpServers (expected an object)")
+            if name not in _OPT_IN_MCPS:
+                issues.append(f"{ref} config")
+            continue
+        if ref not in tools and name not in _OPT_IN_MCPS:
+            # Mounting an opt-in server IS granting it: the `@` ref is what makes
+            # kiro-cli load it. Doctor repairs a broken always-on mount, but it
+            # must never hand an agent a set the user did not assign.
             tools.append(ref)
             config_changed = True
+        elif ref not in tools:
+            # The other half: an entry with no ref. kiro-cli loads a server only
+            # when something references it, so the tools are unreachable and
+            # every other check here would still read clean — the same silent
+            # unreachability this opt-in shape exists to avoid. Warn without
+            # adding an issue: a deliberately staged entry is a legitimate state,
+            # and doctor must not mount it to make itself green.
+            print(
+                f"  {ref}: ⚠️  defined in mcpServers but not referenced in tools "
+                "— unreachable until the ref is added"
+            )
         # `allowedTools` auto-approves, which is the one path that never reaches
         # the PreToolUse gate — so what the ceiling says about this server decides
         # both whether doctor may mint a grant and whether an existing one stands.
@@ -310,12 +350,21 @@ def _doctor_mcp_governance(agent_path: Path, issues: list[str]) -> None:
         # run — on exactly the malformed spec someone is running doctor to find.
         servers = {}
 
+    # What a governed spec OUGHT to declare: every always-on server, plus the
+    # opt-in sets this spec actually grants. Counting an unassigned opt-in server
+    # would report every governed install as half-marked; dropping the always-on
+    # ones from the denominator would make a spec that declares NOTHING — a
+    # malformed or emptied ``mcpServers`` — read as fully marked, which is the
+    # exact failure this section exists to catch.
+    expected = list(_ALWAYS_ON_MCPS) + [
+        name for name in _OPT_IN_MCPS if isinstance(servers.get(name), dict)
+    ]
     marked = sorted(
         name
-        for name in _MANAGED_MCPS
+        for name in expected
         if isinstance(servers.get(name), dict) and servers[name].get("type") == "registry"
     )
-    names = ", ".join(sorted(_MANAGED_MCPS))
+    names = ", ".join(sorted(expected))
     governed_capable = mcp_governance_may_apply()
 
     # Nothing to say: an identity governance cannot reach, with no registry
@@ -347,8 +396,8 @@ def _doctor_mcp_governance(agent_path: Path, issues: list[str]) -> None:
 
     print("  identity: Identity Center or API key — an admin MCP registry can apply")
     if declared:
-        print(f"  registry mode: on — {len(marked)}/{len(_MANAGED_MCPS)} managed servers marked")
-        if len(marked) < len(_MANAGED_MCPS):
+        print(f"  registry mode: on — {len(marked)}/{len(expected)} managed servers marked")
+        if len(marked) < len(expected):
             print("  ❌ markers missing — re-run `kirocrew setup --agent-only`")
             issues.append("MCP registry markers")
             return

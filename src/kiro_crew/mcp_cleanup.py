@@ -39,9 +39,26 @@ def _kiro_mcp_json() -> Path:
 
 # Managed servers whose command is the kirocrew binary itself.
 # Only these are affected by install-method path changes.
-# Ordered tuple (not a set) so consumers that iterate — e.g. `kirocrew
+# Ordered tuples (not sets) so consumers that iterate — e.g. `kirocrew
 # doctor`'s MCP probe — get a deterministic order.
-KIROCREW_BIN_MCP_SERVERS = ("kirocrew-cron", "kirocrew-core", "kirocrew-computer")
+#
+# The split matters to every consumer that asks "should this server be in the
+# spec?". An ALWAYS_ON server missing from an agent spec is a broken install; an
+# OPT_IN one is an assignable set that most agents are simply not granted, so
+# demanding its presence — or minting an auto-approve grant for it — would undo
+# the assignment. Membership here must track the ``opt_in`` flags in
+# ``agent._MANAGED_MCP_SERVERS``; a ratchet test pins the two together.
+ALWAYS_ON_BIN_MCP_SERVERS = (
+    "kirocrew-cron",
+    "kirocrew-core",
+    "kirocrew-computer",
+)
+OPT_IN_BIN_MCP_SERVERS = ("kirocrew-dashboard",)
+
+# Every managed-binary server name, regardless of how it reaches a spec. This is
+# the cleanup view: Kiro Crew never legitimately writes any of them into the
+# user's global mcp.json, so a stray entry is purgeable either way.
+KIROCREW_BIN_MCP_SERVERS = ALWAYS_ON_BIN_MCP_SERVERS + OPT_IN_BIN_MCP_SERVERS
 
 # MeshClaw was the predecessor of KiroCrew. The rename left these managed
 # server entries — pointing at now-dead MeshClaw build paths — behind in the
@@ -49,8 +66,15 @@ KIROCREW_BIN_MCP_SERVERS = ("kirocrew-cron", "kirocrew-core", "kirocrew-computer
 PREDECESSOR_BIN_MCP_SERVERS = frozenset({"meshclaw-cron", "meshclaw-core"})
 
 # Every managed-binary server name KiroCrew is responsible for removing from
-# the user's global mcp.json (KiroCrew never legitimately writes these there).
-STALE_MANAGED_MCP_SERVERS = frozenset(KIROCREW_BIN_MCP_SERVERS) | PREDECESSOR_BIN_MCP_SERVERS
+# the user's global mcp.json (Kiro Crew never legitimately writes these there).
+#
+# ALWAYS_ON only, and there is no ownership-proven exception. This purge exists
+# to reclaim entries an OLDER INSTALL METHOD wrote to the global file — but an
+# opt-in server is never written there by any version of Kiro Crew, since the
+# only way it is ever granted is by hand. So no legitimate residue can exist
+# under that name, and anything found there is necessarily the user's own: to be
+# left alone, not reclaimed on a technicality about how it happens to be spelled.
+STALE_MANAGED_MCP_SERVERS = frozenset(ALWAYS_ON_BIN_MCP_SERVERS) | PREDECESSOR_BIN_MCP_SERVERS
 
 
 # The argv token the deleted Playwright MCP proxy was registered with. An entry
