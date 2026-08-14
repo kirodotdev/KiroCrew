@@ -5650,6 +5650,17 @@
       "select": "Auswählen",
       "subdirectories": "Unterverzeichnisse"
     },
+    "publicPublishAckModal": {
+      "acknowledge_publish": "Ich habe verstanden, öffentlich veröffentlichen",
+      "anyone_with_the_link": "Jede Person auf der Welt mit dem Link kann {{target}} ansehen — keine Authentifizierung, keine Zugriffskontrolle.",
+      "cancel": "Abbrechen",
+      "do_not_publish_anything": "Veröffentliche nichts, was du nicht ins offene Internet stellen würdest.",
+      "exposure_window_persistent": "Dieser Link bleibt öffentlich, bis du das Deployment zurückziehst oder löschst.",
+      "exposure_window_ttl_one": "Dieser Link bleibt {{count}} Stunde öffentlich und wird dann automatisch gelöscht.",
+      "exposure_window_ttl_other": "Dieser Link bleibt {{count}} Stunden öffentlich und wird dann automatisch gelöscht.",
+      "publishing": "Veröffentlichen…",
+      "title": "Dies erstellt eine öffentlich zugängliche Website"
+    },
     "publishHub": {
       "back": "Zurück",
       "cancel": "Abbrechen",

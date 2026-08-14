@@ -36,6 +36,7 @@ from kiro_crew.deploy import pricing as pricing_mod
 from kiro_crew.deploy import profiles as profiles_mod
 from kiro_crew.deploy.render import render_standalone
 from kiro_crew.deploy.scan import Finding, is_credential_finding, scan_content, summarize
+from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
@@ -1378,6 +1379,29 @@ async def _handle_deploy(request: web.Request) -> web.Response:
     denied = _deny_restricted(request, "deploy")
     if denied:
         return denied
+    # Publish-governance ceiling for THIS destination. The provider registry
+    # already hides the button when this denies, but a hidden button is not a
+    # control — the endpoint is reachable directly (and by the MCP preview path),
+    # so the decision is re-made here. Same chokepoint as artifact publish, so an
+    # operator has one place to close every publish destination.
+    #
+    # Off the loop: the decision reads the trust-root policy, every governance
+    # profile, and config.json from disk. On a slow or contended data home that
+    # walk would stall the gateway and its heartbeat for every caller, not just
+    # this request — the provider-registry call site is offloaded for the same
+    # reason.
+    reason = await asyncio.to_thread(
+        publish_denied_reason, request, DEPLOY_WEB_PROVIDER_ID
+    )
+    if reason:
+        _audit("deploy", "", "denied", error=reason)
+        return web.json_response(
+            {
+                "error": f"public web deploy is disabled by policy: {reason}",
+                "code": "publish_destination_disabled",
+            },
+            status=403,
+        )
     params = _strip_confirm_for_internal(request, await _json_body(request))
     status, payload = await _do_deploy(params)
     return web.json_response(_sanitize_response(payload), status=status)
@@ -2042,6 +2066,23 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
     denied = _deny_restricted(request, "pending_confirm")
     if denied:
         return denied
+    # Publish-governance ceiling, re-made at confirm time: a pending entry
+    # created before the operator closed the destination must NOT still be
+    # confirmable. Checked BEFORE claim_pending so a denied confirm leaves the
+    # entry intact rather than consuming it. Off the loop for the same reason as
+    # the deploy handler — the decision reads policy, profiles and config from disk.
+    reason = await asyncio.to_thread(
+        publish_denied_reason, request, DEPLOY_WEB_PROVIDER_ID
+    )
+    if reason:
+        _audit("pending_confirm", request.match_info.get("id", ""), "denied", error=reason)
+        return web.json_response(
+            {
+                "error": f"public web deploy is disabled by policy: {reason}",
+                "code": "publish_destination_disabled",
+            },
+            status=403,
+        )
     entry_id = request.match_info["id"]
     from kiro_crew.deploy.pending import add_pending, claim_pending
     entry = await asyncio.to_thread(claim_pending, entry_id)

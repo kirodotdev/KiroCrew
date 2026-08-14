@@ -1662,6 +1662,17 @@
       "preview_more_lines_one": "… {{count}} more line",
       "preview_more_lines_other": "… {{count}} more lines"
     },
+    "publicPublishAckModal": {
+      "acknowledge_publish": "I understand, publish publicly",
+      "anyone_with_the_link": "Anyone in the world with the link can view {{target}} — no authentication, no access control.",
+      "cancel": "Cancel",
+      "do_not_publish_anything": "Do not publish anything you would not put on the open internet.",
+      "exposure_window_persistent": "This link stays public until you recall or destroy the deployment.",
+      "exposure_window_ttl_one": "This link stays public for {{count}} hour, then it is deleted automatically.",
+      "exposure_window_ttl_other": "This link stays public for {{count}} hours, then it is deleted automatically.",
+      "publishing": "Publishing…",
+      "title": "This will create a publicly accessible website"
+    },
     "publishHub": {
       "checking": "Checking…",
       "content_changed_since_preview_re_run_publish_to": "Content changed since preview — re-run publish to confirm with the current version.",

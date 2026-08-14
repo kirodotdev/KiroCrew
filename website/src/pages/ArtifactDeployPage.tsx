@@ -6,6 +6,7 @@ import { AlertTriangle, ArrowLeft, Globe, Copy, ExternalLink, RefreshCw, Trash2,
 import type { Artifact } from '../types'
 import { PageHeader, Card, CardTitle, StatCard, Btn, Input, Toggle , Badge} from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
+import PublicPublishAckModal from '../components/PublicPublishAckModal'
 import InfoTip from '../components/InfoTip'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { formatCost } from '../utils/formatCost'
@@ -661,6 +662,10 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
     refetchInterval: 10000,
   })
   const pending = data?.pending || []
+  // The pending entry awaiting the blocking public-exposure acknowledgment.
+  // Confirming a pending entry deploys immediately, so it goes through the same
+  // gate as a Publish-panel confirm rather than firing straight from the row.
+  const [ackEntry, setAckEntry] = useState<PendingEntry | null>(null)
 
   const confirmMut = useMutation({
     mutationFn: async ({ id, overrideScan }: { id: string; overrideScan?: boolean }) => {
@@ -722,7 +727,7 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
                     </div>
                   )}
                 </div>
-                <Btn danger onClick={() => confirmMut.mutate({ id: e.id, overrideScan: !!e.override_scan_required })} disabled={confirmMut.isPending}>
+                <Btn danger onClick={() => setAckEntry(e)} disabled={confirmMut.isPending}>
                   {e.override_scan_required ? i18nT('pages.artifactDeployPage.deploy_anyway') : i18nT('pages.artifactDeployPage.confirm_deploy')}
                 </Btn>
                 <Btn onClick={() => dismissMut.mutate(e.id)} disabled={dismissMut.isPending}>
@@ -738,6 +743,22 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
           )
         })}
       </div>
+      {/* Same blocking acknowledgment the Publish panel uses — confirming here
+          creates the public resource, so it cannot be a one-click row action. */}
+      <PublicPublishAckModal
+        open={!!ackEntry}
+        target={ackEntry?.site_id || ''}
+        ttlHours={ackEntry?.ttl_hours ?? 0}
+        busy={confirmMut.isPending}
+        onCancel={() => setAckEntry(null)}
+        onConfirm={() => {
+          const entry = ackEntry
+          setAckEntry(null)
+          if (entry) {
+            confirmMut.mutate({ id: entry.id, overrideScan: !!entry.override_scan_required })
+          }
+        }}
+      />
     </Card>
   )
 }

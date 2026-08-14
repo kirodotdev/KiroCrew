@@ -592,10 +592,18 @@ describe('ArtifactDeployPage — pending confirmations', () => {
     })
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Deploy anyway' }))
+    // #3599: the pending confirm commits through the acknowledgment dialog.
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
     await waitFor(() => expect(writes(calls, '/pending/p2/confirm')).toHaveLength(1))
     expect(writes(calls, '/pending/p2/confirm')[0].body).toEqual({ override_scan: true })
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm Deploy' }))
+    // #3599: the pending confirm commits through the acknowledgment dialog.
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
     await waitFor(() => expect(writes(calls, '/pending/p1/confirm')).toHaveLength(1))
     expect(writes(calls, '/pending/p1/confirm')[0].body).toEqual({})
   })
@@ -604,6 +612,10 @@ describe('ArtifactDeployPage — pending confirmations', () => {
     installFetch({ pending: [pendingEntry()], confirmPending: { status: 400, body: { error: 'credential finding still present' } } })
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Deploy' }))
+    // #3599: the pending confirm commits through the acknowledgment dialog.
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
     expect(await screen.findByText('credential finding still present')).toBeInTheDocument()
   })
 

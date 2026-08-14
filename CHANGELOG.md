@@ -88,6 +88,27 @@ All notable changes to KiroCrew are documented in this file.
   `mcp_sync_ok` on the restart response rather than being dressed up as a
   successful apply.
 
+- **Publishing an artifact to the public internet now requires an explicit
+  acknowledgment, and an operator can remove the path entirely.** The warning
+  next to each confirm button could be scrolled past and read as decoration, and
+  the public-web destination was the one publish destination exempt from the
+  operator's publish policy — `deploy-web-aws` was appended to
+  `/api/publish-providers` unconditionally and `POST /api/deploy/deploy` consulted
+  no ceiling, so a team that had closed every other destination still had a
+  one-click path to a world-readable URL. Every surface that creates the public
+  resource (the Publish panel, its scan-override branch, and **Confirm deploy** on
+  a pending entry) now ends at a blocking dialog that names the artifact, states
+  that anyone with the link can view it, states how long the link stays public,
+  and requires pressing **I understand, publish publicly** — a button that is
+  neither pre-focused nor the default action, so no keystroke that dismisses an
+  ordinary dialog can publish by accident. The destination itself now goes through
+  the same `capabilities.publish` chokepoint as artifact publish: closing it in the
+  trust-root policy (or narrowing `publish.allowed_destinations` in `config.json`)
+  removes the button from the provider registry **and** answers 403 from
+  `/api/deploy/deploy` and `/api/deploy/pending/{id}/confirm`, including for the
+  agent-mediated `deploy_artifact` preview. Operators who had already narrowed
+  `publish.allowed_destinations` must add `deploy-web-aws` to keep deploying. (#3599)
+
 - **A lesson from a previous embedding-model generation could no longer get
   silently deleted or offered as a false contradiction.** `write_lesson`'s
   semantic dedup and `find_contradiction_candidates` compared raw embeddings

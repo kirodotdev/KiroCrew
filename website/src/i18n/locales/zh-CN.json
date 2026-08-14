@@ -5567,6 +5567,16 @@
       "select": "选择",
       "subdirectories": "子目录"
     },
+    "publicPublishAckModal": {
+      "acknowledge_publish": "我已了解，公开发布",
+      "anyone_with_the_link": "世界上任何拿到链接的人都能查看 {{target}}——没有身份验证，也没有访问控制。",
+      "cancel": "取消",
+      "do_not_publish_anything": "不要发布任何你不愿放到公开互联网上的内容。",
+      "exposure_window_persistent": "除非你撤回或销毁部署，此链接会一直公开。",
+      "exposure_window_ttl_other": "此链接会公开 {{count}} 小时，之后自动删除。",
+      "publishing": "正在发布…",
+      "title": "即将创建一个可公开访问的网站"
+    },
     "publishHub": {
       "back": "返回",
       "cancel": "取消",

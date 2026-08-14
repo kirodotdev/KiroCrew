@@ -86,6 +86,10 @@ describe('PublishHub stale_preview digest flow (F4 R15)', () => {
     })
 
     fireEvent.click(screen.getByText('Confirm & Publish'))
+    // #3599: the commit now happens through the blocking acknowledgment.
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
 
     await waitFor(() => {
       expect(screen.getByText(/Content changed since preview/)).toBeDefined()
@@ -142,6 +146,10 @@ describe('PublishHub stale_preview digest flow (F4 R15)', () => {
     })
 
     fireEvent.click(screen.getByText('Confirm & Publish'))
+    // #3599: the commit now happens through the blocking acknowledgment.
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
 
     await waitFor(() => {
       expect(screen.getByText('Published!')).toBeDefined()

@@ -215,7 +215,9 @@ each row carries an `available` flag so the FE can hint install-on-first-use for
 a not-yet-installed but installable destination. Governance: `publish_sync` has NO internal gate and `push_version` is
 ungated, so the two egress-arming routes go through
 `_publish_governance_denied` (fail-closed `capabilities.publish ∩
-destinations:<provider>`) BEFORE dispatch — `overwrite-remote` on the resolved
+destinations:<provider>`, a module-local alias for the shared
+`publish_governance.publish_denied_reason` — the same decision the public-web
+deploy path uses, see `governance.md`) BEFORE dispatch — `overwrite-remote` on the resolved
 `publication.provider`, and `clone` on the routed provider (a clone sets
 `auto_sync=True`, arming every future snapshot push). The four remote comment
 WRITE routes (post / reply / review / delete) are outbound egress too, so each

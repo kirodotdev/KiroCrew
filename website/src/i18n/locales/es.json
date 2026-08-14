@@ -5733,6 +5733,18 @@
       "select": "Seleccionar",
       "subdirectories": "Subdirectorios"
     },
+    "publicPublishAckModal": {
+      "acknowledge_publish": "Lo entiendo, publicar públicamente",
+      "anyone_with_the_link": "Cualquier persona del mundo con el enlace puede ver {{target}}: sin autenticación ni control de acceso.",
+      "cancel": "Cancelar",
+      "do_not_publish_anything": "No publiques nada que no pondrías en la internet abierta.",
+      "exposure_window_persistent": "Este enlace seguirá siendo público hasta que retires o destruyas el despliegue.",
+      "exposure_window_ttl_many": "Este enlace será público durante {{count}} horas y luego se eliminará automáticamente.",
+      "exposure_window_ttl_one": "Este enlace será público durante {{count}} hora y luego se eliminará automáticamente.",
+      "exposure_window_ttl_other": "Este enlace será público durante {{count}} horas y luego se eliminará automáticamente.",
+      "publishing": "Publicando…",
+      "title": "Esto creará un sitio web de acceso público"
+    },
     "publishHub": {
       "back": "Atrás",
       "cancel": "Cancelar",

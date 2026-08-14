@@ -5567,6 +5567,16 @@
       "select": "選択",
       "subdirectories": "サブディレクトリ"
     },
+    "publicPublishAckModal": {
+      "acknowledge_publish": "理解しました。公開します",
+      "anyone_with_the_link": "リンクを知っていれば世界中の誰でも {{target}} を閲覧できます。認証もアクセス制御もありません。",
+      "cancel": "キャンセル",
+      "do_not_publish_anything": "公開インターネットに置きたくないものは公開しないでください。",
+      "exposure_window_persistent": "このリンクは、デプロイを取り下げるか削除するまで公開されたままになります。",
+      "exposure_window_ttl_other": "このリンクは{{count}}時間公開され、その後自動的に削除されます。",
+      "publishing": "公開中…",
+      "title": "一般公開されるウェブサイトが作成されます"
+    },
     "publishHub": {
       "back": "戻る",
       "cancel": "キャンセル",

@@ -5567,6 +5567,16 @@
       "select": "선택",
       "subdirectories": "하위 디렉터리"
     },
+    "publicPublishAckModal": {
+      "acknowledge_publish": "이해했습니다. 공개로 게시합니다",
+      "anyone_with_the_link": "링크를 아는 전 세계 누구나 {{target}}을(를) 볼 수 있습니다. 인증도 접근 제어도 없습니다.",
+      "cancel": "취소",
+      "do_not_publish_anything": "공개 인터넷에 올리고 싶지 않은 것은 게시하지 마세요.",
+      "exposure_window_persistent": "이 링크는 배포를 회수하거나 삭제할 때까지 공개된 상태로 유지됩니다.",
+      "exposure_window_ttl_other": "이 링크는 {{count}}시간 동안 공개되며 이후 자동으로 삭제됩니다.",
+      "publishing": "게시 중…",
+      "title": "누구나 접근할 수 있는 웹사이트가 만들어집니다"
+    },
     "publishHub": {
       "back": "뒤로",
       "cancel": "취소",

@@ -56,13 +56,13 @@ from kiro_crew.artifacts import (
     is_document_path,
     webapp_metadata_from_dict,
 )
-from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_with_identity, stat_identity
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.publish_governance import publish_denied_reason
 from kiro_crew.publish_provider import (
     DEFAULT_PROVIDER,
     Capability,
@@ -2156,86 +2156,13 @@ def _sync_error_response(
 def _publish_governance_denied(request: web.Request, provider_name: str) -> str | None:
     """Plane-C governance chokepoint for artifact publishing.
 
-    Publishing is a user-driven dashboard HTTP action ("NOT LLM tools"), so the
-    host PreToolUse gate never sees it — this is where the ``capabilities.publish``
-    ceiling is enforced. Returns a denial reason (caller → 403) or ``None`` to
-    permit. Enforces, tightest-wins:
-      1. governance ceiling ∩ profile — ``capabilities.publish`` gate AND its
-         inner ``destinations`` ruleset (item ``destinations:<provider>``);
-      2. the standalone operator's ``config.publish.allowed_destinations``
-         allowlist (default-open, narrow-only — cannot widen past the ceiling).
-    A ``PlatformCompositionError`` propagates (fail-closed CPP); any other
-    governance error fails CLOSED (DENY) — publishing is an authorization
-    decision (bytes leave the box), so unlike the messaging/cron chokepoints it
-    must NOT degrade-to-permit. The DENY is produced inside ``governance_permits``
-    (``fail_closed=True``), because that helper swallows its own internal errors —
-    the handler-level ``except`` here only catches errors raised OUTSIDE it.
+    Thin alias for :func:`kiro_crew.publish_governance.publish_denied_reason`,
+    which owns the decision so the public-web deploy path (``/api/deploy/deploy``
+    and the ``deploy-web-aws`` provider row) enforces the SAME ceiling instead of
+    growing a second, drifting copy. Kept as a module-level name because the
+    handlers below and their tests reference it directly.
     """
-    from kiro_crew.platform.context import PlatformCompositionError
-
-    session_key = _session_key(request)
-    try:
-        from kiro_crew.platform.governance_profiles import governance_permits
-
-        decision = governance_permits(
-            "capabilities.publish",
-            f"destinations:{provider_name}",
-            session_key=session_key,
-            # Authorization chokepoint: a governance-evaluation error must DENY
-            # (bytes leave the box). governance_permits swallows its own internal
-            # errors, so the fail-closed DENY has to be produced INSIDE it — the
-            # handler-level ``except`` below only ever sees errors raised outside
-            # governance_permits (e.g. the audit call).
-            fail_closed=True,
-        )
-        # Default to DENY (permitted=False) if the Decision is malformed: this is
-        # an exfil authorization chokepoint documented as "must NOT
-        # degrade-to-permit", so a missing/odd attr must fail closed, not open.
-        if not getattr(decision, "permitted", False):
-            try:
-                sel().log_governance_decision(
-                    session_key=session_key,
-                    tool_name=f"artifact_publish:{provider_name}",
-                    scope="capabilities.publish",
-                    item=f"destinations:{provider_name}",
-                    outcome="denied",
-                    rule=getattr(decision, "rule", ""),
-                    layer=getattr(decision, "layer", ""),
-                    reason=getattr(decision, "reason", ""),
-                )
-            except Exception:
-                logger.debug("publish governance deny audit failed", exc_info=True)
-            return getattr(decision, "reason", "publishing not permitted by policy")
-    except PlatformCompositionError:
-        raise
-    except Exception:
-        # Fail CLOSED: publishing is an authorization decision (bytes leave the
-        # box to an external destination), so an unexpected error must DENY
-        # rather than degrade-to-permit. governance_permits(fail_closed=True)
-        # already denies on ITS own internal errors; this branch is the belt-and-
-        # suspenders catch for anything raised OUTSIDE it (e.g. the deny-audit
-        # call above), keeping the whole helper deny-on-error.
-        try:
-            from kiro_crew.platform.governance_profiles import audit_governance_degraded
-
-            audit_governance_degraded(
-                "artifact_publish", session_key=session_key, scope="capabilities.publish"
-            )
-        except Exception:
-            logger.debug("publish governance degrade audit unavailable", exc_info=True)
-        return "publishing denied: governance could not be evaluated"
-
-    # Config allowlist (default-open, narrow-only). Empty list allows any
-    # registered destination; a non-empty list restricts to those provider ids.
-    # A config-read failure also fails CLOSED for the same reason as above.
-    try:
-        allowed = KiroCrewConfig.load().publish.allowed_destinations
-    except Exception:
-        logger.debug("publish config load failed; failing closed", exc_info=True)
-        return "publishing denied: publish config could not be loaded"
-    if allowed and provider_name not in allowed:
-        return f"publish destination {provider_name!r} is not in the operator allowlist"
-    return None
+    return publish_denied_reason(request, provider_name)
 
 
 async def api_artifact_publish(request: web.Request) -> web.Response:

@@ -50,7 +50,16 @@ async def _provider_ids(monkeypatch) -> list[str]:
 
 
 class _FakeRequest:
-    """The handler reads nothing off the request."""
+    """Carries only what the handler reads: the session key for the publish gate.
+
+    #3599 added a second, independent gate to this handler (the publish-governance
+    chokepoint), which reads ``X-Session-Key`` to resolve the governance profile.
+    An empty mapping means "no session key", i.e. the ungoverned default — which
+    is what these cloud-gate tests want, since they exercise the ``external_access``
+    control, not the publish ceiling.
+    """
+
+    headers: dict = {}
 
 
 @pytest.mark.asyncio

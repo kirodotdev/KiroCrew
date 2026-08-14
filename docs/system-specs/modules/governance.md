@@ -421,7 +421,7 @@ disposition:
   transport is an externally-reachable network surface — deny-by-default on any
   error is the safer posture there, and a transport that fails to start leaks
   nothing. `fail_closed=True` is the same disposition the authorization/admission
-  chokepoints use (e.g. `capabilities.publish` in `handlers/artifacts.py`,
+  chokepoints use (e.g. `capabilities.publish` in `publish_governance.py`,
   `capabilities.theme_install` in `handlers/themes.py`, `capabilities.theme_persona`
   in `chat_runner.py`) where a wrong permit lets bytes leave the box or ingests
   untrusted content. The ALLOW audit is disposition-split: a **governed** allow
@@ -1099,9 +1099,9 @@ Display-only union — it does not widen enforcement.
 with an inner `destinations` `ScopedRuleset` (`identifier` matcher) bounding
 which publish-provider ids are allowed once the capability is on — the direct
 analogue of `capabilities.spawn`'s `agents` ruleset. It is enforced at a Plane-C
-out-of-band chokepoint in the artifact publish handler (`api_artifact_publish`),
-NOT at the host PreToolUse gate: publishing is a user-driven dashboard HTTP
-action ("NOT LLM tools"), so the title-gate never sees it. The chokepoint calls
+out-of-band chokepoint — `publish_governance.publish_denied_reason` — NOT at the
+host PreToolUse gate: publishing is a user-driven dashboard HTTP action ("NOT LLM
+tools"), so the title-gate never sees it. The chokepoint calls
 `governance_permits("capabilities.publish", "destinations:<provider_id>", …)`
 BEFORE dispatching to the provider, and additionally honours the standalone
 operator's `publish.allowed_destinations` config allowlist (default-open,
@@ -1111,6 +1111,26 @@ from `network.egress`: `capabilities.publish.enabled: true` never re-enables git
 publish (the floor is ADD-only and unconditional) nor a fetch host. WHO
 implements a destination is the orthogonal CPP `PublishRegistry` seam; governance
 decides only WHETHER + to WHERE, and runs first.
+
+Callers (one decision, several surfaces — the helper lives in its own module so a
+second surface cannot grow a drifting copy):
+
+| Surface | Destination id | On deny |
+|---|---|---|
+| `api_artifact_publish` + its sharing/review siblings (`handlers/artifacts.py`, via the module-local `_publish_governance_denied` alias) | the requested/effective `publication.provider` | 403 |
+| `GET /api/publish-providers` (`apps/routes.py`) | `deploy-web-aws` | the row is omitted, so the button never renders |
+| `POST /api/deploy/deploy` (`deploy/handlers.py`) | `deploy-web-aws` | 403, audited `deploy/denied` |
+| `POST /api/deploy/pending/{id}/confirm` | `deploy-web-aws` | 403 BEFORE `claim_pending`, so a denied confirm does not consume the entry |
+
+The deploy-path callers are what make the public-web destination genuinely
+closable: hiding the provider row alone would be presentation, not a control
+(the endpoint is reachable directly, and the `deploy_artifact` MCP preview goes
+through `/api/deploy/deploy` too), and gating only the initial deploy would leave
+a pending entry created before the ceiling changed still confirmable. Because the
+deploy path shares `publish.allowed_destinations`, an operator who had already
+narrowed that list for the registry must add `deploy-web-aws` to keep deploying —
+intentional: the list states which destinations are permitted, and the core
+deploy provider was previously the one destination exempt from it.
 
 Unlike the messaging/cron chokepoints (which degrade-to-permit on a transient
 governance-evaluation error so a latent regression can't wedge the surface),
