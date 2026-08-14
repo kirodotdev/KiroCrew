@@ -124,6 +124,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.metrics.events import SESSION_IDLE_EXPIRED, emit_counter
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
+from kiro_crew.pycache_gc import PYCACHE_GC_INTERVAL_SECS, prune_pycache
 from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
@@ -968,6 +969,11 @@ class SessionManager:
         # session key -> the monotonic start of the park already reported for it,
         # so a park outliving the cleanup tick is reported once, not every pass.
         self._stuck_reported: dict[str, float] = {}
+        # Monotonic time of the last bytecode-cache GC (None = not yet run this
+        # process, so the first sweep tick after start prunes pre-existing
+        # bloat). Stamped before the prune runs: a failing walk retries at
+        # PYCACHE_GC_INTERVAL_SECS, not on every ~5-minute tick.
+        self._last_pycache_gc: float | None = None
 
         # Shared runtime for _bg callers (title gen, suggestions, folders, nav).
         # Each caller gets its own ephemeral AcpSessionHandle via get_bg_session().
@@ -5143,6 +5149,31 @@ class SessionManager:
                     )
             except Exception as exc:
                 logger.debug("sandbox launcher sweep failed: %s", type(exc).__name__)
+
+            # Bounded GC of the shared bytecode cache the desktop app points
+            # PYTHONPYCACHEPREFIX at (<data home>/cache/pycache). CPython only
+            # ever adds to that mirror, so the gateway owns eviction (TTL +
+            # total-size cap) — but at most once per PYCACHE_GC_INTERVAL_SECS:
+            # the prune walks the whole cache tree, far too heavy for this
+            # loop's ~5-minute tick.
+            gc_now = time.monotonic()
+            if (
+                self._last_pycache_gc is None
+                or gc_now - self._last_pycache_gc >= PYCACHE_GC_INTERVAL_SECS
+            ):
+                self._last_pycache_gc = gc_now
+                try:
+                    pyc_removed, pyc_freed = await asyncio.get_running_loop().run_in_executor(
+                        maintenance_executor(), prune_pycache
+                    )
+                    if pyc_removed:
+                        logger.info(
+                            "Periodic sweep: pruned %d bytecode-cache files (%d MiB)",
+                            pyc_removed,
+                            pyc_freed // (1024 * 1024),
+                        )
+                except Exception as exc:
+                    logger.debug("bytecode-cache GC failed: %s", type(exc).__name__)
 
             # Sweep kiro-cli processes tracked in kiro_session_pids.txt
             # but no longer in self._sessions or self._warm_pool (leaked by

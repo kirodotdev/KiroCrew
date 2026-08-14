@@ -166,18 +166,31 @@ _SENSITIVE_ENV_PREFIXES: list[str] = [
 
 # Python interpreter env that must NOT leak into a *foreign* Python subprocess
 # launched under the sandbox (e.g. the MCP servers kiro-cli spawns, such as
-# ord-mcp, which bundle their own interpreter + deps). KiroCrew's runtime may
-# export PYTHONPATH pointing at its own site-packages; a foreign server that
-# inherits it prepends KiroCrew's site-packages to sys.path and imports
-# KiroCrew's fastmcp/cryptography instead of its own -> ABI collision + init
-# hang. Stripped ONLY when the caller passes ``strip_python_env=True`` (the
+# ord-mcp, which bundle their own interpreter + deps, or any Python the agent's
+# shell runs).
+#  - PYTHONPATH / PYTHONHOME: Kiro Crew's runtime may export PYTHONPATH
+#    pointing at its own site-packages; a foreign server that inherits it
+#    prepends Kiro Crew's site-packages to sys.path and imports Kiro Crew's
+#    fastmcp/cryptography instead of its own -> ABI collision + init hang.
+#  - PYTHONPYCACHEPREFIX: the packaged desktop app exports it at
+#    ``<data home>/cache/pycache`` so the embedded interpreter keeps bytecode
+#    out of the signed bundle. Inherited into the agent subtree, every foreign
+#    interpreter (uv-managed pythons, ephemeral venvs the agent's bash spawns)
+#    mirrors its whole stdlib + site-packages under the crew home instead of
+#    writing ``__pycache__`` beside its own sources; each ephemeral root mints
+#    a fresh path-keyed mirror, so the cache grows without bound (multi-GB per
+#    day under heavy subagent use). ``pycache_gc.prune_pycache`` bounds what
+#    the gateway's own tree still writes there.
+# Stripped ONLY when the caller passes ``strip_python_env=True`` (the
 # kiro-cli / agent spawn path). It is deliberately NOT part of
 # ``_SENSITIVE_ENV_PREFIXES`` because KiroCrew's OWN sandboxed Python
 # subprocesses (cron scripts, app backends, code-review workers) import
-# ``kiro_crew`` via PYTHONPATH and would break if it were stripped.
+# ``kiro_crew`` via PYTHONPATH — and on the packaged app must keep writing
+# bytecode outside the signed bundle — so both would break if stripped.
 _PYTHON_ENV_PREFIXES: list[str] = [
     "PYTHONPATH",
     "PYTHONHOME",
+    "PYTHONPYCACHEPREFIX",
 ]
 
 # Gateway-owned credentials must never reach agent-influenced subprocesses.

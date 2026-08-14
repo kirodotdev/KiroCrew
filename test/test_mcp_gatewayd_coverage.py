@@ -992,6 +992,28 @@ class TestEnvTargetResolver:
         assert isinstance(env, dict)
         assert work_dir == key.work_dir
 
+    def test_python_env_prefixes_are_stripped_from_spawned_env(self, monkeypatch):
+        """PYTHONPATH/PYTHONHOME/PYTHONPYCACHEPREFIX must not reach a pooled
+        Python-based MCP backend: the first two cause import conflicts, and
+        PYTHONPYCACHEPREFIX would make the backend mirror its stdlib into the
+        shared bytecode cache (see pycache_gc.py). This scrub reuses
+        sandbox._PYTHON_ENV_PREFIXES rather than a hand-listed set of keys, so
+        it can't silently drift from the kiro-cli/agent spawn path's scrub.
+        """
+        key = _pool_key(server="pyenv-mcp")
+        monkeypatch.delenv("KIROCREW_MCP_TARGET_PYENV_MCP", raising=False)
+        monkeypatch.setenv("MC_MCP_TARGET_PYENV_MCP", "py-backend --stdio")
+        monkeypatch.setenv("PYTHONPATH", "/host/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/host/python")
+        monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/host/cache/pycache")
+
+        resolved = gw.env_target_resolver(key)
+        assert resolved is not None
+        _command, _args, env, _work_dir = resolved
+
+        for leaked_key in ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX"):
+            assert leaked_key not in env
+
 
 # --- backend acquire / respawn ----------------------------------------------
 

@@ -81,7 +81,7 @@ from kiro_crew.peer_resolve import resolve_peer_identity
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.platform_compat import get_process_start_id as _get_process_start_id
 from kiro_crew.platform_compat import proc_rss_bytes as _proc_rss_bytes
-from kiro_crew.sandbox import warm_backend
+from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES, warm_backend
 from kiro_crew.sel import SecurityEventLog
 
 logger = logging.getLogger(__name__)
@@ -1267,10 +1267,14 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
         return None
     command, *args = parts
     env = _scrub_sensitive_env(dict(os.environ))
-    # Strip PYTHONPATH/PYTHONHOME so the KiroCrew process's own Python
-    # environment doesn't leak into Python-based MCP backends (import conflicts).
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
+    # Strip the Kiro Crew process's own Python env vars so they don't leak into
+    # Python-based MCP backends: PYTHONPATH/PYTHONHOME cause import conflicts,
+    # and PYTHONPYCACHEPREFIX (desktop-app-only, see pycache_gc.py) would make
+    # a pooled backend mirror its stdlib into the shared bytecode cache. Reuses
+    # sandbox._PYTHON_ENV_PREFIXES instead of hand-listing keys, so this scrub
+    # site can't drift from the kiro-cli/agent spawn path's scrub again.
+    for key in _PYTHON_ENV_PREFIXES:
+        env.pop(key, None)
     # No KIROCREW_CHANNEL_ID is exported into the backend env. It used to be
     # copied from PoolKey.channel_id, which only made sense while a backend was
     # owned by one channel. A pooled backend serves several channels, so a

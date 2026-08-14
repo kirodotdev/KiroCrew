@@ -125,6 +125,23 @@ def test_scrub_env_extra_prefixes_strips_python_env():
     assert out == {"PATH": "/usr/bin"}
 
 
+def test_strip_python_env_covers_pycache_prefix(monkeypatch):
+    """PYTHONPYCACHEPREFIX is scrubbed on the agent spawn path (strip_python_env)
+    and kept otherwise.
+
+    The packaged app exports it for the gateway's own interpreter tree, but a
+    foreign interpreter in the agent subtree inheriting it mirrors its whole
+    stdlib/site-packages into <data home>/cache/pycache — the unbounded cache
+    growth bug. The keep-side matters equally: the gateway's own sandboxed
+    Python children must keep writing bytecode outside the signed bundle.
+    """
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/home/x/.kiro/crew/cache/pycache")
+    stripped = sb._sandbox_env_scrub_keys("standard", True)
+    kept = sb._sandbox_env_scrub_keys("standard", False)
+    assert "PYTHONPYCACHEPREFIX" in stripped
+    assert "PYTHONPYCACHEPREFIX" not in kept
+
+
 def test_strip_python_env_holds_on_fail_open_path(monkeypatch):
     """On the opted-in no-backend path wrap_argv returns argv unmodified (no
     launcher strips PYTHONPATH), so sandboxed_spawn_argv MUST strip the Python

@@ -862,6 +862,32 @@ guard reads the parent via `get_ppid`, the managed-agent check uses
 `platform_compat.file_lock` / `acquire_lock` / `try_acquire_lock` (POSIX `flock`
 vs Windows `msvcrt`). On POSIX the behavior is unchanged.
 
+## Bytecode-Cache GC (periodic sweep hook)
+
+The desktop app launches the gateway with `PYTHONPYCACHEPREFIX` pointed at
+`<data home>/cache/pycache` (keeps the embedded interpreter's bytecode out of
+the codesigned bundle). CPython only ever adds to that PEP 3147 mirror, so the
+periodic sweep in `_cleanup_loop()` owns eviction: it calls
+`pycache_gc.prune_pycache` (mtime TTL + oldest-first total-size cap; limits
+owned by `pycache_gc.py`) on the maintenance executor, gated to at most once
+per `PYCACHE_GC_INTERVAL_SECS` because the prune walks the whole cache tree —
+far heavier than the sweep's ~5-minute tick. `_last_pycache_gc` starts `None`
+so the first tick after the first session starts prunes pre-existing bloat
+(`_cleanup_loop()` is launched by session registration, not gateway start),
+and is stamped **before** the prune runs so a failing walk retries at GC
+cadence, not every tick. The traversal is anchored to no-follow directory
+handles (`O_NOFOLLOW | O_DIRECTORY` + `dir_fd`-relative unlink/rmdir), and
+the root is opened component by component from the filesystem root, so a
+symlink or junction substituted anywhere — under the cache root mid-walk, or
+swapped into a writable ancestor such as `cache/` itself — fails the open
+instead of redirecting deletion outside the cache (a legitimately symlinked
+ancestor thus makes the prune a conservative no-op); on platforms without
+`dir_fd` support (Windows) the prune is a fail-closed no-op. Deleting entries
+is always safe: a `.pyc` regenerates on the next
+import. The unbounded-growth *input* (foreign interpreters in the agent
+subtree inheriting the prefix) is closed separately by the sandbox env scrub —
+see [security](security.md) § Conditional Python-interpreter env strip.
+
 ## Resource Budget (Gateway Mode)
 
 | Session | Key Pattern | Lifetime | Process |
