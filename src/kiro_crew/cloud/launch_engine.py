@@ -15,7 +15,6 @@ import threading
 
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, sizes
-from kiro_crew.cloud import source as source_mod
 from kiro_crew.cloud.aws import AWSError
 from kiro_crew.instances.port_allocator import PortAllocator
 from kiro_crew.instances.registry import InstancesRegistry
@@ -145,21 +144,11 @@ class RealLaunchEngine:
 
     def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str:
         tier = sizes.get_tier(size_key)
-        # Ship the local source only when this really is a checkout. The dashboard
-        # runs from a wheel/app install for most users, where `source.repo_root()`
-        # fails closed by design (it must not tar up site-packages) — and with
-        # ship_source left at its default that raised mid-provision, making
-        # one-click setup impossible for anyone who did not install from git. With
-        # no checkout the instance installs from the template's public-repo clone
-        # instead, which is the fallback the template already carries.
-        ship_source = source_mod.find_repo_root() is not None
-        if not ship_source:
-            logger.info(
-                "no local checkout found; the instance will install by cloning the "
-                "public repo instead of shipping local source"
-            )
         result = ec2.deploy(
-            tag=tag, tier=tier, profile=profile, region=region, ship_source=ship_source,
+            tag=tag,
+            tier=tier,
+            profile=profile,
+            region=region,
             dashboard_port=self._allocate_port(),
         )
         return result.instance_id

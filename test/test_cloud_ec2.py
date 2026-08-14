@@ -466,7 +466,10 @@ class TestBuildDeployArgv:
 
 class TestDeployDryRun:
     def test_dry_run_returns_argv_without_aws(self, monkeypatch):
+        import kiro_crew.cloud.source as source_mod
+
         # If run_aws is called during a dry run, fail loudly.
+        monkeypatch.setattr(source_mod, "find_repo_root", lambda: object())
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
         r = ec2.deploy(
             tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1", dry_run=True
@@ -501,6 +504,16 @@ class TestDeployDryRun:
             ship_source=False,
             dry_run=True,
         )
+        assert not any(a.startswith("SourceBucket=") for a in r.argv)
+
+    def test_dry_run_defaults_to_public_clone_without_checkout(self, monkeypatch):
+        import kiro_crew.cloud.source as source_mod
+
+        monkeypatch.setattr(source_mod, "find_repo_root", lambda: None)
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
+
+        r = ec2.deploy(tag="t1", tier=sizes.default_tier(), dry_run=True)
+
         assert not any(a.startswith("SourceBucket=") for a in r.argv)
 
 
