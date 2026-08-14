@@ -135,6 +135,7 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/pod/restart` | `{name}` | Stop then start pod |
 | `/apps/dev-fleet/api/pod/token` | `{name}` | Mint a dashboard token for the pod |
 | `/apps/dev-fleet/api/pod/provision` | `{name}` | Start async venv+dist build (returns `{run_id}`) |
+| `/apps/dev-fleet/api/pod/provision/dismiss` | `{name, run_id}` | Forget a terminal provision failure when the run id still matches |
 | `/apps/dev-fleet/api/rebase` | `{name}` | Rebase worktree onto origin/main |
 | `/apps/dev-fleet/api/restart-gateway` | — | Restart the live gateway through its service-manager backend; returns the pre-restart `start_id` for the restart handshake |
 | `/apps/dev-fleet/api/make-live` | `{path, dry_run?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
@@ -455,10 +456,10 @@ running run resumes polling into the stepper (accumulating the log window as
 usual), and a failed run restores the persisted red failure state with its log
 auto-expanded. Reattached and locally-started runs are deduped by run id, so a
 fleet refetch never starts a second poll loop for a run already being tracked.
-The dismiss `×` is client-side only: a failed run's id keeps being exposed
-until a newer provision for that checkout replaces it, the run is evicted from
-the bounded registry, or the gateway restarts — so a reload after dismissing
-re-shows the failure. Server-side dismissal is deliberately out of scope here.
+The dismiss `×` posts the worktree name and run id to the server before clearing
+the local strip. The server removes the persisted id only when it still matches
+that terminal run; a stale dismiss cannot clear a newer provision, and a running
+provision cannot be dismissed. A successful response therefore survives reload.
 
 ## Action narration (restart + sync feedback)
 

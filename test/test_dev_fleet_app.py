@@ -3156,6 +3156,7 @@ def test_audited_decorator_applied_to_mutations():
         "api_dev_fleet_prune_run", "api_dev_fleet_pod_up",
         "api_dev_fleet_pod_down", "api_dev_fleet_pod_restart",
         "api_dev_fleet_pod_token", "api_dev_fleet_pod_provision",
+        "api_dev_fleet_pod_provision_dismiss",
         "api_dev_fleet_rebase", "api_dev_fleet_restart_gateway",
     ]:
         fn = getattr(mod, name)

@@ -2839,6 +2839,18 @@ async def _pod_provision(name: str) -> dict:
     return {"ok": True, "run_id": rid}
 
 
+async def _pod_provision_dismiss(name: str, run_id: str) -> dict:
+    """Forget one terminal provision run without racing a replacement run."""
+    async with _PROVISION_LOCK:
+        if _PROVISION_INFLIGHT.get(name) != run_id:
+            return {"ok": True, "dismissed": False}
+        async with _RUNS_LOCK:
+            if _RUNS.get(run_id, {}).get("status") == "running":
+                return {"ok": False, "error": "cannot dismiss a running provision"}
+        _PROVISION_INFLIGHT.pop(name, None)
+    return {"ok": True, "dismissed": True}
+
+
 # --- disk aggregation ---
 _DISK: dict = {"status": "idle", "total_mb": None, "per": {}}
 _DISK_COMPUTING = False
@@ -4435,6 +4447,25 @@ async def api_dev_fleet_pod_provision(request: web.Request) -> web.Response:
     return await _pod_name_action(request, _pod_provision)
 
 
+@_audited("dev_fleet_pod_provision_dismiss")
+async def api_dev_fleet_pod_provision_dismiss(request: web.Request) -> web.Response:
+    body, err = await _json_body(request)
+    if err is not None:
+        return err
+    assert body is not None
+    name = body.get("name")
+    run_id = body.get("run_id")
+    if not isinstance(name, str) or not name:
+        return web.json_response({"error": "'name' must be a non-empty string"}, status=400)
+    if not isinstance(run_id, str) or not run_id:
+        return web.json_response({"error": "'run_id' must be a non-empty string"}, status=400)
+    target, ferr = await _find_worktree(name)
+    if target is None:
+        return web.json_response({"error": ferr}, status=400)
+    result = await _pod_provision_dismiss(name, run_id)
+    return web.json_response(result, status=200 if result.get("ok") else 409)
+
+
 @_audited("dev_fleet_rebase")
 async def api_dev_fleet_rebase(request: web.Request) -> web.Response:
     return await _pod_name_action(request, _rebase)
@@ -5800,6 +5831,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/pod/restart", api_dev_fleet_pod_restart)
     app.router.add_post("/api/pod/token", api_dev_fleet_pod_token)
     app.router.add_post("/api/pod/provision", api_dev_fleet_pod_provision)
+    app.router.add_post("/api/pod/provision/dismiss", api_dev_fleet_pod_provision_dismiss)
     app.router.add_post("/api/rebase", api_dev_fleet_rebase)
     app.router.add_post("/api/restart-gateway", api_dev_fleet_restart_gateway)
     app.router.add_post("/api/make-live", api_dev_fleet_make_live)

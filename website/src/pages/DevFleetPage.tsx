@@ -502,7 +502,7 @@ interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; lines: st
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
 // persists (failed=true) until the user dismisses it rather than vanishing.
-interface ProvRun { status: 'starting' | 'running' | 'done' | 'failed'; lines: string[]; startedAt: number; exit?: number | null; failed?: boolean; done?: boolean }
+interface ProvRun { rid?: string; status: 'starting' | 'running' | 'done' | 'failed'; lines: string[]; startedAt: number; exit?: number | null; failed?: boolean; done?: boolean }
 interface RebaseResult { kind: 'ok' | 'conflict' | 'error'; text: string }
 
 /* ─── Detail Panel (expanded row) ─── */
@@ -699,7 +699,16 @@ export default function DevFleetPage() {
     if (rid) cancelledRunsRef.current.add(rid)
     setSyncRun(null); setSyncLogOpen(false)
   }
-  function dismissProv(name: string) {
+  async function dismissProv(name: string) {
+    const rid = prov[name]?.rid
+    if (rid) {
+      try {
+        await api.post('/pod/provision/dismiss', { name, run_id: rid })
+      } catch (e: unknown) {
+        notify((e as Error)?.message || String(e), { type: 'error' })
+        return
+      }
+    }
     clearTimeout(provDoneTimersRef.current[name])
     setProv((p) => { const n = { ...p }; delete n[name]; return n })
     setProvLogOpen((o) => { const n = { ...o }; delete n[name]; return n })
@@ -798,12 +807,12 @@ export default function DevFleetPage() {
           const t0 = run.started ? run.started * 1000 : Date.now()
           const lines = run.output || []
           if (run.status === 'running') {
-            setProv((p) => ({ ...p, [name]: { status: 'running', lines, startedAt: t0 } }))
+            setProv((p) => ({ ...p, [name]: { rid, status: 'running', lines, startedAt: t0 } }))
             void pollProvisionRun(name, rid, t0, lines)
           } else if (run.exit_code !== 0) {
             // Only unsuccessful runs are exposed by the backend, but guard
             // anyway: a successful run has nothing to reattach.
-            setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines, startedAt: t0, exit: run.exit_code ?? null } }))
+            setProv((p) => ({ ...p, [name]: { rid, status: 'failed', failed: true, lines, startedAt: t0, exit: run.exit_code ?? null } }))
             setProvLogOpen((o) => ({ ...o, [name]: true }))
           }
         })
@@ -984,7 +993,7 @@ export default function DevFleetPage() {
         if (ok) {
           // Flash a brief green "Provisioned", then clear. The
           // fleet refetch flips the row to its built state in the meantime.
-          setProv((p) => ({ ...p, [name]: { status: 'done', done: true, lines, startedAt, exit: 0 } }))
+          setProv((p) => ({ ...p, [name]: { rid, status: 'done', done: true, lines, startedAt, exit: 0 } }))
           invalidateFleet()
           provDoneTimersRef.current[name] = setTimeout(() => {
             setProv((p) => { const n = { ...p }; delete n[name]; return n })
@@ -994,7 +1003,7 @@ export default function DevFleetPage() {
           // FAILURE PERSISTENCE: keep the run, auto-expand the log, hold until
           // the user dismisses it — a multi-minute failed provision must not
           // vanish into an empty row.
-          setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines, startedAt, exit: run.exit_code } }))
+          setProv((p) => ({ ...p, [name]: { rid, status: 'failed', failed: true, lines, startedAt, exit: run.exit_code } }))
           setProvLogOpen((o) => ({ ...o, [name]: true }))
           invalidateFleet()
         }
@@ -1002,17 +1011,17 @@ export default function DevFleetPage() {
       }
       if (run.status !== 'running') {
         notify(run.status === 'timeout' ? i18nT('pages.devFleetPage.provision_timed_out') : i18nT('pages.devFleetPage.provision_failed_status', { status: run.status }), { type: 'error' })
-        setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: lines.length ? lines : ['Provision ' + run.status], startedAt, exit: run.exit_code ?? null } }))
+        setProv((p) => ({ ...p, [name]: { rid, status: 'failed', failed: true, lines: lines.length ? lines : ['Provision ' + run.status], startedAt, exit: run.exit_code ?? null } }))
         setProvLogOpen((o) => ({ ...o, [name]: true }))
         invalidateFleet()
         return
       }
-      setProv((p) => ({ ...p, [name]: { status: 'running', lines, startedAt } }))
+      setProv((p) => ({ ...p, [name]: { rid, status: 'running', lines, startedAt } }))
     }
     // Poll budget exhausted (e.g. run id lost across a gateway restart): keep
     // the failed marker + accumulated log so the user has something to act on.
     notify(i18nT('pages.devFleetPage.provision_polling_timed_out_check_pod_logs'), { type: 'error' })
-    setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: acc.length ? acc : ['Provision polling timed out \u2014 check pod logs'], startedAt, exit: null } }))
+    setProv((p) => ({ ...p, [name]: { rid, status: 'failed', failed: true, lines: acc.length ? acc : ['Provision polling timed out \u2014 check pod logs'], startedAt, exit: null } }))
     setProvLogOpen((o) => ({ ...o, [name]: true }))
     invalidateFleet()
   }
@@ -1547,7 +1556,7 @@ export default function DevFleetPage() {
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}><X size={12} className="lucide-inline" />{pr.exit != null ? i18nT('pages.devFleetPage.provision_failed_exit_code', { code: pr.exit }) : i18nT('pages.devFleetPage.provision_failed')}</span>
           <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={lastLine(pr.lines)}>{lastLine(pr.lines)}</span>
           {logToggle}
-          <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_provision_status')} onClick={() => dismissProv(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
+          <Clickable aria-label={i18nT('pages.devFleetPage.dismiss_provision_status')} onClick={() => { void dismissProv(w.name) }} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: 2 } as CSSProperties}>{"\u00d7"}</Clickable>
         </div>
       )
     }

@@ -657,6 +657,37 @@ async def test_pod_provision_starts_run_and_records_it(monkeypatch):
     assert mod._PROVISION_INFLIGHT["feat"] == "run-9"
 
 
+@pytest.mark.asyncio
+async def test_pod_provision_dismiss_forgets_matching_terminal_run(monkeypatch):
+    monkeypatch.setattr(mod, "_PROVISION_INFLIGHT", {"feat": "run-1"})
+    monkeypatch.setattr(mod, "_RUNS", {"run-1": {"status": "done", "exit_code": 1}})
+
+    assert await mod._pod_provision_dismiss("feat", "run-1") == {
+        "ok": True, "dismissed": True,
+    }
+    assert "feat" not in mod._PROVISION_INFLIGHT
+
+
+@pytest.mark.asyncio
+async def test_pod_provision_dismiss_cannot_clear_replacement_run(monkeypatch):
+    monkeypatch.setattr(mod, "_PROVISION_INFLIGHT", {"feat": "run-new"})
+
+    assert await mod._pod_provision_dismiss("feat", "run-old") == {
+        "ok": True, "dismissed": False,
+    }
+    assert mod._PROVISION_INFLIGHT["feat"] == "run-new"
+
+
+@pytest.mark.asyncio
+async def test_pod_provision_dismiss_refuses_running_run(monkeypatch):
+    monkeypatch.setattr(mod, "_PROVISION_INFLIGHT", {"feat": "run-1"})
+    monkeypatch.setattr(mod, "_RUNS", {"run-1": {"status": "running"}})
+
+    result = await mod._pod_provision_dismiss("feat", "run-1")
+    assert result == {"ok": False, "error": "cannot dismiss a running provision"}
+    assert mod._PROVISION_INFLIGHT["feat"] == "run-1"
+
+
 # --------------------------------------------------------------------------
 # _disk
 # --------------------------------------------------------------------------
@@ -1237,6 +1268,21 @@ async def test_pod_handlers_dispatch_to_their_action(monkeypatch, handler_name, 
     resp = await getattr(mod, handler_name)(_json_request({"name": "feat"}))
     assert json.loads(resp.text) == {"ok": True, "via": action_name}
     action.assert_awaited_once_with("feat")
+
+
+@pytest.mark.asyncio
+async def test_pod_provision_dismiss_handler_validates_and_dispatches(monkeypatch):
+    _sel_capture(monkeypatch)
+    monkeypatch.setattr(mod, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None)))
+    dismiss = AsyncMock(return_value={"ok": True, "dismissed": True})
+    monkeypatch.setattr(mod, "_pod_provision_dismiss", dismiss)
+
+    resp = await mod.api_dev_fleet_pod_provision_dismiss(
+        _json_request({"name": "feat", "run_id": "run-1"})
+    )
+
+    assert json.loads(resp.text) == {"ok": True, "dismissed": True}
+    dismiss.assert_awaited_once_with("feat", "run-1")
 
 
 @pytest.mark.asyncio
