@@ -106,7 +106,17 @@
     "open_command_bar": "Открыть Command Bar",
     "focus_mode": "Режим фокусировки",
     "focus_mode_title": "Режим фокусировки · Alt+Shift+M",
-    "focus_mode_title_mac": "Режим фокусировки · ⌥⇧M"
+    "focus_mode_title_mac": "Режим фокусировки · ⌥⇧M",
+    "before_i_forget": "Пока не забыл",
+    "before_i_forget_chars_few": "{{count}} симв.",
+    "before_i_forget_chars_many": "{{count}} симв.",
+    "before_i_forget_chars_one": "{{count}} симв.",
+    "before_i_forget_chars_other": "{{count}} симв.",
+    "before_i_forget_clear": "Очистить черновик",
+    "before_i_forget_placeholder": "Запишите мысль…",
+    "before_i_forget_save_failed": "не сохранено",
+    "before_i_forget_saved": "сохранён",
+    "before_i_forget_saving": "сохранение…"
   },
   "appSdk": {
     "chatEmbed": {

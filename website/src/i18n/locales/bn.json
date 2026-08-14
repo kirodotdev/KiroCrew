@@ -106,7 +106,15 @@
     "open_command_bar": "Command Bar খুলুন",
     "focus_mode": "ফোকাস মোড",
     "focus_mode_title": "ফোকাস মোড · Alt+Shift+M",
-    "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M"
+    "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M",
+    "before_i_forget": "ভুলে যাওয়ার আগে",
+    "before_i_forget_chars_one": "{{count}} টি অক্ষর",
+    "before_i_forget_chars_other": "{{count}} টি অক্ষর",
+    "before_i_forget_clear": "নোটপ্যাড পরিষ্কার করুন",
+    "before_i_forget_placeholder": "কিছু টুকে রাখুন…",
+    "before_i_forget_save_failed": "সেভ হয়নি",
+    "before_i_forget_saved": "সেভ হয়েছে",
+    "before_i_forget_saving": "সংরক্ষণ হচ্ছে…"
   },
   "appSdk": {
     "chatEmbed": {

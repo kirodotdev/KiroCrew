@@ -106,7 +106,16 @@
     "open_command_bar": "Apri Command Bar",
     "focus_mode": "Modalità concentrazione",
     "focus_mode_title": "Modalità concentrazione · Alt+Maiusc+M",
-    "focus_mode_title_mac": "Modalità concentrazione · ⌥⇧M"
+    "focus_mode_title_mac": "Modalità concentrazione · ⌥⇧M",
+    "before_i_forget": "Prima che me ne dimentichi",
+    "before_i_forget_chars_many": "{{count}} caratteri",
+    "before_i_forget_chars_one": "{{count}} carattere",
+    "before_i_forget_chars_other": "{{count}} caratteri",
+    "before_i_forget_clear": "Svuota il blocco note",
+    "before_i_forget_placeholder": "Annota qualcosa…",
+    "before_i_forget_save_failed": "non salvato",
+    "before_i_forget_saved": "salvato",
+    "before_i_forget_saving": "salvataggio…"
   },
   "appSdk": {
     "chatEmbed": {

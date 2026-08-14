@@ -106,7 +106,15 @@
     "open_command_bar": "Command Bar oeffnen",
     "focus_mode": "Fokusmodus",
     "focus_mode_title": "Fokusmodus · Alt+Umschalt+M",
-    "focus_mode_title_mac": "Fokusmodus · ⌥⇧M"
+    "focus_mode_title_mac": "Fokusmodus · ⌥⇧M",
+    "before_i_forget": "Bevor ich es vergesse",
+    "before_i_forget_chars_one": "{{count}} Zeichen",
+    "before_i_forget_chars_other": "{{count}} Zeichen",
+    "before_i_forget_clear": "Notizzettel leeren",
+    "before_i_forget_placeholder": "Notiere etwas…",
+    "before_i_forget_save_failed": "nicht gespeichert",
+    "before_i_forget_saved": "gespeichert",
+    "before_i_forget_saving": "wird gespeichert…"
   },
   "appSdk": {
     "chatEmbed": {

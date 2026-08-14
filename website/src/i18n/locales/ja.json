@@ -106,7 +106,14 @@
     "open_command_bar": "Command Bar を開く",
     "focus_mode": "フォーカスモード",
     "focus_mode_title": "フォーカスモード · Alt+Shift+M",
-    "focus_mode_title_mac": "フォーカスモード · ⌥⇧M"
+    "focus_mode_title_mac": "フォーカスモード · ⌥⇧M",
+    "before_i_forget": "忘れないうちに",
+    "before_i_forget_chars_other": "{{count}} 文字",
+    "before_i_forget_clear": "メモを消去",
+    "before_i_forget_placeholder": "ひとこと書き留める…",
+    "before_i_forget_save_failed": "未保存",
+    "before_i_forget_saved": "保存済み",
+    "before_i_forget_saving": "保存中…"
   },
   "appSdk": {
     "chatEmbed": {
