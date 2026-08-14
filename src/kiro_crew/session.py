@@ -4505,6 +4505,9 @@ class SessionManager:
         """
         set_unbind_listener(callback)
 
+    async def aflush(self) -> None:
+        await self._session_map.aflush()
+
     def set_mirror_paused(self, key: str, paused: bool, *, origin: bool = False) -> bool:
         """Set whether turns reach one non-Slack delivery; return the prior state.
 

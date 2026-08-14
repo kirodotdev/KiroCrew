@@ -202,6 +202,9 @@ class FakeProvider:
 
 
 class FakeSessions:
+    async def aflush(self) -> None:  # in-memory double: already durable
+        pass
+
     def __init__(self, raise_on_get: bool = False) -> None:
         self.released: list[str] = []
         self.acquired: list[str] = []
@@ -1928,9 +1931,14 @@ class TestDispatcher:
         assert cli.attachment_downloads == []
         assert sess.queued[0][2]["attachments"] == [attachment]
         sess._busy = False
-        await d._drain_queue(d._session_key("u1"), "u1", "c1")
+        native_key = d._session_key("u1")
+        sess.set_mirror_link(
+            "dashboard:chat-1", ChannelLink("discord", channel_id="c1"), accepts_inbound=True
+        )
+        await d._drain_queue(native_key, "u1", "c1")
         await asyncio.sleep(0)
 
+        assert sess.get_origin_link(native_key) == ChannelLink("discord", channel_id="c1")
         prompt_path = d.ctx_builder.messages[-1].splitlines()[0]
         assert cli.attachment_downloads == [url]
         assert prompt_path.endswith(".png")
@@ -2150,25 +2158,34 @@ class TestDispatcher:
         ``batched_save`` writes on the way out even when the block raises, so a
         refusal raised AFTER the opt-out withdrawal would persist that withdrawal
         for a link that never happened — silently turning mirroring back on. The
-        claim is refused before it mutates anything, so it goes first.
+        claim is refused before it mutates anything, so it goes first. Two owners now
+        also make the routing decision refuse `!link` ahead of the handler; either
+        way nothing is persisted for a link that did not happen.
         """
         d, cli, sess = _dispatcher({"u1"})
         await d.handle_message(self._msg("!unlink"))
         self._occupy_ambiguously(sess)
         await d.handle_message(self._msg("!link"))
-        assert any("already linked here" in t for t, _ in cli.sent)
+        assert any("`!unlink`" in t for t, _ in cli.sent)
         assert sess.mirror_opt_outs == {_opt_out_key(d._session_key("u1"))}, (
             "a refused link must not withdraw the refusal"
         )
 
     @pytest.mark.asyncio
-    async def test_a_refused_bind_still_answers_the_turn(self) -> None:
-        # An uncaught raise on the turn path would drop the turn and answer the
-        # user nothing.
+    async def test_an_ambiguous_conversation_is_answered_but_not_processed(self) -> None:
+        """Two owners deny routing, so the turn must be refused — and answered.
+
+        Falling through to this conversation's own session would answer from a
+        session holding none of the context the user is looking at; an uncaught
+        raise here would answer nothing at all. So: a reply, and no turn.
+        """
         d, cli, sess = _dispatcher({"u1"})
         self._occupy_ambiguously(sess)
         await d.handle_message(self._msg("hello world"))
-        assert "Answer: hello world" in (cli.final_text() or "")
+        assert "Ambiguous link" in (cli.final_text() or "")
+        assert "Answer: hello world" not in (cli.final_text() or ""), (
+            "the message was processed while routing was denied"
+        )
         assert d._session_key("u1") not in sess.mirror_links
 
     @pytest.mark.asyncio
@@ -2319,11 +2336,9 @@ class TestDispatcher:
 
     @pytest.mark.asyncio
     async def test_unlink_repairs_duplicate_inbound_bindings(self) -> None:
-        # Duplicate inbound bindings make the resume resolver fail closed
-        # (routing denied), so the resumed-session path cannot release them —
-        # the dispatcher sweep is the repair, and the reply says how much it
-        # cleared instead of a bare ✅ that reads as "just yours". The rows go in
-        # directly because `set_mirror_link` refuses to create this state.
+        # Duplicate inbound bindings make the resolver fail closed. `!unlink`
+        # repairs and settles them in the resume layer instead of falling through
+        # to native unlink. Rows go in directly because the writer refuses them.
         d, cli, sess = _dispatcher({"u1"})
         loc = ChannelLink("discord", channel_id="c1")
         for wedged in ("dashboard:wedged-a", "dashboard:wedged-b"):
@@ -2331,7 +2346,7 @@ class TestDispatcher:
             sess.inbound_mirror_keys.add(wedged)
         await d.handle_message(self._msg("!unlink"))
         assert sess.mirror_links == {}
-        assert any("Unlinked (2 bindings)" in t for t, _ in cli.sent)
+        assert any("Left the resumed session" in t for t, _ in cli.sent)
 
     @pytest.mark.asyncio
     async def test_new_frees_whole_location_when_leaving_resumed_session(self) -> None:

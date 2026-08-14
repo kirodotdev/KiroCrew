@@ -215,9 +215,10 @@ class TestDeferredFlush:
         session_map._write_payload(older, newer_seq - 1)
         assert "dashboard:late" not in _map_file(tmp_path)
 
+    @pytest.mark.parametrize("mode", ["deferred", "flush", "aflush"])
     @pytest.mark.asyncio
-    async def test_write_failure_restores_dirty_and_retries(self, session_map, tmp_path):
-        """A failed flush re-owes the write; the next mutation lands both."""
+    async def test_write_failure_restores_dirty_and_retries(self, session_map, tmp_path, mode):
+        """Every flush path re-owes a failed snapshot; the next mutation lands both."""
         real = SessionMap._write_payload
         boom = {"armed": True}
 
@@ -228,7 +229,20 @@ class TestDeferredFlush:
 
         with patch.object(SessionMap, "_write_payload", flaky):
             session_map.set("dashboard:one", "sid-one")
-            await _settle(session_map)  # first flush fails, dirty restored
+            if mode == "deferred":
+                await _settle(session_map)
+            else:
+                task = session_map._flush_task
+                assert task is not None
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                with pytest.raises(OSError, match="disk full"):
+                    if mode == "flush":
+                        await asyncio.to_thread(session_map.flush)
+                    else:
+                        await session_map.aflush()
+            assert session_map._dirty
             session_map.set("dashboard:two", "sid-two")
             await _settle(session_map)
 

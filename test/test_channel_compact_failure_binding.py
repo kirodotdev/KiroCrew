@@ -107,7 +107,7 @@ class TestCompactFailurePreservesChannelIdentity:
             key, ChannelLink(channel_type="discord", channel_id="C1"), accepts_inbound=True
         )
 
-        await dispatcher._handle_compact("U1", "C1", "")
+        await dispatcher._handle_compact("U1", "C1", "", None)
 
         link = mgr.get_mirror_link(key)
         assert link is not None, "the conversation lost its mirror binding"

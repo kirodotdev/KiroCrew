@@ -579,9 +579,13 @@ class SessionMap:
 
     @_guarded
     def _restore_dirty(self) -> None:
-        """A claimed snapshot never landed: re-owe the flush, retire the task."""
+        """A claimed snapshot never landed: re-owe it from any thread."""
         self._dirty = True
-        if self._flush_task is asyncio.current_task():
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:  # ``flush`` is allowed on a worker thread.
+            current = None
+        if current is not None and self._flush_task is current:
             self._flush_task = None
 
     @_guarded
@@ -619,7 +623,11 @@ class SessionMap:
         if snapshot is None:
             return
         payload, seq = snapshot
-        self._write_payload(payload, seq)
+        try:
+            self._write_payload(payload, seq)
+        except Exception:
+            self._restore_dirty()
+            raise
 
     async def aflush(self) -> None:
         """Awaitable durability point: land pending state without blocking the loop.
@@ -638,6 +646,9 @@ class SessionMap:
         try:
             await asyncio.to_thread(self._write_payload, payload, seq)
         except asyncio.CancelledError:
+            self._restore_dirty()
+            raise
+        except Exception:
             self._restore_dirty()
             raise
 

@@ -9,6 +9,11 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from kiro_crew.discord.resume_expectation import (
+    ExpectationStoreError,
+    ResumeExpectation,
+    ResumeExpectations,
+)
 from kiro_crew.history import is_incognito_transcript, needles_match_text, parse_search_query
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import UNBIND_REASON_USER_UNLINK, ChannelLink
@@ -31,12 +36,59 @@ _PICKER_TTL_SECS = 300
 _PICKER_REGISTRY_MAX = 100
 _REPLAY_MESSAGES = 5
 _REPLAY_TEXT_LIMIT = 1900
+#: Matches the picker's own label budget, so the title a detach notice names is
+#: the same string the user picked.
+_TITLE_LIMIT = 76
 
 
 @dataclass(frozen=True)
 class _SessionChoice:
     key: str
     title: str
+
+
+@dataclass(frozen=True)
+class InboundResolution:
+    """What the inbound resolver found. ``resumed_session`` collapses "no owner" and
+    "two owners" into one ``None`` — right for ROUTING, wrong for the user: one means
+    the link is gone, the other that it cannot be chosen between."""
+
+    key: str | None
+    ambiguous: bool
+
+
+_SETTLE_NOTHING = "nothing"  # record persists; refuse again next message
+_SETTLE_CLEAR = "clear"  # link gone; refuse once, then run natively
+_SETTLE_ADOPT = "adopt"  # link moved; adopt the new session
+
+_MAX_ROUTE_ATTEMPTS = 3
+#: Refusal when the attachment cannot be made durable or read back: the turn would
+#: otherwise use a link whose later loss nothing can detect.
+_STORAGE_REFUSAL = ("🔗 Can't read or save which conversation this channel is linked to, so your "
+                    "message was NOT processed. This needs an operator to repair the gateway's "
+                    "expectation store; `!sessions` still lists sessions, but a reattachment "
+                    "cannot be saved until it is.")
+
+
+class ResumeReleaseError(RuntimeError):
+    """A resumed binding removal could not be made durable."""
+
+
+@dataclass(frozen=True)
+class RoutingDecision:
+    """Where one inbound message runs, or the refusal that stops it running — ONE object
+    for both, computed once, because two resolver calls with an await between them let
+    the binding vanish in the gap and the routing check fall through to the DM's own
+    session. ``described`` is the record the refusal quoted; ``observed`` the live state
+    it described, which settlement re-checks: the version cannot see a dashboard rebind."""
+
+    resumed_key: str | None = None
+    refusal: str | None = None
+    settle: str = _SETTLE_NOTHING
+    described: ResumeExpectation | None = None
+    observed: InboundResolution | None = None
+    adopt_key: str = ""
+    adopt_title: str = ""
 
 
 @dataclass
@@ -90,6 +142,14 @@ def _picker_components(nonce: str, choices: tuple[_SessionChoice, ...]) -> list[
     return rows
 
 
+def _storage_refused(channel_id: str, why: str,
+                     observed: "InboundResolution | None" = None) -> "RoutingDecision":
+    """Log and refuse: routing on an unreadable store attaches the turn to a binding whose later loss nothing can detect."""
+    logger.warning("discord resume: %s at channel %s; refusing rather than routing "
+                   "undetectably", why, channel_id, exc_info=True)
+    return RoutingDecision(refusal=_STORAGE_REFUSAL, settle=_SETTLE_NOTHING, observed=observed)
+
+
 class DiscordSessionResume:
     """Lists dashboard sessions and binds one bidirectionally to Discord."""
 
@@ -110,6 +170,10 @@ class DiscordSessionResume:
         # refresh slots, which is exactly the window the chip exists to cover.
         self.dashboard_state: object | None = None
         self._bind_lock = asyncio.Lock()
+        # Survives the bound session's map entry, which is what makes a
+        # binding destroyed out-of-band reportable at all -- see
+        # discord/resume_expectation.py.
+        self._expectations = ResumeExpectations()
 
     def _push_slots(self) -> None:
         """Nudge the dashboard so the two-way chip appears/disappears at once."""
@@ -130,41 +194,201 @@ class DiscordSessionResume:
     def link_for(channel_id: str) -> ChannelLink:
         return ChannelLink(channel_type="discord", channel_id=channel_id)
 
-    def resumed_session(self, channel_id: str) -> str | None:
-        """Resolve exactly one inbound-enabled binding, failing closed on duplicates."""
+    def resolve_inbound(self, channel_id: str) -> InboundResolution:
+        """Resolve this conversation's inbound owner, keeping "none" and "many" apart."""
         matches = self.sessions.find_mirror_sessions(
             self.link_for(channel_id),
             inbound_only=True,
         )
         if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
+            return InboundResolution(key=matches[0], ambiguous=False)
+        if matches:
             logger.error(
                 "discord resume: ambiguous inbound bindings for channel %s; routing denied",
                 channel_id,
             )
-        return None
+            return InboundResolution(key=None, ambiguous=True)
+        return InboundResolution(key=None, ambiguous=False)
 
-    def leave_resumed_session(self, channel_id: str) -> str | None:
-        key = self.resumed_session(channel_id)
-        if key is not None:
-            # Free the LOCATION, not just the resume binding: a session map can
-            # hold co-located bindings — one written before conversations became
-            # exclusive, or hand-edited — so an outbound mirror can sit on a
-            # conversation a resumed session also holds. This early path bypasses
-            # the dispatcher's own sweep — clearing only *key* here would leave
-            # that mirror occupying the location and reproduce the "already
-            # attached" refusal after an apparently successful unlink.
-            cleared = self.sessions.clear_mirror_links_at(
-                self.link_for(channel_id), reason=UNBIND_REASON_USER_UNLINK
+    def resumed_session(self, channel_id: str) -> str | None:
+        """Resolve exactly one inbound-enabled binding, failing closed on duplicates."""
+        return self.resolve_inbound(channel_id).key
+
+    async def leave_resumed_session(self, channel_id: str) -> str | None:
+        # The bind lock closes the picker gap; live-owner checks cover dashboard writers.
+        async with self._bind_lock:
+            seen = self.resolve_inbound(channel_id)
+            releasing = seen.key is not None or seen.ambiguous
+            cleared: list[str] = []
+            if releasing:
+                # Evidence before mutation: a cleared owner whose flush then fails
+                # would otherwise run natively in silence until the persisted
+                # binding revives on restart, splitting the conversation history.
+                try:
+                    expected = await self._expectations.get(channel_id)
+                    owner = seen.key or next(iter(self.sessions.find_mirror_sessions(
+                        self.link_for(channel_id), inbound_only=True)), None)
+                    if owner and (expected is None or expected.retired):
+                        await self._expectations.record(channel_id, owner, await self._title_of(owner))
+                except ExpectationStoreError as exc:
+                    raise ResumeReleaseError("release evidence write failed") from exc
+                # Free every co-located occupant so unlink cannot leave an ambiguous owner.
+                cleared = self.sessions.clear_mirror_links_at(
+                    self.link_for(channel_id), reason=UNBIND_REASON_USER_UNLINK)
+            # A retry must land a failed in-memory removal before record retirement.
+            try:
+                await self.sessions.aflush()
+            except Exception as exc:
+                logger.warning("discord resume: binding release was not durable for channel %s",
+                               channel_id, exc_info=True)
+                raise ResumeReleaseError("session-map flush failed") from exc
+            if releasing:
+                logger.info("discord: released resumed session %s (cleared bindings: %s)",
+                            seen.key or "(ambiguous)", ", ".join(cleared) or "none")
+                self._push_slots()
+            try:
+                # Retire on the version CAS alone: an owner racing the flush is a NEW
+                # attachment that must meet retired evidence and be announced, while a
+                # newer picker record already wins by version. Gating on a live owner
+                # would let a same-key rebind ride the stale record in silence.
+                expected = await self._expectations.get(channel_id)
+                if expected is not None and not expected.retired:
+                    await self._expectations.retire_if(channel_id, expected.version)
+            except ExpectationStoreError:
+                logger.warning(
+                    "discord resume: could not retire the released record at channel %s; "
+                    "one stale detach notice may follow", channel_id, exc_info=True)
+        return seen.key or (cleared[0] if cleared else None)
+
+    async def route(self, channel_id: str) -> RoutingDecision:
+        """Decide where one inbound message runs, or why it does not run at all. The
+        store read comes FIRST and the session map AFTER it, so the live binding is
+        never older than the record it is compared against; any further await
+        revalidates — a move before the bootstrap record refuses outright, one after
+        it restarts, an exhausted budget refuses. The spec's state table is authoritative."""
+        for _ in range(_MAX_ROUTE_ATTEMPTS):
+            try:
+                expected = await self._expectations.get(channel_id)
+            except ExpectationStoreError:
+                return _storage_refused(channel_id, "cannot read the store")
+            resolution = self.resolve_inbound(channel_id)
+            if resolution.ambiguous:
+                return RoutingDecision(refusal=(
+                        "🔗 Ambiguous link: this conversation is claimed by more than "
+                        "one session, so it cannot be resumed and your message was NOT "
+                        "processed. Run `!unlink` to release them, then `!sessions` to " "reattach."
+                    ), settle=_SETTLE_NOTHING, observed=resolution,
+                )
+            if resolution.key is None:
+                if expected is None or expected.retired:
+                    return RoutingDecision()
+                return RoutingDecision(
+                    refusal=(
+                        "🔗 Detached: this conversation is no longer linked to "
+                        f'"{self._display(expected)}". Your message was NOT processed. '
+                        "Run `!sessions` to reattach, or resend to continue in your own "
+                        "conversation."
+                    ),
+                    settle=_SETTLE_CLEAR,
+                    described=expected,
+                    observed=resolution,
+                )
+            if (expected is not None and not expected.retired and expected.key == resolution.key):
+                return RoutingDecision(resumed_key=resolution.key)
+
+            title = await self._title_of(resolution.key)
+            if self.resolve_inbound(channel_id) != resolution:
+                break
+            if expected is None:
+                try:
+                    await self._expectations.record(channel_id, resolution.key, title)
+                except ExpectationStoreError:
+                    return _storage_refused(channel_id, "could not record the binding", resolution)
+                if self.resolve_inbound(channel_id) != resolution:
+                    continue
+                return RoutingDecision(resumed_key=resolution.key)
+            return RoutingDecision(
+                refusal=(
+                    f'🔗 Now linked to "{_safe_discord_text(title, _TITLE_LIMIT)}" '
+                    f'instead of "{self._display(expected)}". Your message was NOT '
+                    "processed. Resend it to continue in the new conversation, or run "
+                    "`!unlink` to go back to your own."
+                ),
+                settle=_SETTLE_ADOPT,
+                described=expected,
+                observed=resolution,
+                adopt_key=resolution.key,
+                adopt_title=title,
             )
+        logger.warning(
+            "discord resume: channel %s kept changing owner; refusing this message",
+            channel_id,
+        )
+        return RoutingDecision(
+            refusal=(
+                "🔗 This conversation's link is changing right now, so your message was "
+                "NOT processed. Send it again in a moment."
+            ),
+            settle=_SETTLE_NOTHING,
+        )
+
+    async def settle(self, channel_id: str, decision: RoutingDecision) -> None:
+        """Apply a delivered refusal with version and live-owner guards. A detach
+        becomes one durable retired marker: native routing can resume with no owner,
+        while any owner racing that write still encounters the retained evidence."""
+        if decision.settle == _SETTLE_NOTHING or decision.described is None:
+            return
+        if self.resolve_inbound(channel_id) != decision.observed:
             logger.info(
-                "discord: released resumed session %s (cleared bindings: %s)",
-                key,
-                ", ".join(cleared) or "none",
+                "discord resume: channel %s moved while the notice was in flight; "
+                "leaving the record for the next message to re-decide",
+                channel_id,
             )
-            self._push_slots()
-        return key
+            return
+        if decision.settle == _SETTLE_CLEAR:
+            try:
+                await self.sessions.aflush()
+            except Exception:
+                logger.warning(
+                    "discord resume: detach durability failed at %s",
+                    channel_id, exc_info=True)
+                return
+        try:
+            if decision.settle == _SETTLE_CLEAR:
+                await self._expectations.retire_if(channel_id, decision.described.version)
+            elif decision.settle == _SETTLE_ADOPT:
+                await self._expectations.record_if(
+                    channel_id,
+                    decision.described.version,
+                    decision.adopt_key,
+                    decision.adopt_title,
+                )
+        except ExpectationStoreError:
+            # Unsettled, so the same refusal is owed again.
+            logger.warning(
+                "discord resume: could not settle the notice at channel %s; the "
+                "next message will be refused again", channel_id, exc_info=True,
+            )
+
+    def _display(self, expected: ResumeExpectation) -> str:
+        """A title safe to post: redacted, mention-neutered, length-capped, because
+        a title read back from the store or history is conversation text."""
+        if expected.retired:
+            return "your own Discord conversation"
+        return _safe_discord_text(expected.title or expected.key, _TITLE_LIMIT)
+
+    async def _title_of(self, session_key: str) -> str:
+        """The stored title for *session_key*, read off-loop, with a stable fallback."""
+        title = ""
+        if self.conv_log is not None:
+            try:
+                meta = await asyncio.to_thread(self.conv_log.get_metadata, session_key)
+                title = str((meta or {}).get("title") or "")
+            except Exception:
+                logger.debug("discord resume: title lookup failed", exc_info=True)
+        # The picker's fallback for an untitled session, so a bootstrapped record
+        # names the conversation the way the user saw it listed.
+        return title or session_key.removeprefix("dashboard:")
 
     async def show_picker(
         self,
@@ -264,7 +488,8 @@ class DiscordSessionResume:
             if key is None:
                 continue
             raw_title = str(row.get("title") or key.removeprefix("dashboard:"))
-            title = _safe_discord_text(" ".join(raw_title.split()), 76) or "Untitled session"
+            clean = " ".join(raw_title.split())
+            title = _safe_discord_text(clean, _TITLE_LIMIT) or "Untitled session"
             eligible.append(_SessionChoice(key=key, title=title))
 
         # Order is already meaningful: search_sessions returns best-scored first,
@@ -433,6 +658,25 @@ class DiscordSessionResume:
                 )
                 return
 
+            try:
+                # Record BEFORE the success banner and the binding, all under the bind
+                # lock: once Discord shows "Resumed", only durable evidence survives a
+                # crash, and a rollback is unsafe (no map revision; the racing dashboard
+                # rebind skips the lock). A lost banner or bind fails toward one notice.
+                await self._expectations.record(interaction.channel_id, choice.key, choice.title)
+            except ExpectationStoreError:
+                logger.warning(
+                    "discord resume: the pick of %s did not take effect",
+                    choice.key, exc_info=True,
+                )
+                await client.edit_message(
+                    interaction.channel_id,
+                    interaction.message_id,
+                    "⚠️ Couldn't save which conversation this channel is linked to, "
+                    "so the session was NOT resumed. Run `!sessions` to try again.",
+                    components=[],
+                )
+                return
             header_ok = await client.edit_message(
                 interaction.channel_id,
                 interaction.message_id,
