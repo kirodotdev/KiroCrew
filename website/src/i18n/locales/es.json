@@ -4,6 +4,7 @@
       "paste_token_url_or_raw_token": "Pega la URL del token o el token sin procesar…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitación de peticiones en el borde del túnel (HTTP 429) — demasiadas solicitudes en una ráfaga. El panel lo reintenta automáticamente; si esto continúa, espera unos segundos y recarga la página.",
       "session_expired": "La sesión ha caducado.",
+      "session_expired_sign_in_again": "La sesión ha caducado. Ejecuta kirocrew token en una terminal y pega la URL en el banner de la parte superior de esta página para volver a iniciar sesión.",
       "stream_ended_without_completion": "La transmisión terminó sin completarse",
       "unexpected_server_response": "Respuesta inesperada del servidor"
     }

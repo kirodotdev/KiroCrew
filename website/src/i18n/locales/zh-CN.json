@@ -4,6 +4,7 @@
       "paste_token_url_or_raw_token": "粘贴令牌 URL 或原始令牌…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",
       "session_expired": "会话已过期。",
+      "session_expired_sign_in_again": "会话已过期。请在终端运行 kirocrew token，然后将 URL 粘贴到本页顶部的横幅中重新登录。",
       "stream_ended_without_completion": "流在完成前结束",
       "unexpected_server_response": "服务器响应异常"
     }

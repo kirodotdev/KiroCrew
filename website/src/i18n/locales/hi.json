@@ -4,6 +4,7 @@
       "paste_token_url_or_raw_token": "टोकन URL या सीधा टोकन पेस्ट करें…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "टनल एज ने रेट-लिमिट लगा दिया (HTTP 429) — कम समय में बहुत ज़्यादा अनुरोध। डैशबोर्ड अपने आप फिर कोशिश करता है; अगर यह बना रहे, तो कुछ सेकंड रुककर रीलोड करें।",
       "session_expired": "सत्र समाप्त हो गया।",
+      "session_expired_sign_in_again": "सत्र समाप्त हो गया। टर्मिनल में kirocrew token चलाएँ, फिर फिर से साइन इन करने के लिए इस पृष्ठ के शीर्ष पर बैनर में URL पेस्ट करें।",
       "stream_ended_without_completion": "स्ट्रीम पूरी होने से पहले समाप्त हो गई",
       "unexpected_server_response": "सर्वर से अनपेक्षित प्रतिक्रिया"
     }

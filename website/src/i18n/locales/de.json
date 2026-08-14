@@ -4,6 +4,7 @@
       "paste_token_url_or_raw_token": "Token-URL oder Roh-Token einfügen…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
       "session_expired": "Sitzung abgelaufen.",
+      "session_expired_sign_in_again": "Die Sitzung ist abgelaufen. Führen Sie kirocrew token in einem Terminal aus und fügen Sie die URL in das Banner oben auf dieser Seite ein, um sich erneut anzumelden.",
       "stream_ended_without_completion": "Stream endete ohne Abschluss",
       "unexpected_server_response": "Unerwartete Serverantwort"
     }

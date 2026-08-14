@@ -30,6 +30,10 @@ vi.mock('../api/client', () => {
   }
   return {
     ApiError,
+    // Mirrors the real predicate: the panel drops its refresh button only for an
+    // auth denial, so the mock must distinguish one from any other ApiError.
+    isAuthExpiredError: (e: unknown) =>
+      e instanceof ApiError && (e as { authRequired?: boolean }).authRequired === true,
     api: {
       listInstances: vi.fn(),
       addInstance: vi.fn(),

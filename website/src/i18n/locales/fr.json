@@ -4,6 +4,7 @@
       "paste_token_url_or_raw_token": "Colle l’URL du token ou le token brut…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Débit limité par la bordure du tunnel (HTTP 429) — trop de requêtes d’un coup. Le tableau de bord réessaie automatiquement ; si cela persiste, attends quelques secondes et recharge la page.",
       "session_expired": "Session expirée.",
+      "session_expired_sign_in_again": "Session expirée. Exécutez kirocrew token dans un terminal, puis collez l'URL dans la bannière en haut de cette page pour vous reconnecter.",
       "stream_ended_without_completion": "Flux interrompu avant la fin",
       "unexpected_server_response": "Réponse inattendue du serveur"
     }

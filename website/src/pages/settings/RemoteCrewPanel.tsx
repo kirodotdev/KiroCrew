@@ -42,6 +42,7 @@ import {
 import {
   api,
   ApiError,
+  isAuthExpiredError,
   type InstanceView,
   type LaunchJob,
   type CloudPreflight,
@@ -737,6 +738,8 @@ export function RemoteCrewPanel() {
   // leaves the EC2 stack running and billing, invisible to the dashboard. So the list
   // waits until both are known, and surfaces either failure instead of guessing.
   const loadError = !disabled && (instancesQuery.isError || launchesQuery.isError)
+  const authExpired =
+    isAuthExpiredError(instancesQuery.error) || isAuthExpiredError(launchesQuery.error)
   const listLoading = !disabled && (instancesQuery.isLoading || launchesQuery.isLoading)
 
   // `activeLaunchId` is component state, so navigating away and back loses it while
@@ -1086,9 +1089,14 @@ export function RemoteCrewPanel() {
               // reads as "your crews are gone" when the list simply did not load.
               <div className="py-1">
                 <ErrorNotice message={errMsg(instancesQuery.error ?? launchesQuery.error, i18nT('pages.settings.instancesPanel.unknown_error'))} />
-                <Btn className="mt-2" onClick={() => { reloadInstances(); reloadLaunches() }}>
-                  <RefreshCw className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.refresh')}
-                </Btn>
+                {/* Refresh replays the same rejected credential, so it can only
+                    reproduce the error until the user re-authenticates through
+                    the banner the notice points at. */}
+                {!authExpired && (
+                  <Btn className="mt-2" onClick={() => { reloadInstances(); reloadLaunches() }}>
+                    <RefreshCw className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.refresh')}
+                  </Btn>
+                )}
               </div>
             ) : (
               <div>

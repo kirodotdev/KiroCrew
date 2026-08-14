@@ -4,6 +4,7 @@
       "paste_token_url_or_raw_token": "トークン URL またはトークンを貼り付け…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "トンネルエッジでレート制限されています (HTTP 429) — バーストでリクエストが多すぎます。ダッシュボードは自動的に再試行します。これが続く場合は、数秒待ってからリロードしてください。",
       "session_expired": "セッションの有効期限が切れました。",
+      "session_expired_sign_in_again": "セッションの有効期限が切れました。ターミナルで kirocrew token を実行し、このページ上部のバナーに URL を貼り付けて再度サインインしてください。",
       "stream_ended_without_completion": "ストリームが完了せずに終了しました",
       "unexpected_server_response": "予期しないサーバーレスポンス"
     }

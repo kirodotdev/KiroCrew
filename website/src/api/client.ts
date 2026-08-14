@@ -783,13 +783,30 @@ export class ApiError extends Error {
   /** The raw response body, kept so a caller can read structured fields that
    * `friendlyErrText` collapses away when it unwraps the human message. */
   readonly body: string
-  constructor(status: number, message: string, body = '') {
+  /** The gateway rejected this call because the dashboard session no longer
+   * authenticates (403 + `X-Auth-Required`). Call sites branch on this to drop
+   * retry affordances that cannot succeed until the user re-authenticates. */
+  readonly authRequired: boolean
+  constructor(status: number, message: string, body = '', authRequired = false) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.body = body
+    this.authRequired = authRequired
   }
 }
+
+/**
+ * Whether *e* is a failure the user can only clear by signing back in.
+ *
+ * The gateway's auth denial names the cryptographic reason it rejected the
+ * token (`invalid signature`, `session revoked`), which is accurate and
+ * useless to a user: it neither says the session is what broke nor points at
+ * the re-auth banner. Call sites use this to swap a futile retry for the one
+ * action that recovers.
+ */
+export const isAuthExpiredError = (e: unknown): boolean =>
+  e instanceof ApiError && e.authRequired
 
 /**
  * Map raw edge/proxy error bodies to a human-readable message. A dashboard
@@ -827,7 +844,15 @@ export const friendlyErrText = (status: number, body: string): string => {
  * context from the message alone — see AskAgentButton / ErrorNotice.
  */
 const apiFailure = (r: Response, errText: string): ApiError => {
-  const message = friendlyErrText(r.status, errText) || `HTTP ${r.status}`
+  // An auth denial's own reason text ("invalid signature") describes HMAC
+  // verification, not anything the user can act on, and every card that renders
+  // it hides the fact that one re-auth clears all of them at once. Substitute
+  // the recovery instruction for display; the raw reason still travels in
+  // `body` and in the error report's `detail` for diagnostics.
+  const authRequired = r.status === 403 && r.headers.get('X-Auth-Required') === 'true'
+  const message = authRequired
+    ? i18nT('api.client.session_expired_sign_in_again')
+    : friendlyErrText(r.status, errText) || `HTTP ${r.status}`
   recordError({
     source: 'api',
     message,
@@ -836,7 +861,7 @@ const apiFailure = (r: Response, errText: string): ApiError => {
     endpoint: requestPath(r.url),
     detail: errText,
   })
-  return new ApiError(r.status, message, errText)
+  return new ApiError(r.status, message, errText, authRequired)
 }
 
 const j = async (r: Response) => {

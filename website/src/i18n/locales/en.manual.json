@@ -4,6 +4,7 @@
       "paste_token_url_or_raw_token": "Paste token URL or raw token…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
       "session_expired": "Session expired.",
+      "session_expired_sign_in_again": "Session expired. Run kirocrew token in a terminal, then paste the URL into the banner at the top of this page to sign back in.",
       "stream_ended_without_completion": "Stream ended without completion",
       "unexpected_server_response": "Unexpected server response"
     }

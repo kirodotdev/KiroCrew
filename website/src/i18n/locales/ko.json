@@ -4,6 +4,7 @@
       "paste_token_url_or_raw_token": "토큰 URL 또는 토큰 원문을 붙여넣으세요…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "터널 엣지에서 요청 수가 제한되었습니다 (HTTP 429) — 짧은 시간에 요청이 너무 많습니다. 대시보드가 자동으로 재시도합니다. 계속되면 몇 초 기다린 후 새로고침하세요.",
       "session_expired": "세션이 만료되었습니다.",
+      "session_expired_sign_in_again": "세션이 만료되었습니다. 터미널에서 kirocrew token 을 실행한 뒤 이 페이지 상단 배너에 URL을 붙여넣어 다시 로그인하세요.",
       "stream_ended_without_completion": "스트림이 완료되지 않은 채 종료되었습니다",
       "unexpected_server_response": "예기치 않은 서버 응답"
     }

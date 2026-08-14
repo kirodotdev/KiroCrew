@@ -14,6 +14,10 @@ vi.mock('../api/client', () => {
   }
   return {
     ApiError,
+    // Mirrors the real predicate: the panel drops its refresh button only for an
+    // auth denial, so the mock must distinguish one from any other ApiError.
+    isAuthExpiredError: (e: unknown) =>
+      e instanceof ApiError && (e as { authRequired?: boolean }).authRequired === true,
     api: {
       listInstances: vi.fn(),
       addInstance: vi.fn(),
@@ -478,6 +482,20 @@ describe('RemoteCrewPanel', () => {
     expect(screen.queryByText(/No crews yet/i)).not.toBeInTheDocument()
     // A retry sits with the error, in addition to the header's refresh control.
     expect(screen.getAllByRole('button', { name: /Refresh/i }).length).toBeGreaterThan(1)
+  })
+
+  it('drops the retry when the load failed because the session no longer authenticates', async () => {
+    // Retrying replays the same rejected credential, so the button could only
+    // reproduce the error. Re-auth happens through the page-top banner instead,
+    // and only the header's own refresh control remains.
+    const denial = new ApiError(403, 'Session expired. Run kirocrew token …')
+    ;(denial as unknown as { authRequired: boolean }).authRequired = true
+    vi.mocked(api.listInstances).mockRejectedValue(denial)
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    expect(await screen.findByText(/kirocrew token/i)).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Refresh/i }).length).toBe(1)
   })
 
   it('warns that a restart is required when the feature is on but not active', async () => {
