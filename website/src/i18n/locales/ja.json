@@ -6941,7 +6941,9 @@
       "your_credentials_never_touch_kirocrew": "Kiro Crew がお客様の認証情報に触れることはありません。",
       "your_host_not_your_laptop_artifact_deploy_shells": "（お客様のホスト）であり、お客様のラップトップではありません — Artifact Deploy はゲートウェイプロセスから",
       "public_by_link_warning": "公開された URL はリンクを知っていれば誰でもアクセスできます。リンクを知っている人は誰でもコンテンツを閲覧でき、認証なしで公開インターネット上に配信されます。",
-      "random_domain_note": "コンテンツはランダムな *.cloudfront.net ドメインで配信されます。オープンなインターネットに置きたくないものは公開しないでください。"
+      "random_domain_note": "コンテンツはランダムな *.cloudfront.net ドメインで配信されます。オープンなインターネットに置きたくないものは公開しないでください。",
+      "cloud_deployment_disabled": "Cloud deployment is disabled",
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· リモートコピーでより新しいバージョンが利用可能です",
@@ -7158,7 +7160,8 @@
       "v": "v",
       "ver": "バージョン",
       "widgets_files_and_snippets_live_tracked_with_ver": "ウィジェット、ファイル、スニペット — バージョン履歴とともにライブ追跡",
-      "your_artifacts": "あなたのアーティファクト"
+      "your_artifacts": "あなたのアーティファクト",
+      "local_preview": "Local preview"
     },
     "capabilitiesPage": {
       "agent_capabilities": "エージェント機能",

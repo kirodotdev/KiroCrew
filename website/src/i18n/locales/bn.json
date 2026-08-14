@@ -7037,7 +7037,9 @@
       "your_credentials_never_touch_kirocrew": "আপনার ক্রেডেনশিয়াল কখনও Kiro Crew স্পর্শ করে না।",
       "your_host_not_your_laptop_artifact_deploy_shells": "(আপনার হোস্ট), আপনার ল্যাপটপ নয় — Artifact Deploy শেল করে চালায়",
       "public_by_link_warning": "প্রকাশিত URL লিঙ্কের মাধ্যমে সর্বজনীন: লিঙ্ক থাকা যে কেউ কন্টেন্ট দেখতে পারবে — এটি কোনো প্রমাণীকরণ ছাড়াই পাবলিক ইন্টারনেটে পরিবেশিত হয়।",
-      "random_domain_note": "কন্টেন্ট একটি এলোমেলো *.cloudfront.net ডোমেইনে পরিবেশিত হয় — এমন কিছু প্রকাশ করবেন না যা আপনি খোলা ইন্টারনেটে রাখতে চাইবেন না।"
+      "random_domain_note": "কন্টেন্ট একটি এলোমেলো *.cloudfront.net ডোমেইনে পরিবেশিত হয় — এমন কিছু প্রকাশ করবেন না যা আপনি খোলা ইন্টারনেটে রাখতে চাইবেন না।",
+      "cloud_deployment_disabled": "Cloud deployment is disabled",
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· রিমোট কপিতে একটি নতুন সংস্করণ পাওয়া যাচ্ছে",
@@ -7255,7 +7257,8 @@
       "v": "v",
       "ver": "সংস্করণ",
       "widgets_files_and_snippets_live_tracked_with_ver": "উইজেট, ফাইল ও স্নিপেট — সংস্করণ ইতিহাসসহ লাইভ ট্র্যাক করা",
-      "your_artifacts": "আপনার আর্টিফ্যাক্ট"
+      "your_artifacts": "আপনার আর্টিফ্যাক্ট",
+      "local_preview": "Local preview"
     },
     "capabilitiesPage": {
       "agent_capabilities": "এজেন্টের সক্ষমতা",

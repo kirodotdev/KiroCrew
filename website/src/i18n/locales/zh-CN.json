@@ -6941,7 +6941,9 @@
       "your_credentials_never_touch_kirocrew": "你的凭证从不接触 Kiro Crew。",
       "your_host_not_your_laptop_artifact_deploy_shells": "（你的主机）上配置，而不是你的笔记本 — 工件部署会调用",
       "public_by_link_warning": "发布的 URL 为凭链接公开：任何拥有该链接的人都可以查看内容——它通过公共互联网提供，没有任何身份验证。",
-      "random_domain_note": "内容通过随机的 *.cloudfront.net 域名提供——不要发布任何你不愿放到公开互联网上的内容。"
+      "random_domain_note": "内容通过随机的 *.cloudfront.net 域名提供——不要发布任何你不愿放到公开互联网上的内容。",
+      "cloud_deployment_disabled": "Cloud deployment is disabled",
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· 远端副本中有更新的版本",
@@ -7158,7 +7160,8 @@
       "v": "v",
       "ver": "版本",
       "widgets_files_and_snippets_live_tracked_with_ver": "小组件、文件和代码片段 — 实时跟踪并保留版本历史",
-      "your_artifacts": "你的工件"
+      "your_artifacts": "你的工件",
+      "local_preview": "Local preview"
     },
     "capabilitiesPage": {
       "agent_capabilities": "代理能力",

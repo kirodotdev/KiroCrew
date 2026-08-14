@@ -57,6 +57,16 @@ class SkillsShProvider:
         self._config = config or SkillsShConfig()
 
     @property
+    def api_base(self) -> str:
+        """The registry base URL this provider fetches from.
+
+        Public because the platform ``discovery`` policy allowlists a registry by
+        URL rather than by name: the name is a self-chosen label, while the base
+        URL is what determines where skill content comes from.
+        """
+        return self._config.api_base
+
+    @property
     def name(self) -> str:
         return "skillsh"
 

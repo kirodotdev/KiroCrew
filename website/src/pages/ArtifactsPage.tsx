@@ -26,6 +26,7 @@ import { compareText } from '../i18n/format'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { framablePreviewUrl } from '../lib/safeUrl'
+import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
 import { markJustCreatedBlank } from '../lib/blankHandoff'
 import { IMPORT_ACCEPT, IMPORTABLE_EXT_LIST, MAX_IMPORT_BYTES, planFileImport, wasContentRedacted, type ImportPlan, type ImportRejection } from '../lib/artifactImport'
 import { useAppPreview } from '../components/WebAppArtifactCard'
@@ -353,6 +354,10 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   const meta = art.webapp_metadata
   const status = meta?.lifecycle?.status ?? 'draft'
   const publicUrl = meta?.deploy_target?.public_url || ''
+  // When the platform withholds cloud deployment there is no deploy state worth
+  // reporting: every artifact would read "Not deployed" for a capability that is
+  // not on offer. The local preview below is unaffected and still renders.
+  const cloudDeployEnabled = useCloudDeploymentEnabled()
   // Local-first: serve the app's local copy through the gateway preview
   // channel (works for every lifecycle state); fall back to iframing the
   // live CloudFront deployment; else a status hero.
@@ -360,12 +365,12 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   const frameUrl = previewBase
     || (!mini && status === 'live' && remoteFramable ? framablePreviewUrl(publicUrl) : null)
   const urlLabel = (() => {
-    if (!publicUrl) return i18nT('pages.artifactsPage.not_deployed')
+    if (!publicUrl) return cloudDeployEnabled ? i18nT('pages.artifactsPage.not_deployed') : ''
     try {
       const u = new URL(publicUrl)
       return `${u.host}${u.pathname}`
     } catch {
-      return i18nT('pages.artifactsPage.not_deployed')
+      return cloudDeployEnabled ? i18nT('pages.artifactsPage.not_deployed') : ''
     }
   })()
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -384,7 +389,7 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   const heroIcon = status === 'expired'
     ? <Cloud size={mini ? 16 : 24} className="text-muted" aria-hidden="true" />
     : <Rocket size={mini ? 16 : 24} className={status === 'deploying' ? 'text-warn animate-pulse' : 'text-accent/70'} aria-hidden="true" />
-  const heroLabel = status === 'expired' ? i18nT('pages.artifactsPage.expired') : status === 'deploying' ? i18nT('pages.artifactsPage.deploying') : status === 'live' ? i18nT('pages.artifactsPage.live') : i18nT('pages.artifactsPage.not_deployed_2')
+  const heroLabel = status === 'expired' ? i18nT('pages.artifactsPage.expired') : status === 'deploying' ? i18nT('pages.artifactsPage.deploying') : status === 'live' ? i18nT('pages.artifactsPage.live') : cloudDeployEnabled ? i18nT('pages.artifactsPage.not_deployed_2') : i18nT('pages.artifactsPage.local_preview')
   return (
     <div className="bg-card">
       {/* chrome bar */}
@@ -1492,6 +1497,10 @@ function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggleExpand
 
 export default function ArtifactsPage() {  const navigate = useNavigate()
   const qc = useQueryClient()
+  // Hides the AWS deploy console entry when the platform withholds cloud
+  // deployment — otherwise the option is visible and only explains itself after
+  // a click.
+  const cloudDeployEnabled = useCloudDeploymentEnabled()
   const [filter, setFilter] = useState('')
   const [tagFilter, setTagFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<string>('')
@@ -2101,9 +2110,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               aria-label={i18nT('pages.artifactsPage.filter_by_tag')}
               onChange={setTagFilter}
             />
-            <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
-              <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
-            </Btn>
+            {cloudDeployEnabled && (
+              <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
+                <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
+              </Btn>
+            )}
             <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label={i18nT('pages.artifactsPage.filter_starred')}>
               <button
                 type="button"

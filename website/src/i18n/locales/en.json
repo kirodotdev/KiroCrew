@@ -4945,7 +4945,9 @@
       "worst_case_tiers_over_each_ttl_window_estimate_n": "(worst-case tiers, over each TTL window; estimate — not the AWS bill)",
       "writes_only_region_credential_process_via": "(writes only region / credential_process via",
       "your_credentials_never_touch_kirocrew": "Your credentials never touch Kiro Crew.",
-      "your_host_not_your_laptop_artifact_deploy_shells": "(your host), not your laptop — Artifact Deploy shells to"
+      "your_host_not_your_laptop_artifact_deploy_shells": "(your host), not your laptop — Artifact Deploy shells to",
+      "cloud_deployment_disabled": "Cloud deployment is disabled",
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· a newer version is available in the remote copy",
@@ -5076,7 +5078,8 @@
       "v": "v",
       "ver": "Ver",
       "widgets_files_and_snippets_live_tracked_with_ver": "Widgets, files, and snippets — live-tracked with version history",
-      "your_artifacts": "Your Artifacts"
+      "your_artifacts": "Your Artifacts",
+      "local_preview": "Local preview"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Agent Capabilities"

@@ -308,34 +308,51 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     Returns enabled apps' publish providers plus the core deploy provider (folded
     from the former deploy_web app), each with a ``configured`` flag. Built-in
     providers (the internal registry) are registered frontend-side and are not returned here.
+
+    The core deploy row is omitted when the platform's ``external_access`` policy
+    withholds cloud deployment. Because this list is what the Publish panel
+    renders, that single omission is also what makes the panel correct — a
+    deployment that registers only an internal destination shows only that one,
+    with no frontend change.
     """
     # Both the apps-dir walk (list_apps) and the per-provider configured-state
     # probe (_provider_is_configured reads each app's persisted config file)
     # touch disk, so the whole collection runs off the loop — same shape as the
     # deploy registry read below.
     providers = await asyncio.to_thread(lambda: collect_publish_providers(list_apps()))
-    # Core deploy provider (always present, regardless of any app install state)
-    try:
-        from kiro_crew.deploy import profiles as _deploy_profiles
+    # Core deploy provider — present unless the platform withholds cloud
+    # deployment, in which case advertising it would offer a destination whose
+    # every mutating route refuses. Omitting the ROW is what makes the Publish
+    # panel correct without a frontend change: the panel is data-driven, so a
+    # deployment that only registers an internal destination shows only that one.
+    # circular import: apps.routes is imported by the dashboard handler layer, so
+    # reaching back into it must be a function-local downward import.
+    from kiro_crew.dashboard.handlers._shared import admits_cloud_deployment
 
-        # Align with deploy/handlers.py: registry reads go through to_thread.
-        reg = await asyncio.to_thread(_deploy_profiles.load_registry)
-        configured = bool(reg["profiles"])
-    except Exception:
-        configured = False
-    providers.append(
-        {
-            "id": "deploy-web-aws",
-            "label": "Publish to public web (your AWS)",
-            "icon": "Globe",
-            "endpoint": "/api/deploy/deploy",
-            "kinds": ["widget", "html", "markdown"],
-            "setupRoute": "/artifacts/deploy",
-            "app": "",
-            "origin": "core",
-            "configured": configured,
-        }
-    )
+    # In a worker thread with the registry read below: the admission path can
+    # initialize the SEL audit log, which shells out on a fresh Windows gateway.
+    if await asyncio.to_thread(admits_cloud_deployment, "aws"):
+        try:
+            from kiro_crew.deploy import profiles as _deploy_profiles
+
+            # Align with deploy/handlers.py: registry reads go through to_thread.
+            reg = await asyncio.to_thread(_deploy_profiles.load_registry)
+            configured = bool(reg["profiles"])
+        except Exception:
+            configured = False
+        providers.append(
+            {
+                "id": "deploy-web-aws",
+                "label": "Publish to public web (your AWS)",
+                "icon": "Globe",
+                "endpoint": "/api/deploy/deploy",
+                "kinds": ["widget", "html", "markdown"],
+                "setupRoute": "/artifacts/deploy",
+                "app": "",
+                "origin": "core",
+                "configured": configured,
+            }
+        )
     return web.json_response({"providers": providers})
 
 

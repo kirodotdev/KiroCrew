@@ -51,9 +51,19 @@ export default function ArtifactDeployPage() {
   const [npRole, setNpRole] = useState('')
   const [npCreate, setNpCreate] = useState(false)
 
+  const { data: deployCfg } = useQuery<{ cloudDeploymentEnabled?: boolean }>({
+    queryKey: ['deploy-web', 'config'],
+    queryFn: () => jget('/config'),
+  })
+  // Absent means an older backend that predates the flag — treat as enabled so a
+  // version skew never hides a working deploy surface. Only an explicit false
+  // withholds it.
+  const cloudDeploymentDisabled = deployCfg?.cloudDeploymentEnabled === false
+
   const { data: profilesResp } = useQuery<ProfilesResp>({
     queryKey: ['deploy-web', 'profiles'],
     queryFn: () => jget('/profiles'),
+    enabled: !cloudDeploymentDisabled,
   })
   const profiles = profilesResp?.profiles || []
   const defaultProfile = profilesResp?.default || ''
@@ -231,6 +241,23 @@ export default function ArtifactDeployPage() {
       <PageHeader title={i18nT('pages.artifactDeployPage.artifact_deploy')} subtitle={i18nT('pages.artifactDeployPage.one_console_for_deploying_artifacts_to_your_own')} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0" style={{ color: 'var(--text)' }}>
 
+      {/* Cloud deployment withheld: the PROVISIONING half of this console is
+          hidden below, but the deployments table and its recall/destroy actions
+          stay — a policy that stops new deployments must not strand exposure
+          created while it was still permitted, which is the same reason those
+          routes are ungated on the backend. */}
+      {cloudDeploymentDisabled && (
+        <Card>
+          <CardTitle>
+            <Lock size={14} aria-hidden="true" />
+            {i18nT('pages.artifactDeployPage.cloud_deployment_disabled')}
+          </CardTitle>
+          <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>
+            {i18nT('pages.artifactDeployPage.cloud_deployment_disabled_detail')}
+          </p>
+        </Card>
+      )}
+
       {/* StatCard row — mirrors AgentsPage/ArtifactsPage pattern */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
         <StatCard label={i18nT('pages.artifactDeployPage.profiles')} value={profiles.length} />
@@ -243,6 +270,7 @@ export default function ArtifactDeployPage() {
         <Card style={{ whiteSpace: 'pre-wrap', borderColor: 'var(--accent)', fontSize: 12 }}>{notice}</Card>
       )}
 
+      {!cloudDeploymentDisabled && (<>
       {/* Getting started guide */}
       <Card>
         <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: showGuide ? 12 : 0 }}
@@ -525,6 +553,8 @@ export default function ArtifactDeployPage() {
           </div>
         </Card>
       )}
+
+      </>)}
 
       {/* Deployments — CardTitle + InfoTip + table-striped */}
       <Card>

@@ -846,7 +846,15 @@ class TestAdapters:
     async def test_get_config_returns_registry_default(self):
         handlers._save_config("p", "eu-west-1")
         resp = await handlers._handle_get_config(_FakeReq())
-        assert _payload(resp) == {"profile": "p", "region": "eu-west-1"}
+        # The response also carries ``cloudDeploymentEnabled`` so the frontend can
+        # hide the console when the platform withholds cloud deployment; the public
+        # default admits it. Asserted as a superset so a future additive field does
+        # not break this test again.
+        assert _payload(resp) == {
+            "profile": "p",
+            "region": "eu-west-1",
+            "cloudDeploymentEnabled": True,
+        }
 
     @pytest.mark.asyncio
     async def test_deny_restricted_without_app_context(self):

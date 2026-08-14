@@ -7133,7 +7133,9 @@
       "your_credentials_never_touch_kirocrew": "Le tue credenziali non passano mai per Kiro Crew.",
       "your_host_not_your_laptop_artifact_deploy_shells": "(il tuo host), non il tuo laptop — Artifact Deploy si collega a",
       "public_by_link_warning": "Gli URL pubblicati sono pubblici tramite link: chiunque abbia il link può visualizzare il contenuto — viene servito su Internet pubblico senza autenticazione.",
-      "random_domain_note": "I contenuti vengono serviti su un dominio *.cloudfront.net casuale: non pubblicare nulla che non metteresti su Internet aperto."
+      "random_domain_note": "I contenuti vengono serviti su un dominio *.cloudfront.net casuale: non pubblicare nulla che non metteresti su Internet aperto.",
+      "cloud_deployment_disabled": "Cloud deployment is disabled",
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· è disponibile una versione più recente nella copia remota",
@@ -7352,7 +7354,8 @@
       "v": "v",
       "ver": "Ver.",
       "widgets_files_and_snippets_live_tracked_with_ver": "Widget, file e snippet — tracciati in tempo reale con cronologia delle versioni",
-      "your_artifacts": "I tuoi artefatti"
+      "your_artifacts": "I tuoi artefatti",
+      "local_preview": "Local preview"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Capacità dell'agente",

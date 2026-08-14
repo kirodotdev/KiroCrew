@@ -6941,7 +6941,9 @@
       "your_credentials_never_touch_kirocrew": "자격 증명은 Kiro Crew에 전달되지 않습니다.",
       "your_host_not_your_laptop_artifact_deploy_shells": "(내 호스트)이며 노트북이 아닙니다 — Artifact Deploy는 게이트웨이 프로세스에서",
       "public_by_link_warning": "게시된 URL은 링크만 있으면 공개됩니다: 링크가 있는 사람은 누구나 콘텐츠를 볼 수 있으며, 인증 없이 공용 인터넷에서 제공됩니다.",
-      "random_domain_note": "콘텐츠는 임의의 *.cloudfront.net 도메인에서 제공됩니다 — 공개 인터넷에 올리고 싶지 않은 것은 게시하지 마세요."
+      "random_domain_note": "콘텐츠는 임의의 *.cloudfront.net 도메인에서 제공됩니다 — 공개 인터넷에 올리고 싶지 않은 것은 게시하지 마세요.",
+      "cloud_deployment_disabled": "Cloud deployment is disabled",
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· 원격 사본에 더 새로운 버전이 있습니다",
@@ -7158,7 +7160,8 @@
       "v": "v",
       "ver": "버전",
       "widgets_files_and_snippets_live_tracked_with_ver": "위젯·파일·스니펫 — 버전 기록과 함께 실시간 추적",
-      "your_artifacts": "내 아티팩트"
+      "your_artifacts": "내 아티팩트",
+      "local_preview": "Local preview"
     },
     "capabilitiesPage": {
       "agent_capabilities": "에이전트 기능",

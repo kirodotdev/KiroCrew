@@ -20,6 +20,33 @@ All notable changes to KiroCrew are documented in this file.
   entry point, the fail-closed security prelude, and all subcommand dispatch
   are untouched. (#3504)
 
+- **A managed deployment can now withhold the external services the core offers
+  unconditionally.**
+  Three surfaces had no composition point. Two are installable-content registries
+  — skill discovery (skills.sh) and MCP server discovery (the official MCP
+  registry) — which fetch from the public internet and then offer to install what
+  they return, but hardcoded their public provider at registration time. The third
+  is cloud deployment: `kiro_crew/deploy/` provisions S3, CloudFront, IAM roles and
+  a reaper Lambda in the operator's own account and carried no capability gate at
+  all, so `capabilities.publish` (which bounds publish-provider destinations) did
+  not reach it. Together that made "source installable code only from our own
+  registry, and never provision cloud infrastructure" impossible to express without
+  patching the core — a hard blocker for any deployment where third-party code must
+  be reviewed first, or where provisioning is centrally controlled. A new
+  `external_access` platform slot adds `admits_registry(kind, name, api_base)` and
+  `admits_cloud_deployment(target)`. A refused registry is never registered, so it
+  is absent rather than failing per request; a refused cloud deployment makes the
+  deploy surface report itself disabled — so the UI hides the console instead of
+  rendering one whose every button 403s — and refuses every mutating route, wrapped
+  at registration so a new endpoint is gated by being listed rather than by
+  remembering an in-handler check. Both decisions take the concrete target as well
+  as a label, because a name is self-chosen while the URL or target determines
+  where bytes go, so an allowlist stops admitting a provider that later repoints at
+  a different host instead of letting it inherit trust from its name. Both outcomes
+  are SEL-audited: a log carrying only denials cannot show whether the permitted
+  path was ever taken. The public default admits everything, so an ordinary install
+  is unchanged.
+
 - **A lesson from a previous embedding-model generation could no longer get
   silently deleted or offered as a false contradiction.** `write_lesson`'s
   semantic dedup and `find_contradiction_candidates` compared raw embeddings

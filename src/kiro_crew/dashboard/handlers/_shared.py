@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from aiohttp import web
 
@@ -80,6 +80,117 @@ async def read_bounded_json(
             {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
         )
     return body, None
+
+
+def _audit_admission(surface: str, resource: str, allowed: bool, error: str = "") -> None:
+    """Record an external-access verdict in the security event log.
+
+    BOTH outcomes are logged, not just denials. An admission is the security-
+    relevant event here: "this deployment queried a public registry" and "this
+    deployment provisioned cloud infrastructure" are exactly what an operator who
+    restricted these surfaces needs to be able to prove afterwards, and a log that
+    only carries denials cannot answer whether the permitted path was ever taken.
+
+    Raises on failure — deliberately NOT best-effort, unlike most SEL call sites.
+    An access grant that cannot be recorded is an unaccountable grant, so the
+    caller converts a failed audit into a denial rather than proceeding unlogged.
+
+    ``critical=True`` is what makes that possible. The default path QUEUES the
+    event and swallows a write failure internally, so an exception handler around
+    this call would never fire and the "fail closed" claim would be empty; the
+    critical path writes synchronously and raises on a filesystem failure.
+    """
+    from kiro_crew.sel import sel as _sel  # circular import: sel imports config
+
+    _sel().log_api_access(
+        caller="system",
+        operation=f"external_access:{surface}",
+        outcome="allowed" if allowed else "denied",
+        source="agent",
+        resources=resource,
+        error=error,
+        critical=True,
+    )
+
+
+def _admits(surface: str, resource: str, probe: "Callable[[], bool]") -> bool:
+    """Ask the composed policy one admission question, audited either way.
+
+    Denies on a transient adapter failure rather than admitting. The only way to
+    reach that fallback is for a COMPOSED policy to raise — a managed deployment
+    whose intent was to restrict something — so admitting there would hand back
+    the exact access the operator disabled. The public default cannot raise, so an
+    ordinary install is unaffected, and ``PlatformCompositionError`` still
+    propagates per the CPP fail-closed invariant.
+
+    A FAILED AUDIT ALSO DENIES. If the verdict cannot be written to the security
+    event log — an unwritable or corrupt SEL key — then proceeding would grant
+    external access with no accountability record, which is the one thing this
+    seam exists to make provable. Denying is the conservative direction: the
+    operator loses a registry browser or a deploy button and gets a logged error,
+    rather than silently gaining unaudited egress.
+
+    SYNCHRONOUS BY DESIGN, and callers on the event loop must run it in a worker
+    thread. SEL initialization can shell out (``icacls`` on a fresh Windows
+    gateway), so calling this inline from a coroutine would stall every request.
+    """
+    from kiro_crew.platform.context import safe_context_call
+
+    failed: list[str] = []
+
+    def _fallback() -> bool:
+        failed.append("policy_error")
+        return False
+
+    allowed = safe_context_call(
+        probe,
+        fallback_factory=_fallback,
+        log_message=f"external-access check failed for {surface} {resource!r}; denying",
+    )
+    try:
+        _audit_admission(surface, resource, allowed, error="policy_error" if failed else "")
+    except Exception:
+        logger.error(
+            "external-access verdict for %s %r could not be audited; denying",
+            surface,
+            resource,
+            exc_info=True,
+        )
+        return False
+    return allowed
+
+
+def admits_registry(kind: str, name: str, api_base: str) -> bool:
+    """Whether the composed platform admits an external discovery registry.
+
+    The single call point for the registry half of the ``external_access`` seam, so
+    both catalogs ask the question identically instead of each re-deriving the
+    fail-closed idiom — the reason ``safe_context_call`` is centralized is that a
+    hand-rolled ``except Exception`` at a call site silently swallows
+    ``PlatformCompositionError``.
+    """
+    from kiro_crew.platform.context import current_context
+
+    return _admits(
+        f"registry:{kind}",
+        api_base,
+        lambda: current_context().external_access.admits_registry(kind, name, api_base),
+    )
+
+
+def admits_cloud_deployment(target: str = "aws") -> bool:
+    """Whether the composed platform admits provisioning in a cloud account.
+
+    Consulted by the deploy surface: a denied deployment reports itself disabled
+    and refuses every mutating request.
+    """
+    from kiro_crew.platform.context import current_context
+
+    return _admits(
+        "cloud_deployment",
+        target,
+        lambda: current_context().external_access.admits_cloud_deployment(target),
+    )
 
 
 def _capability_manager() -> "CapabilityManager":

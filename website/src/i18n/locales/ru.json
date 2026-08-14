@@ -7229,7 +7229,9 @@
       "your_credentials_never_touch_kirocrew": "Ваши учётные данные никогда не попадают в Kiro Crew.",
       "your_host_not_your_laptop_artifact_deploy_shells": "(ваш хост), а не ваш ноутбук — «Развёртывание артефактов» вызывает",
       "public_by_link_warning": "Опубликованные URL общедоступны по ссылке: любой, у кого есть ссылка, может просмотреть контент — он доступен в общедоступном интернете без аутентификации.",
-      "random_domain_note": "Контент доступен на случайном домене *.cloudfront.net — не публикуйте то, что не разместили бы в открытом интернете."
+      "random_domain_note": "Контент доступен на случайном домене *.cloudfront.net — не публикуйте то, что не разместили бы в открытом интернете.",
+      "cloud_deployment_disabled": "Cloud deployment is disabled",
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· в удалённой копии доступна более новая версия",
@@ -7449,7 +7451,8 @@
       "v": "v",
       "ver": "Вер.",
       "widgets_files_and_snippets_live_tracked_with_ver": "Виджеты, файлы и фрагменты кода — отслеживаются в реальном времени, с историей версий",
-      "your_artifacts": "Ваши артефакты"
+      "your_artifacts": "Ваши артефакты",
+      "local_preview": "Local preview"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Возможности агента",

@@ -45,12 +45,19 @@ _DETAIL_TIMEOUT_SECS = 15.0
 def _build_registry() -> ProviderRegistry:
     """Build the provider registry with all available providers.
 
-    The official registry is always registered (public API, no auth).
-    The edition capability provider is registered only when the CPP
-    capability manager reports available — external installs never see it.
+    The official registry is registered unless the composed ``discovery`` policy
+    refuses it — the seam a managed deployment uses to restrict installable
+    servers to its own registry. The edition capability provider is registered
+    only when the CPP capability manager reports available — external installs
+    never see it.
     """
     registry = ProviderRegistry()
-    registry.register(OfficialRegistryProvider())
+
+    from kiro_crew.dashboard.handlers._shared import admits_registry
+
+    official = OfficialRegistryProvider()
+    if admits_registry("mcp", official.name, official.api_base):
+        registry.register(official)
 
     # The edition capability manager (CPP seam) registers as a second
     # provider only when this edition actually installs one — the public
@@ -141,7 +148,7 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
     except ValueError:
         limit = 20
 
-    registry = _get_registry()
+    registry = await asyncio.to_thread(_get_registry)
     provider_names = [p.name for p in registry.available_providers]
 
     if len(query) < _MIN_QUERY_LEN:
@@ -204,7 +211,7 @@ async def api_mcp_discover_detail(request: web.Request) -> web.Response:
     if not provider_name or not server_id:
         return web.json_response({"error": "Both 'provider' and 'id' are required"}, status=400)
 
-    registry = _get_registry()
+    registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
     if provider is None:
         return web.json_response({"error": f"Unknown provider '{provider_name}'"}, status=400)
@@ -280,7 +287,7 @@ async def api_mcp_discover_install(request: web.Request) -> web.Response:
 
 async def _install_from_official(request: web.Request, server_id: str) -> web.Response:
     """Fetch the registry entry, translate, and write into KiroCrew scope."""
-    registry = _get_registry()
+    registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("official")
     if provider is None or not provider.is_available():
         return web.json_response({"error": "Provider 'official' is not available"}, status=503)
@@ -382,7 +389,7 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
     if not _is_valid_mcp_name(server_id):
         return web.json_response({"error": f"Invalid server id '{server_id[:64]}'"}, status=400)
 
-    registry = _get_registry()
+    registry = await asyncio.to_thread(_get_registry)
     provider = registry.get("capability")
     if provider is None or not provider.is_available():
         return web.json_response({"error": "Provider 'capability' is not available"}, status=503)
