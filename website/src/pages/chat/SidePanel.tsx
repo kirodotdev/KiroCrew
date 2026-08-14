@@ -3,7 +3,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, PanelBottom, Layers, ListTree } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, FolderTree, PanelRight, PanelBottom, Layers, ListTree } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -56,10 +56,17 @@ const KIND_ICON: Record<TabKind, ReactNode> = {
  * — `i18nT(item.labelKey)` over a loop variable cannot be resolved, so a field
  * on `NEW_MENU` would have made every menu key unverifiable.
  *
- * Keyed by `ViewKind | 'terminal'` (not `string`) so adding a view without its
- * label and description is a type error rather than a missing-key render.
+ * Keyed by `MenuKind` (not `string`) so adding an entry without its label and
+ * description is a type error rather than a missing-key render.
  */
-export const NEW_MENU_LABEL_KEY: Record<ViewKind, string> = {
+/** What the + menu may offer. Every singleton `ViewKind`, plus `folder` — a
+ *  DOCUMENT-kind tab rather than a view, opened rooted at the chat's project
+ *  directory. It is not a `ViewKind` because the panel unmounts category views
+ *  on tab switch, and a directory listing keeps navigation state (the cwd the
+ *  user browsed to) that a remount would throw away. */
+export type MenuKind = ViewKind | 'folder'
+
+export const NEW_MENU_LABEL_KEY: Record<MenuKind, string> = {
   changes: 'pages.chat.sidePanel.menu_changes',
   issues: 'pages.chat.sidePanel.menu_issues',
   files: 'pages.chat.sidePanel.menu_files',
@@ -72,9 +79,10 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind, string> = {
   browser: 'pages.chat.sidePanel.menu_browser',
   git: 'pages.chat.sidePanel.menu_git',
   summary: 'pages.chat.sidePanel.menu_summary',
+  folder: 'pages.chat.sidePanel.menu_folder',
 }
 
-export const NEW_MENU_DESC_KEY: Record<ViewKind, string> = {
+export const NEW_MENU_DESC_KEY: Record<MenuKind, string> = {
   changes: 'pages.chat.sidePanel.menu_changes_desc',
   issues: 'pages.chat.sidePanel.menu_issues_desc',
   files: 'pages.chat.sidePanel.menu_files_desc',
@@ -87,6 +95,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind, string> = {
   browser: 'pages.chat.sidePanel.menu_browser_desc',
   git: 'pages.chat.sidePanel.menu_git_desc',
   summary: 'pages.chat.sidePanel.menu_summary_desc',
+  folder: 'pages.chat.sidePanel.menu_folder_desc',
 }
 
 /** Views offered by the + menu, in the three semantic groups the menu renders
@@ -110,7 +119,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind, string> = {
  *  Every key of `NEW_MENU_LABEL_KEY` must appear exactly once across the
  *  groups — `sidePanelAddMenu.test.tsx` pins that partition, so adding a view
  *  without placing it in a group fails rather than silently dropping it. */
-const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind; icon: ReactNode }[] }[] = [
+const NEW_MENU_GROUPS: { id: string; items: { kind: MenuKind; icon: ReactNode }[] }[] = [
   // Session output — what this chat referenced or produced. (Changes / Files /
   // Artifacts are auto-pinned and filtered out below; they are listed here so
   // this table stays the complete catalog of views.)
@@ -133,6 +142,9 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind; icon: ReactNode }[
     items: [
       { kind: 'side', icon: <MessageSquare size={15} /> },
       { kind: 'browser', icon: <Globe size={15} /> },
+      // Rooted at the chat's own project directory, so switching chats browses
+      // that chat's tree — the per-slot tab bucket keeps the two apart.
+      { kind: 'folder', icon: <FolderTree size={15} /> },
     ],
   },
   // Diagnostics.
@@ -154,7 +166,7 @@ const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 
  *  belongs in a non-developer's menu. Gating BOTH empties the diagnostics group
  *  outright when Developer Mode is off — which is exactly the empty-group case
  *  `newMenuSections` drops. */
-const DEV_ONLY_VIEWS = new Set<ViewKind>(['logs', 'context'])
+const DEV_ONLY_VIEWS = new Set<MenuKind>(['logs', 'context'])
 
 /** Which `+`-menu entries are offered, given the gates that hide entries:
  *  the diagnostics views (Logs, Context breakdown) are hidden unless Developer
@@ -169,18 +181,25 @@ const DEV_ONLY_VIEWS = new Set<ViewKind>(['logs', 'context'])
  *  rather than wording around it, and it reverses itself the moment the flag
  *  flips.
  *
+ *  Project tree is gated on the chat HAVING a project directory, for the same
+ *  reason: its root is that directory, so with none set the row could only open
+ *  an empty listing the user cannot re-root from the panel. `hasProjectDir`
+ *  defaults to true so a caller that has no notion of a project dir (the
+ *  grouping tests) still sees the full catalog.
+ *
  *  Grouped, and **emptied groups are dropped**: with Developer Mode off the
  *  whole diagnostics group disappears. A group that filtered down to nothing
  *  would otherwise render as a separator with no rows after it. */
 export function newMenuSections(
-  opts: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean },
-): { id: string; items: { kind: ViewKind; icon: ReactNode }[] }[] {
+  opts: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean; hasProjectDir?: boolean },
+): { id: string; items: { kind: MenuKind; icon: ReactNode }[] }[] {
   return NEW_MENU_GROUPS
     .map(group => ({
       id: group.id,
       items: group.items.filter(item =>
         (opts.devMode || !DEV_ONLY_VIEWS.has(item.kind))
         && (opts.summaryEnabled || item.kind !== 'summary')
+        && (opts.hasProjectDir !== false || item.kind !== 'folder')
         && !(PINNED_VIEWS as string[]).includes(item.kind),
       ),
     }))
@@ -381,7 +400,7 @@ export default function SidePanel({
   // never list the auto-managed pinned views (Changes / Files / Artifacts) —
   // those appear on their own when they have content (see the syncPinned
   // reconcile below).
-  const menuSections = newMenuSections({ devMode, terminalEnabled, summaryEnabled })
+  const menuSections = newMenuSections({ devMode, terminalEnabled, summaryEnabled, hasProjectDir: !!projectDir })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
   // about ORDER, so it reads the groups rather than its own list.
@@ -397,11 +416,16 @@ export default function SidePanel({
   // opening such a path inline routes to its existing tab (one editor per path).
   const openDocPaths = useMemo(() => new Set(tabs.filter(t => t.kind === 'file' && t.path).map(t => t.path as string)), [tabs])
   // Terminal opens a NEW tab (its own PTY session) starting in the chat's
-  // working dir; every other menu item is a singleton view.
-  const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
+  // working dir; Project tree opens a directory tab rooted there. Both read
+  // `projectDir` at click time, so a chat whose project changed opens at the
+  // current one. Every other menu item is a singleton view.
+  const openMenuItem = useCallback((kind: MenuKind | 'terminal') => {
     if (kind === 'terminal') openTerminal({ cwd: projectDir })
+    // Attributed to this chat so the tab lands in this chat's own strip bucket;
+    // the row is gated on a non-empty projectDir, so this never opens at ''.
+    else if (kind === 'folder') openFolder(projectDir ?? '', slot)
     else openView(kind)
-  }, [openTerminal, openView, projectDir])
+  }, [openTerminal, openFolder, openView, projectDir, slot])
   // Closing a terminal tab kills its PTY (server) and disposes local state. The
   // server delete goes through a React Query mutation (use-react-query
   // guideline); the synchronous WS + xterm teardown stays in disposeTerminalSession.

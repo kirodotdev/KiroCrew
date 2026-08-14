@@ -2559,6 +2559,8 @@
         "menu_context_desc": "Context added during this session's turns",
         "menu_files": "Files",
         "menu_files_desc": "Browse & edit files",
+        "menu_folder": "Project tree",
+        "menu_folder_desc": "Browse the whole project tree, not just files this chat touched",
         "menu_issues": "Issues",
         "menu_issues_desc": "Issues mentioned in this session",
         "menu_logs": "Logs",

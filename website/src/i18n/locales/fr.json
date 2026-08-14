@@ -7731,6 +7731,8 @@
         "menu_context_desc": "Contexte ajouté pendant les tours de cette session",
         "menu_files": "Fichiers",
         "menu_files_desc": "Parcourir et modifier les fichiers",
+        "menu_folder": "Arborescence du projet",
+        "menu_folder_desc": "Parcourir tout l'arbre du projet, pas seulement les fichiers touchés par ce chat",
         "menu_issues": "Issues",
         "menu_issues_desc": "Issues mentionnées dans cette session",
         "menu_logs": "Journaux",
