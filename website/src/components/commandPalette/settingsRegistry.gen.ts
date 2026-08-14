@@ -159,7 +159,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.describe-your-role",
     "label": "Describe your role",
     "labelKey": "pages.settings.chatPanel.describe_your_role",
-    "description": "Kiro quotes this back to itself when calibrating vocabulary and examples.",
+    "description": "Kiro uses this description to adapt vocabulary and examples to your role.",
     "tab": "chat",
     "type": "input",
     "occurrence": 1

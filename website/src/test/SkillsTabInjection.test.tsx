@@ -115,7 +115,7 @@ describe('injection control on the Skills page', () => {
 
   it('states what the ON position actually does', async () => {
     mount([BASE])
-    expect(await screen.findByText(/whole SKILL\.md is added every time a trigger matches/i)).toBeTruthy()
+    expect(await screen.findByText(/full SKILL\.md is added to the prompt/i)).toBeTruthy()
   })
 
   it('states that OFF makes following the skill the agent’s choice', async () => {

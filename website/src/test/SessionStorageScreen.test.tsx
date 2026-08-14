@@ -460,7 +460,7 @@ describe('SessionStorageScreen (inventory)', () => {
     const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
     const held = boxes.find(b => b.disabled)
     expect(held).toBeTruthy()
-    expect(held!.title).toMatch(/can still be resumed/i)
+    expect(held!.title).toMatch(/storage cleanup is unavailable/i)
   })
 
 })

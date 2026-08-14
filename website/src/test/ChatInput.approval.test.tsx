@@ -605,7 +605,7 @@ describe('ChatInput unattended-source approvals', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(screen.getByRole('status')).toHaveTextContent(/That approval expired/i)
+      expect(screen.getByRole('status')).toHaveTextContent(/approval request expired/i)
     })
   })
 })

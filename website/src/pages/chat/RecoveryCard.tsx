@@ -58,7 +58,7 @@ export interface ParsedRecovery {
   kind: RecoveryKind
   /** What happened, stated as fact. Never claims the recovery succeeded. */
   title: string
-  /** Cause plus the attempt, e.g. "safety policy · continuing automatically". */
+  /** Cause plus the attempt, e.g. "safety policy blocked the call · continuation sent automatically". */
   detail: string
   /** Trailing chip: the deny pattern, or a count when several distinct ones fired. */
   chip: string
