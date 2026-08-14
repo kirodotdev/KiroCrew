@@ -253,10 +253,16 @@ def _standalone_install_command() -> str:
             "powershell -ExecutionPolicy Bypass -File $p"
         )
     # `&&` gives the shell form the same guarantee for free.
+    # `_pwcli_dir`, not `d`: this runs at the top level of whatever interactive
+    # shell the operator pasted it into, so the assignment persists in THEIR
+    # session. `d` is a common scratch name and overwriting it silently is the
+    # same discourtesy as writing playwright-cli.sh over their file. The directory
+    # is left in place -- /tmp is reaped by the OS, and putting an `rm -rf` into a
+    # string users are invited to edit is a worse trade than a stale temp dir.
     return (
-        "d=$(mktemp -d) && curl -fsSL "
-        f'{_INSTALLER_BASE}/playwright-cli.sh -o "$d/playwright-cli.sh" '
-        '&& sh "$d/playwright-cli.sh"'
+        "_pwcli_dir=$(mktemp -d) && curl -fsSL "
+        f'{_INSTALLER_BASE}/playwright-cli.sh -o "$_pwcli_dir/playwright-cli.sh" '
+        '&& sh "$_pwcli_dir/playwright-cli.sh"'
     )
 
 

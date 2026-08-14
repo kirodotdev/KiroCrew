@@ -116,9 +116,12 @@ MIN_GLIBC_FOR_OFFICIAL="2.28"
 # (reachable with --prefix "$HOME" on a host that also has ~/node).
 NODE_STAMP_NAME=".kirocrew-playwright-cli-node"
 
-DATA_HOME="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+# `${HOME:-}` rather than a bare `$HOME`, because `set -u` turns an unset HOME into
+# a raw shell abort with an exit code outside the documented table. The situation is
+# reported properly once EX_USAGE exists, a few lines below.
+DATA_HOME="${KIROCREW_HOME:-${HOME:-}/.kiro/crew}"
 PREFIX="${KIROCREW_PLAYWRIGHT_CLI_HOME:-$DATA_HOME/playwright-cli}"
-BIN_DIR="$HOME/.local/bin"
+BIN_DIR="${HOME:-$DATA_HOME}/.local/bin"
 # Seeded from the ambient value, not left empty, because `npx playwright install`
 # inherits PLAYWRIGHT_DOWNLOAD_HOST from this process whether or not the script
 # exports it. Reading it into the local is what puts an already-exported mirror
@@ -149,23 +152,32 @@ warn() { echo "$SELF: $*" >&2; }
 # documented in usage() rather than being an incidental $?.
 die()  { _code="$1"; shift; echo "$SELF: $*" >&2; exit "$_code"; }
 
+# `${2:?msg}` was the obvious way to require a value and it reports the WRONG exit
+# code: the shell writes its own message and terminates the process directly,
+# never reaching die(), so `--version` with no value exited 1 while usage()
+# promises 2 for every usage error. A wrapper keying off 2 to mean "fix your
+# invocation" would misread it as an unclassified failure.
+_need_value() { # flag remaining-argc
+  [ "$2" -ge 2 ] || die "$EX_USAGE" "$1 needs a value"
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version) PACKAGE_VERSION="${2:?--version needs a value}"; shift 2 ;;
+    --version) _need_value --version $#; PACKAGE_VERSION="$2"; shift 2 ;;
     --version=*) PACKAGE_VERSION="${1#*=}"; shift ;;
-    --registry) REGISTRY="${2:?--registry needs a value}"; REGISTRY_FROM_FLAG=1; shift 2 ;;
+    --registry) _need_value --registry $#; REGISTRY="$2"; REGISTRY_FROM_FLAG=1; shift 2 ;;
     --registry=*) REGISTRY="${1#*=}"; REGISTRY_FROM_FLAG=1; shift ;;
     --isolated-npmrc) ISOLATED_NPMRC=1; shift ;;
-    --node-version) NODE_VERSION="${2:?--node-version needs a value}"; shift 2 ;;
+    --node-version) _need_value --node-version $#; NODE_VERSION="$2"; shift 2 ;;
     --node-version=*) NODE_VERSION="${1#*=}"; shift ;;
-    --node-mirror) NODE_MIRROR="${2:?--node-mirror needs a value}"; shift 2 ;;
+    --node-mirror) _need_value --node-mirror $#; NODE_MIRROR="$2"; shift 2 ;;
     --node-mirror=*) NODE_MIRROR="${1#*=}"; shift ;;
-    --download-host) DOWNLOAD_HOST="${2:?--download-host needs a value}"; DOWNLOAD_HOST_FROM_FLAG=1; shift 2 ;;
+    --download-host) _need_value --download-host $#; DOWNLOAD_HOST="$2"; DOWNLOAD_HOST_FROM_FLAG=1; shift 2 ;;
     --download-host=*) DOWNLOAD_HOST="${1#*=}"; DOWNLOAD_HOST_FROM_FLAG=1; shift ;;
     --skip-browsers) SKIP_BROWSERS=1; shift ;;
-    --prefix) PREFIX="${2:?--prefix needs a value}"; shift 2 ;;
+    --prefix) _need_value --prefix $#; PREFIX="$2"; shift 2 ;;
     --prefix=*) PREFIX="${1#*=}"; shift ;;
-    --bin-dir) BIN_DIR="${2:?--bin-dir needs a value}"; shift 2 ;;
+    --bin-dir) _need_value --bin-dir $#; BIN_DIR="$2"; shift 2 ;;
     --bin-dir=*) BIN_DIR="${1#*=}"; shift ;;
     --force) FORCE=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -340,13 +352,29 @@ _reject_url_credential() { # label url alternative
       ;;
   esac
 }
-_require_https "--registry" "$REGISTRY"
+# Reported here, AFTER argument parsing, so a caller who supplied both paths
+# explicitly is not refused for a variable they had already worked around. Only the
+# defaults need HOME; --prefix and --bin-dir replace every use of it.
+if [ -z "${HOME:-}" ] && [ -z "${KIROCREW_HOME:-}" ] \
+   && { [ "$PREFIX" = "/.kiro/crew/playwright-cli" ] || [ "$BIN_DIR" = "/.local/bin" ]; }; then
+  die "$EX_USAGE" "HOME is not set; pass --prefix and --bin-dir, or set HOME"
+fi
+
+# Named for where the value actually CAME FROM. Both of these are seeded from the
+# environment when no flag is given, so a bare "--registry must be an https:// URL"
+# sends a user hunting for a flag they never typed -- and the fix is in their shell
+# profile, which the message has to name to be actionable.
+if [ "$REGISTRY_FROM_FLAG" = 1 ]; then _registry_label="--registry"
+else _registry_label="KIROCREW_NPM_REGISTRY"; fi
+if [ "$DOWNLOAD_HOST_FROM_FLAG" = 1 ]; then _dlhost_label="--download-host"
+else _dlhost_label="PLAYWRIGHT_DOWNLOAD_HOST"; fi
+_require_https "$_registry_label" "$REGISTRY"
 [ "$REGISTRY_FROM_FLAG" = 0 ] || _reject_url_credential "--registry" "$REGISTRY" \
   "Pass it as KIROCREW_NPM_REGISTRY in the environment instead, or run 'npm login --registry <url>' first."
 [ -z "$NODE_MIRROR" ] || _require_https "--node-mirror" "$NODE_MIRROR"
 [ -z "$NODE_MIRROR" ] || _reject_url_credential "--node-mirror" "$NODE_MIRROR" \
   "Use a proxy, or a credentials file that curl and wget read for that host."
-[ -z "$DOWNLOAD_HOST" ] || _require_https "--download-host" "$DOWNLOAD_HOST"
+[ -z "$DOWNLOAD_HOST" ] || _require_https "$_dlhost_label" "$DOWNLOAD_HOST"
 [ "$DOWNLOAD_HOST_FROM_FLAG" = 0 ] || _reject_url_credential "--download-host" "$DOWNLOAD_HOST" \
   "Export PLAYWRIGHT_DOWNLOAD_HOST in the environment instead; this script passes an already-set value through."
 
@@ -1035,6 +1063,12 @@ fi
 # rather than writing through it, so the destination itself needs no guard.
 _incoming="$(mktemp "$BIN_DIR/.playwright-cli.XXXXXX")" \
   || die "$EX_NOT_WRITABLE" "cannot create a staging file in $BIN_DIR"
+# Removed if anything below fails. Without this, `set -e` on a full disk aborts
+# between the mktemp and the mv and strands a hidden file in a directory that is
+# on the user's PATH -- and because the name is random, every retry strands
+# another one. No trap is live here: the bootstrap's own handler is installed and
+# cleared entirely inside _bootstrap_node, which has already returned.
+trap 'rm -f -- "$_incoming"' EXIT INT TERM
 cat >"$_incoming" <<EOF
 #!/bin/sh
 # Generated by playwright-cli.sh — re-run that installer to regenerate.
@@ -1044,6 +1078,7 @@ exec $(_shell_quote "$TARGET") "\$@"
 EOF
 chmod 755 "$_incoming"
 mv "$_incoming" "$WRAPPER"
+trap - EXIT INT TERM
 
 # ── verify ───────────────────────────────────────────────────────────
 VERSION_OUT="$("$WRAPPER" --version 2>/dev/null || true)"

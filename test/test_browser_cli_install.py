@@ -513,7 +513,8 @@ def test_the_standalone_command_writes_no_fixed_name_into_the_working_directory(
     posix = mod._standalone_install_command()
     assert "mktemp -d" in posix
     assert "-fsSLO" not in posix, "-O derives the name from the URL, into the cwd"
-    assert 'sh "$d/playwright-cli.sh"' in posix
+    assert 'sh "$_pwcli_dir/playwright-cli.sh"' in posix
+    assert "d=$(mktemp" not in posix, "must not clobber a common scratch variable"
 
     monkeypatch.setattr(mod.os, "name", "nt")
     windows = mod._standalone_install_command()

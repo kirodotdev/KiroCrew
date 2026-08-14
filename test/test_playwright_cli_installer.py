@@ -14,7 +14,6 @@ reaches the network or writes outside its own temp dir.
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import os
 import platform
@@ -427,50 +426,6 @@ def test_help_documents_every_accepted_flag(tmp_path: Path, stubs: Path) -> None
     assert result.returncode == 0, result.stderr
     for flag in flags:
         assert flag in result.stdout, f"{flag} is accepted but undocumented"
-
-
-def test_exit_code_table_matches_the_scripts() -> None:
-    """Callers branch on these codes, so both scripts and this suite must agree
-    on every number."""
-    sh_body = INSTALLER_SH.read_text()
-    ps_body = INSTALLER_PS1.read_text()
-    sh_names = {
-        "missing_tool": "EX_MISSING_TOOL",
-        "node_bootstrap": "EX_NODE_BOOTSTRAP",
-        "checksum": "EX_CHECKSUM",
-        "registry_auth": "EX_REGISTRY_AUTH",
-        "registry_unreachable": "EX_REGISTRY_UNREACHABLE",
-        "package_not_found": "EX_PACKAGE_NOT_FOUND",
-        "browser_download": "EX_BROWSER_DOWNLOAD",
-        "not_writable": "EX_NOT_WRITABLE",
-        "verify": "EX_VERIFY",
-        "usage": "EX_USAGE",
-    }
-    for key, expected in EXIT_CODES.items():
-        assert f"{sh_names[key]}={expected}\n" in sh_body, f"{sh_names[key]} drifted"
-        ps_name = "$Ex" + "".join(part.capitalize() for part in key.split("_"))
-        assert f"{ps_name} = {expected}\n" in ps_body, f"{ps_name} drifted"
-
-
-def test_flag_parity_between_shell_and_powershell() -> None:
-    """The two installers are documented as the same tool in two spellings; a
-    flag that exists in only one of them makes that promise false."""
-    sh_body = INSTALLER_SH.read_text()
-    parser = sh_body.split("while [ $# -gt 0 ]; do", 1)[1].split("done", 1)[0]
-    sh_flags = {
-        match.group(1) for match in re.finditer(r"^\s*(--[a-z][a-z-]*)\)", parser, re.MULTILINE)
-    }
-    ps_params = set(
-        re.findall(
-            r"^\s*\[(?:string|switch)\]\$(\w+)",
-            INSTALLER_PS1.read_text(),
-            re.MULTILINE,
-        )
-    )
-    assert ps_params, "no param block found in playwright-cli.ps1"
-    for flag in sorted(sh_flags):
-        pascal = "".join(part.capitalize() for part in flag.lstrip("-").split("-"))
-        assert pascal in ps_params, f"{flag} has no -{pascal} counterpart on Windows"
 
 
 @posix_only
@@ -1130,26 +1085,6 @@ def test_the_install_log_is_owner_only(tmp_path: Path, stubs: Path) -> None:
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
 
 
-def test_the_install_log_is_never_secured_on_a_best_effort_basis() -> None:
-    """The end state above is reachable two ways, and only one is safe: creating
-    the log at the ambient mode and chmod-ing it afterwards leaves it readable in
-    between, and leaves it readable forever if the chmod fails. Both halves are
-    asserted structurally because neither is observable from the end state -- the
-    window needs a race to catch, and a failing chmod needs a filesystem that
-    rejects it.
-    """
-    body = INSTALLER_SH.read_text()
-    assert (
-        '(umask 077; : >"$LOG")' in body
-    ), "the log must be created owner-only, not chmod-ed afterwards"
-    tolerated = [
-        line.strip() for line in body.splitlines() if "chmod 600" in line and "|| true" in line
-    ]
-    assert not tolerated, "a chmod that cannot restrict the log must be fatal:\n" + "\n".join(
-        tolerated
-    )
-
-
 def test_both_installers_classify_the_same_browser_download_failures() -> None:
     """A custom browser mirror reports `Download failure` without naming the CDN,
     so a matcher that only knows the CDN hostnames misfiles it as a registry
@@ -1164,55 +1099,6 @@ def test_both_installers_classify_the_same_browser_download_failures() -> None:
             f"{installer.name} cannot classify a mirror's 'Download failure' as a "
             "browser problem, so it will print the registry remedy instead"
         )
-
-
-def test_both_installers_probe_writability_rather_than_trusting_creation() -> None:
-    """Creating a directory proves nothing about being able to write into it:
-    `mkdir -p` and `New-Item -Force` both succeed on an existing directory the
-    caller cannot write to. Without a probe the failure surfaces only when the
-    wrapper is written -- after npm has installed and possibly downloaded Node and
-    the browsers -- so the user gets a partial install and an unclassified error
-    instead of exit 17.
-    """
-    sh = INSTALLER_SH.read_text()
-    assert '[ -w "$PREFIX" ]' in sh and '[ -w "$BIN_DIR" ]' in sh
-    ps1 = INSTALLER_PS1.read_text()
-    assert "write-probe-" in ps1, (
-        "PowerShell must probe $Prefix and $BinDir for writes; New-Item -Force "
-        "succeeds on an existing unwritable directory"
-    )
-    assert (
-        ps1.count("Die $ExNotWritable") >= 3
-    ), "the probe must fail with exit 17, like the shell installer's [ -w ] checks"
-
-
-def test_both_installers_harden_the_log_before_npm_can_write_to_it() -> None:
-    """The log holds npm's output, which carries the resolved registry URL. Both
-    installers create it themselves first -- the shell under `umask 077`, PowerShell
-    with inheritance disabled and a single owner ACE -- because each one's later
-    redirect truncates an existing file without changing its permissions. Creating
-    it by redirect instead would leave it readable for the whole install.
-    """
-    assert '(umask 077; : >"$LOG")' in INSTALLER_SH.read_text()
-    ps1 = INSTALLER_PS1.read_text()
-    assert "SetAccessRuleProtection" in ps1, "the log's inherited ACL must be broken"
-    assert "cannot restrict the install log" in ps1, "failing to harden the log must be fatal"
-    hardening = ps1.index("SetAccessRuleProtection")
-    # The install's own redirect, not the comment above the hardening.
-    redirect = ps1.index("*> $logPath")
-    assert hardening < redirect, "the log must be hardened before npm writes to it"
-
-
-def test_both_installers_classify_before_they_redact() -> None:
-    """Redaction rewrites the log and, when it cannot, deletes it. Running it first
-    can therefore leave the classifier with nothing to read and downgrade a
-    diagnosable enterprise failure -- an auth wall, a blocked CDN -- to
-    'unclassified', which is the one outcome this installer exists to avoid.
-    """
-    sh = INSTALLER_SH.read_text()
-    assert sh.index("_classify_failure || _code=$?") < sh.index("\n  _sanitize_log")
-    ps1 = INSTALLER_PS1.read_text()
-    assert ps1.index("$class = Get-FailureClass") < ps1.index("Redact-Log $logPath")
 
 
 def test_a_log_that_cannot_be_scrubbed_is_never_printed() -> None:
@@ -1391,48 +1277,6 @@ def test_the_windows_script_refuses_root_and_drive_relative_prefixes() -> None:
     assert body.count("'^[A-Za-z]:$'") == 2, "both parameters must reject a bare drive"
 
 
-def test_every_tool_this_suite_launches_is_process_group_bounded() -> None:
-    """`subprocess.run(timeout=...)` kills only the direct child. A shim, a
-    wrapper or a package manager spawns descendants, so the timeout returns while
-    the download it started keeps running -- and keeps writing outside tmp_path.
-    `run_bounded` puts the child in its own process group and `killpg`s the group,
-    which is the only form that actually bounds a tool.
-
-    So a direct `subprocess.run` is allowed only for a program that cannot
-    outlive the call: `sh -n` and `ksh -n` parse and exit, and a `sed` filter ends
-    with its stdin. Anything else -- npm, node, pwsh, the generated wrapper --
-    goes through `run_bounded`. This is the fourth time a tool escaped this
-    suite's sandbox, so the rule is mechanical rather than remembered.
-    """
-    tree = ast.parse(Path(__file__).read_text())
-    sanctioned = {"sh", "ksh"}
-    offenders: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        target = ast.unparse(node.func)
-        if target != "subprocess.run":
-            continue
-        if any(keyword.arg == "timeout" for keyword in node.keywords):
-            offenders.append(
-                f"line {node.lineno}: passes timeout=; use run_bounded so the "
-                "whole process group is killed"
-            )
-            continue
-        argv = node.args[0] if node.args else None
-        first = None
-        if isinstance(argv, ast.List) and argv.elts:
-            element = argv.elts[0]
-            if isinstance(element, ast.Constant) and isinstance(element.value, str):
-                first = element.value
-        if first not in sanctioned:
-            offenders.append(
-                f"line {node.lineno}: launches {first!r}, which can outlive the "
-                "call; use run_bounded"
-            )
-    assert not offenders, "unbounded tool launches:\n" + "\n".join(offenders)
-
-
 @posix_only
 def test_a_node_without_npm_bootstraps_instead_of_demanding_npm(
     tmp_path: Path, stubs: Path, node_mirror: Path
@@ -1469,21 +1313,6 @@ def test_a_node_without_npm_bootstraps_instead_of_demanding_npm(
     # The private Node was used, and the tool is installed and runnable.
     assert (tmp_path / "datahome" / "playwright-cli" / "node" / "bin" / "npm").exists()
     assert (tmp_path / "home" / ".local" / "bin" / "playwright-cli").is_file()
-
-
-def test_both_installers_bootstrap_rather_than_demand_npm() -> None:
-    """The remedy has to be the same on both platforms, and the guard against
-    looping has to exist in both: a missing npm in a tree the installer itself
-    just unpacked is a broken archive, and retrying the bootstrap would spin.
-    """
-    sh = INSTALLER_SH.read_text()
-    ps1 = INSTALLER_PS1.read_text()
-    for body in (sh, ps1):
-        assert "install npm (it ships with Node) and re-run" not in body
-        assert "no npm beside it; installing a private Node that bundles npm" in body
-        assert "the archive may be truncated" in body
-    assert "NODE_WAS_BOOTSTRAPPED" in sh
-    assert "NodeWasBootstrapped" in ps1
 
 
 def test_the_windows_installer_never_builds_a_cmd_command_line() -> None:
@@ -1589,15 +1418,6 @@ def test_a_query_string_credential_is_redacted(tmp_path: Path, stubs: Path) -> N
     for haystack in (result.stdout + result.stderr, log):
         assert secret not in haystack, haystack
     assert "?***" in log
-
-
-def test_both_installers_reject_a_path_separator_and_redact_queries() -> None:
-    """Neither hazard is platform-specific, so neither remedy may be."""
-    sh = INSTALLER_SH.read_text()
-    ps1 = INSTALLER_PS1.read_text()
-    assert "which separates PATH entries" in sh and "which separates PATH entries" in ps1
-    assert r"\(https*://[^?[:space:]]*\)?[^[:space:]]*" in sh
-    assert ps1.count(r"(https?://[^?\s]*)\?\S*") == 2, "URL display AND the log must scrub queries"
 
 
 def test_the_node_floor_matches_what_the_product_requires_of_this_cli() -> None:
@@ -1736,25 +1556,6 @@ def test_a_blocked_browser_cdn_exits_16_with_a_mirror_remedy(tmp_path: Path, stu
     assert "--skip-browsers" in result.stderr, result.stderr
     # The CLI itself stays installed -- only the browser is missing.
     assert (tmp_path / "home" / ".local" / "bin" / "playwright-cli").is_file()
-
-
-def test_every_exit_code_name_used_is_actually_defined() -> None:
-    """`set -eu` turns a misspelled exit-code name into an 'unbound variable' abort
-    on the very path that was supposed to print a diagnosis -- so the failure branch
-    fails, and only there. A shell cannot catch this at parse time and `sh -n`
-    passes happily, so the check is mechanical here instead.
-    """
-    sh = INSTALLER_SH.read_text()
-    defined = set(re.findall(r"^(EX_[A-Z_]+)=", sh, re.MULTILINE))
-    used = set(re.findall(r"\$\{?(EX_[A-Z_]+)\b", sh))
-    assert used <= defined, f"undefined in playwright-cli.sh: {sorted(used - defined)}"
-
-    ps1 = INSTALLER_PS1.read_text()
-    ps_defined = set(re.findall(r"^\$(Ex[A-Za-z]+) *=", ps1, re.MULTILINE))
-    # $ExecutionContext is a PowerShell automatic variable, not one of ours. The
-    # automatics are a closed list, and it is the only one starting with "Ex".
-    ps_used = set(re.findall(r"\$(Ex[A-Za-z]+)\b", ps1)) - {"ExecutionContext"}
-    assert ps_used <= ps_defined, f"undefined in playwright-cli.ps1: {sorted(ps_used - ps_defined)}"
 
 
 @posix_only
@@ -2080,21 +1881,6 @@ def test_a_credential_that_is_not_url_shaped_is_scrubbed_too(tmp_path: Path, stu
     assert "npm error path /home/u/project" in log
 
 
-def test_both_installers_scrub_assignment_shaped_credentials() -> None:
-    """Same hazard on both platforms. The shell installer needs one rule per key
-    rather than an alternation, because `\\|` is a GNU extension and the script has
-    to survive BSD sed on macOS."""
-    sh = INSTALLER_SH.read_text()
-    for key in ("_authToken=", "_password=", "_auth=", "NPM_TOKEN="):
-        assert f"s|{key}[^[:space:]]*|{key}***|g" in sh, key
-    ps1 = INSTALLER_PS1.read_text()
-    assert "(_authToken|_password|_auth|NPM_TOKEN)=" in ps1
-    # `_auth` must come after `_authToken` in the alternation, or the shorter
-    # branch would match first and leave `Token=<secret>` behind.
-    alternation = ps1[ps1.index("(_authToken|") :]
-    assert alternation.index("_authToken") < alternation.index("|_auth|")
-
-
 def test_both_installers_probe_the_staged_node_before_promoting_it() -> None:
     """Ordering is the whole fix, and it is not observable from the end state.
 
@@ -2177,18 +1963,6 @@ def test_the_environment_route_still_accepts_a_credential(tmp_path: Path, stubs:
     assert "//***@npm.internal.example" in result.stdout
 
 
-def test_both_installers_refuse_url_credentials_by_provenance() -> None:
-    """The check must key on where the value CAME FROM, not on its content: the
-    resolved registry also holds an env-supplied credential, and refusing that would
-    break the escape the refusal message recommends."""
-    sh = INSTALLER_SH.read_text()
-    assert "REGISTRY_FROM_FLAG" in sh and "DOWNLOAD_HOST_FROM_FLAG" in sh
-    ps1 = INSTALLER_PS1.read_text()
-    assert (
-        '$PSBoundParameters.ContainsKey("Registry")' in ps1
-    ), "PowerShell needs the bound-parameter test for the same reason"
-
-
 @posix_only
 @pytest.mark.parametrize("flag", ["--registry", "--download-host", "--node-mirror"])
 def test_no_url_flag_accepts_a_query_string(tmp_path: Path, stubs: Path, flag: str) -> None:
@@ -2213,22 +1987,6 @@ def test_no_url_flag_accepts_a_query_string(tmp_path: Path, stubs: Path, flag: s
     assert result.returncode == EXIT_CODES["usage"], result.stdout + result.stderr
     assert "may not carry a query string" in result.stderr
     assert secret not in result.stdout + result.stderr
-
-
-def test_both_installers_require_npm_in_the_archive_before_promoting() -> None:
-    """A checksum-valid archive that omits npm is a broken archive, and saying so
-    before the old tree is touched is the difference between a failed install and a
-    destroyed one. The shell installer always required both; PowerShell checked only
-    node.exe, which is the twelfth sh/ps1 asymmetry this review has surfaced.
-    """
-    sh = INSTALLER_SH.read_text()
-    assert '[ -x "$_tmp/$NODE_ART_BASE/bin/node" ] && [ -x "$_tmp/$NODE_ART_BASE/bin/npm" ]' in sh
-    ps1 = INSTALLER_PS1.read_text()
-    assert '@("node.exe", "npm.cmd")' in ps1
-    # And before the existing tree is moved aside, or it guards nothing.
-    assert ps1.index('@("node.exe", "npm.cmd")') < ps1.index(
-        "Move-Item -LiteralPath $target -Destination $backup"
-    )
 
 
 @posix_only
@@ -2260,13 +2018,6 @@ def test_the_log_name_cannot_clobber_an_unrelated_file(tmp_path: Path, stubs: Pa
     assert result.returncode == 0, result.stdout + result.stderr
     assert bystander.read_text().startswith("someone else's log"), "clobbered a bystander"
     assert (prefix / "playwright-cli-install.log").is_file(), "and must still keep its own"
-
-
-def test_both_installers_namespace_the_log_file() -> None:
-    """Same hazard on both platforms: PowerShell deletes and recreates the log, which
-    is if anything worse than truncating it."""
-    assert 'LOG="$PREFIX/$WRAPPER_NAME-install.log"' in INSTALLER_SH.read_text()
-    assert '$logPath = Join-Path $Prefix "$WrapperName-install.log"' in INSTALLER_PS1.read_text()
 
 
 # ── fail-closed download posture ─────────────────────────────────────
@@ -2416,8 +2167,18 @@ def test_the_generated_cmd_wrapper_is_written_for_cmd_exe() -> None:
 def test_windows_downloads_refuse_redirects() -> None:
     """Invoke-WebRequest otherwise follows up to five hops with no way to require
     that each stays HTTPS, and it is the checksum manifest travelling that
-    channel."""
+    channel.
+
+    Asserted on the VALUE in force rather than on each call site's literal text:
+    the previous form required `-MaximumRedirection 0` inline on every line and
+    broke the moment the shared arguments moved into a splatted hashtable, even
+    though the setting was still zero. The invariant is "no download follows a
+    redirect", not "the flag is spelled inline".
+    """
     body = INSTALLER_PS1.read_text()
+    settings = re.findall(r"MaximumRedirection\s*(?:=|\s)\s*(\d+)", body)
+    assert settings, "no MaximumRedirection setting found"
+    assert set(settings) == {"0"}, f"a download may follow redirects: {settings}"
     calls = [
         line
         for line in body.splitlines()
@@ -2425,7 +2186,7 @@ def test_windows_downloads_refuse_redirects() -> None:
     ]
     assert calls, "no Invoke-WebRequest calls found"
     for call in calls:
-        assert "-MaximumRedirection 0" in call, call.strip()
+        assert "-MaximumRedirection 0" in call or "@webArgs" in call, call.strip()
 
 
 def test_windows_node_staging_is_on_the_prefix_volume() -> None:

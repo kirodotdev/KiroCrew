@@ -137,7 +137,8 @@ Environment:
   KIROCREW_PLAYWRIGHT_CLI_HOME  overrides -Prefix
   KIROCREW_NPM_REGISTRY         overrides -Registry
   KIROCREW_NODE_BIN_DIR         an existing Node bin dir to reuse
-  HTTPS_PROXY / NO_PROXY        honored by npm
+  HTTPS_PROXY                   honored by npm and the Node download
+  NO_PROXY                      honored by npm only
   NODE_EXTRA_CA_CERTS           CA bundle for a TLS-terminating proxy
 
 Exit codes:
@@ -374,6 +375,12 @@ $script:NodeWasBootstrapped = $false
 function Try-Node([string]$Candidate) {
     if ([string]::IsNullOrWhiteSpace($Candidate)) { return $false }
     if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) { return $false }
+    # Parity with the .sh guard against ':' in a candidate's directory. ';' is legal
+    # in an NTFS name and is also the PATH separator, so accepting it would splice
+    # bogus entries into the npm subprocess PATH and into the generated .cmd
+    # wrapper. Reachable via KIROCREW_NODE_BIN_DIR, the node-bin-dir marker, or a
+    # PATH lookup; $Prefix is already screened for it upstream.
+    if ((Split-Path -Parent $Candidate) -match ';') { return $false }
     # $ErrorActionPreference is 'Stop' globally, and Windows PowerShell 5.1 wraps
     # a native command's stderr as a NativeCommandError that 'Stop' promotes to
     # terminating. A Node that writes any warning to stderr during this probe
@@ -423,7 +430,12 @@ function Resolve-Node {
 # directory legitimately named `%PATH%` (legal on NTFS) would therefore be
 # rewritten before npm ever saw it. npm.cmd exists only to hand npm's own
 # npm-cli.js to node, so when that file can be found the installer calls node
-# with it directly and no shell is involved at any point.
+# with it directly and cmd.exe is out of the picture. When it CANNOT be found --
+# an npm laid out unlike the bundled-Node/global-npm shape this expects -- the
+# fallback does invoke npm.cmd, and cmd.exe does parse that line. That is
+# tolerable only because the single argument passed there is the package spec,
+# which is charset-validated upstream and cannot contain '%'. It is a property of
+# the input, not a guarantee the code structure provides.
 function Resolve-NpmCliJs {
     $script:NpmCliJs = ""
     foreach ($base in @($script:NodeBinDir, (Split-Path -Parent $script:NpmCmd))) {
@@ -485,8 +497,18 @@ function Install-Node {
             # archive and the hash that blesses it. Both default mirrors serve
             # these paths directly, so a redirect means the mirror is not the one
             # this contract describes.
-            Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath -UseBasicParsing -MaximumRedirection 0
-            Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -MaximumRedirection 0
+            # Passed explicitly because Invoke-WebRequest on 5.1 (.NET Framework)
+            # reads only the WinINet/system proxy and ignores HTTPS_PROXY entirely --
+            # so without this, the enterprise Windows user this installer exists for
+            # cannot fetch Node at all when their proxy is configured only in the
+            # environment. NO_PROXY has no Invoke-WebRequest equivalent and is
+            # documented as npm-only in the usage banner.
+            $webArgs = @{ UseBasicParsing = $true; MaximumRedirection = 0 }
+            $proxy = $env:HTTPS_PROXY
+            if (-not $proxy) { $proxy = $env:https_proxy }
+            if ($proxy) { $webArgs["Proxy"] = $proxy }
+            Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath @webArgs
+            Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath @webArgs
         } catch {
             Die $ExNodeBootstrap ("could not download Node from $(Redact-Url $zipUrl) - check proxy access, or pass " +
                 "-NodeMirror pointing at an internal Node mirror that serves the artifact without a " +
@@ -990,7 +1012,18 @@ if ($oemEncoding.GetString($oemEncoding.GetBytes($wrapperBody)) -ne $wrapperBody
 }
 $wrapperTmp = "$wrapper.incoming"
 Set-Content -LiteralPath $wrapperTmp -Value $wrapperBody -Encoding OEM
-Move-Item -LiteralPath $wrapperTmp -Destination $wrapper -Force
+# `Move-Item -Force` onto an existing file is delete-then-move on 5.1, not the
+# atomic rename the .sh twin gets from POSIX `mv`. A locked destination -- the
+# wrapper is running, or an indexer/AV has it open, both ordinary on Windows --
+# throws, and uncaught that surfaces as a PowerShell stack trace with an exit code
+# outside the documented table.
+try {
+    Move-Item -LiteralPath $wrapperTmp -Destination $wrapper -Force
+} catch {
+    Remove-Item -LiteralPath $wrapperTmp -Force -ErrorAction SilentlyContinue
+    Die $ExNotWritable ("cannot replace $wrapper -- is playwright-cli currently " +
+        "running? Close it and re-run. ($($_.Exception.Message))")
+}
 
 # ── verify ───────────────────────────────────────────────────────────
 $versionOut = ""
