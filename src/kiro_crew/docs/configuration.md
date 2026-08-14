@@ -51,15 +51,21 @@ provider.
 | `kas` | kiro-agent (KAS) | runs chat; some surfaces still missing |
 
 **What works on `kas`:** normal chat — your configured agent, its prompt, its tool
-allowlist, and session resume.
+allowlist, and session resume. The context-usage percentage meter, compaction
+(summarization) status, and agent-switch echoes are wired: KAS reports these as
+`session/update` discriminants (`session_info_update` with a `context_usage` /
+`turn_completion` / `summarization_*` kind, and `current_mode_update`) rather than
+the separate `_kiro.dev/*` methods kiro-cli uses, and Kiro Crew maps them back to
+the same displays.
 
 **What does not, yet:**
 
 - Native subagent progress reporting (subagents run; their live progress does not
   surface in the UI).
-- Context-usage percentage, compaction status, and agent-switch echoes — KAS
-  reports these differently and the mapping is not wired up.
-- Slash-command execution.
+- Slash commands: KAS advertises them (`available_commands_update`), but Kiro Crew
+  surfaces no available-commands UI for any backend (kiro-cli's
+  `_kiro.dev/commands/available` is likewise unconsumed), and slash-command
+  *execution* is not wired.
 - Auto-approve (`allowedTools`) is not carried over, so KAS applies its own
   default approval policy.
 - `spawn_continue` works for runs started with an explicit keep, but not for
@@ -67,6 +73,14 @@ allowlist, and session resume.
 - Model selection is unverified: KAS advertises no model list on an
   unauthenticated session, and Kiro Crew only sends a model the session
   advertised, so a session may simply run KAS's own default model.
+
+**Signals with no KAS analog** (documented so they are not mistaken for gaps):
+KAS has no `clear/status` notification, and its MCP methods (`_kiro/mcp/status`,
+`_kiro/mcp/toggle`) are request-side only — it emits no MCP server-init
+notification for Kiro Crew to surface. A resumable-session existence probe would
+use KAS's `_kiro/session/list` (which returns the full `sessions[]` to search by
+id); that is deferred to the session-lifecycle work, not the display path.
+
 
 **KAS gets its token from kiro-cli.** Kiro Crew launches KAS with
 `--auth=acp-callback`, so KAS keeps no credential of its own: whenever it needs

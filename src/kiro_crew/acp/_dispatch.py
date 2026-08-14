@@ -226,7 +226,9 @@ def parse_metadata(params: dict[str, Any]) -> tuple[float | None, float]:
     pct = params.get("contextUsagePercentage")
     try:
         pct_val = float(pct) if pct is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: a JSON integer beyond float range — malformed telemetry
+        # must degrade to "absent", never raise inside the turn dispatch path.
         pct_val = None
     credits = 0.0
     metering = params.get("meteringUsage")
@@ -235,7 +237,7 @@ def parse_metadata(params: dict[str, Any]) -> tuple[float | None, float]:
             if isinstance(entry, dict) and entry.get("unit") == "credit":
                 try:
                     credits += float(entry.get("value", 0) or 0)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     pass
     return pct_val, credits
 

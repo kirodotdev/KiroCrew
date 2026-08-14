@@ -28,6 +28,7 @@ from typing import Any, Protocol
 
 from kiro_crew import model_registry
 from kiro_crew.acp._dispatch import (
+    _token_count,
     build_permission_event,
     classify_notification,
     parse_metadata,
@@ -90,6 +91,8 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
+    UPDATE_CURRENT_MODE,
+    UPDATE_SESSION_INFO,
     AcpEvent,
     AcpPromptStats,
     JsonRpcMessage,
@@ -454,6 +457,10 @@ class AcpSessionHandle:
         self._resolved_model_id: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
+        # Last KAS mode id seen on a current_mode_update, so a re-assert of the
+        # already-current mode does not surface a spurious agent-switch echo
+        # (kiro-cli only emits on a real _kiro.dev/agent/switched). None = unseen.
+        self._last_kas_mode_id: str | None = None
 
     @property
     def session_id(self) -> str:
@@ -2131,6 +2138,122 @@ class AcpSessionHandle:
             self._permission_options[event.request_id] = recorded
         return event
 
+    def _handle_kas_update(self, session_update: str, update: dict) -> list[AcpEvent] | None:
+        """Map a KAS-only ``session/update`` discriminant to Crew events.
+
+        Returns a (possibly empty) event list for a discriminant KAS uses in
+        place of a kiro-cli ``_kiro.dev/*`` method, or ``None`` when the
+        discriminant is not KAS-specific (ordinary chunk/tool frames) so the
+        caller falls through to the shared parser. Only ever reached on the KAS
+        backend.
+        """
+        if session_update == UPDATE_CURRENT_MODE:
+            # KAS agent-switch echo (kiro-cli: _kiro.dev/agent/switched). The new
+            # mode id stands in for kiro-cli's agentName. KAS re-emits this to
+            # report the CURRENT mode, so suppress only a repeat of the
+            # already-emitted mode (a no-op re-assert); every actual change is
+            # emitted. First-sight is NOT suppressed: the session's initial
+            # current_mode_update is drained pre-prompt without reaching here, so
+            # the first frame that does reach here is a real switch that must not
+            # be dropped.
+            mode_id = update.get("currentModeId")
+            if not (isinstance(mode_id, str) and mode_id):
+                return []
+            if mode_id == self._last_kas_mode_id:
+                return []
+            self._last_kas_mode_id = mode_id
+            return [AcpEvent(kind=EVENT_AGENT_SWITCHED, text=mode_id)]
+        if session_update == UPDATE_SESSION_INFO:
+            return self._handle_kas_session_info(update)
+        # available_commands_update / any other KAS discriminant falls through to
+        # the shared parser, which already returns [] for it — Crew surfaces no
+        # available-commands UI for any backend (kiro-cli's
+        # _kiro.dev/commands/available is likewise unconsumed), so there is
+        # nothing to render and no separate branch is needed.
+        return None
+
+    def _handle_kas_session_info(self, update: dict) -> list[AcpEvent]:
+        """Map a KAS ``session_info_update`` (``_meta.kiro`` union) to events.
+
+        This one discriminant carries what kiro-cli splits across separate
+        methods: ``context_usage`` (the context meter) and ``turn_completion``
+        (per-turn billing) together reconstruct the single ``_kiro.dev/metadata``
+        frame, while the ``summarization_*`` kinds are KAS's compaction status
+        (kiro-cli: ``_kiro.dev/compaction/status``).
+        """
+        meta = update.get("_meta")
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not isinstance(kiro, dict):
+            return []
+        kind = kiro.get("kind")
+        if kind == "context_usage":
+            self._apply_kas_context_pct(kiro.get("usagePercentage"))
+            return []
+        if kind == "turn_completion":
+            self._apply_kas_turn_completion(kiro)
+            return []
+        if kind in ("summarization_started", "summarization_completed", "summarization_failed"):
+            if kind == "summarization_completed":
+                # Pre-compaction counts no longer describe the session — drop
+                # them so the meter resets and fresh telemetry re-derives real
+                # numbers (parity with the kiro-cli compaction handler).
+                self.last_prompt_stats.reset_after_compaction()
+            status_type = "completed" if kind == "summarization_completed" else (
+                "failed" if kind == "summarization_failed" else "started"
+            )
+            # conversationSummary is backend-echoed, LLM-influenced text that
+            # reaches the dashboard — redact exfil URLs/credentials first.
+            summary = redact_text(str(kiro.get("conversationSummary", "") or ""))
+            return [AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)]
+        return []
+
+    def _apply_kas_context_pct(self, pct: object) -> None:
+        """Apply a KAS ``context_usage`` percentage to the context meter.
+
+        Mirrors ``_track_metadata``'s pct path: a real ``usage_update`` is
+        authoritative (``context_tokens_from_usage``) and must not be clobbered,
+        and the value is sanitized to a real [0, 100] before use.
+        """
+        if pct is None or self.last_prompt_stats.context_tokens_from_usage:
+            return
+        try:
+            pct_f = float(pct)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: a JSON integer beyond float range (int->float
+            # conversion) — malformed telemetry must degrade to "absent", never
+            # abort the active turn's dispatch.
+            return
+        # NaN is caught by self-inequality; ±inf/out-of-range are clamped.
+        pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
+        self.last_prompt_stats.context_pct = pct_f
+        self.last_prompt_stats.note_pct_reported()
+        self._backfill_context_window(pct_f)
+
+    def _apply_kas_turn_completion(self, kiro: dict) -> None:
+        """Set per-turn credits from a KAS ``turn_completion`` frame.
+
+        ``promptTurnSummaries`` entries are ``{usage, unit, unitPlural}``; only
+        ``unit == "credit"`` contributes, mirroring the kiro-cli ``meteringUsage``
+        credit sum (value validation shared via ``_token_count``). The acp
+        provider bills in credits.
+
+        The frame carries the whole turn's summary, so the total is ASSIGNED, not
+        accumulated: a duplicate or resume-replayed ``turn_completion`` reports
+        the same total and must not inflate the displayed cost. A malformed frame
+        (no summaries list) leaves the prior value untouched rather than zeroing.
+        """
+        summaries = kiro.get("promptTurnSummaries")
+        if not isinstance(summaries, list):
+            return
+        total = 0.0
+        for entry in summaries:
+            if not isinstance(entry, dict) or entry.get("unit") != "credit":
+                continue
+            value = _token_count(entry.get("usage"))
+            if value is not None:
+                total += float(value)
+        self.last_prompt_stats.credits = total
+
     def _handle_update(self, msg: JsonRpcMessage) -> list[AcpEvent]:
         """Process a session/update notification and return events."""
         params = msg.params or {}
@@ -2165,6 +2288,19 @@ class AcpSessionHandle:
                 self._config_options = config_options
                 self._sync_effort_levels()
             return []
+
+        # KAS folds signals that kiro-cli sends as separate top-level
+        # ``_kiro.dev/*`` methods (agent switch, per-turn metadata, compaction
+        # status) into ``session/update`` discriminants instead. kiro-cli never
+        # emits these discriminants (verified against its source), so this
+        # KAS-gated branch restores the same displays without touching the kiro
+        # path — a positive ``== ACP_BACKEND_KAS`` check for harness parity (H5).
+        # Returns None only for a non-KAS-specific discriminant, so ordinary
+        # chunk/tool frames still fall through to the shared parser below.
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            kas_events = self._handle_kas_update(session_update, update)
+            if kas_events is not None:
+                return kas_events
 
         # All other session/update kinds go through the single shared parser so
         # AcpRuntime and AcpClient cannot drift on frame shape or redaction. The
