@@ -39,15 +39,37 @@ from kiro_crew.apps.builtins.auto_research.session_keys import (
     is_owned_research_slot,
 )
 from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
 
-# Directives whose effect targets a DASHBOARD chat slot (its project/CWD, its
-# follow-up card, its question card). The HTTP endpoints they replaced were
-# dashboard-scoped, so the applier keeps that boundary; the monitor trio is
-# intentionally NOT here because it binds by session and supports Slack/Discord.
-_DASHBOARD_ONLY_DIRECTIVES = frozenset({"set_project", "suggest_followup", "ask_question"})
+# Directives whose effect targets a DASHBOARD chat slot (its follow-up card,
+# its question card). The HTTP endpoints they replaced were dashboard-scoped,
+# so the applier keeps that boundary; the monitor trio is intentionally NOT
+# here because it binds by session and supports Slack/Discord. ``set_project``
+# is also not here — it renders no card, so any USER-FACING surface (dashboard,
+# Slack, Telegram, Discord, ...) may retarget its own session's CWD — but it is
+# gated below on the same positive predicate, so headless callers (cron,
+# subagent, hook, taskrunner, background, empty key) are still refused.
+_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question"})
+
+# Directives allowed from any USER-FACING surface but refused for headless
+# callers. A cron turn can run ON A USER'S DASHBOARD SLOT (cron
+# ``session="origin"`` injection), and a sub-agent inherits its parent's slot —
+# letting those retarget ``slot.project`` would silently repoint the user's own
+# session out from under them. The gate is POSITIVE (dashboard surface or a
+# known channel namespace), so a key minted by any other subsystem (``hook:``,
+# ``secretary:``, ``wf-pool:``, an empty key, ...) fails closed instead of
+# silently qualifying.
+_USER_SURFACE_DIRECTIVES = frozenset({"set_project"})
+
+
+def _has_user_surface(session_key: str) -> bool:
+    """True when *session_key* names a user-facing conversation surface: a
+    dashboard slot (open tab or dashboard-born key) or a messaging-channel
+    session (Slack, Telegram, Discord, ...)."""
+    return has_dashboard_surface(session_key) or is_channel_session_key(session_key)
 
 
 class _DirectiveDenied(Exception):
@@ -99,6 +121,19 @@ async def apply_session_directive(
         return (
             f"Error: {kind} only works from a dashboard chat session "
             f"(this turn is {session_key!r}). Nothing was changed."
+        )
+    if kind in _USER_SURFACE_DIRECTIVES and not _has_user_surface(session_key):
+        # set_project needs no dashboard tab (it renders no card), but it DOES
+        # need a user-facing conversation: a cron turn injected into a user's
+        # slot or a sub-agent sharing its parent's slot must not repoint that
+        # slot's project/CWD out from under the user. Positive predicate — an
+        # unrecognized key shape fails closed.
+        _audit(session_key, kind, "denied")
+        return (
+            f"Error: {kind} only works from a user-facing session (dashboard "
+            f"or a messaging channel); headless callers such as cron jobs and "
+            f"sub-agents are refused (this turn is {session_key!r}). "
+            "Nothing was changed."
         )
     try:
         if kind == "monitor_start":
