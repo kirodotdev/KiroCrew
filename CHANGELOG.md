@@ -17,6 +17,25 @@ All notable changes to KiroCrew are documented in this file.
   dimension-checked, float64-precision scorer the ranking paths already use,
   which also removes a per-row query re-derivation from both loops. (#3466)
 
+- **Computer use no longer costs a 109 MB backend process per chat when it is
+  off — or on platforms where it cannot run at all.** `kirocrew-computer` was
+  registered into the agent spec unconditionally, and the keystone enable was
+  only checked *inside* the process the spec had already caused kiro-cli to
+  spawn: it suppressed the tool list, never the process. Every chat process paid
+  ~109 MB for a disabled capability, including every `spawn_run` subagent, and
+  on Linux/Windows it paid that for a feature with no driver (macOS is the only
+  supported platform) — measured at 16 processes / 1.75 GB on one Linux host.
+  The server is now withheld from the emitted spec, unless this is macOS *and*
+  the keystone is on; enabling it from Settings rebuilds the spec before
+  restarting sessions, so the tools still appear in the session you are sitting
+  in. Your `tools` entries are left untouched — a ref whose server the spec does
+  not define resolves to nothing, so a mount you had narrowed to a single tool
+  comes back exactly as you left it. Only the entry's own `autoApprove` and
+  custom `env` keys are reset by an off/on cycle and need re-applying,
+  deliberately: restoring an approval from a file the agent can write would
+  bypass the PreToolUse gate. The two in-process checks are kept as defence in
+  depth for a mid-session disable. (#3482)
+
 - **Side-panel oversize-question refusal now reports an accurate character
   target for every script, not just emoji.** The refusal derived its
   character count from a fixed worst-case floor (4 bytes/char, the emoji

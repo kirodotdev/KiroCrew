@@ -28,6 +28,13 @@ from kiro_crew.kiro_cli import (
 
 MANAGED = ("kirocrew-core", "kirocrew-cron", "kirocrew-computer")
 
+# ``kirocrew-computer`` carries a ``spec_gate`` and is therefore absent from an
+# emitted spec on any non-macOS host (and on macOS with the keystone off) -- see
+# ``agent._computer_use_spec_gate``. These tests are about the REGISTRY MARKER, not
+# about that gate, so they pin it OPEN with an empty snapshot: the marker rule must
+# hold for every managed server the spec actually carries, on every CI platform.
+NO_GATES: frozenset[str] = frozenset()
+
 
 def _write_config(home: Path, *, registry_mode: bool | None) -> Path:
     path = home / "config.json"
@@ -154,13 +161,13 @@ class TestIdentityProbeIsAudited:
 class TestFreshInstallMarker:
     def test_no_marker_outside_registry_mode(self, monkeypatch):
         monkeypatch.setattr(agent_mod, "_mcp_registry_mode", lambda: False)
-        config = agent_mod.build_agent_config()
+        config = agent_mod.build_agent_config(gated_off=NO_GATES)
         for name in MANAGED:
             assert "type" not in config["mcpServers"][name], name
 
     def test_marker_on_every_managed_server_in_registry_mode(self, monkeypatch):
         monkeypatch.setattr(agent_mod, "_mcp_registry_mode", lambda: True)
-        config = agent_mod.build_agent_config()
+        config = agent_mod.build_agent_config(gated_off=NO_GATES)
         for name in MANAGED:
             assert config["mcpServers"][name]["type"] == "registry", name
 
@@ -168,7 +175,7 @@ class TestFreshInstallMarker:
         """command/args stay so doctor's handshake probe, the CC sidecar sync and
         a later ungoverned refresh still describe a runnable server."""
         monkeypatch.setattr(agent_mod, "_mcp_registry_mode", lambda: True)
-        entry = agent_mod.build_agent_config()["mcpServers"]["kirocrew-core"]
+        entry = agent_mod.build_agent_config(gated_off=NO_GATES)["mcpServers"]["kirocrew-core"]
         assert entry["command"]
         assert entry["args"] == ["mcp-core"] or "mcp-core" in entry["args"]
 
@@ -177,7 +184,7 @@ class TestRefreshMarker:
     def test_refresh_adds_the_marker(self, monkeypatch):
         monkeypatch.setattr(agent_mod, "_mcp_registry_mode", lambda: True)
         config = {"mcpServers": {name: {"command": "x", "args": []} for name in MANAGED}}
-        agent_mod._refresh_dynamic_fields(config)
+        agent_mod._refresh_dynamic_fields(config, gated_off=NO_GATES)
         for name in MANAGED:
             assert config["mcpServers"][name]["type"] == "registry", name
 
@@ -190,7 +197,7 @@ class TestRefreshMarker:
                 name: {"command": "x", "args": [], "type": "registry"} for name in MANAGED
             }
         }
-        agent_mod._refresh_dynamic_fields(config)
+        agent_mod._refresh_dynamic_fields(config, gated_off=NO_GATES)
         for name in MANAGED:
             assert "type" not in config["mcpServers"][name], name
 
@@ -199,7 +206,7 @@ class TestRefreshMarker:
         theirs, and kiro-cli tolerates it."""
         monkeypatch.setattr(agent_mod, "_mcp_registry_mode", lambda: False)
         config = {"mcpServers": {"kirocrew-core": {"command": "x", "args": [], "type": "stdio"}}}
-        agent_mod._refresh_dynamic_fields(config)
+        agent_mod._refresh_dynamic_fields(config, gated_off=NO_GATES)
         assert config["mcpServers"]["kirocrew-core"]["type"] == "stdio"
 
 

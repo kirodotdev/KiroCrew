@@ -120,6 +120,59 @@ from the live `kirocrew` binary, strips stale remote-transport fields (`url`,
 gateway is actually running under while preserving the user's own env keys.
 User customizations such as `autoApprove` are preserved.
 
+An entry may also carry a **`spec_gate`** — a predicate consulted at spec
+EMISSION time. `kirocrew-computer` is the one row that has one, and the
+distinction it draws is the difference between a capability that advertises no
+tools and one that costs nothing: emitting the entry is what makes kiro-cli spawn
+the backend, so an in-process enable check can only ever refuse work in a process
+that is already resident (~109 MB, per chat process, including every `spawn_run`
+subagent). While the gate is closed the server appears in neither `mcpServers`
+nor `tools`, so nothing is spawned at all. Both loops that write specs honour it,
+and asymmetrically on purpose:
+
+- `build_agent_config()` withholds the entry **and pops one arriving from the
+  user override file** — a platform gate exists because there is no driver on
+  this OS, and an override must not smuggle a server past it;
+- `_refresh_dynamic_fields()` **retracts** an entry a previous pass wrote while
+  the gate was open, because a skip-only refresh would mean turning a feature off
+  never reclaims the process turning it on started;
+**The `@server` refs in `tools` / `allowedTools` are left exactly as they are.**
+Withholding the entry is the whole control: a `@server` ref resolves against the
+agent's own `mcpServers` plus the global `mcp.json`, so with no entry in either
+there is nothing to launch — the ref names nothing and mounts nothing.
+
+| | |
+|---|---|
+| **Preserved** | the user's `tools` and `allowedTools` refs, verbatim — including a mount hand-narrowed to a single `@server/tool` |
+| **NOT preserved** | the entry's `autoApprove` and user `env` keys. An off/on cycle resets these; the operator re-applies them |
+
+Stripping the refs as well is the tidier-looking design and it is where a whole
+class of defects came from. The removed set is not reconstructible from the server
+name — a user can narrow `tools` to ONE `@server/tool` ref while the re-enable path
+re-adds the BARE ref — so anything that prunes must also stash and restore, and
+every way that stash can fail silently **widens** the mount: an unwritable stash, a
+stash cleared before the spec write landed, a rebuild path that skipped the
+restore. Leaving the refs alone has none of those states, and the only place a stash
+could live is a sidecar the agent itself can write.
+
+That last point is why the entry's own fields are still dropped rather than stashed:
+a restored `autoApprove` would be an **agent-authored** value that a later rebuild
+installs into the spec, and kiro-cli approves an auto-approved MCP tool *locally* —
+no permission request is emitted, so `hooks.on_tool_call` (deny floor,
+sensitive-path check, governance ceiling) and the SEL audit are never reached. For
+tools that can click and type into an already-authenticated application that is a
+self-granted gate bypass. Losing an approval is the safe direction; restoring one
+from a file the agent can write is not.
+
+Withholding is recorded to SEL as `mcp_server_withheld`, derived from the gate plus
+the shipped template rather than from a config delta — nothing in the spec changes
+shape when a gate closes, so there is no delta to observe, and the audit trail would
+otherwise have no record that a shipped server was deliberately not emitted.
+
+The gate decision is snapshotted **once per rebuild** and threaded through both emit
+loops, so a keystone flip landing mid-rebuild cannot produce a spec that emits one
+server's entry under the old decision and another's under the new one.
+
 Under an enterprise MCP registry, `_refresh_dynamic_fields()` also maintains a
 `"type": "registry"` marker on these three entries — added when
 `agent.mcp_registry_mode` is declared, and REMOVED when it is not. The marker is
@@ -137,7 +190,8 @@ request, so `hooks.on_tool_call` (the PreToolUse deny floor, sensitive-path
 check and governance ceiling) is never reached for it. For a tool that can click
 and type into an already-authenticated application, that would be a complete
 gate bypass. Its stdio shim answers an empty `tools/list` while the keystone
-enable is off, so a disabled feature costs the model no context.
+enable is off — retained as defence in depth for a mid-session disable, on top of
+the `spec_gate` above that keeps the process from existing in the first place.
 
 ### The final auto-approve pass
 
