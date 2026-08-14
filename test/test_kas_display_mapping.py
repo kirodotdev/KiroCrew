@@ -19,6 +19,9 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     EVENT_AGENT_SWITCHED,
     EVENT_COMPACTION_STATUS,
+    EVENT_STEER_CLEARED,
+    EVENT_STEER_CONSUMED,
+    EVENT_STEER_QUEUED,
     EVENT_TEXT_CHUNK,
     JsonRpcMessage,
 )
@@ -314,3 +317,56 @@ def test_context_usage_not_applied_on_kiro_backend() -> None:
         {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "context_usage", "usagePercentage": 42.5}}},
     )
     assert handle.last_prompt_stats.context_pct != 42.5
+
+
+# ── session_info_update / steering_* → steer events ──────────────────────────
+
+
+def test_steering_injected_maps_to_consumed() -> None:
+    handle = _handle(ACP_BACKEND_KAS)
+    events = _update(
+        handle,
+        {
+            "sessionUpdate": "session_info_update",
+            "_meta": {"kiro": {"kind": "steering_injected", "messageId": "m1", "content": "focus on tests"}},
+        },
+    )
+    # injected is the settling signal that _settle_consumed_steers consumes.
+    assert len(events) == 1
+    assert events[0].kind == EVENT_STEER_CONSUMED
+    assert events[0].text == "focus on tests"
+
+
+def test_steering_queued_maps_to_queued() -> None:
+    handle = _handle(ACP_BACKEND_KAS)
+    events = _update(
+        handle,
+        {
+            "sessionUpdate": "session_info_update",
+            "_meta": {"kiro": {"kind": "steering_queued", "messageId": "m1", "content": "also update docs"}},
+        },
+    )
+    assert len(events) == 1
+    assert events[0].kind == EVENT_STEER_QUEUED
+    assert events[0].text == "also update docs"
+
+
+def test_steering_cleared_maps_to_cleared_no_text() -> None:
+    handle = _handle(ACP_BACKEND_KAS)
+    events = _update(
+        handle,
+        {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "steering_cleared", "messageIds": ["m1"]}}},
+    )
+    assert len(events) == 1
+    assert events[0].kind == EVENT_STEER_CLEARED
+
+
+def test_steering_not_routed_on_kiro_backend() -> None:
+    handle = _handle(ACP_BACKEND_KIRO)
+    # kiro-cli delivers steer as session/update discriminants (the "steer"
+    # action), never as a session_info_update _meta.kiro kind, so this KAS-shaped
+    # frame must NOT produce a steer event on the kiro path.
+    assert _update(
+        handle,
+        {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "steering_injected", "content": "x"}}},
+    ) == []

@@ -461,6 +461,9 @@ class AcpSessionHandle:
         # already-current mode does not surface a spurious agent-switch echo
         # (kiro-cli only emits on a real _kiro.dev/agent/switched). None = unseen.
         self._last_kas_mode_id: str | None = None
+        # KAS sub-agent roster keyed by agentSubtaskId. Each entry is shaped for
+        # EVENT_SUBAGENT_LIST consumption by _native_subagent_sync in chat_runner.
+        self._kas_subagent_roster: dict[str, dict[str, Any]] = {}
 
     @property
     def session_id(self) -> str:
@@ -553,6 +556,12 @@ class AcpSessionHandle:
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
         self._permission_options.clear()
+        # Per-turn reset (parity with kiro-cli's authoritative full subagent_list
+        # each turn): otherwise a completed sub-agent from a prior turn stays in
+        # the roster and is re-emitted in the next turn's EVENT_SUBAGENT_LIST,
+        # which the fresh per-turn _native_tracker resurrects as a duplicate
+        # spawn/done card — and the roster would grow unbounded for the session.
+        self._kas_subagent_roster.clear()
 
         # Drain frames left over from a prior abandoned turn. The cancel-unacked
         # / stale / tool-stall / timeout paths synthesize a terminal
@@ -2179,7 +2188,9 @@ class AcpSessionHandle:
         methods: ``context_usage`` (the context meter) and ``turn_completion``
         (per-turn billing) together reconstruct the single ``_kiro.dev/metadata``
         frame, while the ``summarization_*`` kinds are KAS's compaction status
-        (kiro-cli: ``_kiro.dev/compaction/status``).
+        (kiro-cli: ``_kiro.dev/compaction/status``) and the ``steering_*`` kinds
+        are KAS's mid-turn steer echo (kiro-cli: ``session/update`` steer
+        discriminants, handled by the "steer" action).
         """
         meta = update.get("_meta")
         kiro = meta.get("kiro") if isinstance(meta, dict) else None
@@ -2205,7 +2216,141 @@ class AcpSessionHandle:
             # reaches the dashboard — redact exfil URLs/credentials first.
             summary = redact_text(str(kiro.get("conversationSummary", "") or ""))
             return [AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)]
+        if kind in ("steering_queued", "steering_injected", "steering_cleared"):
+            # KAS mid-turn steer echo. kiro-cli sends these as `session/update`
+            # discriminants (handled by the "steer" action); KAS instead puts the
+            # kind under `_meta.kiro`, so route it here. `injected` is the
+            # settling signal (→ EVENT_STEER_CONSUMED, which _settle_consumed_steers
+            # consumes); queued/cleared mirror the kiro path. Never trust
+            # backend-echoed steer text — redact before it reaches any surface.
+            if kind == "steering_cleared":
+                return [AcpEvent(kind=EVENT_STEER_CLEARED)]
+            text = redact_text(str(kiro.get("content") or ""))
+            steer_kind = EVENT_STEER_CONSUMED if kind == "steering_injected" else EVENT_STEER_QUEUED
+            return [AcpEvent(kind=steer_kind, text=text)]
         return []
+
+    def _handle_kas_subagent(self, update: dict) -> list[AcpEvent] | None:
+        """Route KAS PARENT sub-agent frames to EVENT_SUBAGENT_LIST.
+
+        Returns a list of events when the frame is a PARENT sub-agent lifecycle
+        frame (``kind:"agent-subtask"`` or ``pipeline``), or ``None`` when it is
+        a child nested tool or an ordinary frame that should fall through to the
+        shared parser (so caches populate and tool events render).
+        """
+        meta = update.get("_meta")
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not isinstance(kiro, dict):
+            return None
+
+        agent_subtask_id = kiro.get("agentSubtaskId")
+        pipeline = kiro.get("pipeline")
+
+        if not agent_subtask_id and not pipeline:
+            return None
+
+        # Pipeline frame: one entry per stage.
+        if isinstance(pipeline, dict):
+            stages = pipeline.get("stages")
+            if isinstance(stages, list):
+                for stage in stages:
+                    if not isinstance(stage, dict):
+                        continue
+                    s_id = stage.get("agentSubtaskId")
+                    if not isinstance(s_id, str) or not s_id:
+                        continue
+                    s_status = str(stage.get("status") or "in_progress")
+                    s_name = str(stage.get("name") or stage.get("role") or "")
+                    self._kas_subagent_roster[s_id] = {
+                        "sessionId": s_id,
+                        "sessionName": s_name,
+                        "agentName": s_name,
+                        "initialQuery": s_name,
+                        "status": {"type": s_status, "message": ""},
+                    }
+            return [AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=list(self._kas_subagent_roster.values()),
+            )]
+
+        # Individual agent-subtask frame (kind == "agent-subtask") → PARENT.
+        is_parent = kiro.get("kind") == "agent-subtask"
+
+        if is_parent:
+            subtask_id = str(agent_subtask_id)
+            status = str(update.get("status") or "in_progress")
+            title = str(update.get("title") or "")
+            name = title.replace("Sub-agent: ", "") if title.startswith("Sub-agent: ") else title
+            self._kas_subagent_roster[subtask_id] = {
+                "sessionId": subtask_id,
+                "sessionName": title,
+                "agentName": name,
+                "initialQuery": title,
+                "status": {"type": status, "message": ""},
+            }
+            return [AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=list(self._kas_subagent_roster.values()),
+            )]
+
+        # Child nested tool_call/tool_call_update (has agentSubtaskId but NOT
+        # kind:"agent-subtask" or pipeline) → return None so the caller falls
+        # through to parse_session_update (populates caches + renders tool
+        # events). The caller prepends the activity prefix separately.
+        return None
+
+    def _handle_kas_subagent_chunk(self, update: dict) -> list[AcpEvent] | None:
+        """Route KAS agent_message_chunk with agentSubtaskId to activity.
+
+        Returns a list when the chunk belongs to a child sub-agent, else None
+        (fall through to normal chunk handling).
+        """
+        meta = update.get("_meta")
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not isinstance(kiro, dict):
+            return None
+        subtask_id = kiro.get("agentSubtaskId")
+        if not isinstance(subtask_id, str) or not subtask_id:
+            return None
+        # Must NOT have kind:"agent-subtask" or pipeline — those are parent frames
+        if kiro.get("kind") == "agent-subtask" or kiro.get("pipeline"):
+            return None
+        text, _thinking = parse_text_chunk(update)
+        if not text or _thinking:
+            # A child's private reasoning (thinking/reasoning content) must not
+            # surface as visible sub-agent activity — parity with the kiro native
+            # subagent path, which only forwards non-thinking agent_message_chunk.
+            return []
+        return [AcpEvent(
+            kind=EVENT_SUBAGENT_ACTIVITY,
+            sub_session_id=subtask_id,
+            text=redact_text(text),
+        )]
+
+    def _build_child_tool_activity_prefix(self, update: dict) -> list[AcpEvent]:
+        """Build an EVENT_SUBAGENT_ACTIVITY prefix for a child nested tool frame.
+
+        Called when ``_handle_kas_subagent`` returns None (child tool) so the
+        activity attribution is emitted BEFORE the tool events from
+        ``parse_session_update``.
+        """
+        meta = update.get("_meta")
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not isinstance(kiro, dict):
+            return []
+        subtask_id = kiro.get("agentSubtaskId")
+        if not isinstance(subtask_id, str) or not subtask_id:
+            return []
+        tool_call_id = str(update.get("toolCallId") or "")
+        if not tool_call_id:
+            return []
+        title = redact_text(str(update.get("title") or ""))
+        return [AcpEvent(
+            kind=EVENT_SUBAGENT_ACTIVITY,
+            sub_session_id=subtask_id,
+            tool_call_id=tool_call_id,
+            title=title,
+        )]
 
     def _apply_kas_context_pct(self, pct: object) -> None:
         """Apply a KAS ``context_usage`` percentage to the context meter.
@@ -2301,6 +2446,41 @@ class AcpSessionHandle:
             kas_events = self._handle_kas_update(session_update, update)
             if kas_events is not None:
                 return kas_events
+
+        # KAS sub-agent progress: tool_call/tool_call_update frames carrying
+        # _meta.kiro.agentSubtaskId or _meta.kiro.pipeline are sub-agent
+        # lifecycle frames — intercept PARENT frames and route to the native
+        # sub-agent WS path (EVENT_SUBAGENT_LIST) instead of rendering them as
+        # ordinary tool calls. CHILD nested tool frames (agentSubtaskId present,
+        # but not a parent) emit an activity prefix AND fall through to the
+        # shared parser (caches populate + tool events render).
+        # Positive KAS gate (H5).
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            if session_update in ("tool_call", "tool_call_update"):
+                kas_sub_events = self._handle_kas_subagent(update)
+                if kas_sub_events is not None:
+                    return kas_sub_events
+                _child_prefix = self._build_child_tool_activity_prefix(update)
+                if _child_prefix:
+                    # Child nested tool: run the shared parser for its cache
+                    # SIDE EFFECTS ONLY — the trusted _tool_call_is_shell signal
+                    # + redacted input that a later permission/result reads — but
+                    # return ONLY the activity. Surfacing the tool events would
+                    # render the child tool as a top-level tool; the sub-agent
+                    # card is fed by the roster + activity, not the raw frame.
+                    parse_session_update(
+                        update,
+                        tool_input_cache=self._tool_call_inputs,
+                        shell_cache=self._tool_call_is_shell,
+                        raw_params_cache=self._tool_call_raw_params,
+                        mcp_server_name_cache=self._tool_call_mcp_server,
+                        tool_name_cache=self._tool_call_tool_name,
+                    )
+                    return _child_prefix
+            if session_update == "agent_message_chunk":
+                kas_chunk_events = self._handle_kas_subagent_chunk(update)
+                if kas_chunk_events is not None:
+                    return kas_chunk_events
 
         # All other session/update kinds go through the single shared parser so
         # AcpRuntime and AcpClient cannot drift on frame shape or redaction. The
