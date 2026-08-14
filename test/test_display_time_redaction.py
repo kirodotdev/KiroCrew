@@ -228,11 +228,13 @@ def test_restore_recent_sessions_does_not_broadcast_either(tmp_path, monkeypatch
 
 
 def test_rehydrate_does_not_broadcast_replayed_messages(tmp_path, monkeypatch) -> None:
-    """_broadcast_chat_message ships content verbatim.
+    """Replayed history must not be broadcast even though content is now redacted.
 
+    _broadcast_chat_message redacts non-user *content* (parity with
+    _prepare_messages, #1713) but deliberately not *meta* — so replaying history
+    through it would still push unredacted meta straight to connected clients.
     This helper also runs for on-demand cold-slot rehydrates, i.e. while clients
-    are connected — so replaying history through it would push unredacted content
-    straight to them.
+    are connected.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -515,3 +517,45 @@ def test_oauth_completion_preserves_a_legitimate_url() -> None:
     meta = sent[0]["payload"]["meta"]
     assert meta.get("oauth_url") == legit, "a legitimate consent URL was blanked"
     assert meta.get("completed") is True
+
+
+# ── 7. WS broadcast redaction parity with the HTTP history path (#1713) ──────
+#
+# _prepare_messages (HTTP history) redacts non-user content at display time;
+# _broadcast_chat_message (live WS push) used to ship the same row verbatim, so
+# one chat row left the backend in two different byte forms depending on which
+# consumer received it. These pin the parity on both sides of the role gate.
+
+
+def test_ws_broadcast_redacts_assistant_content(tmp_path, monkeypatch) -> None:
+    """An assistant row carrying a credential comes out redacted on the WS path."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    sent: list[dict] = []
+    monkeypatch.setattr(state, "_broadcast", lambda payload: sent.append(payload))
+
+    state._broadcast_chat_message(
+        "chat-1-wsred", {"role": "assistant", "content": f"key {SECRET}", "ts": "1"}
+    )
+
+    assert len(sent) == 1, "precondition: exactly one payload was broadcast"
+    assert SECRET not in sent[0]["content"], "WS payload leaked an unredacted credential"
+    assert sent[0]["role"] == "assistant"
+
+
+def test_ws_broadcast_leaves_user_content_raw(tmp_path, monkeypatch) -> None:
+    """A user row is left alone — the same carve-out as _prepare_messages.
+
+    The user typed it and is the only one who sees it back; redacting it here
+    would diverge from the HTTP path in the other direction.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    sent: list[dict] = []
+    monkeypatch.setattr(state, "_broadcast", lambda payload: sent.append(payload))
+
+    text = f"my note contains {SECRET}"
+    state._broadcast_chat_message("chat-1-wsraw", {"role": "user", "content": text, "ts": "1"})
+
+    assert len(sent) == 1, "precondition: exactly one payload was broadcast"
+    assert sent[0]["content"] == text, "user-authored content must survive verbatim"

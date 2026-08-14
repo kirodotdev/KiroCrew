@@ -4259,11 +4259,24 @@ class DashboardState:
 
     def _broadcast_chat_message(self, slot_key: str, msg: dict) -> None:
         """Push a chat message to all SSE clients via the global stream."""
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        # Mirror the display-time redaction gate _prepare_messages applies on
+        # the HTTP history path, so a row's *content* leaves the backend in one
+        # byte form regardless of which consumer receives it. Scope: content
+        # only — `cls` / `meta` and the live `chat_chunk` stream are
+        # deliberately not covered (see the direct_meta comment below). Gate is
+        # `!= "user"` for the same reason as there: every non-user role can
+        # carry model/tool output, and user-authored content stays raw (the
+        # user typed it and is the only one who sees it back).
+        if role != "user" and isinstance(content, str) and content:
+            content, _ = redact_exfiltration_urls(content)
+            content, _ = redact_credentials(content)
         payload: dict[str, Any] = {
             "_type": "chat_message",
             "slot": slot_key,
-            "role": msg.get("role", ""),
-            "content": msg.get("content", ""),
+            "role": role,
+            "content": content,
             "ts": msg.get("ts", ""),
         }
         # Include cls for backward compatibility

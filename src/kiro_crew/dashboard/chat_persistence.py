@@ -698,9 +698,10 @@ def _rehydrate_slot_from_history(
                 cls,
                 ts=m.get("ts", ""),
                 # broadcast=False: replaying history must not emit N `chat_message`
-                # events. _broadcast_chat_message ships content verbatim, and this
+                # events. _broadcast_chat_message redacts non-user content (parity
+                # with _prepare_messages) but deliberately not meta, and this
                 # helper also runs for on-demand cold-slot rehydrates while clients
-                # ARE connected, so broadcasting here would push unredacted history
+                # ARE connected, so broadcasting here would push unredacted meta
                 # straight to them. Clients get the transcript from the slot detail
                 # endpoint (redacted) and the sidebar from the coalesced slots push.
                 broadcast=False,
