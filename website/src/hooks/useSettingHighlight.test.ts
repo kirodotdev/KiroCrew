@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
@@ -88,5 +88,66 @@ describe('useSettingHighlight', () => {
     document.body.removeChild(el1)
     document.body.removeChild(el2)
     vi.useRealTimers()
+  })
+})
+
+describe('useSettingHighlight against the real registry and catalogs', () => {
+  /*
+   * Deliberately UNMOCKED, which is the whole point of this case.
+   *
+   * `useSettingHighlightKeyPrefix.test.ts` pins the same path with a stubbed
+   * registry entry and a stubbed `i18nT`, so it proves the hook consults the key
+   * and uses what it gets back. It cannot fail if the generator recorded the
+   * WRONG key, or a key the shipped catalogs do not carry — both are supplied by
+   * the mock. This one runs the real generated registry through the real
+   * catalogs under a real language switch, so those two failures are reachable.
+   */
+  afterAll(async () => {
+    const { i18next } = await import('../i18n')
+    await i18next.changeLanguage('en')
+  })
+
+  it('highlights a control whose rendered label is translated', async () => {
+    const { i18next } = await import('../i18n')
+    const { i18nT } = await import('../i18n/t')
+    const { SETTINGS_REGISTRY } = await import('../components/commandPalette/settingsRegistry.gen')
+
+    // `display.language` carries no configKey, so the label-derived id is its
+    // only route — and it is one of the anchors the curated tips pool ships.
+    const entry = SETTINGS_REGISTRY.find(e => e.id === 'display.language')
+    expect(entry, 'display.language must exist in the registry').toBeTruthy()
+    expect(entry!.labelKey, 'the generator must record its catalog key').toBeTruthy()
+
+    await i18next.changeLanguage('ja')
+    const translated = i18nT(entry!.labelKey as Parameters<typeof i18nT>[0])
+    // Two guards, because the DOM label below is derived from this same call:
+    // without them a self-consistent wrong answer would satisfy the match.
+    //
+    //  - not the English label: proves the active locale is really in play.
+    //  - not the key itself: `i18nT` returns the raw key when NEITHER the active
+    //    catalog nor English carries it, so this is what fails if the generator
+    //    ever records a key the shipped catalogs do not have.
+    expect(translated).not.toBe(entry!.label)
+    expect(translated).not.toBe(entry!.labelKey)
+
+    const el = document.createElement('div')
+    el.setAttribute('data-setting-label', translated)
+    document.body.appendChild(el)
+
+    vi.useFakeTimers()
+    renderHook(() => useSettingHighlight(), {
+      wrapper: wrapper(['/settings?tab=display&highlight=display.language']),
+    })
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+
+    // The same two properties the duplicate-label case asserts on, for the same
+    // happy-dom shorthand reason.
+    expect(el.style.outlineOffset).toBe('4px')
+    expect(el.style.borderRadius).toBe('8px')
+
+    vi.useRealTimers()
+    document.body.removeChild(el)
   })
 })

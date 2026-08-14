@@ -8,6 +8,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "channels.file-sessions-in-a-folder",
     "label": "File sessions in a folder",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -18,6 +19,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "channels.folder-name",
     "label": "Folder name",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
     "description": "Created for you when you save these settings, if it does not exist yet.",
     "tab": "channels",
     "type": "input",
@@ -29,6 +31,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "channels.owner-slack-member-id",
     "label": "Owner Slack member ID",
+    "labelKey": "pages.settings.slackPanel.owner_slack_member_id",
     "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",
     "tab": "channels",
     "type": "input",
@@ -40,6 +43,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "channels.phase-reactions",
     "label": "Phase reactions",
+    "labelKey": "pages.settings.slackPanel.phase_reactions",
     "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages.",
     "tab": "channels",
     "type": "toggle",
@@ -51,6 +55,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "channels.show-thinking",
     "label": "Show thinking",
+    "labelKey": "pages.settings.slackPanel.show_thinking",
     "description": "Post the model's reasoning as a thread reply. Disable to keep responses concise.",
     "tab": "channels",
     "type": "toggle",
@@ -62,6 +67,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "channels.slash-command",
     "label": "Slash command",
+    "labelKey": "pages.settings.slackPanel.slash_command",
     "description": "Trigger word for the Slack slash command (without the leading /).",
     "tab": "channels",
     "type": "input",
@@ -73,6 +79,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
+    "labelKey": "pages.settings.chatPanel.auto_compact_threshold",
     "description": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
     "tab": "chat",
     "type": "select",
@@ -82,6 +89,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.background-effort",
     "label": "Background Effort",
+    "labelKey": "pages.settings.chatPanel.background_effort",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
@@ -89,6 +97,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.background-model",
     "label": "Background Model",
+    "labelKey": "pages.settings.chatPanel.background_model",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
@@ -96,6 +105,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.completion-event-characters",
     "label": "Completion Event Characters",
+    "labelKey": "pages.settings.chatPanel.completion_event_characters",
     "tab": "chat",
     "type": "input",
     "occurrence": 1
@@ -103,6 +113,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.completion-event-truncation",
     "label": "Completion Event Truncation",
+    "labelKey": "pages.settings.chatPanel.completion_event_truncation",
     "description": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",
     "tab": "chat",
     "type": "select",
@@ -111,6 +122,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.confirm-before-closing-session",
     "label": "Confirm Before Closing Session",
+    "labelKey": "pages.settings.chatPanel.confirm_before_closing_session",
     "description": "Show a confirmation dialog when closing a session",
     "tab": "chat",
     "type": "toggle",
@@ -119,6 +131,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.content-width",
     "label": "Content Width",
+    "labelKey": "pages.settings.chatPanel.content_width",
     "description": "Compact is the original view. Comfortable and Full use more screen space.",
     "tab": "chat",
     "type": "buttonGroup",
@@ -127,6 +140,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.default-reasoning-effort",
     "label": "Default Reasoning Effort",
+    "labelKey": "pages.settings.chatPanel.default_reasoning_effort",
     "description": "How long models think before answering by default. Higher is slower and costs more. Only available on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x).",
     "tab": "chat",
     "type": "select",
@@ -135,6 +149,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.default-to-autopilot-mode",
     "label": "Default to Autopilot Mode",
+    "labelKey": "pages.settings.chatPanel.default_to_autopilot_mode",
     "description": "New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions.",
     "tab": "chat",
     "type": "toggle",
@@ -143,6 +158,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.describe-your-role",
     "label": "Describe your role",
+    "labelKey": "pages.settings.chatPanel.describe_your_role",
     "description": "Kiro quotes this back to itself when calibrating vocabulary and examples.",
     "tab": "chat",
     "type": "input",
@@ -151,6 +167,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.fallback-model",
     "label": "Fallback Model",
+    "labelKey": "pages.settings.chatPanel.default_model",
     "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
     "tab": "chat",
     "type": "select",
@@ -159,6 +176,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.feature-tips",
     "label": "Feature Tips",
+    "labelKey": "pages.settings.chatPanel.feature_tips",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1
@@ -166,6 +184,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.file-change-chips",
     "label": "File Change Chips",
+    "labelKey": "pages.settings.chatPanel.file_change_chips",
     "description": "How file diff chips appear below assistant messages",
     "tab": "chat",
     "type": "select",
@@ -174,6 +193,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.folder-suggestions",
     "label": "Folder suggestions",
+    "labelKey": "pages.settings.chatPanel.folder_suggestions",
     "description": "Offer to file a new session into a matching folder once it has a title.",
     "tab": "chat",
     "type": "toggle",
@@ -182,6 +202,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.follow-up-bar-layout",
     "label": "Follow-Up Bar Layout",
+    "labelKey": "pages.settings.chatPanel.follow_up_bar_layout",
     "description": "Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row.",
     "tab": "chat",
     "type": "buttonGroup",
@@ -190,6 +211,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.history-expanded",
     "label": "History Expanded",
+    "labelKey": "pages.settings.chatPanel.history_expanded",
     "description": "Expand history sidebar by default",
     "tab": "chat",
     "type": "toggle",
@@ -198,6 +220,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.link-previews",
     "label": "Link Previews",
+    "labelKey": "pages.settings.chatPanel.link_previews",
     "description": "Show a favicon and page title instead of the raw URL. This machine then fetches every link the model outputs, so each linked site sees a request from your IP address.",
     "tab": "chat",
     "type": "toggle",
@@ -206,6 +229,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.mcp-apps-in-side-panel",
     "label": "MCP Apps in Side Panel",
+    "labelKey": "pages.settings.chatPanel.mcp_apps_in_side_panel",
     "description": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat. The panel opens automatically.",
     "tab": "chat",
     "type": "toggle",
@@ -214,6 +238,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.merge-queued-messages",
     "label": "Merge Queued Messages",
+    "labelKey": "pages.settings.chatPanel.merge_queued_messages",
     "description": "Combine follow-up messages into a single labeled prompt while the agent is busy",
     "tab": "chat",
     "type": "toggle",
@@ -222,6 +247,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.pin-the-latest-prompt",
     "label": "Pin the latest prompt",
+    "labelKey": "pages.settings.chatPanel.pin_last_prompt",
     "description": "Keep the most recent prompt visible as a sticky banner once it scrolls above the fold.",
     "tab": "chat",
     "type": "toggle",
@@ -230,6 +256,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.prevent-sleep-while-running",
     "label": "Prevent sleep while running",
+    "labelKey": "pages.settings.chatPanel.prevent_sleep_while_running",
     "description": "Keep your computer awake while a task is running",
     "tab": "chat",
     "type": "toggle",
@@ -239,6 +266,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.quick-send",
     "label": "Quick Send",
+    "labelKey": "pages.settings.chatPanel.quick_send",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1
@@ -246,6 +274,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.response-verbosity",
     "label": "Response Verbosity",
+    "labelKey": "pages.settings.chatPanel.response_verbosity",
     "description": "How terse the agent's prose is. Ultra-concise keeps the whole reply short: answer first, bullets over paragraphs, no filler. Code, commands, and error strings stay verbatim at every level, and security warnings and multi-step instructions keep full detail.",
     "tab": "chat",
     "type": "select",
@@ -254,6 +283,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.restore-sessions",
     "label": "Restore Sessions",
+    "labelKey": "pages.settings.chatPanel.restore_sessions",
     "description": "Re-open recently active sessions on startup",
     "tab": "chat",
     "type": "toggle",
@@ -262,6 +292,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.restore-window",
     "label": "Restore Window",
+    "labelKey": "pages.settings.chatPanel.restore_window",
     "description": "Time window for session restoration",
     "tab": "chat",
     "type": "select",
@@ -270,6 +301,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.send-shortcut",
     "label": "Send shortcut",
+    "labelKey": "pages.settings.chatPanel.send_shortcut",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
@@ -277,6 +309,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.session-summaries",
     "label": "Session summaries",
+    "labelKey": "pages.settings.chatPanel.session_summaries",
     "description": "Summarize each session by intent. Uses tokens on turns that change the session.",
     "tab": "chat",
     "type": "toggle",
@@ -285,6 +318,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.show-context-percentage",
     "label": "Show Context Percentage",
+    "labelKey": "pages.settings.chatPanel.show_context_percentage",
     "description": "Display usage percentage next to the context progress bar",
     "tab": "chat",
     "type": "toggle",
@@ -293,6 +327,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.show-context-tokens",
     "label": "Show Context Tokens",
+    "labelKey": "pages.settings.chatPanel.show_token_usage",
     "description": "Display used and total tokens next to the context progress bar",
     "tab": "chat",
     "type": "toggle",
@@ -301,6 +336,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.show-thinking-inline",
     "label": "Show Thinking Inline",
+    "labelKey": "pages.settings.chatPanel.show_thinking_inline",
     "description": "Show intermediate reasoning text between tool calls instead of collapsing everything",
     "tab": "chat",
     "type": "toggle",
@@ -309,6 +345,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.show-timestamps",
     "label": "Show Timestamps",
+    "labelKey": "pages.settings.chatPanel.show_timestamps",
     "description": "Display time on each message",
     "tab": "chat",
     "type": "toggle",
@@ -317,6 +354,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.simplified-tool-call-names",
     "label": "Simplified Tool Call Names",
+    "labelKey": "pages.settings.chatPanel.simplified_tool_call_names",
     "description": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run",
     "tab": "chat",
     "type": "toggle",
@@ -325,6 +363,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.soft-stop-budget-seconds",
     "label": "Soft-stop budget (seconds)",
+    "labelKey": "pages.settings.chatPanel.soft_stop_budget_seconds",
     "tab": "chat",
     "type": "input",
     "occurrence": 1
@@ -332,6 +371,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.split-view-session-grid",
     "label": "Split View (Session Grid)",
+    "labelKey": "pages.settings.chatPanel.split_view_session_grid",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1
@@ -339,6 +379,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.subagent-effort",
     "label": "Subagent Effort",
+    "labelKey": "pages.settings.chatPanel.subagent_effort",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
@@ -346,6 +387,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.subagent-model",
     "label": "Subagent Model",
+    "labelKey": "pages.settings.chatPanel.subagent_model",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
@@ -353,6 +395,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.tail-only-fork",
     "label": "Tail-only Fork",
+    "labelKey": "pages.settings.chatPanel.tail_only_fork",
     "description": "Fork keeps only the messages after the chosen point instead of those up to it.",
     "tab": "chat",
     "type": "toggle",
@@ -361,6 +404,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.technical-comfort",
     "label": "Technical Comfort",
+    "labelKey": "pages.settings.chatPanel.technical_comfort",
     "description": "Sets how deep explanations go — plain language vs. full technical detail",
     "tab": "chat",
     "type": "select",
@@ -369,6 +413,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.text-streaming-style",
     "label": "Text Streaming Style",
+    "labelKey": "pages.settings.chatPanel.text_streaming_style",
     "description": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace.",
     "tab": "chat",
     "type": "buttonGroup",
@@ -377,6 +422,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.widget-density",
     "label": "Widget Density",
+    "labelKey": "pages.settings.chatPanel.widget_density",
     "description": "How aggressively the agent uses inline widgets for visual content",
     "tab": "chat",
     "type": "select",
@@ -385,6 +431,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.your-role",
     "label": "Your Role",
+    "labelKey": "pages.settings.chatPanel.your_role",
     "description": "Kiro matches vocabulary and examples to your professional background",
     "tab": "chat",
     "type": "select",
@@ -393,6 +440,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "computer-use.attach-screenshots",
     "label": "Attach screenshots",
+    "labelKey": "pages.settings.computerUsePanel.attach_screenshots",
     "description": "Also capture the target window and pass its file path. The accessibility tree stays the primary channel; windows containing a password field are never captured.",
     "tab": "computer-use",
     "type": "toggle",
@@ -401,6 +449,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "computer-use.enable-computer-use",
     "label": "Enable computer use",
+    "labelKey": "pages.settings.computerUsePanel.enable_computer_use",
     "description": "Let the agent read desktop app windows through accessibility and act on their controls. Off until you turn it on here — an agent cannot enable it.",
     "tab": "computer-use",
     "type": "toggle",
@@ -409,6 +458,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "computer-use.max-tree-nodes",
     "label": "Max tree nodes",
+    "labelKey": "pages.settings.computerUsePanel.max_tree_nodes",
     "description": "How many controls one window reading returns. A window with more than this gets truncated, and the agent is told so. Raise it for dense apps (a spreadsheet, an IDE); lower it to spend fewer tokens per reading.",
     "tab": "computer-use",
     "type": "input",
@@ -417,6 +467,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "computer-use.screenshot-width",
     "label": "Screenshot width",
+    "labelKey": "pages.settings.computerUsePanel.screenshot_width",
     "description": "Longest edge of the screenshot, in pixels. Smaller is cheaper and faster to read; larger keeps small text legible if the agent has to fall back to the image.",
     "tab": "computer-use",
     "type": "input",
@@ -425,6 +476,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "computer-use.show-cursor-motion",
     "label": "Show cursor motion",
+    "labelKey": "pages.settings.computerUsePanel.show_cursor_motion",
     "description": "Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer.",
     "tab": "computer-use",
     "type": "toggle",
@@ -433,6 +485,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "developer.developer-mode",
     "label": "Developer Mode",
+    "labelKey": "pages.settings.developerPanel.developer_mode",
     "description": "Show Developer page in sidebar with Logs, System metrics, and Memory internals",
     "tab": "developer",
     "type": "toggle",
@@ -441,6 +494,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "developer.run-a-local-gateway",
     "label": "Run a local gateway",
+    "labelKey": "pages.settings.developerPanel.run_a_local_gateway",
     "description": "Start a gateway on this machine. Turn it off to use Kiro Crew as a client only, connecting to the gateway you have configured instead of running one here. Takes effect next time you open the app.",
     "tab": "developer",
     "type": "toggle",
@@ -449,6 +503,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.default-shell",
     "label": "Default shell",
+    "labelKey": "pages.settings.displayPanel.terminal_shell",
     "description": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
     "tab": "display",
     "type": "input",
@@ -458,6 +513,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.display-mode",
     "label": "Display Mode",
+    "labelKey": "pages.settings.displayPanel.display_mode",
     "description": "How the session color is applied to the row.",
     "tab": "display",
     "type": "buttonGroup",
@@ -466,6 +522,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.font",
     "label": "Font",
+    "labelKey": "pages.settings.displayPanel.terminal_font_family",
     "description": "Font for the built-in terminal. Enter a monospace font installed on your computer — use a Nerd Font to render Powerline and prompt-theme glyphs.",
     "tab": "display",
     "type": "input",
@@ -474,6 +531,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.font-family",
     "label": "Font Family",
+    "labelKey": "pages.settings.displayPanel.font_family",
     "description": "UI font family for the dashboard. Code font follows the active theme.",
     "tab": "display",
     "type": "buttonGroup",
@@ -482,6 +540,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.font-size",
     "label": "Font size",
+    "labelKey": "pages.settings.displayPanel.terminal_font_size",
     "description": "Text size in the built-in terminal, measured in pixels.",
     "tab": "display",
     "type": "stepper",
@@ -490,6 +549,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.highlight-recent-sessions",
     "label": "Highlight recent sessions",
+    "labelKey": "pages.settings.displayPanel.highlight_recent_sessions",
     "description": "Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your Kiro Crew config.",
     "tab": "display",
     "type": "stepper",
@@ -498,6 +558,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.intensity",
     "label": "Intensity",
+    "labelKey": "pages.settings.displayPanel.intensity",
     "description": "How visible the color tint is on sidebar rows.",
     "tab": "display",
     "type": "buttonGroup",
@@ -506,6 +567,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.interface",
     "label": "Interface",
+    "labelKey": "pages.settings.displayPanel.interface",
     "description": "Chat bubbles or CLI-style line-by-line output",
     "tab": "display",
     "type": "buttonGroup",
@@ -514,6 +576,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.language",
     "label": "Language",
+    "labelKey": "settings.display.language.label",
     "description": "Language for the dashboard interface.",
     "tab": "display",
     "type": "select",
@@ -522,6 +585,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.mode",
     "label": "Mode",
+    "labelKey": "pages.settings.displayPanel.mode",
     "description": "Light or dark appearance for the dashboard",
     "tab": "display",
     "type": "buttonGroup",
@@ -530,6 +594,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.palette",
     "label": "Palette",
+    "labelKey": "pages.settings.displayPanel.palette",
     "description": "Choose a color palette for your sidebar sessions.",
     "tab": "display",
     "type": "buttonGroup",
@@ -538,6 +603,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.theme",
     "label": "Theme",
+    "labelKey": "pages.settings.displayPanel.theme",
     "description": "Select a theme for the dashboard",
     "tab": "display",
     "type": "select",
@@ -546,6 +612,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.zoom-level",
     "label": "Zoom Level",
+    "labelKey": "pages.settings.displayPanel.zoom_level",
     "tab": "display",
     "type": "stepper",
     "occurrence": 1
@@ -553,6 +620,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "notifications.play-sound-on-new-notifications",
     "label": "Play sound on new notifications",
+    "labelKey": "pages.settings.notificationsPanel.play_sound_on_new_notifications",
     "tab": "notifications",
     "type": "toggle",
     "occurrence": 1
@@ -560,6 +628,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "privacy.record-metrics",
     "label": "Record metrics",
+    "labelKey": "pages.settings.privacyPanel.recordMetricsLabel",
     "tab": "privacy",
     "type": "toggle",
     "occurrence": 1,
@@ -568,6 +637,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "security.trust-every-third-party-app",
     "label": "Trust every third-party app",
+    "labelKey": "pages.settings.securityPanel.trustedApps.allow_all_label",
     "description": "Off by default. When on, every third-party app you install can run its own code straight away, without asking you first.",
     "tab": "security",
     "type": "toggle",
@@ -576,6 +646,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "skills.auto-generate-skills-from-sessions",
     "label": "Auto-generate skills from sessions",
+    "labelKey": "pages.settings.skillsPanel.auto_generate_skills_from_sessions",
     "description": "Analyze each completed session and draft a reusable SKILL.md when a non-trivial multi-step procedure is detected. Off by default. Drafts are staged to the pending queue on the Skills tab for review — nothing goes live without your approval (see below).",
     "tab": "skills",
     "type": "toggle",
@@ -585,6 +656,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "skills.require-approval-before-generated-skills-go-live",
     "label": "Require approval before generated skills go live",
+    "labelKey": "pages.settings.skillsPanel.require_approval_before_generated_skills_go_live",
     "description": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
     "tab": "skills",
     "type": "toggle",
@@ -594,6 +666,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.auto-speak-responses",
     "label": "Auto-speak Responses",
+    "labelKey": "pages.settings.voicePanel.auto_speak_responses",
     "description": "Speak every assistant reply automatically",
     "tab": "voice",
     "type": "toggle",
@@ -602,6 +675,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.auto-submit-when-i-finish-speaking",
     "label": "Auto-submit when I finish speaking",
+    "labelKey": "pages.settings.sttSettings.endpointing",
     "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
     "tab": "voice",
     "type": "toggle",
@@ -610,6 +684,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.aws-profile-amazon-polly",
     "label": "AWS Profile (Amazon Polly)",
+    "labelKey": "pages.settings.voicePanel.aws_profile_polly",
     "description": "AWS credentials profile for Amazon Polly",
     "tab": "voice",
     "type": "input",
@@ -618,6 +693,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.aws-profile-transcribe",
     "label": "AWS Profile (Transcribe)",
+    "labelKey": "pages.settings.sttSettings.aws_profile_transcribe",
     "description": "AWS credentials profile for Transcribe (blank = default chain)",
     "tab": "voice",
     "type": "input",
@@ -626,6 +702,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.aws-region-amazon-polly",
     "label": "AWS Region (Amazon Polly)",
+    "labelKey": "pages.settings.voicePanel.aws_region_polly",
     "description": "AWS region for Amazon Polly API",
     "tab": "voice",
     "type": "input",
@@ -634,6 +711,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.aws-region-transcribe",
     "label": "AWS Region (Transcribe)",
+    "labelKey": "pages.settings.sttSettings.aws_region_transcribe",
     "description": "AWS region for Transcribe",
     "tab": "voice",
     "type": "input",
@@ -642,6 +720,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
+    "labelKey": "pages.settings.sttSettings.dictation_panel",
     "description": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion.",
     "tab": "voice",
     "type": "toggle",
@@ -650,6 +729,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.enabled",
     "label": "Enabled",
+    "labelKey": "pages.settings.sttSettings.enabled",
     "description": "Transcribe voice into the message box when you click the mic",
     "tab": "voice",
     "type": "toggle",
@@ -658,6 +738,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.engine",
     "label": "Engine",
+    "labelKey": "pages.settings.voicePanel.engine",
     "description": "Amazon Polly engine type",
     "tab": "voice",
     "type": "select",
@@ -666,6 +747,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.how-the-key-works",
     "label": "How the key works",
+    "labelKey": "pages.settings.sttSettings.ptt_mode",
     "tab": "voice",
     "type": "buttonGroup",
     "occurrence": 1
@@ -673,6 +755,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.language",
     "label": "Language",
+    "labelKey": "pages.settings.sttSettings.language",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
@@ -680,6 +763,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.microphone",
     "label": "Microphone",
+    "labelKey": "pages.settings.sttSettings.microphone",
     "description": "Input device used to capture your voice",
     "tab": "voice",
     "type": "select",
@@ -688,6 +772,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.mlx-model",
     "label": "MLX Model",
+    "labelKey": "pages.settings.sttSettings.mlx_model",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
@@ -695,6 +780,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.model",
     "label": "Model",
+    "labelKey": "pages.settings.sttSettings.model",
     "description": "Larger models are more accurate but slower to run",
     "tab": "voice",
     "type": "select",
@@ -703,6 +789,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.piper-binary",
     "label": "Piper Binary",
+    "labelKey": "pages.settings.voicePanel.piper_binary",
     "description": "Path to the piper executable. Leave blank to auto-detect on PATH or ~/piper-venv/bin/piper",
     "tab": "voice",
     "type": "input",
@@ -711,6 +798,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.piper-model",
     "label": "Piper Model",
+    "labelKey": "pages.settings.voicePanel.piper_model",
     "description": "Path to the Piper voice model (.onnx). Required — download from github.com/rhasspy/piper",
     "tab": "voice",
     "type": "input",
@@ -719,6 +807,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.provider",
     "label": "Provider",
+    "labelKey": "pages.settings.sttSettings.provider",
     "description": "Whisper, MLX and Apple Speech run locally; Transcribe calls AWS",
     "tab": "voice",
     "type": "select",
@@ -727,6 +816,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.provider-2",
     "label": "Provider",
+    "labelKey": "pages.settings.voicePanel.provider",
     "description": "Piper runs locally and offline; Amazon Polly uses AWS credentials + network",
     "tab": "voice",
     "type": "select",
@@ -735,6 +825,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.speed",
     "label": "Speed",
+    "labelKey": "pages.settings.voicePanel.speed",
     "description": "Speech rate",
     "tab": "voice",
     "type": "select",
@@ -743,6 +834,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.speed-2",
     "label": "Speed",
+    "labelKey": "pages.settings.voicePanel.speed",
     "description": "Piper speech speed (length scale)",
     "tab": "voice",
     "type": "select",
@@ -751,6 +843,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.streaming",
     "label": "Streaming",
+    "labelKey": "pages.settings.sttSettings.streaming",
     "description": "Stream live partial transcripts into the input box as you speak. Supported by Transcribe (AWS) and Apple Speech (on-device).",
     "tab": "voice",
     "type": "toggle",
@@ -759,6 +852,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.tap-vs-hold-cutoff",
     "label": "Tap vs. hold cutoff",
+    "labelKey": "pages.settings.sttSettings.ptt_hold_threshold",
     "description": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on.",
     "tab": "voice",
     "type": "stepper",
@@ -767,6 +861,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.voice",
     "label": "Voice",
+    "labelKey": "pages.settings.voicePanel.voice",
     "description": "Amazon Polly voice for TTS",
     "tab": "voice",
     "type": "select",

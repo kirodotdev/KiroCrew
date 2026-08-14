@@ -10,12 +10,9 @@
  *   - a translation call        `label={t('settings.display.language.label')}`
  *
  * The `t()` form is resolved against `src/i18n/locales/en.json`, so the
- * generated registry keeps holding real English text. This matters because the
- * registry powers command-palette settings SEARCH: if a translated label were
- * skipped (as a plain "dynamic label" is), that setting would silently vanish
- * from search — the control still renders, but nobody can find it. Resolving
- * the key instead of skipping it is what keeps i18n conversion invisible to the
- * search index.
+ * generated registry keeps holding real English text for command-palette
+ * search. Its catalog key is retained separately so deep-link highlighting can
+ * match the label rendered in the user's active locale.
  *
  * Search is indexed in English on purpose: `SETTINGS_REGISTRY` is generated at
  * build time and cannot vary per user language. Localizing it would mean
@@ -175,6 +172,17 @@ function extractStringProp(source: string, propName: string): string | undefined
   return undefined
 }
 
+/** Return the catalog key when a JSX prop is a supported translation call. */
+function extractTranslationKeyProp(source: string, propName: string): string | undefined {
+  const tCall = new RegExp(
+    `${propName}=\\{\\s*(?:i18nT|t)\\(\\s*['"]([^'"]+)['"]\\s*\\)\\s*\\}`,
+    'g',
+  )
+  const match = tCall.exec(source)
+  if (!match) return undefined
+  return getEnCatalog()[match[1]] === undefined ? undefined : match[1]
+}
+
 /**
  * Walk source from `start` (just after `<Component`) to find the complete
  * props string, respecting brace depth so `>` inside `{...}` (arrow fns,
@@ -262,11 +270,13 @@ export function extractFromSource(
         skipped++
         continue
       }
+      const labelKey = extractTranslationKeyProp(props, 'label')
       const description = extractStringProp(props, 'description')
       const configKey = extractStringProp(props, 'configKey')
       entries.push({
         id: '',
         label,
+        ...(labelKey ? { labelKey } : {}),
         description: description || undefined,
         tab,
         type: PRIMITIVE_MAP[primitiveName],
