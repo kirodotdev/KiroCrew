@@ -5875,7 +5875,8 @@
       "apply_restart": "Anwenden & neu starten",
       "restart_failed": "Neustart fehlgeschlagen",
       "restarting": "Wird neu gestartet…",
-      "sessions_restarted_config_applied": "Sitzungen neu gestartet — Konfiguration angewendet."
+      "sessions_restarted_config_applied": "Sitzungen neu gestartet — Konfiguration angewendet.",
+      "sessions_restarted_but_mcp_sync_failed": "Sitzungen neu gestartet, aber MCP-Synchronisierung fehlgeschlagen – Gateway-Logs prüfen"
     },
     "runInTerminalBtn": {
       "cancel": "Abbrechen",
@@ -9096,7 +9097,7 @@
         "undo": "Rückgängig",
         "uninstall": "Deinstallieren",
         "unknown": "Unbekannt",
-        "unverified": "ungeprüft"
+        "declared": "Deklariert"
       },
       "memoryGraphTab": {
         "all_count": "Alle ({{count}})",

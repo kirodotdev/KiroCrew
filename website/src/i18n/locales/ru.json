@@ -6049,7 +6049,8 @@
       "apply_restart": "Применить и перезапустить",
       "restart_failed": "Не удалось перезапустить",
       "restarting": "Перезапуск…",
-      "sessions_restarted_config_applied": "Сессии перезапущены — конфигурация применена."
+      "sessions_restarted_config_applied": "Сессии перезапущены — конфигурация применена.",
+      "sessions_restarted_but_mcp_sync_failed": "Сеансы перезапущены, но синхронизация MCP не удалась — проверьте журналы шлюза"
     },
     "runInTerminalBtn": {
       "cancel": "Отмена",
@@ -9322,7 +9323,7 @@
         "undo": "Отменить",
         "uninstall": "Удалить",
         "unknown": "Неизвестно",
-        "unverified": "не проверено"
+        "declared": "Объявлено"
       },
       "memoryGraphTab": {
         "all_count": "Все ({{count}})",

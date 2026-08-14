@@ -5875,7 +5875,8 @@
       "apply_restart": "लागू करें और पुनः आरंभ करें",
       "restart_failed": "रीस्टार्ट विफल",
       "restarting": "पुनः आरंभ हो रहा है…",
-      "sessions_restarted_config_applied": "सेशन रीस्टार्ट हुए — कॉन्फ़िगरेशन लागू हो गया।"
+      "sessions_restarted_config_applied": "सेशन रीस्टार्ट हुए — कॉन्फ़िगरेशन लागू हो गया।",
+      "sessions_restarted_but_mcp_sync_failed": "सत्र पुनः प्रारंभ हुए, लेकिन MCP सिंक विफल रहा — गेटवे लॉग देखें"
     },
     "runInTerminalBtn": {
       "cancel": "रद्द करें",
@@ -9096,7 +9097,7 @@
         "undo": "अनडू",
         "uninstall": "अनइंस्टॉल करें",
         "unknown": "अज्ञात",
-        "unverified": "असत्यापित"
+        "declared": "घोषित"
       },
       "memoryGraphTab": {
         "all_count": "सभी ({{count}})",

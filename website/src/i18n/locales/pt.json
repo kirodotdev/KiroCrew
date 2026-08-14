@@ -5962,7 +5962,8 @@
       "apply_restart": "Aplicar e reiniciar",
       "restart_failed": "Falha ao reiniciar",
       "restarting": "Reiniciando…",
-      "sessions_restarted_config_applied": "Sessões reiniciadas — configuração aplicada."
+      "sessions_restarted_config_applied": "Sessões reiniciadas — configuração aplicada.",
+      "sessions_restarted_but_mcp_sync_failed": "Sessões reiniciadas, mas a sincronização do MCP falhou — verifique os logs do gateway"
     },
     "runInTerminalBtn": {
       "cancel": "Cancelar",
@@ -9209,7 +9210,7 @@
         "undo": "Desfazer",
         "uninstall": "Desinstalar",
         "unknown": "Desconhecido",
-        "unverified": "não verificado"
+        "declared": "Declarado"
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

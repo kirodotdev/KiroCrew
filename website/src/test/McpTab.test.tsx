@@ -147,3 +147,26 @@ describe('McpTab needs_auth status', () => {
     expect(screen.queryByText('Not verified')).not.toBeInTheDocument()
   })
 })
+
+describe('McpTab declared-vs-handshake status', () => {
+  it('a declared server shows "Declared", never the green "Online"', async () => {
+    // probeMode 'declared' means the tool list came from the package's own
+    // static declaration — nothing spawned the server. Rendering the same green
+    // "Online" as a handshake-proven row asserts something no one verified.
+    mockApi.mcpServers.mockResolvedValue([
+      { ...server('managed'), probeMode: 'declared', probedAt: 1_700_000_000 },
+    ])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('Declared')).toBeInTheDocument())
+    expect(screen.queryByText('Online')).not.toBeInTheDocument()
+  })
+
+  it('a handshake-proven server still shows "Online"', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      { ...server('real'), probeMode: 'handshake', probedAt: 1_700_000_000 },
+    ])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('Online')).toBeInTheDocument())
+    expect(screen.queryByText('Declared')).not.toBeInTheDocument()
+  })
+})

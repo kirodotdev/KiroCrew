@@ -31,7 +31,13 @@ import aiohttp
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, kiro_agents_dir
-from kiro_crew.env import emit_env, sanitize_spec_env, spec_env_path, spec_path_key
+from kiro_crew.env import (
+    denied_spec_env_keys,
+    emit_env,
+    sanitize_spec_env,
+    spec_env_path,
+    spec_path_key,
+)
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
@@ -1494,11 +1500,11 @@ async def probe_server(
         _path_key = spec_path_key(server.env)
         _declared_path = server.env.get(_path_key, "") if _path_key else ""
         env["PATH"] = spec_env_path(_declared_path if isinstance(_declared_path, str) else "")
-        # Same launcher-injection rule as the cron tool bridge: the declared
-        # env is untrusted config text applied to the environment the SANDBOX
-        # LAUNCHER starts under, so loader/interpreter injection keys must not
-        # pass through — they would execute before confinement exists. See
-        # env.sanitize_spec_env.
+        # The declared env is untrusted config text applied to the environment
+        # the SANDBOX LAUNCHER starts under, so loader/interpreter injection
+        # keys must not pass through — they would execute before confinement
+        # exists. See env.sanitize_spec_env; _note_denied_env explains a
+        # resulting failure to the dashboard reader.
         env.update(
             sanitize_spec_env(
                 (k, v) for k, v in server.env.items() if k != _path_key
@@ -1945,7 +1951,33 @@ async def probe_all() -> list[McpServerInfo]:
             out.append(servers[i])
         else:
             out.append(r)  # type: ignore[arg-type]
+    for s in out:
+        _note_denied_env(s)
     return out
+
+
+def _note_denied_env(server: McpServerInfo) -> None:
+    """Name the policy-dropped env keys on a FAILED probe.
+
+    The probe strips loader/interpreter injection keys before spawning, so a
+    server configured through one of them (a Python server using
+    ``env.PYTHONPATH`` is the realistic case) can fail here while working in a
+    session, where kiro-cli spawns it with no launcher of ours in the chain.
+    The sanitizer logs each drop, but the person reading a red badge is looking
+    at the dashboard, not the gateway log — without this the row reads as a
+    probe bug instead of a deliberate boundary. Only annotates errors: on a
+    success the drop changed nothing worth reporting.
+    """
+    if server.status != "error" or not server.error:
+        return
+    dropped = denied_spec_env_keys(server.env or {})
+    if not dropped:
+        return
+    server.error = (
+        f"{server.error} (probe dropped declared env "
+        f"{', '.join(sorted(dropped))}: these execute in the sandbox launcher "
+        f"before confinement, so the probe cannot honour them — a session still does)"
+    )
 
 
 def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:

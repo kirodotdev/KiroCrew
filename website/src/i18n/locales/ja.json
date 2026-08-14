@@ -5788,7 +5788,8 @@
       "apply_restart": "適用して再起動",
       "restart_failed": "再起動に失敗しました",
       "restarting": "再起動中…",
-      "sessions_restarted_config_applied": "セッションを再起動 — 設定を適用しました。"
+      "sessions_restarted_config_applied": "セッションを再起動 — 設定を適用しました。",
+      "sessions_restarted_but_mcp_sync_failed": "セッションを再起動しましたが、MCP の同期に失敗しました — ゲートウェイのログを確認してください"
     },
     "runInTerminalBtn": {
       "cancel": "キャンセル",
@@ -8983,7 +8984,7 @@
         "undo": "元に戻す",
         "uninstall": "アンインストール",
         "unknown": "不明",
-        "unverified": "未検証"
+        "declared": "宣言のみ"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",

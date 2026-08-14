@@ -5875,7 +5875,8 @@
       "apply_restart": "প্রয়োগ ও রিস্টার্ট",
       "restart_failed": "রিস্টার্ট ব্যর্থ",
       "restarting": "রিস্টার্ট হচ্ছে…",
-      "sessions_restarted_config_applied": "সেশন রিস্টার্ট হয়েছে — কনফিগ প্রয়োগ হয়েছে।"
+      "sessions_restarted_config_applied": "সেশন রিস্টার্ট হয়েছে — কনফিগ প্রয়োগ হয়েছে।",
+      "sessions_restarted_but_mcp_sync_failed": "সেশন পুনরায় চালু হয়েছে, কিন্তু MCP সিঙ্ক ব্যর্থ হয়েছে — গেটওয়ে লগ দেখুন"
     },
     "runInTerminalBtn": {
       "cancel": "বাতিল",
@@ -9096,7 +9097,7 @@
         "undo": "আনডু",
         "uninstall": "আনইনস্টল",
         "unknown": "অজানা",
-        "unverified": "যাচাই করা হয়নি"
+        "declared": "ঘোষিত"
       },
       "memoryGraphTab": {
         "all_count": "সব ({{count}})",

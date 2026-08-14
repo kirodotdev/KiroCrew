@@ -914,3 +914,26 @@ class TestSanitizeSpecEnv:
         out = env_mod.emit_env({"PYTHONPATH": "/srv/lib", "LD_PRELOAD": "/x.so"})
         assert out["PYTHONPATH"] == "/srv/lib"
         assert out["LD_PRELOAD"] == "/x.so"
+
+
+class TestDeniedSpecEnvKeys:
+    """The reporting counterpart of the sanitizer: what did policy remove?"""
+
+    def test_names_what_the_sanitizer_would_drop(self) -> None:
+        env = {"PYTHONPATH": "/srv", "LD_PRELOAD": "/x.so", "TOKEN": "t", "PATH": "/b"}
+        assert sorted(env_mod.denied_spec_env_keys(env)) == ["LD_PRELOAD", "PYTHONPATH"]
+
+    def test_matches_the_sanitizer_case_insensitively(self) -> None:
+        """Both sides must agree, or a dropped key goes unexplained."""
+        env = {"pythonpath": "/srv", "Ld_Preload": "/x.so", "ok": "1"}
+        dropped = env_mod.denied_spec_env_keys(env)
+        kept = env_mod.sanitize_spec_env([(k, str(v)) for k, v in env.items()])
+        assert sorted(dropped) == ["Ld_Preload", "pythonpath"]
+        assert set(dropped).isdisjoint(kept)
+
+    def test_clean_env_names_nothing(self) -> None:
+        assert env_mod.denied_spec_env_keys({"TOKEN": "t", "PATH": "/b"}) == []
+
+    def test_non_string_keys_are_ignored(self) -> None:
+        """Config JSON is unvalidated; a malformed key must not raise here."""
+        assert env_mod.denied_spec_env_keys({1: "x"}) == []  # type: ignore[dict-item]

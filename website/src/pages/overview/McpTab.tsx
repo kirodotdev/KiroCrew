@@ -461,21 +461,28 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                   </div>
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">
-                  <Badge variant={mcpStatusVariant(s.status)} title={mcpStatusHint(s.status, s.name)}>
-                    {mcpStatusLabel(s.status)}
-                  </Badge>
-                  {/* "unverified": the tool list is the package's own static declaration —
-                      nothing verified the server can start. Distinct from a handshake-
-                      proven Online so the two cannot be read as the same green. */}
-                  {s.probeMode === 'declared' && s.status === 'ok' && (
-                    <span className="ml-1.5 text-[11px] text-warn" title={i18nT('pages.overview.mcpTab.tool_list_read_from_the_package_s_declaration_th')}>{i18nT('pages.overview.mcpTab.unverified')}</span>
+                  {/* A "declared" row's tool list is the package's own static
+                      declaration — nothing spawned the server. The COLOR carries
+                      that, not a tiny word next to a green badge: green asserts
+                      "it is up", and a peripheral scan of a 12-row table reads
+                      colour long before it reads 11px text. */}
+                  {s.probeMode === 'declared' && s.status === 'ok' ? (
+                    <Badge variant="warn" title={i18nT('pages.overview.mcpTab.tool_list_read_from_the_package_s_declaration_th')}>
+                      {i18nT('pages.overview.mcpTab.declared')}
+                    </Badge>
+                  ) : (
+                    <Badge variant={mcpStatusVariant(s.status)} title={mcpStatusHint(s.status, s.name)}>
+                      {mcpStatusLabel(s.status)}
+                    </Badge>
                   )}
                   {!!s.probedAt && (
                     /* nowrap: the column is narrow enough that "Last probed: 7:47 PM"
-                       wraps to three lines and triples every row's height. */
+                       wraps to three lines and triples every row's height.
+                       The title carries the FULL date+time, so the hover earns
+                       its place instead of restating the visible label. */
                     <div
                       className="text-[11px] text-muted mt-0.5 whitespace-nowrap"
-                      title={i18nT('pages.overview.mcpTab.last_probed')}
+                      title={`${i18nT('pages.overview.mcpTab.last_probed')}: ${fmtDateTime(s.probedAt * 1000)}`}
                     >
                       {i18nT('pages.overview.mcpTab.last_probed')}: {isToday(s.probedAt) ? fmtTime(s.probedAt * 1000) : fmtDateTime(s.probedAt * 1000)}
                     </div>

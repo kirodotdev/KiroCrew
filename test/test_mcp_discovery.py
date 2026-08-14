@@ -19,6 +19,7 @@ from kiro_crew.mcp_discovery import (
     _cache_probe,
     _get_cached,
     _load_mcp_json_by_source,
+    _note_denied_env,
     _probe_cache,
     _probe_remote,
     _read_jsonrpc_response,
@@ -3588,3 +3589,36 @@ class TestFirstPartyManagedArgv:
             await probe_server(server)
 
         assert seen["flag"] is False
+
+
+class TestNoteDeniedEnv:
+    """A red badge caused by policy must say so on the badge's own surface."""
+
+    def _srv(self, **kw):
+        s = McpServerInfo(name="py-srv", command="server", args=[])
+        for k, v in kw.items():
+            setattr(s, k, v)
+        return s
+
+    def test_failed_probe_names_the_dropped_key(self) -> None:
+        s = self._srv(status="error", error="exec failed", env={"PYTHONPATH": "/srv/lib"})
+        _note_denied_env(s)
+        assert "PYTHONPATH" in s.error
+        assert "exec failed" in s.error, "the original cause must survive"
+        assert "a session still does" in s.error, "must say where it DOES work"
+
+    def test_successful_probe_is_left_alone(self) -> None:
+        """The drop changed nothing worth reporting when the server came up."""
+        s = self._srv(status="ok", error=None, env={"PYTHONPATH": "/srv/lib"})
+        _note_denied_env(s)
+        assert s.error is None
+
+    def test_failure_without_denied_keys_is_unchanged(self) -> None:
+        s = self._srv(status="error", error="command not found: server", env={"TOKEN": "t"})
+        _note_denied_env(s)
+        assert s.error == "command not found: server"
+
+    def test_missing_env_does_not_raise(self) -> None:
+        s = self._srv(status="error", error="boom", env=None)
+        _note_denied_env(s)
+        assert s.error == "boom"

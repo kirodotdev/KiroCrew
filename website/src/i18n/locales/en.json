@@ -4175,7 +4175,8 @@
     },
     "restartButton": {
       "apply_restart": "Apply & Restart",
-      "restarting": "Restarting…"
+      "restarting": "Restarting…",
+      "sessions_restarted_but_mcp_sync_failed": "Sessions restarted, but MCP sync failed — check gateway logs"
     },
     "runInTerminalBtn": {
       "cancel": "Cancel",
@@ -6121,7 +6122,7 @@
         "tools_2": "tools",
         "undo": "Undo",
         "uninstall": "Uninstall",
-        "unverified": "unverified"
+        "declared": "Declared"
       },
       "memoryGraphTab": {
         "loading_graph_data": "Loading graph data…",

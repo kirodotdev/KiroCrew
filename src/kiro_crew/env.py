@@ -681,6 +681,23 @@ def sanitize_spec_env(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
     return out
 
 
+def denied_spec_env_keys(env: "Mapping[str, object]") -> list[str]:
+    """The keys :func:`sanitize_spec_env` would drop from *env*, in spec order.
+
+    Exists so a caller can EXPLAIN itself. The sanitizer's WARNING lands in the
+    gateway log, which is not where someone staring at a red status badge is
+    looking: a Python server configured through ``env.PYTHONPATH`` probes as an
+    error while working fine in a session, and without naming the dropped key
+    that reads as a probe bug rather than a policy decision.
+    """
+    return [
+        k
+        for k in env
+        if isinstance(k, str)
+        and any(k.upper().startswith(p) for p in _SPEC_ENV_DENIED_PREFIXES)
+    ]
+
+
 def spec_path_key(env: "Mapping[str, object]") -> str | None:
     """The key under which *env* declares a PATH, or ``None``.
 

@@ -5962,7 +5962,8 @@
       "apply_restart": "Appliquer et redémarrer",
       "restart_failed": "Échec du redémarrage",
       "restarting": "Redémarrage…",
-      "sessions_restarted_config_applied": "Sessions redémarrées — configuration appliquée."
+      "sessions_restarted_config_applied": "Sessions redémarrées — configuration appliquée.",
+      "sessions_restarted_but_mcp_sync_failed": "Sessions redémarrées, mais la synchronisation MCP a échoué — vérifiez les journaux de la passerelle"
     },
     "runInTerminalBtn": {
       "cancel": "Annuler",
@@ -9209,7 +9210,7 @@
         "undo": "Annuler",
         "uninstall": "Désinstaller",
         "unknown": "Inconnu",
-        "unverified": "non vérifié"
+        "declared": "Déclaré"
       },
       "memoryGraphTab": {
         "all_count": "Tous ({{count}})",

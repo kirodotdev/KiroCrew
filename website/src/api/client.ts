@@ -1606,7 +1606,15 @@ export const api = {
   vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
   memoryGraph: () => fetch('/api/memory/graph').then(j),
   consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
-  restartSessions: () => post('/api/sessions/restart').then(j),
+  restartSessions: () =>
+    post('/api/sessions/restart').then(j) as Promise<{
+      ok: boolean
+      sessions_reset: number
+      mcp_synced: number
+      /** false when the MCP reconcile FAILED before the restart: sessions did
+       *  restart, but against a config that may not match the sources. */
+      mcp_sync_ok: boolean
+    }>,
   sessionsContext: () => fetch('/api/sessions/context').then(j),
   sessionsMemory: () => fetch('/api/sessions/memory').then(j) as Promise<{
     sessions: {

@@ -65,4 +65,36 @@ describe('RestartButton', () => {
     await act(async () => { release?.() })
     await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
   })
+
+  it('reports a FAILED MCP reconcile instead of claiming the config was applied', async () => {
+    // The HTTP call succeeded and the sessions did restart, but the reconcile
+    // before it failed — so the config on disk may not match the sources.
+    // Claiming "config applied" here is the lie this button exists to avoid.
+    restartSessions.mockResolvedValue({
+      ok: true,
+      sessions_reset: 2,
+      mcp_synced: 0,
+      mcp_sync_ok: false,
+    } as never)
+    render(<RestartButton />)
+
+    fireEvent.click(screen.getByRole('button'))
+    const msg = await screen.findByText(/mcp sync failed/i)
+    expect(msg.className).toContain('text-danger')
+    expect(screen.queryByText(/config applied/i)).not.toBeInTheDocument()
+  })
+
+  it('still reports plain success when the reconcile is ok', async () => {
+    restartSessions.mockResolvedValue({
+      ok: true,
+      sessions_reset: 2,
+      mcp_synced: 3,
+      mcp_sync_ok: true,
+    } as never)
+    render(<RestartButton />)
+
+    fireEvent.click(screen.getByRole('button'))
+    const ok = await screen.findByText(/config applied/i)
+    expect(ok.className).toContain('text-ok')
+  })
 })

@@ -330,9 +330,11 @@ Probes run from `POST /api/mcp/probe`:
       "this package declares these tools", not "the server answered", and the
       default log level is WARNING, so at info it would be invisible on exactly the
       hosts where it always happens. The result also carries
-      `probeMode: "declared"` into the cache and the API payload, so the
-      dashboard renders the substitution instead of an indistinguishable green
-      badge. Third-party servers have no declaration to
+      `probeMode: "declared"` into the cache and the API payload, and the
+      dashboard renders it as a **warn `Declared` badge rather than a green
+      `Online`** — colour carries the distinction, because a scan of a dozen
+      rows reads colour long before it reads small print. Third-party servers
+      have no declaration to
       read and keep the honest `mcp_probe_sandbox_unavailable` error.
     - Modules are imported **lazily** (they pull in the validation/artifacts graph,
       which cannot be imported at `mcp_discovery` import time). Any failure returns
@@ -399,8 +401,18 @@ Apply does **not** restart sessions. Scope changes take effect at the next
 session spawn; the header's Apply & Restart calls `POST /api/sessions/restart`
 to drain the warm pool of pre-spawned processes carrying the old config, so a
 freshly installed server is mounted on the next session rather than the one
-after it. The response carries `mcp_sync_ok`: a reconcile that FAILED is
-reported rather than dressed up as a successful apply.
+after it. The response carries `mcp_sync_ok`, and `RestartButton` READS it: a
+reconcile that failed is reported in the danger tint instead of the usual
+"sessions restarted, config applied". Honesty that lives only in a JSON body no
+user sees is not honesty — the sessions did restart, but against a config that
+may not match the sources, and that is the one thing the caller needs told.
+
+A probe that FAILS after the sanitizer stripped a declared env key names the key
+in its error (`_note_denied_env`). The sanitizer's own WARNING goes to the
+gateway log, which is not where someone staring at a red badge is looking: a
+Python server configured through `env.PYTHONPATH` fails the probe while working
+in a session, and unexplained that reads as a probe bug rather than the
+launcher boundary it is.
 
 ## How app agents reach MCP servers
 

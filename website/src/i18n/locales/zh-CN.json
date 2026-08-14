@@ -5788,7 +5788,8 @@
       "apply_restart": "应用并重启",
       "restart_failed": "重启失败",
       "restarting": "正在重启…",
-      "sessions_restarted_config_applied": "会话已重启 — 配置已应用。"
+      "sessions_restarted_config_applied": "会话已重启 — 配置已应用。",
+      "sessions_restarted_but_mcp_sync_failed": "会话已重启，但 MCP 同步失败 — 请检查 gateway 日志"
     },
     "runInTerminalBtn": {
       "cancel": "取消",
@@ -8983,7 +8984,7 @@
         "undo": "撤销",
         "uninstall": "卸载",
         "unknown": "未知",
-        "unverified": "未验证"
+        "declared": "仅声明"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",
