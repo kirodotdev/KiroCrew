@@ -822,3 +822,52 @@ class TestGptMediaFilterBehavior:
         assert len(raw) <= 8000
         # Must decode cleanly (no invalid trailing bytes) and drop the split char.
         assert raw.decode("utf-8") == "x" * 7999
+
+
+class TestDeploymentNeutralFramingParity:
+    """The four reviewer lanes carry an inlined copy of the deployment-neutral
+    framing (issue #3451). The copies are verbatim and unguarded by any shared
+    source file on main, so this asserts they stay byte-identical to EACH
+    OTHER after dedent -- an edit to one copy that does not touch the other
+    three recreates the cross-lane contradiction the swap removed."""
+
+    LANES = (
+        "design-review.yml",
+        "fork-design-review.yml",
+        "codex-review.yml",
+        "fork-gpt-review.yml",
+    )
+    FIRST = "DO NOT REASON FROM AN ASSUMED USER COUNT"
+    LAST = "speculative surface."
+
+    def _framing_block(self, workflow: str) -> str:
+        text = _workflow(workflow)
+        lines = text.splitlines()
+        start = next(
+            i for i, line in enumerate(lines) if self.FIRST in line
+        )
+        end = next(
+            i for i, line in enumerate(lines[start:], start)
+            if line.strip().endswith(self.LAST)
+        )
+        block = lines[start : end + 1]
+        indent = len(block[0]) - len(block[0].lstrip())
+        return "\n".join(
+            line[indent:] if line.strip() else "" for line in block
+        )
+
+    def test_all_four_lanes_carry_an_identical_framing_block(self):
+        blocks = {name: self._framing_block(name) for name in self.LANES}
+        reference = blocks[self.LANES[0]]
+        for name, block in blocks.items():
+            assert block == reference, (
+                f"{name} framing block drifted from {self.LANES[0]}; "
+                "the deployment-neutral framing must stay byte-identical "
+                "across all four reviewer lanes (issue #3451)"
+            )
+
+    def test_no_lane_reintroduces_the_single_user_premise(self):
+        for name in self.LANES + ("ux-review.yml", "fork-ux-review.yml"):
+            flat = _flat(_workflow(name))
+            assert "Keep review proportional to that shape" not in flat, name
+            assert "It is a single-user tool: every component" not in flat, name
