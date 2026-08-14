@@ -86,6 +86,7 @@ def sessions():
     sm = MagicMock()
     sm.remove = AsyncMock()
     sm.destroy = AsyncMock()
+    sm.discard_conversation = AsyncMock()
     sm.stop_turn = AsyncMock(return_value="soft")
     sm.try_acquire = AsyncMock(return_value=False)
     sm.has_session = MagicMock(return_value=False)
@@ -2009,11 +2010,18 @@ class TestCompactCommand:
         assert "Compaction timed out." in _texts(slack)
 
     @pytest.mark.asyncio
-    async def test_exception_destroys_the_session(self, slack, sessions):
+    async def test_exception_discards_the_conversation(self, slack, sessions):
+        """The wedged conversation goes; the session's channel identity stays.
+
+        ``discard_conversation`` shuts the provider down and drops the resume
+        sid exactly like ``destroy``, but keeps the session-map entry that
+        carries the thread linkage.
+        """
         provider = MagicMock()
         provider.compact = AsyncMock(side_effect=RuntimeError("stdio died"))
         sessions.try_acquire = AsyncMock(return_value=True)
         sessions.get_provider = MagicMock(return_value=provider)
         await h._handle_compact_command(slack, sessions, "C1", "t1", "msg1", "t1")
         assert "Compaction failed unexpectedly." in _texts(slack)
-        sessions.destroy.assert_awaited_once_with("t1")
+        sessions.discard_conversation.assert_awaited_once_with("t1")
+        sessions.destroy.assert_not_awaited()

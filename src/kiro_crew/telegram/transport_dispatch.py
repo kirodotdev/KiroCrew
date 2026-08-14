@@ -1537,10 +1537,15 @@ class TelegramDispatcher:
             except Exception:
                 logger.warning("Telegram /compact failed for %s", session_key, exc_info=True)
                 result_text = "❌ Compaction failed unexpectedly."
+                # Drop the wedged native conversation, NOT the session's channel
+                # identity: the map entry carries the mirror binding, so a full
+                # ``destroy`` would silently unlink a mirrored conversation.
+                # Housekeeping never unlinks (see ``SessionMap.prune`` and
+                # ``SessionManager._recycle_held``).
                 try:
-                    await self.sessions.destroy(session_key)
+                    await self.sessions.discard_conversation(session_key)
                 except Exception:
-                    logger.debug("Telegram: destroy after compact failure failed", exc_info=True)
+                    logger.debug("Telegram: discard after compact failure failed", exc_info=True)
 
             final = result_text or "✅ Context compacted."
             if status_id:
@@ -1549,5 +1554,5 @@ class TelegramDispatcher:
                 await self._reply(chat_id, final, thread=thread)
         finally:
             # Always release the semaphore we took. No-op if the except path
-            # already destroyed the session (release() looks up by key).
+            # already tore the session down (release() looks up by key).
             self.sessions.release(session_key)

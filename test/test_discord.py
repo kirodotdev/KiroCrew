@@ -201,6 +201,7 @@ class FakeSessions:
         self.released: list[str] = []
         self.acquired: list[str] = []
         self.destroyed: list[str] = []
+        self.discarded: list[str] = []
         self.successes: list[str] = []
         self.failures: list[str] = []
         self.last_agent: Any = None
@@ -360,6 +361,9 @@ class FakeSessions:
 
     async def destroy(self, key: str) -> None:
         self.destroyed.append(key)
+
+    async def discard_conversation(self, key: str) -> None:
+        self.discarded.append(key)
 
 
 class _FakeHooks:
@@ -1637,7 +1641,7 @@ class TestDispatcher:
         assert any("timed out" in t for _, t, _ in cli.edits) or any(
             "timed out" in t for t, _ in cli.sent
         )
-        assert sess.destroyed == []  # healthy session preserved
+        assert sess.destroyed == [] and sess.discarded == []  # healthy session preserved
 
     @pytest.mark.asyncio
     async def test_link_and_unlink(self) -> None:

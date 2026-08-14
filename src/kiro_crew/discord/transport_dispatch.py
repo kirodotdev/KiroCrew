@@ -1225,11 +1225,16 @@ class DiscordDispatcher:
             except Exception:
                 logger.warning("Discord !compact failed for %s", session_key, exc_info=True)
                 result_text = "❌ Compaction failed unexpectedly."
+                # Drop the wedged native conversation, NOT the session's channel
+                # identity: the map entry carries the mirror binding, so a full
+                # ``destroy`` would silently unlink a mirrored conversation.
+                # Housekeeping never unlinks (see ``SessionMap.prune`` and
+                # ``SessionManager._recycle_held``).
                 try:
-                    await self.sessions.destroy(session_key)
+                    await self.sessions.discard_conversation(session_key)
                 except Exception:
                     logger.debug(
-                        "Discord: destroy after compact failure failed",
+                        "Discord: discard after compact failure failed",
                         exc_info=True,
                     )
 

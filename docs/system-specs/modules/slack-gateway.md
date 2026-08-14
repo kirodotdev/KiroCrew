@@ -336,7 +336,7 @@ Triggers in-place ACP `/compact` on the current thread's session:
 2. Streams `/compact` command, waits for `compaction_status` event
 3. Falls back to `wait_for_compaction()` (shared `COMPACT_WAIT_TIMEOUT_SECS` budget) if no inline status
 4. Posts result (✅/❌) + timing footer
-5. On failure: removes session to force clean restart
+5. On failure: `sessions.discard_conversation(session_key)` — kills the session and drops only the resume sid, so the next message cold-starts. The session-map ENTRY survives, keeping the thread↔session linkage `get_session_for_thread` routes later replies through; `destroy` here would fork the thread into a fresh session with none of its context. Housekeeping never removes a channel identity (see [session](session.md))
 
 ## Wedged-Session Recovery (`AcpPromptBusy`)
 

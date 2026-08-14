@@ -2262,11 +2262,17 @@ async def _handle_compact_command(
                 await slack.post_message(channel, "❌ Compaction failed unexpectedly.", reply_ts)
             except Exception:
                 logger.debug("Failed to post compact error for %s", session_key, exc_info=True)
+            # Drop the wedged native conversation, NOT the session's channel
+            # identity: the map entry carries the thread linkage that
+            # ``get_session_for_thread`` routes every later reply through, so a
+            # full ``destroy`` would fork this thread into a fresh session with
+            # none of its context. Housekeeping never unlinks (see
+            # ``SessionMap.prune`` and ``SessionManager._recycle_held``).
             try:
-                await sessions.destroy(session_key)
+                await sessions.discard_conversation(session_key)
             except Exception:
                 logger.warning(
-                    "Failed to destroy session %s after compact failure",
+                    "Failed to discard conversation %s after compact failure",
                     session_key,
                     exc_info=True,
                 )

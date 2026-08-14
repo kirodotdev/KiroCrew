@@ -141,6 +141,9 @@ class FakeSessionManager:
     async def destroy(self, key):
         self.removed.append(f"destroy:{key}")
 
+    async def discard_conversation(self, key):
+        self.removed.append(f"discard:{key}")
+
     def has_session(self, key):
         return key in self.keys_seen
 
@@ -2703,7 +2706,11 @@ class TestCompactCommand:
 
     @pytest.mark.asyncio
     async def test_compact_exception_cleans_up(self):
-        """When compact() raises, handler posts error and removes session."""
+        """When compact() raises, handler posts an error and tears the session down.
+
+        The teardown discards the wedged native conversation rather than
+        destroying the session-map entry, so the thread keeps its binding.
+        """
         provider = FakeProvider()
 
         async def compact(context=""):
@@ -2718,8 +2725,9 @@ class TestCompactCommand:
         texts = self._posted_texts(slack)
         assert any("unexpectedly" in t for t in texts)
         assert (
-            "destroy:thread1" in sessions.removed
-        ), "Session must be destroyed after compact failure"
+            "discard:thread1" in sessions.removed
+        ), "Session must be torn down after compact failure"
+        assert "destroy:thread1" not in sessions.removed, "the thread binding must survive"
 
     @pytest.mark.asyncio
     async def test_compact_posts_timing_footer_without_ctx(self):

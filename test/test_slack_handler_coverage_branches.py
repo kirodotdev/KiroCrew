@@ -133,6 +133,7 @@ def sessions():
     sm.has_session = MagicMock(return_value=False)
     sm.release = MagicMock()
     sm.destroy = AsyncMock()
+    sm.discard_conversation = AsyncMock()
     sm.get_session_for_thread = MagicMock(return_value=None)
     return sm
 
@@ -422,9 +423,9 @@ class TestCompactCommandFailureArms:
     ):
         slack = FlakySlack("post_message", "remove_reaction")
         sessions.get_provider = MagicMock(return_value=_provider(compact_raises=True))
-        sessions.destroy = AsyncMock(side_effect=RuntimeError("registry locked"))
+        sessions.discard_conversation = AsyncMock(side_effect=RuntimeError("registry locked"))
         await h._handle_compact_command(slack, sessions, "C1", "t1", "m1", "slack:t1")
-        sessions.destroy.assert_awaited_once_with("slack:t1")
+        sessions.discard_conversation.assert_awaited_once_with("slack:t1")
         sessions.release.assert_called_once_with("slack:t1")
 
     @pytest.mark.asyncio

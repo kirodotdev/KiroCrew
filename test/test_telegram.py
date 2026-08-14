@@ -268,6 +268,7 @@ class FakeSessions:
         self.released: list[str] = []
         self.acquired: list[str] = []
         self.destroyed: list[str] = []
+        self.discarded: list[str] = []
         self.successes: list[str] = []
         self.failures: list[str] = []
         self.last_agent: Any = None
@@ -379,6 +380,9 @@ class FakeSessions:
 
     async def destroy(self, key: str) -> None:
         self.destroyed.append(key)
+
+    async def discard_conversation(self, key: str) -> None:
+        self.discarded.append(key)
 
 
 class _FakeHooks:
@@ -2572,7 +2576,7 @@ class TestDispatcher:
         assert any("timed out" in s[0] for s in cli.sent) or any(
             "timed out" in e[1] for e in cli.edits
         )
-        assert sess.destroyed == []  # healthy session preserved
+        assert sess.destroyed == [] and sess.discarded == []  # healthy session preserved
 
     def test_callback_option_echoes_choice_and_redispatches(self) -> None:
         d, cli, sess = _dispatcher({7})
