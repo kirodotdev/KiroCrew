@@ -5581,7 +5581,8 @@
       "size": "大小：",
       "ttl_time_to_live": "TTL（存活时间）",
       "unexpected_response": "意外的响应",
-      "via": "通过"
+      "via": "通过",
+      "public_exposure_warning": "任何拥有已发布链接的人都可以查看此内容。它通过公共互联网提供，且没有任何身份验证。"
     },
     "pullRequestPanel": {
       "a_reviewer": "某位评审者",
@@ -6796,7 +6797,6 @@
       "admin": "管理员",
       "also_create_in_aws_config": "同时在 AWS config 中创建",
       "and_click": "并点击",
-      "anyone_with_the_link_can_view_it": "任何拿到链接的人都能查看",
       "apply_this_policy_yourself_kirocrew_never_edits": "自行应用此策略（Kiro Crew 从不修改你的 IAM）。",
       "artifact_deploy": "工件部署",
       "aws": "aws",
@@ -6813,13 +6813,11 @@
       "bucketownerenforced": "BucketOwnerEnforced",
       "cli_with": "CLI，并使用",
       "click": "— 点击",
-      "cloudfront_net": "*.cloudfront.net",
       "command_kirocrew_never_edits_your_iam_the_first": "命令。Kiro Crew 从不修改你的 IAM。\n              如有任何问题，首次部署会报告确切缺失的权限。",
       "configure_the_profile_on_the": "在",
       "confirm_deploy": "确认部署",
       "confirm_gate_audit": "确认门控 + 审计。",
       "content_is_scanned_for_secrets_and_internal_data": "内容会被扫描以检测密钥和内部数据\n              特征（内部主机名、账户 ID/ARN），在你明确覆盖之前，发布会被阻止并警告。本地目录会与敏感凭证路径进行比对\n              （",
-      "content_is_served_at_a_random": "内容通过随机的",
       "copy": "复制",
       "copy_boundary_policy": "复制边界策略",
       "copy_policy": "复制策略",
@@ -6840,7 +6838,6 @@
       "destroying": "正在销毁“{{name}}”（CloudFront 停用可能需要 5–15 分钟）。",
       "details": "详情",
       "dismiss": "忽略",
-      "domain": "域名 —",
       "e_g_my_sandbox": "例如 my-sandbox",
       "error": "错误：{{error}}",
       "est_cost_not_a_bill": "预估费用（非账单）",
@@ -6915,7 +6912,6 @@
       "takes_a_site_down_fast_url_404_reversible": "可快速下线站点\n              （URL → 404，可恢复）；",
       "tears_down_all_infra_irreversible": "会拆除所有基础设施（不可恢复）。",
       "the_origin_bucket_is_private": "源存储桶是私有的。",
-      "the_published_url_is_public_by_link": "发布的 URL 是凭链接公开的。",
       "then": "，然后",
       "then_apply_it_yourself_to_a_dedicated_role_ident": "，然后自行将其应用到一个专用的\n              角色/身份——通过控制台或你自己的",
       "to_publish_open_an_artifact_and_choose": "要发布，请打开一个工件并选择",
@@ -6932,11 +6928,12 @@
       "verify_access": "验证访问",
       "webapp_kind_badge": "webapp",
       "webapp_other": "{{count}} 个 webapp",
-      "world_readable_no_auth_in_v1_don_t_publish_anyth": "（全网可读；\n              v1 无鉴权）。不要发布任何你不愿放到公开互联网上的内容。",
       "worst_case_tiers_over_each_ttl_window_estimate_n": "（最坏情况层级，按每个 TTL 窗口计算；仅为估算 — 不是 AWS 账单）",
       "writes_only_region_credential_process_via": "（仅通过以下方式写入 region / credential_process：",
       "your_credentials_never_touch_kirocrew": "你的凭证从不接触 Kiro Crew。",
-      "your_host_not_your_laptop_artifact_deploy_shells": "（你的主机）上配置，而不是你的笔记本 — 工件部署会调用"
+      "your_host_not_your_laptop_artifact_deploy_shells": "（你的主机）上配置，而不是你的笔记本 — 工件部署会调用",
+      "public_by_link_warning": "发布的 URL 为凭链接公开：任何拥有该链接的人都可以查看内容——它通过公共互联网提供，没有任何身份验证。",
+      "random_domain_note": "内容通过随机的 *.cloudfront.net 域名提供——不要发布任何你不愿放到公开互联网上的内容。"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· 远端副本中有更新的版本",

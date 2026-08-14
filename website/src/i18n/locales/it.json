@@ -5749,7 +5749,8 @@
       "size": "Dimensione:",
       "ttl_time_to_live": "TTL (durata di vita)",
       "unexpected_response": "Risposta inaspettata",
-      "via": "tramite"
+      "via": "tramite",
+      "public_exposure_warning": "Chiunque abbia il link pubblicato può visualizzare questo contenuto. Viene servito su Internet pubblico senza autenticazione."
     },
     "pullRequestPanel": {
       "a_reviewer": "un revisore",
@@ -6984,7 +6985,6 @@
       "admin": "Amministrazione",
       "also_create_in_aws_config": "Crea anche nella configurazione AWS",
       "and_click": "e clicca su",
-      "anyone_with_the_link_can_view_it": "chiunque abbia il link può visualizzarlo",
       "apply_this_policy_yourself_kirocrew_never_edits": "Applica tu stesso questa policy (Kiro Crew non modifica mai il tuo IAM).",
       "artifact_deploy": "Artifact Deploy",
       "aws": "aws",
@@ -7001,13 +7001,11 @@
       "bucketownerenforced": "BucketOwnerEnforced",
       "cli_with": "CLI con",
       "click": "— clicca su",
-      "cloudfront_net": "*.cloudfront.net",
       "command_kirocrew_never_edits_your_iam_the_first": "comando. Kiro Crew non modifica mai il tuo IAM.\n              Il primo deploy segnala esattamente quale permesso manca, se qualcosa non va.",
       "configure_the_profile_on_the": "Configura il profilo nella",
       "confirm_deploy": "Conferma il deploy",
       "confirm_gate_audit": "Gate di conferma + audit.",
       "content_is_scanned_for_secrets_and_internal_data": "Il contenuto viene analizzato per individuare segreti e segnali di dati\n              interni (nomi host interni, ID account/ARN) e la pubblicazione viene bloccata con un avviso\n              finché non forzi esplicitamente. Le directory locali vengono confrontate con i percorsi di credenziali sensibili\n              (",
-      "content_is_served_at_a_random": "Il contenuto viene servito su un",
       "copy": "Copia",
       "copy_boundary_policy": "Copia la policy di confine",
       "copy_policy": "Copia policy",
@@ -7028,7 +7026,6 @@
       "destroying": "Distruzione di '{{name}}' in corso (la disattivazione di CloudFront può richiedere 5–15 min).",
       "details": "Dettagli",
       "dismiss": "Ignora",
-      "domain": "dominio —",
       "e_g_my_sandbox": "ad es. my-sandbox",
       "error": "Errore: {{error}}",
       "est_cost_not_a_bill": "Costo stimato (non una fattura)",
@@ -7105,7 +7102,6 @@
       "takes_a_site_down_fast_url_404_reversible": "mette offline un sito rapidamente\n              (URL → 404, reversibile);",
       "tears_down_all_infra_irreversible": "smantella tutta l'infrastruttura (irreversibile).",
       "the_origin_bucket_is_private": "Il bucket di origine è privato.",
-      "the_published_url_is_public_by_link": "L'URL pubblicato è accessibile pubblicamente tramite link.",
       "then": ", poi",
       "then_apply_it_yourself_to_a_dedicated_role_ident": ", poi applicala tu stesso a un\n              ruolo/identità dedicato — console o il tuo",
       "to_publish_open_an_artifact_and_choose": "Per pubblicare, apri un artefatto e scegli",
@@ -7124,11 +7120,12 @@
       "webapp_many": "{{count}} webapp",
       "webapp_one": "{{count}} webapp",
       "webapp_other": "{{count}} webapp",
-      "world_readable_no_auth_in_v1_don_t_publish_anyth": "(leggibile da tutti;\n              nessuna autenticazione in v1). Non pubblicare nulla che non metteresti su Internet aperto.",
       "worst_case_tiers_over_each_ttl_window_estimate_n": "(fasce nel caso peggiore, su ciascuna finestra TTL; stima — non la fattura AWS)",
       "writes_only_region_credential_process_via": "(scrive solo region / credential_process tramite",
       "your_credentials_never_touch_kirocrew": "Le tue credenziali non passano mai per Kiro Crew.",
-      "your_host_not_your_laptop_artifact_deploy_shells": "(il tuo host), non il tuo laptop — Artifact Deploy si collega a"
+      "your_host_not_your_laptop_artifact_deploy_shells": "(il tuo host), non il tuo laptop — Artifact Deploy si collega a",
+      "public_by_link_warning": "Gli URL pubblicati sono pubblici tramite link: chiunque abbia il link può visualizzare il contenuto — viene servito su Internet pubblico senza autenticazione.",
+      "random_domain_note": "I contenuti vengono serviti su un dominio *.cloudfront.net casuale: non pubblicare nulla che non metteresti su Internet aperto."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· è disponibile una versione più recente nella copia remota",

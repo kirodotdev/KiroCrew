@@ -10,7 +10,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { AlertCircle, Check, ExternalLink, Globe, Settings, Upload, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Check, ExternalLink, Globe, Settings, Upload, X } from 'lucide-react'
 import { api, type AppPublishProvider } from '../api/client'
 import { Card, Btn } from './ui'
 import SimpleSelect from './SimpleSelect'
@@ -231,6 +231,10 @@ export function PublishHub({
             {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
           </div>
+          <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+            <AlertTriangle className="lucide-inline shrink-0" />
+            <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+          </div>
           <div className="flex gap-2">
             <Btn primary onClick={() => confirmPublish()} disabled={busy}>
               {busy ? i18nT('components.publishHub.publishing_2') : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
@@ -263,6 +267,10 @@ export function PublishHub({
               <p className="text-[12px] text-muted">
                 {i18nT('components.publishHub.publishing_is_blocked_until_scan_findings_are_re')}
               </p>
+              <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+                <AlertTriangle className="lucide-inline shrink-0" />
+                <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+              </div>
               <div className="flex gap-2">
                 <Btn danger onClick={() => { setScanBlocked(null); confirmPublish(true) }} disabled={busy}>
                   {busy ? i18nT('components.publishHub.publishing_2') : i18nT('components.publishHub.override_publish_anyway')}

@@ -932,7 +932,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                          "scan": _redact_text(summarize(findings)) if findings else "clean",
                          "profile": profile, "region": region,
                          "content_digest": content_digest,
-                         "message": "This will publish to a PUBLIC URL on your own AWS. Confirm to proceed."}
+                         "message": "This publishes to your own AWS account. Confirm to proceed."}
 
         # When the caller supplies expected_content_digest on a
         # confirm=true request, re-compute the current digest and reject with

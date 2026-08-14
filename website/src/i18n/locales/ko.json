@@ -5581,7 +5581,8 @@
       "size": "크기:",
       "ttl_time_to_live": "TTL (유효 기간)",
       "unexpected_response": "예기치 않은 응답",
-      "via": "경유"
+      "via": "경유",
+      "public_exposure_warning": "게시된 링크가 있는 사람은 누구나 이 콘텐츠를 볼 수 있습니다. 인증 없이 공용 인터넷에서 제공됩니다."
     },
     "pullRequestPanel": {
       "a_reviewer": "리뷰어",
@@ -6796,7 +6797,6 @@
       "admin": "관리자",
       "also_create_in_aws_config": "AWS config에도 생성",
       "and_click": "그리고 클릭",
-      "anyone_with_the_link_can_view_it": "링크가 있는 누구나 볼 수 있습니다",
       "apply_this_policy_yourself_kirocrew_never_edits": "이 정책은 직접 적용하세요 (Kiro Crew는 IAM을 수정하지 않습니다).",
       "artifact_deploy": "아티팩트 배포",
       "aws": "aws",
@@ -6813,13 +6813,11 @@
       "bucketownerenforced": "BucketOwnerEnforced",
       "cli_with": "CLI, 사용 옵션",
       "click": "— 클릭",
-      "cloudfront_net": "*.cloudfront.net",
       "command_kirocrew_never_edits_your_iam_the_first": "명령. Kiro Crew는 IAM을 수정하지 않습니다.\n 문제가 있으면 첫 배포에서 부족한 권한을 정확히 알려 줍니다.",
       "configure_the_profile_on_the": "프로필을 설정할 곳은",
       "confirm_deploy": "배포 확인",
       "confirm_gate_audit": "확인 게이트 + 감사.",
       "content_is_scanned_for_secrets_and_internal_data": "콘텐츠는 시크릿과 내부 데이터 신호\n (내부 호스트 이름, 계정 ID/ARN)가 있는지 스캔되며, 명시적으로 재정의할 때까지\n 게시가 차단되고 경고가 표시됩니다. 로컬 디렉터리는 민감한 자격 증명 경로와 대조해\n (",
-      "content_is_served_at_a_random": "콘텐츠는 임의의",
       "copy": "복사",
       "copy_boundary_policy": "바운더리 정책 복사",
       "copy_policy": "정책 복사",
@@ -6840,7 +6838,6 @@
       "destroying": "‘{{name}}’을(를) 파기하는 중입니다 (CloudFront 비활성화에 5–15분이 걸릴 수 있습니다).",
       "details": "세부 정보",
       "dismiss": "닫기",
-      "domain": "도메인 —",
       "e_g_my_sandbox": "예: my-sandbox",
       "error": "오류: {{error}}",
       "est_cost_not_a_bill": "예상 비용 (청구서 아님)",
@@ -6915,7 +6912,6 @@
       "takes_a_site_down_fast_url_404_reversible": "사이트를 빠르게 내립니다\n (URL → 404, 되돌릴 수 있음),",
       "tears_down_all_infra_irreversible": "모든 인프라를 철거합니다 (되돌릴 수 없음).",
       "the_origin_bucket_is_private": "오리진 버킷은 비공개입니다.",
-      "the_published_url_is_public_by_link": "게시된 URL은 링크만 있으면 공개됩니다.",
       "then": ", 그다음",
       "then_apply_it_yourself_to_a_dedicated_role_ident": ", 그다음 전용 역할/ID에 직접 적용하세요 —\n 콘솔이나 직접 사용하는",
       "to_publish_open_an_artifact_and_choose": "게시하려면 아티팩트를 열고 선택하세요",
@@ -6932,11 +6928,12 @@
       "verify_access": "액세스 확인",
       "webapp_kind_badge": "webapp",
       "webapp_other": "웹앱 {{count}}개",
-      "world_readable_no_auth_in_v1_don_t_publish_anyth": "(누구나 읽을 수 있으며\n v1에는 인증이 없습니다). 공개 인터넷에 두고 싶지 않은 것은 게시하지 마세요.",
       "worst_case_tiers_over_each_ttl_window_estimate_n": "(최악의 경우 등급, 각 TTL 구간 기준. 추정치이며 AWS 청구서가 아닙니다)",
       "writes_only_region_credential_process_via": "(region / credential_process만 기록하며, 사용 도구는",
       "your_credentials_never_touch_kirocrew": "자격 증명은 Kiro Crew에 전달되지 않습니다.",
-      "your_host_not_your_laptop_artifact_deploy_shells": "(내 호스트)이며 노트북이 아닙니다 — Artifact Deploy는 게이트웨이 프로세스에서"
+      "your_host_not_your_laptop_artifact_deploy_shells": "(내 호스트)이며 노트북이 아닙니다 — Artifact Deploy는 게이트웨이 프로세스에서",
+      "public_by_link_warning": "게시된 URL은 링크만 있으면 공개됩니다: 링크가 있는 사람은 누구나 콘텐츠를 볼 수 있으며, 인증 없이 공용 인터넷에서 제공됩니다.",
+      "random_domain_note": "콘텐츠는 임의의 *.cloudfront.net 도메인에서 제공됩니다 — 공개 인터넷에 올리고 싶지 않은 것은 게시하지 마세요."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· 원격 사본에 더 새로운 버전이 있습니다",

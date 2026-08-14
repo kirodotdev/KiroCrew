@@ -5581,7 +5581,8 @@
       "size": "サイズ:",
       "ttl_time_to_live": "TTL(有効期限)",
       "unexpected_response": "予期しないレスポンス",
-      "via": "経由"
+      "via": "経由",
+      "public_exposure_warning": "公開されたリンクを知っている人は誰でもこのコンテンツを閲覧できます。認証なしで公開インターネット上に配信されます。"
     },
     "pullRequestPanel": {
       "a_reviewer": "レビュアー",
@@ -6796,7 +6797,6 @@
       "admin": "管理者",
       "also_create_in_aws_config": "AWS config にも作成",
       "and_click": "をクリック",
-      "anyone_with_the_link_can_view_it": "リンクを持つ誰もが表示できます",
       "apply_this_policy_yourself_kirocrew_never_edits": "このポリシーを自分で適用してください（Kiro Crew は IAM を編集しません）。",
       "artifact_deploy": "アーティファクトをデプロイ",
       "aws": "aws",
@@ -6813,13 +6813,11 @@
       "bucketownerenforced": "BucketOwnerEnforced",
       "cli_with": "CLI の",
       "click": "— をクリック",
-      "cloudfront_net": "*.cloudfront.net",
       "command_kirocrew_never_edits_your_iam_the_first": "コマンド。Kiro Crew は IAM を編集しません。\n              最初のデプロイで問題があれば正確に不足しているパーミッションを報告します。",
       "configure_the_profile_on_the": "プロファイルを設定するのは",
       "confirm_deploy": "デプロイを確認",
       "confirm_gate_audit": "確認ゲート + 監査。",
       "content_is_scanned_for_secrets_and_internal_data": "コンテンツはシークレットや内部データの兆候\n              （内部ホスト名、アカウント ID/ARN）がないかスキャンされ、明示的に上書きするまでは\n              公開がブロックされ、警告が表示されます。ローカルディレクトリは機密性の高い認証情報パス\n              （",
-      "content_is_served_at_a_random": "コンテンツはランダムに提供されます",
       "copy": "コピー",
       "copy_boundary_policy": "バウンダリーポリシーをコピー",
       "copy_policy": "ポリシーをコピー",
@@ -6840,7 +6838,6 @@
       "destroying": "「{{name}}」を削除しています（CloudFront の無効化には 5–15 分かかる場合があります）。",
       "details": "詳細",
       "dismiss": "非表示",
-      "domain": "ドメイン —",
       "e_g_my_sandbox": "例：my-sandbox",
       "error": "エラー：{{error}}",
       "est_cost_not_a_bill": "推定コスト（請求ではありません）",
@@ -6915,7 +6912,6 @@
       "takes_a_site_down_fast_url_404_reversible": "サイトを高速に停止\n              (URL → 404、可逆);",
       "tears_down_all_infra_irreversible": "すべてのインフラを破棄 (不可逆)。",
       "the_origin_bucket_is_private": "オリジンバケットはプライベートです。",
-      "the_published_url_is_public_by_link": "公開 URL はリンク経由で公開です。",
       "then": "、その後",
       "then_apply_it_yourself_to_a_dedicated_role_ident": "、その後、専用のロール/ID に適用してください\n              コンソール、またはお客様自身の",
       "to_publish_open_an_artifact_and_choose": "公開するには、アーティファクトを開いて選択してください",
@@ -6932,11 +6928,12 @@
       "verify_access": "アクセスを確認",
       "webapp_kind_badge": "webapp",
       "webapp_other": "{{count}} 個のウェブアプリ",
-      "world_readable_no_auth_in_v1_don_t_publish_anyth": "(ワールドリーダブル;\n              v1 は認証なし)。インターネット上で公開したくないものを公開しないでください。",
       "worst_case_tiers_over_each_ttl_window_estimate_n": "(最悪ケースのティア、各 TTL ウィンドウ; 見積もり — AWS の請求書ではありません)",
       "writes_only_region_credential_process_via": "(リージョン / credential_process のみ書き込み",
       "your_credentials_never_touch_kirocrew": "Kiro Crew がお客様の認証情報に触れることはありません。",
-      "your_host_not_your_laptop_artifact_deploy_shells": "（お客様のホスト）であり、お客様のラップトップではありません — Artifact Deploy はゲートウェイプロセスから"
+      "your_host_not_your_laptop_artifact_deploy_shells": "（お客様のホスト）であり、お客様のラップトップではありません — Artifact Deploy はゲートウェイプロセスから",
+      "public_by_link_warning": "公開された URL はリンクを知っていれば誰でもアクセスできます。リンクを知っている人は誰でもコンテンツを閲覧でき、認証なしで公開インターネット上に配信されます。",
+      "random_domain_note": "コンテンツはランダムな *.cloudfront.net ドメインで配信されます。オープンなインターネットに置きたくないものは公開しないでください。"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· リモートコピーでより新しいバージョンが利用可能です",

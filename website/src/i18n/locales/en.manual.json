@@ -1660,7 +1660,8 @@
       "publishing_2": "Publishing…",
       "scan_blocked_finding_one": "Scan blocked ({{count}} finding)",
       "scan_blocked_finding_other": "Scan blocked ({{count}} findings)",
-      "unexpected_response": "Unexpected response"
+      "unexpected_response": "Unexpected response",
+      "public_exposure_warning": "Anyone with the published link can view this content. It is served on the public internet with no authentication."
     },
     "pullRequestPanel": {
       "all_checks_passed": "All checks passed",
@@ -2267,7 +2268,9 @@
       "removed_from_registry_your_aws_config_is_untouche": "Removed from registry (your ~/.aws/config is untouched).",
       "unknown": "unknown",
       "unknown_2": "(unknown)",
-      "update_failed": "update failed"
+      "update_failed": "update failed",
+      "public_by_link_warning": "Published URLs are public-by-link: anyone with the link can view the content — it is served on the public internet with no authentication.",
+      "random_domain_note": "Content is served at a random *.cloudfront.net domain — don't publish anything you wouldn't put on the open internet."
     },
     "artifactDetailPage": {
       "agent_chat": "Agent chat",

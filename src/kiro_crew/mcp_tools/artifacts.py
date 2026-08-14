@@ -1188,7 +1188,10 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
             f"These findings are overridable by a HUMAN: the deploy now "
             f"appears under \"Pending confirmations\" on the Artifact "
             f"Deploy page, where the user can review the findings and "
-            f"explicitly deploy anyway (or dismiss)."
+            f"explicitly deploy anyway (or dismiss).\n"
+            f"\nWARNING: Anyone with the published link can view this content. "
+            f"It is served on the public internet with no authentication. Relay "
+            f"this warning to the user before they confirm."
         )
     # Preview response (requires_confirm is always true for the tool path)
     # Persist as a pending confirmation so the dashboard UI can execute it.
@@ -1204,12 +1207,19 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
         "content_digest": d.get("content_digest", ""),
     }
     add_pending(pending_params)
+    # The relay instruction below is best-effort: the ENFORCED gate is the
+    # dashboard's "Pending confirmations" card, which renders the same warning
+    # next to its own Confirm Deploy button. Keep both — an edit that drops the
+    # card's warning must not assume this line covers it.
     return (
         f"Deploy preview for site '{args['site_id']}':\n"
         f"  Public: {d.get('public', True)}\n"
         f"  Size: {d.get('bytes', '?')} bytes\n"
         f"  Scan: {_deploy_redact(str(d.get('scan', 'clean')))}\n"
         f"  TTL: {args.get('ttl_hours', 72)} hours\n"
+        f"\nWARNING: Anyone with the published link can view this content. "
+        f"It is served on the public internet with no authentication. Relay "
+        f"this warning to the user before they confirm.\n"
         f"\nThis deploy now appears under \"Pending confirmations\" on the "
         f"Artifact Deploy page in the dashboard. Open it to confirm or dismiss."
     )

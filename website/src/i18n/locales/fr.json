@@ -5749,7 +5749,8 @@
       "size": "Taille :",
       "ttl_time_to_live": "TTL (durée de vie)",
       "unexpected_response": "Réponse inattendue",
-      "via": "via"
+      "via": "via",
+      "public_exposure_warning": "Toute personne disposant du lien publié peut voir ce contenu. Il est servi sur l'Internet public sans authentification."
     },
     "pullRequestPanel": {
       "a_reviewer": "un relecteur",
@@ -6984,7 +6985,6 @@
       "admin": "Admin",
       "also_create_in_aws_config": "Créer aussi dans la configuration AWS",
       "and_click": "et cliquez sur",
-      "anyone_with_the_link_can_view_it": "toute personne disposant du lien peut le consulter",
       "apply_this_policy_yourself_kirocrew_never_edits": "Appliquez cette politique vous-même (Kiro Crew ne modifie jamais votre IAM).",
       "artifact_deploy": "Déploiement d'artefacts",
       "aws": "aws",
@@ -7001,13 +7001,11 @@
       "bucketownerenforced": "BucketOwnerEnforced",
       "cli_with": "CLI avec",
       "click": "— cliquez sur",
-      "cloudfront_net": "*.cloudfront.net",
       "command_kirocrew_never_edits_your_iam_the_first": "commande. Kiro Crew ne modifie jamais votre IAM.\n              Le premier déploiement indique l'autorisation manquante exacte en cas de problème.",
       "configure_the_profile_on_the": "Configurez le profil sur la",
       "confirm_deploy": "Confirmer le déploiement",
       "confirm_gate_audit": "Confirmation obligatoire + audit.",
       "content_is_scanned_for_secrets_and_internal_data": "Le contenu est analysé à la recherche de secrets et de signaux de données internes\n              (noms d'hôtes internes, ID de compte/ARN), et la publication est bloquée avec avertissement\n              jusqu'à ce que vous passiez outre explicitement. Les répertoires locaux sont vérifiés par rapport aux chemins d'identifiants sensibles\n              (",
-      "content_is_served_at_a_random": "Le contenu est servi sur un domaine",
       "copy": "Copier",
       "copy_boundary_policy": "Copier la politique de périmètre",
       "copy_policy": "Copier la politique",
@@ -7028,7 +7026,6 @@
       "destroying": "Destruction de « {{name}} » (la désactivation de CloudFront peut prendre 5 à 15 min).",
       "details": "Détails",
       "dismiss": "Ignorer",
-      "domain": "aléatoire —",
       "e_g_my_sandbox": "ex. my-sandbox",
       "error": "Erreur : {{error}}",
       "est_cost_not_a_bill": "Coût est. (pas une facture)",
@@ -7105,7 +7102,6 @@
       "takes_a_site_down_fast_url_404_reversible": "met un site hors ligne rapidement\n              (URL → 404, réversible) ;",
       "tears_down_all_infra_irreversible": "détruit toute l'infrastructure (irréversible).",
       "the_origin_bucket_is_private": "Le bucket d'origine est privé.",
-      "the_published_url_is_public_by_link": "L'URL publiée est publique par lien.",
       "then": ", puis",
       "then_apply_it_yourself_to_a_dedicated_role_ident": ", puis appliquez-la vous-même à un\n              rôle/identité dédié — console ou votre propre",
       "to_publish_open_an_artifact_and_choose": "Pour publier, ouvrez un artefact et choisissez",
@@ -7124,11 +7120,12 @@
       "webapp_many": "{{count}} webapps",
       "webapp_one": "{{count}} webapp",
       "webapp_other": "{{count}} webapps",
-      "world_readable_no_auth_in_v1_don_t_publish_anyth": "(lisible par tous ;\n              aucune authentification en v1). Ne publiez rien que vous ne mettriez pas sur l'internet ouvert.",
       "worst_case_tiers_over_each_ttl_window_estimate_n": "(niveaux au pire cas, sur chaque fenêtre TTL ; estimation — pas la facture AWS)",
       "writes_only_region_credential_process_via": "(n'écrit que region / credential_process via",
       "your_credentials_never_touch_kirocrew": "Vos identifiants ne touchent jamais Kiro Crew.",
-      "your_host_not_your_laptop_artifact_deploy_shells": "(votre hôte), pas votre ordinateur portable — Déploiement d'artefacts appelle"
+      "your_host_not_your_laptop_artifact_deploy_shells": "(votre hôte), pas votre ordinateur portable — Déploiement d'artefacts appelle",
+      "public_by_link_warning": "Les URL publiées sont publiques par lien : toute personne disposant du lien peut voir le contenu — il est servi sur l'Internet public sans authentification.",
+      "random_domain_note": "Le contenu est servi sur un domaine *.cloudfront.net aléatoire — ne publiez rien que vous ne mettriez pas sur l'Internet ouvert."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· une version plus récente est disponible dans la copie distante",

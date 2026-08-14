@@ -5833,7 +5833,8 @@
       "size": "Размер:",
       "ttl_time_to_live": "TTL (время жизни)",
       "unexpected_response": "Неожиданный ответ",
-      "via": "через"
+      "via": "через",
+      "public_exposure_warning": "Любой, у кого есть опубликованная ссылка, может просмотреть этот контент. Он доступен в общедоступном интернете без аутентификации."
     },
     "pullRequestPanel": {
       "a_reviewer": "рецензент",
@@ -7078,7 +7079,6 @@
       "admin": "Admin",
       "also_create_in_aws_config": "Также создать в конфигурации AWS",
       "and_click": "и нажмите",
-      "anyone_with_the_link_can_view_it": "любой, у кого есть ссылка, может его открыть",
       "apply_this_policy_yourself_kirocrew_never_edits": "Примените эту политику самостоятельно (Kiro Crew никогда не изменяет ваш IAM).",
       "artifact_deploy": "Развёртывание артефактов",
       "aws": "aws",
@@ -7095,13 +7095,11 @@
       "bucketownerenforced": "BucketOwnerEnforced",
       "cli_with": "CLI с",
       "click": "— нажмите",
-      "cloudfront_net": "*.cloudfront.net",
       "command_kirocrew_never_edits_your_iam_the_first": "команды. Kiro Crew никогда не изменяет ваш IAM.\n              При первом развёртывании будет указано, какого именно разрешения не хватает, если что-то не так.",
       "configure_the_profile_on_the": "Настройте профиль на",
       "confirm_deploy": "Подтвердить развёртывание",
       "confirm_gate_audit": "Подтверждение + аудит.",
       "content_is_scanned_for_secrets_and_internal_data": "Содержимое проверяется на наличие секретов и признаков внутренних данных\n              (внутренние имена хостов, идентификаторы аккаунтов и ARN), а публикация блокируется с предупреждением,\n              пока вы явно не снимете запрет. Локальные каталоги проверяются на пути с конфиденциальными учётными данными\n              (",
-      "content_is_served_at_a_random": "Содержимое отдаётся на случайном",
       "copy": "Копировать",
       "copy_boundary_policy": "Копировать политику границ разрешений",
       "copy_policy": "Копировать политику",
@@ -7122,7 +7120,6 @@
       "destroying": "Уничтожение «{{name}}» (отключение CloudFront может занять 5–15 мин).",
       "details": "Подробности",
       "dismiss": "Скрыть",
-      "domain": "домене —",
       "e_g_my_sandbox": "например, my-sandbox",
       "error": "Ошибка: {{error}}",
       "est_cost_not_a_bill": "Прибл. стоимость (не счёт)",
@@ -7200,7 +7197,6 @@
       "takes_a_site_down_fast_url_404_reversible": "быстро отключает сайт\n              (URL → 404, обратимо);",
       "tears_down_all_infra_irreversible": "полностью удаляет всю инфраструктуру (необратимо).",
       "the_origin_bucket_is_private": "Бакет-источник является приватным.",
-      "the_published_url_is_public_by_link": "Опубликованный URL доступен всем по ссылке.",
       "then": ", затем",
       "then_apply_it_yourself_to_a_dedicated_role_ident": ", затем примените её самостоятельно к отдельной\n              роли или идентичности — в консоли или собственной",
       "to_publish_open_an_artifact_and_choose": "Чтобы опубликовать, откройте артефакт и выберите",
@@ -7220,11 +7216,12 @@
       "webapp_many": "{{count}} webapp",
       "webapp_one": "{{count}} webapp",
       "webapp_other": "{{count}} webapp",
-      "world_readable_no_auth_in_v1_don_t_publish_anyth": "(доступно всем;\n              без аутентификации в v1). Не публикуйте то, что вы не выложили бы в открытый интернет.",
       "worst_case_tiers_over_each_ttl_window_estimate_n": "(по худшему сценарию для каждого уровня, за окно TTL; оценка — не счёт AWS)",
       "writes_only_region_credential_process_via": "(записывает только region / credential_process через",
       "your_credentials_never_touch_kirocrew": "Ваши учётные данные никогда не попадают в Kiro Crew.",
-      "your_host_not_your_laptop_artifact_deploy_shells": "(ваш хост), а не ваш ноутбук — «Развёртывание артефактов» вызывает"
+      "your_host_not_your_laptop_artifact_deploy_shells": "(ваш хост), а не ваш ноутбук — «Развёртывание артефактов» вызывает",
+      "public_by_link_warning": "Опубликованные URL общедоступны по ссылке: любой, у кого есть ссылка, может просмотреть контент — он доступен в общедоступном интернете без аутентификации.",
+      "random_domain_note": "Контент доступен на случайном домене *.cloudfront.net — не публикуйте то, что не разместили бы в открытом интернете."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· в удалённой копии доступна более новая версия",

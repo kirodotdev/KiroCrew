@@ -316,6 +316,29 @@ class TestDeployArtifactMCPTool:
             assert "preview" in result.lower() or "confirm" in result.lower()
             assert "dashboard" in result.lower()
 
+    def test_deploy_artifact_preview_carries_public_exposure_warning(self):
+        """The preview response states the public/no-auth exposure explicitly.
+
+        Agent-mediated publishes have no UI: this hardcoded line is the only
+        way the exposure warning reaches the user before they confirm.
+        """
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            mock_post.return_value = {
+                "requires_confirm": True,
+                "public": True,
+                "bytes": 4096,
+                "scan": "clean",
+                "site_id": "my-app",
+            }
+
+            result = _call_tool("deploy_artifact", {
+                "site_id": "my-app",
+                "artifact_slug": "my-demo",
+            })
+
+            assert "WARNING: Anyone with the published link can view this content." in result
+            assert "no authentication" in result
+
     def test_deploy_artifact_rejects_confirm_param(self):
         """confirm param is rejected via schema — returns controlled error string."""
         result = _call_tool("deploy_artifact", {
@@ -386,6 +409,9 @@ class TestDeployArtifactMCPTool:
             })
             assert "blocked by scan" in result
             assert "Pending confirmations" in result
+            # The override path commits a publish too — it must carry the
+            # same public/no-auth warning as the clean-preview return.
+            assert "WARNING: Anyone with the published link can view this content." in result
             assert mock_pending.call_count == 1
             assert mock_pending.call_args[0][0]["override_scan_required"] is True
 
