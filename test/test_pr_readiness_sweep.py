@@ -303,6 +303,94 @@ def test_max_dispatch_caps_the_sweep(runner: Runner) -> None:
     )
 
 
+# ── Fairness: oldest-stale-first, never PR-list order ────────────────────────
+
+# A `gh` stub that serves per-SHA readiness statuses, so several PRs can be
+# frozen for different lengths of time in one sweep. The base stub keys statuses
+# only on the subcommand (one fixture for all PRs), which cannot express "PR A is
+# staler than PR B" -- the exact thing this ordering test must vary.
+GH_STUB_PER_SHA = r"""#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1 ${2:-}" = "pr list" ]; then
+  cat "$FIXTURES/prs.json"; exit 0
+fi
+if [ "$1 ${2:-}" = "workflow run" ]; then
+  printf '%s\n' "$*" >> "$FIXTURES/dispatched.txt"; exit 0
+fi
+if [ "$1" = "api" ]; then
+  case "${2:-}" in
+    *"/check-runs") echo '{"check_runs":[]}'; exit 0 ;;
+    *"/commits/"*"/statuses")
+      sha="${2#*/commits/}"; sha="${sha%%/statuses}"
+      cat "$FIXTURES/status_${sha}.json"; exit 0 ;;
+  esac
+fi
+echo "gh stub: unhandled: $*" >&2
+exit 90
+"""
+
+
+def test_dispatch_is_oldest_stale_first(tmp_path: Path, script: str) -> None:
+    """The longest-frozen PR is dispatched first, regardless of PR-list order.
+
+    This is the anti-starvation property: with a per-sweep cap, dispatching in
+    `gh pr list` order (newest-first) permanently defers the oldest, lowest-
+    numbered frozen PRs. Ordering by how long each PR has been stale fixes that.
+    """
+    fixtures = tmp_path / "fixtures"
+    work = tmp_path / "work"
+    bindir = tmp_path / "bin"
+    for d in (fixtures, work, bindir):
+        d.mkdir(parents=True)
+    stub = bindir / "gh"
+    stub.write_text(GH_STUB_PER_SHA)
+    stub.chmod(0o755)
+
+    # PRs as `gh pr list` returns them (newest-numbered first), each frozen for a
+    # DIFFERENT length of time. Staleness order (oldest first) is 3120, 3400, 3612
+    # -- the opposite of the list order for the newest entry.
+    prs = [
+        {"number": 3612, "headRefOid": "aaa"},
+        {"number": 3120, "headRefOid": "bbb"},
+        {"number": 3400, "headRefOid": "ccc"},
+    ]
+    (fixtures / "prs.json").write_text(json.dumps(prs))
+    ages = {
+        "aaa": "2020-01-01T00:00:03Z",  # least stale
+        "bbb": "2020-01-01T00:00:01Z",  # most stale -> first
+        "ccc": "2020-01-01T00:00:02Z",
+    }
+    for sha, at in ages.items():
+        (fixtures / f"status_{sha}.json").write_text(
+            json.dumps([{"context": "PR Readiness", "state": "pending", "updated_at": at}])
+        )
+
+    proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
+        ["bash", "-c", script],
+        cwd=work,
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FIXTURES": str(fixtures),
+            "REPO": "kirodotdev/KiroCrew",
+            "STATUS_CONTEXT": "PR Readiness",
+            "STALE_MINUTES": "15",
+            "MAX_DISPATCH": "200",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    dispatched = (fixtures / "dispatched.txt").read_text().splitlines()
+    order = []
+    for line in dispatched:
+        for tok in line.split():
+            if tok.startswith("pr="):
+                order.append(int(tok.split("=", 1)[1]))
+    assert order == [3120, 3400, 3612], f"expected oldest-first, got {order}"
+
+
 def test_the_sweep_never_recomputes_a_verdict_itself(script: str) -> None:
     """It may only nudge the authoritative workflow.
 
