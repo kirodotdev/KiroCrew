@@ -32,6 +32,7 @@ from meetings_helpers import (  # noqa: F401
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
+from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 from kiro_crew.apps.builtins.meetings.backend.routes import _common
 
 BASE = k.API_BASE
@@ -817,6 +818,49 @@ class TestAgentRoutes:
             assert resp.status == 200
             # Only the agent just enabled — the defaults are NOT re-added.
             assert (await resp.json())["agents_enabled"] == ["note-taker"]
+
+    def _default_output_names(self, root: Path) -> set[str]:
+        """Output filenames the default roster would seed."""
+        config = store.read_config(root)
+        return {
+            store.agent_output_filename(a) for a in sess.get_enabled_agents(config, None)
+        }
+
+    @pytest.mark.asyncio
+    async def test_init_preserves_an_explicit_empty_roster(self, app, root):
+        """On init too, `[]` means "no agents" — not "use the defaults".
+
+        Init seeded its roster with ``field_str_list(...) or meta.get(...)``, and
+        ``or`` is falsy on ``[]``, so an explicitly empty roster fell through to
+        the default set: every default agent got an output file seeded and then
+        ran on the meeting. ``field_str_list`` returns None for absent precisely
+        so the two stay distinguishable.
+        """
+        expected_defaults = self._default_output_names(root)
+        assert expected_defaults, "fixture config must define at least one default agent"
+
+        async with client_for(app) as client:
+            resp = await client.post(
+                f"{BASE}/meetings/standup/init", json={"agents_enabled": []}
+            )
+            assert resp.status == 200
+
+        seeded = {p.name for p in store.meeting_dir("standup", root).iterdir() if p.is_file()}
+        assert not (seeded & expected_defaults), (
+            "an explicitly empty roster must seed no agent output files"
+        )
+
+    @pytest.mark.asyncio
+    async def test_init_without_a_roster_still_seeds_the_defaults(self, app, root):
+        """The other direction: absent must keep meaning "use the defaults"."""
+        expected_defaults = self._default_output_names(root)
+
+        async with client_for(app) as client:
+            resp = await client.post(f"{BASE}/meetings/standup/init", json={})
+            assert resp.status == 200
+
+        seeded = {p.name for p in store.meeting_dir("standup", root).iterdir() if p.is_file()}
+        assert expected_defaults <= seeded
 
     @pytest.mark.asyncio
     async def test_an_illegal_status_transition_is_refused(self, app, fake_sessions):
