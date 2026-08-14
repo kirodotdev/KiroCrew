@@ -73,9 +73,27 @@ def cli_env() -> dict[str, str]:
     in a version-manager-owned bin directory that the gateway process may never
     have had on PATH, so a child that inherits it unchanged cannot find the
     binary that was just installed.
+
+    Two layers, node bins outermost so they win:
+
+    1. :func:`node_augmented_path` prepends the Node bin dirs, so ``npm``/``node``
+       resolve to the managed toolchain.
+    2. :func:`augmented_path` (the inner layer) contributes the broad non-login
+       PATH -- ``~/.local/bin``, ``/opt/homebrew/bin``, the mise shims -- because
+       the mise-managed per-version ``npm`` is itself a wrapper script that runs
+       ``mise reshim`` after a global install. That hook needs the ``mise``
+       binary itself on PATH, and mise installs to ``~/.local/bin`` (or
+       Homebrew's bin), NOT to any Node bin dir. A GUI- or daemon-launched
+       gateway inherits a minimal PATH lacking those dirs, so without this layer
+       the wrapper dies ``mise: command not found`` and, under its
+       ``set -euo pipefail``, fails the whole ``npm install -g`` with rc 127.
+
+    This also aligns the exec env with discovery: :func:`cli_path` already
+    searches over ``node_augmented_path(augmented_path(PATH))``, so the child's
+    PATH now matches the path the binary was resolved on.
     """
     env = dict(os.environ)
-    env["PATH"] = node_augmented_path(env.get("PATH", ""))
+    env["PATH"] = node_augmented_path(augmented_path(env.get("PATH", "")))
     return env
 
 

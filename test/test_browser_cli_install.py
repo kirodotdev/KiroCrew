@@ -261,12 +261,49 @@ def test_step_success_does_not_surface_stderr(monkeypatch: pytest.MonkeyPatch) -
     assert result["steps"][0]["stderr"] == ""
 
 
-def test_cli_env_puts_node_dirs_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A global npm bin dir the gateway never had on PATH must still be found."""
+def test_cli_env_layers_node_dirs_over_the_broad_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Node bins win, and the broad non-login PATH is layered under them.
+
+    A global npm bin dir the gateway never had on PATH must still be found
+    (node layer, outermost). The broad layer under it carries ``~/.local/bin`` /
+    Homebrew's bin so a mise-managed npm's post-install ``mise reshim`` hook can
+    find the ``mise`` binary instead of dying ``mise: command not found``.
+    """
+    monkeypatch.setattr(mod, "augmented_path", lambda base: f"/home/.local/bin:{base}")
     monkeypatch.setattr(mod, "node_augmented_path", lambda base: f"/node/bin:{base}")
     monkeypatch.setenv("PATH", "/usr/bin")
 
-    assert mod.cli_env()["PATH"] == "/node/bin:/usr/bin"
+    assert mod.cli_env()["PATH"] == "/node/bin:/home/.local/bin:/usr/bin"
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX ~ expansion and the ~/.local/bin (mise) layout; Windows uses a different PATH set",
+)
+def test_cli_env_integration_puts_mise_home_bin_on_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The REAL (unstubbed) broad layer must contribute ``~/.local/bin``.
+
+    The stubbed unit tests above lock only the composition order. This one runs
+    the real ``augmented_path`` so it fails if a refactor drops ``~/.local/bin``
+    from the broad PATH -- the dir where the ``mise`` binary lives, without which
+    the post-install ``mise reshim`` hook dies ``mise: command not found`` and
+    ``npm install -g`` fails rc 127. That regression would otherwise be invisible
+    to this suite.
+    """
+    home = tmp_path / "home"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    # Isolate mise's data dir so the assertion does not depend on the host's.
+    monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    path_entries = mod.cli_env()["PATH"].split(os.pathsep)
+
+    assert str(local_bin) in path_entries
 
 
 class TestPerEngineDownloads:
@@ -463,6 +500,7 @@ class TestCliEnvIsPublic:
     def test_cli_env_augments_path_from_node_augmented_path(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(mod, "augmented_path", lambda base: base)
         monkeypatch.setattr(mod, "node_augmented_path", lambda base: f"/nvm/bin:{base}")
         monkeypatch.setenv("PATH", "/usr/local/bin")
 
