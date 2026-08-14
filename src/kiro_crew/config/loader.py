@@ -2279,6 +2279,18 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    dm_single_session: bool = field(
+        default=False,
+        metadata=_meta(
+            "DM Single Session",
+            "Treat each 1:1 DM as one continuous conversation instead of starting "
+            "a new session per top-level message. Replies post at channel root "
+            "rather than in a thread. Threaded replies, group channels and group "
+            "DMs are unaffected. Off by default: turning it on routes the next DM "
+            "to a different session than the previous one.",
+            tags=["slack"],
+        ),
+    )
     home_tab_sessions_per_kind: int = field(
         default=5,
         metadata=_meta(
@@ -6289,6 +6301,7 @@ class KiroCrewConfig:
                 reactions_enabled=bool(slack_data.get("reactions_enabled", True)),
                 use_tunnel_url=bool(slack_data.get("use_tunnel_url", False)),
                 show_thinking=bool(slack_data.get("show_thinking", True)),
+                dm_single_session=bool(slack_data.get("dm_single_session", False)),
             ),
             publish=PublishConfig(
                 allowed_destinations=[

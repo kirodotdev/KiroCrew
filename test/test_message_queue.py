@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.session import SessionManager, _Session, unlink_queued_temp_paths
 
 # ── Unit tests for _Session queue fields ──
@@ -269,6 +270,75 @@ class TestHandleMessageDeleted:
              patch("kiro_crew.slack.events.sel"):
             await _handle_message_deleted(orch, event)
         # No thread_ts → session_key = deleted_ts
+        orch.sessions.cancel_queued.assert_called_once_with("ts_dm", "ts_dm")
+
+    @staticmethod
+    def _enable_flat_dm(orch):
+        """Both conditions the flat key needs: the flag AND the transport path."""
+        orch._cfg.slack.dm_single_session = True
+        orch._cfg.messaging.use_transport = True
+
+    @pytest.mark.asyncio
+    async def test_single_session_dm_cancels_under_the_channel_key(self):
+        """A flat DM queues under the channel key, so the cancel must use it too."""
+        from kiro_crew.slack.events import _handle_message_deleted
+
+        orch = self._make_orch()
+        self._enable_flat_dm(orch)
+        orch.sessions.cancel_queued.return_value = True
+        event = {"deleted_ts": "ts_dm", "channel": "D1", "previous_message": {"user": "U1"}}
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.sel"):
+            await _handle_message_deleted(orch, event)
+        orch.sessions.cancel_queued.assert_called_once_with("slack:D1", "ts_dm")
+
+    @pytest.mark.asyncio
+    async def test_single_session_cancels_a_threaded_reply_under_the_channel_key(self):
+        """A threaded DM reply queues under the channel key too, so must cancel there."""
+        from kiro_crew.slack.events import _handle_message_deleted
+
+        orch = self._make_orch()
+        self._enable_flat_dm(orch)
+        orch.sessions.cancel_queued.return_value = True
+        event = self._make_event(channel="D1", thread_ts="thread1")
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.sel"):
+            await _handle_message_deleted(orch, event)
+        orch.sessions.cancel_queued.assert_called_once_with("slack:D1", "ts_del")
+
+    @pytest.mark.asyncio
+    async def test_native_path_dm_keys_the_way_native_does(self):
+        """Only the transport path honours the flat key.
+
+        With ``messaging.use_transport`` off the turn runs under the message ts,
+        so cancelling under the channel key would miss it entirely.
+        """
+        from kiro_crew.slack.events import _handle_message_deleted
+
+        orch = self._make_orch()
+        orch._cfg.slack.dm_single_session = True
+        orch._cfg.messaging.use_transport = False
+        orch.sessions.cancel_queued.return_value = True
+        event = {"deleted_ts": "ts_dm", "channel": "D1", "previous_message": {"user": "U1"}}
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.sel"):
+            await _handle_message_deleted(orch, event)
+        orch.sessions.cancel_queued.assert_called_once_with("ts_dm", "ts_dm")
+
+    @pytest.mark.asyncio
+    async def test_review_mode_dm_keys_the_way_native_does(self):
+        """_route_message keeps review-mode channels on native for the privacy
+        gate, so their bookkeeping must key like native too."""
+        from kiro_crew.slack.events import _handle_message_deleted
+
+        orch = self._make_orch()
+        self._enable_flat_dm(orch)
+        orch._cfg.channel_config.return_value.activation = ACTIVATION_REVIEW
+        orch.sessions.cancel_queued.return_value = True
+        event = {"deleted_ts": "ts_dm", "channel": "D1", "previous_message": {"user": "U1"}}
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.sel"):
+            await _handle_message_deleted(orch, event)
         orch.sessions.cancel_queued.assert_called_once_with("ts_dm", "ts_dm")
 
     @pytest.mark.asyncio

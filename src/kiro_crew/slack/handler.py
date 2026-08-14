@@ -701,6 +701,7 @@ async def _apply_temporary_modifier(
     slack: SlackClientOps,
     sessions: SessionManager,
     reply_ts: str,
+    link_thread: bool = True,
 ) -> None:
     """Mark a session as temporary and notify the user (idempotent)."""
     if session_key in _thread_temporary:
@@ -720,11 +721,17 @@ async def _apply_temporary_modifier(
     # Register thread so follow-up messages pass the in_active_thread
     # gate in mention/observe channels without needing another @mention.
     # reply_ts is the bare Slack thread_ts; session_key may be namespaced.
-    sessions.set_slack_link(session_key, reply_ts, channel)
+    # Skipped when there is no thread, and when the caller says this session is
+    # not thread-scoped at all (``link_thread=False`` -- a flat 1:1 DM, whose
+    # session is keyed by the channel): claiming a thread there would hand the
+    # dashboard mirror one branch to post into. Posting is a separate decision,
+    # so the confirmation still lands where the modifier was typed.
+    if reply_ts and link_thread:
+        sessions.set_slack_link(session_key, reply_ts, channel)
     await slack.post_message(
         channel,
         "🔒 Temporary mode ON — this thread won't read or save memory.",
-        reply_ts,
+        reply_ts or None,
     )
 
 
@@ -735,6 +742,7 @@ async def _apply_incognito_modifier(
     slack: SlackClientOps,
     sessions: SessionManager,
     reply_ts: str,
+    link_thread: bool = True,
 ) -> None:
     """Mark a session as incognito and notify the user (idempotent)."""
     if session_key in _thread_incognito:
@@ -752,11 +760,13 @@ async def _apply_incognito_modifier(
         resources=f"{channel}:{session_key}",
     )
     # reply_ts is the bare Slack thread_ts; session_key may be namespaced.
-    sessions.set_slack_link(session_key, reply_ts, channel)
+    # See _apply_temporary_modifier for why link_thread gates the claim.
+    if reply_ts and link_thread:
+        sessions.set_slack_link(session_key, reply_ts, channel)
     await slack.post_message(
         channel,
         "🕶️ Incognito mode ON — this thread can read memory but won't save anything.",
-        reply_ts,
+        reply_ts or None,
     )
 
 
@@ -769,6 +779,7 @@ async def maybe_apply_privacy_modifiers(
     slack: SlackClientOps,
     sessions: SessionManager,
     reply_ts: str,
+    link_thread: bool = True,
 ) -> tuple[str, str, bool]:
     """Strip and apply the ``!temporary`` / ``!incognito`` privacy modifiers.
 
@@ -789,7 +800,9 @@ async def maybe_apply_privacy_modifiers(
     """
     cmd_stripped, had_temporary = _strip_temporary_token(cmd_text)
     if had_temporary:
-        await _apply_temporary_modifier(session_key, user_id, channel, slack, sessions, reply_ts)
+        await _apply_temporary_modifier(
+            session_key, user_id, channel, slack, sessions, reply_ts, link_thread
+        )
         cmd_text = cmd_stripped
         text = _TEMPORARY_TOKEN_RE.sub("", text)
         text = " ".join(text.split()) or text  # collapse whitespace
@@ -799,7 +812,9 @@ async def maybe_apply_privacy_modifiers(
 
     cmd_stripped, had_incognito = _strip_incognito_token(cmd_text)
     if had_incognito:
-        await _apply_incognito_modifier(session_key, user_id, channel, slack, sessions, reply_ts)
+        await _apply_incognito_modifier(
+            session_key, user_id, channel, slack, sessions, reply_ts, link_thread
+        )
         cmd_text = cmd_stripped
         text = _INCOGNITO_TOKEN_RE.sub("", text)
         text = " ".join(text.split()) or text
