@@ -2342,6 +2342,15 @@ LIST_SESSIONS_SCHEMA = ToolSchema(
     ],
 )
 
+TAG_SESSION_SCHEMA = ToolSchema(
+    tool_name="tag_session",
+    fields=[
+        FieldSpec("tag", str, required=True, max_len=60),
+        FieldSpec("slot_key", str, required=False, max_len=200),
+        FieldSpec("force", bool, required=False, default=False),
+    ],
+)
+
 # ── Schema Registry ──
 
 MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
@@ -2373,6 +2382,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "search_chat_history": SEARCH_CHAT_HISTORY_SCHEMA,
     "get_chat_session": GET_CHAT_SESSION_SCHEMA,
     "list_sessions": LIST_SESSIONS_SCHEMA,
+    "tag_session": TAG_SESSION_SCHEMA,
     "set_project": SET_PROJECT_SCHEMA,
     "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,

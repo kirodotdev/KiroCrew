@@ -26,6 +26,7 @@ from kiro_crew.validation import (
     GET_CHAT_SESSION_SCHEMA,
     LIST_SESSIONS_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
+    TAG_SESSION_SCHEMA,
     validate_tool_args,
 )
 
@@ -147,6 +148,36 @@ def schemas() -> list[dict[str, Any]]:
                         "default": False,
                     },
                 },
+            },
+        },
+        {
+            "name": "tag_session",
+            "description": (
+                "Assign a status or label tag to a dashboard session slot, moving it "
+                "between kanban board columns. Use when transitioning a session's "
+                "lifecycle stage (e.g. to 'implementation' when coding starts, 'review' "
+                "when a PR opens, 'done' when work completes). Status tags advance "
+                "forward only by default (planned->todo->implementation->review->done); "
+                "pass force=true to override. Defaults to tagging your own session."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tag": {
+                        "type": "string",
+                        "description": "Tag name (case-insensitive). e.g. 'implementation', 'review', 'done'.",
+                    },
+                    "slot_key": {
+                        "type": "string",
+                        "description": "Target session slot key. Defaults to this session's slot.",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Allow regressing a status tag to an earlier lifecycle stage (default false).",
+                        "default": False,
+                    },
+                },
+                "required": ["tag"],
             },
         },
     ]
@@ -426,8 +457,115 @@ def list_sessions(name: str, args: dict[str, Any]) -> str:
     return output
 
 
+def tag_session(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, TAG_SESSION_SCHEMA)
+    tag_name = args["tag"]
+    force = args.get("force", False)
+
+    # Resolve the target slot key.
+    # STRICT resolution (env-var only, no PID walk): this tool mutates
+    # persistent slot state via PUT, and a subagent lives under the parent
+    # slot's process tree — a PID-walk would let it silently retag the
+    # PARENT session (same hazard as monitor_start/autonudge_stop).
+    session_key = mcp_core._resolve_session_key_strict()
+    slot_key = args.get("slot_key") or ""
+    if not slot_key:
+        # Derive slot_key from session_key by stripping the 'dashboard:' prefix.
+        # Live dashboard session keys are colon-spelled: "dashboard:chat-N-TS".
+        if session_key and session_key.startswith("dashboard:"):
+            slot_key = session_key.removeprefix("dashboard:")
+        elif session_key:
+            slot_key = session_key
+        else:
+            return (
+                "Cannot determine target slot: no session identity resolved "
+                "(subagent or pooled context). Provide slot_key explicitly."
+            )
+    if not slot_key:
+        return "Cannot determine target slot — provide slot_key explicitly."
+
+    # GET /api/chat/tags — find the tag by name (case-insensitive).
+    tags_resp = mcp_core._get("/api/chat/tags")
+    if isinstance(tags_resp, dict) and tags_resp.get("error"):
+        return f"Failed to fetch tags: {tags_resp['error']}"
+    # The endpoint returns a JSON array; _get annotates -> dict but json.loads
+    # can return a list — handle both shapes defensively.
+    tags_list: list[dict] = tags_resp if isinstance(tags_resp, list) else []  # type: ignore[assignment]
+    target_tag: dict | None = None
+    for t in tags_list:
+        if isinstance(t, dict) and t.get("name", "").lower() == tag_name.lower():
+            target_tag = t
+            break
+    if target_tag is None:
+        return f"No tag named '{tag_name}' found (case-insensitive). Available: {', '.join(t.get('name', '?') for t in tags_list if isinstance(t, dict))}."
+
+    target_tag_id = target_tag["id"]
+    is_status_tag = bool(target_tag.get("status"))
+
+    # GET /api/chat/slots — find the slot and read current tags.
+    slots_resp = mcp_core._get("/api/chat/slots")
+    if isinstance(slots_resp, dict) and slots_resp.get("error"):
+        return f"Failed to fetch slots: {slots_resp['error']}"
+    slots_list: list[dict] = slots_resp if isinstance(slots_resp, list) else []  # type: ignore[assignment]
+    target_slot: dict | None = None
+    for s in slots_list:
+        if isinstance(s, dict) and s.get("key") == slot_key:
+            target_slot = s
+            break
+    if target_slot is None:
+        return f"Slot '{slot_key}' not found."
+
+    current_tag_ids: list[str] = list(target_slot.get("tags") or [])
+
+    if is_status_tag:
+        # Status tags: check advancement (order field), replace existing status tags.
+        new_order = target_tag.get("order", 0)
+        # Build a set of all status tag ids for replacement logic.
+        status_tag_ids = {t["id"] for t in tags_list if isinstance(t, dict) and t.get("status")}
+        # Find the current status tag(s) on this slot.
+        current_status_tags = [
+            t for t in tags_list
+            if isinstance(t, dict) and t.get("id") in current_tag_ids and t.get("status")
+        ]
+        if current_status_tags and not force:
+            # Check advancement: new tag must have higher or equal order.
+            max_current_order = max(t.get("order", 0) for t in current_status_tags)
+            if new_order < max_current_order:
+                current_names = ", ".join(t.get("name", "?") for t in current_status_tags)
+                return (
+                    f"Regression blocked: current status is '{current_names}' "
+                    f"(order {max_current_order}), requested '{tag_name}' "
+                    f"(order {new_order}). Pass force=true to override."
+                )
+        # Replace all status tags with the new one.
+        new_tag_ids = [tid for tid in current_tag_ids if tid not in status_tag_ids]
+        new_tag_ids.append(target_tag_id)
+    else:
+        # Non-status tag: add if not already present; no-op if already there.
+        if target_tag_id in current_tag_ids:
+            return f"Tag '{tag_name}' already assigned to slot '{slot_key}'. No change."
+        new_tag_ids = current_tag_ids + [target_tag_id]
+
+    # PUT /api/chat/slots/{slot_key}/tags with new tags.
+    put_resp = mcp_core._put(f"/api/chat/slots/{slot_key}/tags", {"tags": new_tag_ids})
+    if isinstance(put_resp, dict) and put_resp.get("error"):
+        return f"Failed to update slot tags: {put_resp['error']}"
+
+    # SEL audit log.
+    mcp_core.sel().log_tool_invocation(
+        session_key=session_key,
+        source="mcp",
+        tool_name="tag_session",
+        outcome="success",
+        metadata={"tag": tag_name, "slot_key": slot_key, "forced": force},
+    )
+
+    return f"Tagged slot '{slot_key}' with '{tag_name}'."
+
+
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "search_chat_history": search_chat_history,
     "get_chat_session": get_chat_session,
     "list_sessions": list_sessions,
+    "tag_session": tag_session,
 }
