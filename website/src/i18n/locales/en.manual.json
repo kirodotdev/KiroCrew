@@ -2893,6 +2893,8 @@
         "menu_context_desc": "Context added during this session's turns",
         "menu_files": "Files",
         "menu_files_desc": "Project file browser with a built-in viewer",
+        "menu_folder": "Project tree",
+        "menu_folder_desc": "Browse the whole project tree, not just files this chat touched",
         "menu_links": "Links",
         "menu_links_desc": "URLs this chat referenced",
         "menu_issues": "Issues",

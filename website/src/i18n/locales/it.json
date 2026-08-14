@@ -8354,6 +8354,8 @@
         "menu_context_desc": "Contesto aggiunto durante i turni di questa sessione",
         "menu_files": "File",
         "menu_files_desc": "Sfoglia e modifica i file",
+        "menu_folder": "Albero del progetto",
+        "menu_folder_desc": "Sfogliare tutto l'albero del progetto, non solo i file toccati da questa chat",
         "menu_git": "Git",
         "menu_git_desc": "Branch, modifiche e commit recenti",
         "menu_issues": "Issue",

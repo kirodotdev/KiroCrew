@@ -8354,6 +8354,8 @@
         "menu_context_desc": "Contexte ajouté pendant les tours de cette session",
         "menu_files": "Fichiers",
         "menu_files_desc": "Parcourir et modifier les fichiers",
+        "menu_folder": "Arborescence du projet",
+        "menu_folder_desc": "Parcourir tout l'arbre du projet, pas seulement les fichiers touchés par ce chat",
         "menu_git": "Git",
         "menu_git_desc": "Branche, modifications et commits récents",
         "menu_issues": "Issues",

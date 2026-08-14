@@ -8249,6 +8249,8 @@
         "menu_context_desc": "Kontext, der während der Züge dieser Sitzung hinzugefügt wurde",
         "menu_files": "Dateien",
         "menu_files_desc": "Dateien durchsuchen & bearbeiten",
+        "menu_folder": "Projektbaum",
+        "menu_folder_desc": "Den ganzen Projektbaum durchsuchen, nicht nur die von diesem Chat berührten Dateien",
         "menu_git": "Git",
         "menu_git_desc": "Branch, Änderungen und letzte Commits",
         "menu_issues": "Issues",

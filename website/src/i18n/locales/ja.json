@@ -8144,6 +8144,8 @@
         "menu_context_desc": "このセッションのターン中に追加されたコンテキスト",
         "menu_files": "ファイル",
         "menu_files_desc": "ファイルを閲覧・編集",
+        "menu_folder": "プロジェクトツリー",
+        "menu_folder_desc": "このチャットが触れたファイルだけでなく、プロジェクトツリー全体を参照",
         "menu_git": "Git",
         "menu_git_desc": "ブランチ、変更、最近のコミット",
         "menu_issues": "Issue",

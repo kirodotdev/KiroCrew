@@ -8354,6 +8354,8 @@
         "menu_context_desc": "Contexto agregado durante los turnos de esta sesión",
         "menu_files": "Archivos",
         "menu_files_desc": "Explorar y editar archivos",
+        "menu_folder": "Árbol del proyecto",
+        "menu_folder_desc": "Explorar todo el árbol del proyecto, no solo los archivos que tocó este chat",
         "menu_git": "Git",
         "menu_git_desc": "Rama, cambios y commits recientes",
         "menu_issues": "Incidencias",

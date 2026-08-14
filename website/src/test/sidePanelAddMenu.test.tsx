@@ -41,24 +41,25 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
 import { usePanelTabs } from '../hooks/usePanelTabs'
 
-function Harness() {
+function Harness({ projectDir }: { projectDir?: string }) {
   const tabsCtl = usePanelTabs('slot-a')
   return (
     <SidePanel
       tabsCtl={tabsCtl}
       slot="slot-a"
+      projectDir={projectDir}
       onFileSave={async () => {}}
       onClose={() => {}}
     />
   )
 }
 
-function renderPanel() {
+function renderPanel(opts: { projectDir?: string } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <Provider store={createTestStore()}>
-        <Harness />
+        <Harness projectDir={opts.projectDir} />
       </Provider>
     </QueryClientProvider>,
   )
@@ -96,6 +97,23 @@ describe('side panel + menu (shadcn dropdown)', () => {
     expect(screen.getByRole('tab', { name: /Workflows/ })).toBeTruthy()
   })
 
+  it('offers Project tree only for a chat that has a project directory', () => {
+    renderPanel()
+    openMenu()
+    expect(screen.queryByRole('menuitem', { name: 'Project tree' })).toBeNull()
+  })
+
+  it('opens Project tree rooted at the chat project directory', () => {
+    // The root is read at click time from the chat's own project dir, and the
+    // tab lands in this chat's per-slot bucket — that pairing is what makes
+    // switching chats browse the tree of the chat you switched to.
+    renderPanel({ projectDir: '/srv/checkout/widget-api' })
+    openMenu()
+    act(() => { fireEvent.click(screen.getByRole('menuitem', { name: 'Project tree' })) })
+    // Titled by the directory's basename, so the strip names the tree it shows.
+    expect(screen.getByRole('tab', { name: /widget-api/ })).toBeTruthy()
+  })
+
   it('dismisses on Escape', () => {
     renderPanel()
     openMenu()
@@ -122,7 +140,7 @@ describe('side panel + menu (shadcn dropdown)', () => {
 })
 
 describe('newMenuSections', () => {
-  const kinds = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled?: boolean }) =>
+  const kinds = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled?: boolean; hasProjectDir?: boolean }) =>
     newMenuSections({ summaryEnabled: true, ...o }).map(g => g.items.map(i => i.kind))
 
   it('partitions every catalogued view exactly once', () => {
@@ -181,7 +199,7 @@ describe('newMenuSections', () => {
   it('groups by session output, workspaces, then diagnostics', () => {
     expect(kinds({ devMode: true, terminalEnabled: true })).toEqual([
       ['summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
-      ['side', 'browser'],
+      ['side', 'browser', 'folder'],
       ['logs', 'context'],
     ])
   })
@@ -200,12 +218,23 @@ describe('newMenuSections', () => {
     // Both gates closed: diagnostics gone outright — two groups, not three with a hole.
     expect(kinds({ devMode: false, terminalEnabled: false })).toEqual([
       ['summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
-      ['side', 'browser'],
+      ['side', 'browser', 'folder'],
     ])
     // Terminal enabled doesn't change menu (terminal moved to app-wide panel).
     expect(kinds({ devMode: false, terminalEnabled: true })).toEqual([
       ['summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
-      ['side', 'browser'],
+      ['side', 'browser', 'folder'],
     ])
+  })
+
+  it('hides Project tree for a chat with no project directory', () => {
+    // Project tree's root IS the chat's project dir, so with none set the row could
+    // only open an empty listing. Its group keeps its other rows, so the group
+    // itself survives and nothing else is collateral.
+    const groups = kinds({ devMode: true, terminalEnabled: true, hasProjectDir: false })
+    expect(groups.flat()).not.toContain('folder')
+    expect(groups[1]).toEqual(['side', 'browser'])
+    expect(newMenuSections({ devMode: true, terminalEnabled: true, summaryEnabled: true, hasProjectDir: false }).map(g => g.id))
+      .toEqual(['session-output', 'workspaces', 'diagnostics'])
   })
 })
