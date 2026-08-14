@@ -306,6 +306,9 @@ class TestConfigSchemaProperties:
         all_fields = _all_fields_recursive(KiroCrewConfig)
         for path, f in all_fields:
             tp = _resolve_type(f)
+            optional_args = typing.get_args(tp)
+            if len(optional_args) == 2 and type(None) in optional_args:
+                tp = next(arg for arg in optional_args if arg is not type(None))
             origin = typing.get_origin(tp)
 
             # Determine expected JSON Schema type

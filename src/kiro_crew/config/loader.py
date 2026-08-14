@@ -4217,9 +4217,9 @@ class InstancesConfig:
     since enabling it allows the gateway to open SSH ``-L`` forwards and relaxes
     the dashboard CSP ``frame-src`` for the active loopback tunnel ports.
 
-    The numeric tunables default to constants defined in
-    ``kiro_crew.instances.constants`` so the canonical default lives in one
-    place and cannot drift from this dataclass.
+    Numeric transport defaults and bounds live in
+    ``kiro_crew.instances.constants`` so their canonical values cannot drift
+    from this dataclass.
     """
 
     enabled: bool = field(
@@ -4261,18 +4261,18 @@ class InstancesConfig:
             "on a fast/local link where compression CPU outweighs the bandwidth win.",
         ),
     )
-    connect_timeout_secs: float = field(
-        default=_DEFAULT_CONNECT_TIMEOUT,
+    connect_timeout_secs: float | None = field(
+        default=None,
         metadata=_meta(
             "Connect Timeout (secs)",
             "How long to wait for the local forward port to accept connections "
-            "before declaring a connect attempt failed. The default (15s) is "
-            "sufficient for a direct ssh TCP connect, but hosts behind a "
+            "before declaring a connect attempt failed. When unset, SSH uses "
+            "15s and SSM uses 25s. Fifteen seconds is sufficient for a direct "
+            "ssh TCP connect, but hosts behind a "
             "ProxyCommand or jump host routinely need longer (the proxy handshake "
             "runs before ssh begins the forward). Raise this if connecting a "
             "remote instance times out while the same ssh forward succeeds by hand. "
-            "The SSM transport uses its own higher default (25s) unless this value "
-            "is explicitly set. Clamped to [1, 120].",
+            "An explicit value applies to both transports. Clamped to [1, 120].",
         ),
     )
     max_recovery_attempts: int = field(
@@ -4314,14 +4314,16 @@ class InstancesConfig:
                 _DEFAULT_TUNNEL_BASE_PORT,
             )
             object.__setattr__(self, "tunnel_base_port", _DEFAULT_TUNNEL_BASE_PORT)
-        if self.connect_timeout_secs < 1.0:
+        if self.connect_timeout_secs is not None and self.connect_timeout_secs < 1.0:
             logger.warning(
-                "instances.connect_timeout_secs %s < 1, using %s",
+                "instances.connect_timeout_secs %s < 1, using the transport default",
                 self.connect_timeout_secs,
-                _DEFAULT_CONNECT_TIMEOUT,
             )
-            object.__setattr__(self, "connect_timeout_secs", _DEFAULT_CONNECT_TIMEOUT)
-        elif self.connect_timeout_secs > _CONNECT_TIMEOUT_CEILING:
+            object.__setattr__(self, "connect_timeout_secs", None)
+        elif (
+            self.connect_timeout_secs is not None
+            and self.connect_timeout_secs > _CONNECT_TIMEOUT_CEILING
+        ):
             logger.warning(
                 "instances.connect_timeout_secs %s > %s, clamping to %s",
                 self.connect_timeout_secs,
@@ -5631,6 +5633,7 @@ class KiroCrewConfig:
         instances_data = data.get("instances", {})
         if not isinstance(instances_data, dict):
             instances_data = {}
+        connect_timeout_raw = instances_data.get("connect_timeout_secs")
         mcp_gateway_data = data.get("mcp_gateway", {})
         if not isinstance(mcp_gateway_data, dict):
             mcp_gateway_data = {}
@@ -6361,9 +6364,10 @@ class KiroCrewConfig:
                 ssh_compression=bool(
                     instances_data.get("ssh_compression", _DEFAULT_SSH_COMPRESSION)
                 ),
-                connect_timeout_secs=_safe_float(
-                    instances_data.get("connect_timeout_secs", _DEFAULT_CONNECT_TIMEOUT),
-                    _DEFAULT_CONNECT_TIMEOUT,
+                connect_timeout_secs=(
+                    _safe_float(connect_timeout_raw, _DEFAULT_CONNECT_TIMEOUT)
+                    if connect_timeout_raw is not None
+                    else None
                 ),
                 max_recovery_attempts=_safe_int(
                     instances_data.get("max_recovery_attempts", _DEFAULT_MAX_RECOVERY),

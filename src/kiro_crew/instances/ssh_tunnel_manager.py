@@ -758,7 +758,7 @@ class SshTunnelManager:
         registry: InstancesRegistry,
         *,
         base_port: int = DEFAULT_TUNNEL_BASE_PORT,
-        connect_timeout_secs: float = _DEFAULT_CONNECT_TIMEOUT_SECS,
+        connect_timeout_secs: float | None = None,
         ssh_compression: bool = True,
         max_recovery_attempts: int = _MAX_RECOVERY,
         recover_backoff_max_secs: float = _RECOVER_BACKOFF_MAX_SECS,
@@ -883,11 +883,11 @@ class SshTunnelManager:
         higher. A caller that passed an explicit ``connect_timeout_secs``
         (tests, tuning) wins for both transports.
         """
-        if self._connect_timeout != _DEFAULT_CONNECT_TIMEOUT_SECS:
+        if self._connect_timeout is not None:
             return self._connect_timeout  # explicit override
         if method == "ssm":
             return _DEFAULT_SSM_CONNECT_TIMEOUT_SECS
-        return self._connect_timeout
+        return _DEFAULT_CONNECT_TIMEOUT_SECS
 
     async def _ps_lines(self) -> list[str]:
         """Return ``<pid> <command>`` lines for all processes (portable ps).
