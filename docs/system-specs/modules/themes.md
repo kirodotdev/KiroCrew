@@ -67,7 +67,11 @@ runtime scoper still removes the pin, so the preference is protected either way.
 
 1. **Source** — a local directory (moved/copied) or an https `github.com` repo
    shallow-cloned server-side (`_clone_github`, `--depth 1`, 30s timeout, host
-   allowlist).
+   allowlist). The clone spawns through the sandbox chokepoint, which fails
+   **closed** where no OS sandbox backend exists: that refusal answers `503`
+   with `code: "theme_install_sandbox_unavailable"`, never an unsandboxed
+   retry — the URL is user-influenced and `git clone` executes remote content.
+   A **local** source spawns nothing, so it stays available on such a host.
 2. **Stage** — the source is copied into a private staging snapshot
    (`.install-staging-<token>`) via a per-file, symlink-rejecting,
    byte-bounded loop (`_copy_installed_theme`). The source dir remains
@@ -115,6 +119,12 @@ predate this subsystem and remain the color-theme surface.)
 - **Locked CSP** — overlay/topbar responses carry a fixed
   `Content-Security-Policy` including a `sandbox` directive; asset responses
   carry `X-Content-Type-Options: nosniff` and a content-type allowlist.
+- **Descriptor-pinned containment** — pack install and serving resolve the
+  opened file descriptor before trusting bytes: `/proc/self/fd` on Linux,
+  `fcntl.F_GETPATH` on macOS, and `GetFinalPathNameByHandleW` on Windows. The
+  resolved path must remain inside the pack root; an unavailable or failed
+  resolution rejects the read rather than falling back to a pathname-only
+  check.
 - **postMessage allowlist** — the parent (`ThemeExperienceLayer.tsx`) accepts
   only `theme:resize`, `theme:sound`, `theme:visibility`, and `theme:state`
   messages from a pack iframe; all others are dropped.

@@ -1798,8 +1798,9 @@ def safe_read_file_bytes_nolink(
     ``st_nlink > 1`` or a non-regular file type is rejected.
 
     When ``within_root`` is given, the OPENED descriptor's real path
-    (via ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS) must resolve
-    inside that root and must not be sensitive. ``O_NOFOLLOW`` only guards the
+    (via ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS, or
+    ``GetFinalPathNameByHandleW`` on Windows) must resolve inside that root and
+    must not be sensitive. ``O_NOFOLLOW`` only guards the
     FINAL path component — a nested directory swapped for a symlink between
     the tree walk and the open would silently escape the approved tree. The
     fd-path check is pinned to the inode actually opened, so no check-to-use

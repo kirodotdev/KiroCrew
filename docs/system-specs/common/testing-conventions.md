@@ -76,6 +76,11 @@ an unconditional skip drops the whole assertion on Windows. Reach for a skip onl
 where the *link kind itself* is the subject (a file symlink's `lstat` mode bits,
 say), and then still pair it with a Windows counterpart.
 
+The shared symlink capability probe skips only when Windows reports
+`ERROR_PRIVILEGE_NOT_HELD` (WinError 1314), or when the runtime has no symlink
+API. Other filesystem errors propagate so a broken fixture cannot silently
+remove the containment assertion from the test run.
+
 ### Patch the defining module, not a re-export
 
 `monkeypatch.setattr`/`patch` rebind a NAME in one module namespace. Code

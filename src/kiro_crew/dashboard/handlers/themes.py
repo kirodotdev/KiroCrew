@@ -61,31 +61,18 @@ from kiro_crew.dashboard.theme_validate import (
 )
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import safe_read_file_bytes_nolink
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    resource_limit_preexec,
+    sandboxed_spawn_argv,
+)
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
 )
 
-# Theme install/serve traverses the O_NOFOLLOW + fd-real-path chokepoint in
-# hooks (safe_read_file_bytes_nolink), which has no Windows implementation
-# (_fd_real_path returns None there -> fail-closed on every read). Rather than
-# fail opaquely, gate the pack routes with an honest 501 on Windows.
-# Tracked: kirodotdev/KiroCrew#311. The editor custom-record (<slug>.json) CRUD
-# paths never touch that chokepoint, so they are intentionally NOT gated.
-_THEMES_WIN_UNSUPPORTED = os.name == "nt"
-
-
-def _win_unsupported_response() -> web.Response:
-    """501 for pack routes that rely on the POSIX-only nolink chokepoint."""
-    return web.json_response(
-        {
-            "error": "theme packs are not yet supported on Windows "
-            "(tracked: kirodotdev/KiroCrew#311)"
-        },
-        status=501,
-    )
+_THEME_GIT_SANDBOX_UNAVAILABLE = "theme install sandbox is unavailable on this server"
 
 
 def _list_themes_sync() -> list[dict[str, Any]]:
@@ -240,9 +227,15 @@ def _clone_github(url: str, dest: Path) -> str | None:
     # content, so route through the sandbox chokepoint (OS filesystem isolation
     # + credential-scrubbed env) and apply the fork-bomb/resource ceiling via
     # preexec_fn — same discipline as git_coord._git.
-    argv, env, cleanup = sandboxed_spawn_argv(
-        ["git", "clone", "--depth", "1", "--quiet", "--", url, str(dest)]
-    )
+    try:
+        argv, env, cleanup = sandboxed_spawn_argv(
+            ["git", "clone", "--depth", "1", "--quiet", "--", url, str(dest)]
+        )
+    except SandboxUnavailableError:
+        # Translate the typed sandbox refusal at this boundary. In particular,
+        # Windows has no process-sandbox backend, but local theme installs and
+        # every descriptor-contained read route remain supported there.
+        return _THEME_GIT_SANDBOX_UNAVAILABLE
     try:
         proc = subprocess.run(
             argv,
@@ -404,7 +397,8 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
         else:
             return None, "source.type must be 'local' or 'github'", 400
         if err or src is None:
-            return None, err or "invalid source", 400
+            status = 503 if err == _THEME_GIT_SANDBOX_UNAVAILABLE else 400
+            return None, err or "invalid source", status
 
         # ── Stage-first (TOCTOU class fix) ──
         # The source dir stays writable by its owner throughout, so a
@@ -527,9 +521,6 @@ async def api_themes_install(request: web.Request) -> web.Response:
     Fetch/move -> validate (data + structure) -> register as
     ``_themes_dir()/<slug>/``.
     """
-    if _THEMES_WIN_UNSUPPORTED:
-        return _win_unsupported_response()
-
     # Governance admission gate: installing a pack ingests third-party content
     # (local move or server-side git clone) and serves sandboxed JS into the
     # dashboard, so an enterprise POLICY must be able to ban it wholesale
@@ -575,7 +566,10 @@ async def api_themes_install(request: web.Request) -> web.Response:
         discovery_executor(), _do_install, stype, source
     )
     if err or theme is None:
-        return web.json_response({"error": err or "install failed"}, status=status)
+        payload = {"error": err or "install failed"}
+        if err == _THEME_GIT_SANDBOX_UNAVAILABLE:
+            payload["code"] = "theme_install_sandbox_unavailable"
+        return web.json_response(payload, status=status)
 
     return web.json_response({"ok": True, "slug": theme["slug"], "theme": theme})
 
@@ -598,9 +592,6 @@ async def api_theme_detail(request: web.Request) -> web.Response:
             )
             return web.json_response({"ok": True})
         if dir_target.is_dir():
-            if _THEMES_WIN_UNSUPPORTED:
-                return _win_unsupported_response()
-
             # Recursive delete of a many-file theme dir is blocking; run off-loop.
             # Acquire the per-slug install lock (same key _do_install stages/swaps
             # under) so we never rmtree mid-reinstall and race its stage→rename;
@@ -676,8 +667,6 @@ async def api_theme_detail(request: web.Request) -> web.Response:
             return web.json_response({"error": "failed to read theme"}, status=500)
         return web.json_response(data)
     if dir_target.is_dir():
-        if _THEMES_WIN_UNSUPPORTED:
-            return _win_unsupported_response()
         summary, err = await loop.run_in_executor(
             discovery_executor(), _validate_theme_dir, dir_target
         )
@@ -737,8 +726,6 @@ def _theme_html_response(text: str) -> web.Response:
 
 async def api_theme_asset(request: web.Request) -> web.Response:
     """GET /api/theme/{slug}/assets/{path} — serve a static theme asset."""
-    if _THEMES_WIN_UNSUPPORTED:
-        return _win_unsupported_response()
     target, err = _resolve_theme_asset(
         request.match_info["slug"], request.match_info.get("path", "")
     )
@@ -767,8 +754,6 @@ async def api_theme_asset(request: web.Request) -> web.Response:
 
 async def api_theme_overlay(request: web.Request) -> web.Response:
     """GET /api/theme/{slug}/overlay/{id} — serve overlay HTML (id = file stem)."""
-    if _THEMES_WIN_UNSUPPORTED:
-        return _win_unsupported_response()
     oid = request.match_info["id"].lower()
     if not oid or _safe_theme_slug(oid) != oid:
         return web.json_response({"error": "invalid overlay id"}, status=400)
@@ -788,8 +773,6 @@ async def api_theme_overlay(request: web.Request) -> web.Response:
 
 async def api_theme_topbar(request: web.Request) -> web.Response:
     """GET /api/theme/{slug}/topbar/{mode} — serve topbar HTML (mode dark|light)."""
-    if _THEMES_WIN_UNSUPPORTED:
-        return _win_unsupported_response()
     mode = request.match_info["mode"]
     if mode not in ("dark", "light"):
         return web.json_response({"error": "mode must be dark or light"}, status=400)
