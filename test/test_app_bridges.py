@@ -162,6 +162,129 @@ class TestAgentRegistration:
         assert removed == 1
         assert not (app_env["kiro_agents"] / "test-app--my-agent.json").exists()
 
+    def test_a_dangling_at_grant_logs_a_warning_and_still_registers(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        """An ``@server`` grant no config declares must be LOUD at registration.
+
+        kiro-cli drops the reference silently at mount time — the agent works
+        minus the tool with no error anywhere — so this warning is the only
+        signal a user-installed app whose server failed to register ever gets
+        (CI's shipped-spec gate cannot see that runtime event). Warning only:
+        the agent must still register, a dangling ref is degradation, not a
+        broken agent.
+        """
+        from kiro_crew.apps import bridges as bridges_mod
+
+        # Deterministic ambient: the check falls back to the user's global
+        # mcp.json, and the developer's real one must not decide this test.
+        monkeypatch.setattr(bridges_mod, "_global_mcp_specs", lambda: {})
+        src = _make_app_source(tmp_path)
+        (src / "agents" / "my-agent.json").write_text(
+            json.dumps(
+                {"name": "my-agent", "model": "auto", "tools": ["fs_read", "@ghost/summon"]}
+            )
+        )
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        app_root = app_env["home"] / "apps" / "test-app"
+
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            registered = _register_agents("test-app", manifest, app_root)
+
+        assert "test-app/my-agent" in registered  # still registers
+        warning = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        )
+        assert "silently never mount" in warning
+        assert "@ghost/summon" in warning
+        assert "my-agent" in warning
+
+    def test_resolvable_at_grants_log_no_dangling_warning(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        """The four real resolution sources must not trip the diagnostic.
+
+        A spec-own server, a host-managed server (materialized by
+        ``_materialize_managed_refs``), the app's own namespaced server
+        (registered by ``_register_mcp_servers`` and injected back by
+        ``_own_mcp_servers``), and a global-``mcp.json`` server are each
+        resolvable at mount time; warning on any of them would train
+        operators to ignore the log line that matters.
+        """
+        from kiro_crew.apps import bridges as bridges_mod
+
+        monkeypatch.setattr(bridges_mod, "_global_mcp_specs", lambda: {"ambient-srv": {}})
+        src = _make_app_source(
+            tmp_path, mcpServers={"srv": {"command": "echo", "args": []}}
+        )
+        (src / "agents" / "my-agent.json").write_text(
+            json.dumps(
+                {
+                    "name": "my-agent",
+                    "model": "auto",
+                    "mcpServers": {"own-srv": {"command": "echo", "args": []}},
+                    "tools": [
+                        "@own-srv/do_thing",
+                        "@kirocrew-core",
+                        "@ambient-srv",
+                        "@test-app:srv",
+                    ],
+                }
+            )
+        )
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        app_root = app_env["home"] / "apps" / "test-app"
+        # Register the app's own server first, mirroring register_app's order —
+        # _own_mcp_servers reads it back from the registered config.
+        _register_mcp_servers("test-app", manifest, live_port=None)
+
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            _register_agents("test-app", manifest, app_root)
+
+        assert "silently never mount" not in caplog.text
+
+    def test_include_mcp_json_false_does_not_resolve_against_global_config(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        """A spec that opts out of the global mcp.json gets no ambient rescue.
+
+        With ``includeMcpJson: false`` kiro-cli never consults the global
+        config at mount time, so a grant that only a global entry could
+        satisfy is dropped — treating the ambient entry as resolvable would
+        suppress the warning for exactly the specs that set this flag.
+        """
+        from kiro_crew.apps import bridges as bridges_mod
+
+        monkeypatch.setattr(bridges_mod, "_global_mcp_specs", lambda: {"ambient-srv": {}})
+        src = _make_app_source(tmp_path)
+        (src / "agents" / "my-agent.json").write_text(
+            json.dumps(
+                {
+                    "name": "my-agent",
+                    "model": "auto",
+                    "includeMcpJson": False,
+                    "tools": ["@ambient-srv"],
+                }
+            )
+        )
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        app_root = app_env["home"] / "apps" / "test-app"
+
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            _register_agents("test-app", manifest, app_root)
+
+        assert "silently never mount" in caplog.text
+        assert "@ambient-srv" in caplog.text
+
     def test_a_failed_rewrite_leaves_the_prior_config_intact(self, tmp_path, app_env, monkeypatch):
         """A rebuild must never destroy the working config before its replacement
         is durable.

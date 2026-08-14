@@ -599,6 +599,48 @@ def _materialize_managed_refs(agent_data: dict[str, Any]) -> None:
     agent_data["mcpServers"] = servers
 
 
+def _unresolvable_tool_refs(agent_data: dict[str, Any]) -> list[str]:
+    """``@server``/``@server/tool`` grants whose server no config declares.
+
+    kiro-cli resolves a ``@`` tool reference against the agent's own
+    ``mcpServers`` plus the global ``mcp.json``; a name found in neither is
+    dropped SILENTLY at mount time — the agent simply loses the tool with no
+    exception and no log line anywhere. CI gates the shipped specs (see
+    ``test_pptx_maker_provision.py``), but a user-installed app whose server
+    failed to register is a runtime event CI cannot see, so the registration
+    path — the last point that holds both the grants and the merged server
+    map — reports it here.
+
+    Diagnostic only: the caller logs a warning and still registers the agent.
+    A dangling ref never mounts; it does not break the agent, so it must not
+    become fatal. The global config is read only when a candidate survives the
+    merged map (the common all-resolved case costs no I/O).
+    """
+    servers = agent_data.get("mcpServers")
+    known = set(servers) if isinstance(servers, dict) else set()
+    candidates: list[tuple[str, str]] = []
+    for entry in agent_data.get("tools") or []:
+        if not isinstance(entry, str) or not entry.startswith("@"):
+            continue
+        server = entry[1:].split("/", 1)[0]
+        if server not in known:
+            candidates.append((entry, server))
+    if not candidates:
+        return []
+    if agent_data.get("includeMcpJson") is False:
+        # The spec opts out of the global mcp.json, so kiro-cli will not
+        # consult it at mount time — an ambient entry cannot rescue these refs
+        # and treating it as resolvable would suppress the one signal that
+        # exists for exactly the specs (mochi's) that set this flag.
+        return [f"{entry} (server {server!r})" for entry, server in candidates]
+    ambient = set(_global_mcp_specs())
+    return [
+        f"{entry} (server {server!r})"
+        for entry, server in candidates
+        if server not in ambient
+    ]
+
+
 #: Keys the framework OWNS in a materialized app agent config: each is derived
 #: from the manifest, the per-app MCP policy, or the running install, so a stale
 #: value is a bug rather than a preference. Everything else a user hand-edits in
@@ -920,6 +962,20 @@ def _register_agents(app_name: str, manifest: AppManifest, app_root: Path) -> li
             _servers = merged.get("mcpServers")
             if isinstance(_servers, dict):
                 merged["mcpServers"] = _strip_ungoverned_auto_approve(_servers)
+            # The map above is FINAL — every source of servers has been merged —
+            # so this is the one point a dangling `@` grant is decidable. Warn,
+            # never reject: kiro-cli just skips the ref, so the agent works
+            # minus the tool, and the warning is the only signal that exists.
+            dangling = _unresolvable_tool_refs(merged)
+            if dangling:
+                logger.warning(
+                    "App %s: agent %r grants MCP tool ref(s) not found in this "
+                    "agent's merged mcpServers or the global mcp.json; kiro-cli "
+                    "will silently never mount them: %s",
+                    app_name,
+                    agent_name,
+                    ", ".join(dangling),
+                )
             atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
             registered.append(_namespace(app_name, agent_name))
             # The DECLARED name only — kiro-cli enumerates agents by their

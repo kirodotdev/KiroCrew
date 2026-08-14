@@ -1046,3 +1046,77 @@ class TestShippedAgentsDoNotPreAuthorizeTools:
                 raw = raw.replace(placeholder, "/rendered")
             data = json.loads(raw)
             assert data.get("tools"), f"{path} lost its tools entirely"
+
+    def test_every_at_server_grant_resolves_to_a_declared_server(self) -> None:
+        """Every ``@server``/``@server/tool`` grant names a server something declares.
+
+        kiro-cli drops an unresolvable ``@`` reference SILENTLY at mount time:
+        the agent registers, mounts without the tool, and no exception or
+        warning appears anywhere — so a typo in a spec edit degrades an agent
+        with zero signal. This gate makes that failure loud in CI.
+
+        A shipped spec's ``@`` grant is resolvable when its server part names
+        one of the three sources registration actually merges (see
+        ``bridges._register_agents``):
+
+        - the spec's OWN ``mcpServers`` block (e.g. pptx-maker's ``sdpm``);
+        - a HOST-MANAGED server — read from ``agent._MANAGED_MCP_SERVERS``
+          itself, the registry ``bridges._materialize_managed_refs`` consults,
+          so a renamed managed server fails here instead of un-mounting. The
+          materializer keys on the WHOLE remainder after ``@`` (``t[1:]``), so
+          only the bare ``@server`` form resolves — ``@kirocrew-core/tool``
+          would never be copied into the spec's ``mcpServers`` and must FAIL
+          this gate;
+        - the owning app's NAMESPACED servers, ``<app>:<server>`` for every
+          key in the manifest's ``mcpServers`` (``bridges._own_mcp_servers``
+          injects these by prefix after ``_register_mcp_servers`` writes them).
+
+        Deliberately NOT validated: bare builtin names (kiro-cli checks those
+        at registration — re-listing its vocabulary here would rot) and the
+        ``/tool`` half of a reference (only the live server can enumerate its
+        tools; the server lookup is the part that fails silently).
+        """
+        import io
+
+        from kiro_crew.agent import _MANAGED_MCP_SERVERS
+
+        builtins_dir = provision._PACKAGE_ROOT.parent
+        templates = sorted(builtins_dir.glob("*/agents/*.json"))
+        assert templates, "no shipped agent templates found — did the path change?"
+        offenders: list[str] = []
+        grants_seen = 0
+        for path in templates:
+            raw = io.open(path, encoding="utf-8").read()
+            for placeholder in _declared_placeholders():
+                raw = raw.replace(placeholder, "/rendered")
+            data = json.loads(raw)
+            resolvable = set(data.get("mcpServers") or {})
+            manifest = json.loads(
+                (path.parent.parent / "app.json").read_text(encoding="utf-8")
+            )
+            app_name = manifest.get("name")
+            if isinstance(app_name, str) and app_name:
+                resolvable.update(
+                    f"{app_name}:{server}" for server in (manifest.get("mcpServers") or {})
+                )
+            for entry in data.get("tools") or []:
+                if not isinstance(entry, str) or not entry.startswith("@"):
+                    continue
+                grants_seen += 1
+                remainder = entry[1:]
+                server = remainder.split("/", 1)[0]
+                # Managed refs resolve on the WHOLE remainder (bare form only):
+                # _materialize_managed_refs matches `t[1:]` against the registry
+                # keys, so a per-tool managed ref never materializes.
+                if remainder in _MANAGED_MCP_SERVERS:
+                    continue
+                if server not in resolvable:
+                    offenders.append(f"{path}: {entry!r} (server {server!r})")
+        # The gate must not pass vacuously: shipped specs DO carry @ grants
+        # today, so finding none means the traversal or the spec format moved.
+        assert grants_seen, "no @server grants found in any shipped spec — did the format change?"
+        assert offenders == [], (
+            "these shipped agent specs grant tools on a server that nothing "
+            "declares — kiro-cli will silently drop them at mount time:\n  "
+            + "\n  ".join(offenders)
+        )
