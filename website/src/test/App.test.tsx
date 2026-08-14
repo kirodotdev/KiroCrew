@@ -715,9 +715,63 @@ describe('App routing', () => {
   })
 
   it('reserves the larger topbar cluster before showing the centered search', () => {
-    expect(calculateTopbarSearchLayout(330, 180, 1200)).toEqual({ gutter: 342, visible: true })
-    expect(calculateTopbarSearchLayout(180, 505, 1570)).toEqual({ gutter: 517, visible: true })
-    expect(calculateTopbarSearchLayout(330, 180, 900)).toEqual({ gutter: 342, visible: false })
+    expect(calculateTopbarSearchLayout(330, 180, 1200)).toEqual({ gutter: 342, width: 360, visible: true })
+    expect(calculateTopbarSearchLayout(180, 505, 1570)).toEqual({ gutter: 517, width: 483, visible: true })
+    expect(calculateTopbarSearchLayout(330, 180, 900)).toEqual({ gutter: 342, width: 240, visible: false })
+  })
+
+  it('caps the centered search at the measured gutter instead of a fixed third of the viewport', () => {
+    // Regression: `visible` is only a floor gate (does 240px still fit?), while
+    // the overlay rendered at a fixed 33.3333vw - 40px. Between those two
+    // numbers sits an overlap band where the gate says "show it" and the box is
+    // nonetheless wider than the space the actions cluster leaves, so it ran
+    // underneath the metrics capsule. Measured at 1400x820 with a 552px-reach
+    // capsule the overlay used to run 77px under it. A wide actions cluster
+    // must shrink the overlay, not be covered by it.
+    const wide = calculateTopbarSearchLayout(12, 460, 1300)
+    expect(wide.visible).toBe(true)
+    expect(wide.width).toBe(1300 - wide.gutter * 2)            // clamped to the gutter
+    expect(wide.width).toBeLessThan(Math.round(1300 / 3) - 40) // ...below the old fixed third
+    // A narrow actions cluster leaves the third of the viewport untouched.
+    expect(calculateTopbarSearchLayout(12, 180, 1300).width).toBe(Math.round(1300 / 3) - 40)
+  })
+
+  it('keeps a real gap between the centered search and the clusters that bound it', () => {
+    // The gutter is built from how far each cluster REACHES in from its side of
+    // the viewport, not its bare width. Measuring width alone ignored the
+    // header's own px-3 padding, so the whole TOPBAR_SEARCH_GAP was swallowed
+    // and the overlay's border ended up flush against the capsule (measured:
+    // 0px clearance). With reaches as inputs the clearance is the full gap.
+    const viewport = 1500
+    const actionsReach = 500                     // viewport - actions.left
+    const { width, visible } = calculateTopbarSearchLayout(12, actionsReach, viewport)
+    expect(visible).toBe(true)
+    // The overlay is centered, so its right edge sits at (viewport + width) / 2.
+    const clearance = (viewport - actionsReach) - (viewport + width) / 2
+    expect(clearance).toBeGreaterThanOrEqual(12)
+  })
+
+  it('measures the topbar clusters even when the brand cluster is empty', () => {
+    // Regression: the brand cluster is legitimately 0-wide on a single-instance
+    // desktop (the brand lives in the sidebar and InstanceTabBar renders
+    // nothing without a remote instance), but `update` bailed on
+    // `brandWidth <= 0`. The measurement therefore never ran in the common
+    // case, the state stayed frozen on its optimistic initial value, and the
+    // overlay kept its full width no matter how wide the capsule grew.
+    const rect = (left: number, width: number) => ({ width, height: 40, top: 0, left, right: left + width, bottom: 40, x: left, y: 0, toJSON: () => ({}) }) as DOMRect
+    // jsdom viewport is 1024 wide. Actions cluster reaches 370px in from the
+    // right (left edge at 654), the brand cluster is empty at the px-3 edge.
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: Element) { return this.classList.contains('ml-auto') ? rect(654, 370) : rect(12, 0) })
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
+      // gutter = 370 + 12 = 382, so the overlay is capped at 1024 - 764 = 260px,
+      // below the unclamped 301px a fixed third of the viewport would have given.
+      expect(trigger.style.width).toBe('260px')
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('resizes the sidebar and main body together with a quick shell transition', () => {

@@ -171,12 +171,35 @@ export function metricColor(pct: number): string {
 }
 export const memColorClass = metricColor
 
+// Geometry for the centered top-bar search overlay. It is absolutely
+// positioned and centered on the VIEWPORT (left: 50vw), not flowed between the
+// brand and actions clusters, so it cannot be squeezed by its siblings — this
+// function has to keep it inside the gutter instead.
+//
+// Both inputs are the space a cluster CONSUMES from its side of the viewport
+// (`brand.right`, and `viewportWidth - actions.left`), not the cluster's bare
+// width: the header has its own horizontal padding, so measuring width alone
+// under-counts the occupied space and ate the whole TOPBAR_SEARCH_GAP.
+//   - `gutter` is the reserved space on EACH side (the larger of the two
+//     clusters plus the gap, mirrored because the overlay is center-anchored).
+//   - `width` is the resolved px width: a third of the viewport, but never
+//     wider than the space the clusters leave. It used to be a fixed
+//     `33.3333vw - 40px` in CSS, which sat UNDER a wide actions cluster
+//     (metrics capsule + usage pill) on narrower windows.
+//   - `visible` is only the floor: below TOPBAR_SEARCH_MIN_WIDTH the overlay is
+//     dropped rather than shrunk further, so `width` is never below the floor
+//     while the overlay is on screen.
 const TOPBAR_SEARCH_GAP = 12
 const TOPBAR_SEARCH_MIN_WIDTH = 240
+// Actions-cluster reach assumed for the first paint, before the clusters have
+// been measured. Chosen to reproduce the long-standing 360px initial gutter.
+const TOPBAR_SEARCH_ASSUMED_ACTIONS = 348
 
-export function calculateTopbarSearchLayout(brandWidth: number, actionsWidth: number, viewportWidth: number) {
-  const gutter = Math.ceil(Math.max(brandWidth, actionsWidth)) + TOPBAR_SEARCH_GAP
-  return { gutter, visible: viewportWidth - (gutter * 2) >= TOPBAR_SEARCH_MIN_WIDTH }
+export function calculateTopbarSearchLayout(brandEdge: number, actionsEdge: number, viewportWidth: number) {
+  const gutter = Math.ceil(Math.max(brandEdge, actionsEdge)) + TOPBAR_SEARCH_GAP
+  const available = viewportWidth - (gutter * 2)
+  const width = Math.max(TOPBAR_SEARCH_MIN_WIDTH, Math.min(Math.round(viewportWidth / 3) - 40, available))
+  return { gutter, width, visible: available >= TOPBAR_SEARCH_MIN_WIDTH }
 }
 
 // Apps-nav fetch resilience (see refreshAppNav). The dashboard loads
@@ -1677,18 +1700,26 @@ export default function App() {
   }, [isMobile, effectiveCollapsed])
   const topbarBrandRef = useRef<HTMLDivElement>(null)
   const topbarActionsRef = useRef<HTMLDivElement>(null)
-  const [topbarSearchLayout, setTopbarSearchLayout] = useState({ gutter: 360, visible: true })
+  const [topbarSearchLayout, setTopbarSearchLayout] = useState(() =>
+    calculateTopbarSearchLayout(0, TOPBAR_SEARCH_ASSUMED_ACTIONS, typeof window === 'undefined' ? 1440 : window.innerWidth))
   useEffect(() => {
     if (isMobile) return
     const brand = topbarBrandRef.current
     const actions = topbarActionsRef.current
     if (!brand || !actions) return
     const update = () => {
-      const brandWidth = brand.getBoundingClientRect().width
-      const actionsWidth = actions.getBoundingClientRect().width
-      if (brandWidth <= 0 || actionsWidth <= 0) return
-      const next = calculateTopbarSearchLayout(brandWidth, actionsWidth, window.innerWidth)
-      setTopbarSearchLayout(current => current.gutter === next.gutter && current.visible === next.visible ? current : next)
+      const brandRect = brand.getBoundingClientRect()
+      const actionsRect = actions.getBoundingClientRect()
+      // Only the actions cluster proves layout has happened. The brand cluster
+      // is LEGITIMATELY 0-wide in the common single-instance desktop case —
+      // InstanceTabBar renders nothing without a remote instance and the brand
+      // itself moved to the sidebar — so bailing on `brandWidth <= 0` skipped
+      // every measurement, froze this state on its optimistic initial value,
+      // and let the centered search overlay run under the capsule. The actions
+      // cluster always holds at least the capsule's connection dot.
+      if (actionsRect.width <= 0) return
+      const next = calculateTopbarSearchLayout(brandRect.right, window.innerWidth - actionsRect.left, window.innerWidth)
+      setTopbarSearchLayout(current => current.gutter === next.gutter && current.width === next.width && current.visible === next.visible ? current : next)
     }
     update()
     const observer = new ResizeObserver(update)
@@ -1831,7 +1862,7 @@ export default function App() {
             data-topbar-overlay
             onClick={commandPalette.openPalette}
             className="absolute h-7 px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
-            style={{ left: '50vw', transform: 'translateX(-50%)', width: 'calc(33.3333vw - 40px)', minWidth: TOPBAR_SEARCH_MIN_WIDTH }}
+            style={{ left: '50vw', transform: 'translateX(-50%)', width: topbarSearchLayout.width }}
             aria-label={i18nT('app.search_sessions_files_and_commands')}
             title={i18nT('app.search_everywhere_k')}
           >
