@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored, action-first feature tips for KiroCrew-native features (keyboard shortcuts, Settings toggles, config keys) that have no docs/*.md entry and so can never surface through the doc-scan catalog. Each tip's body ends with the exact thing to do. An optional 'action' object ({kind:'route', label, route}) renders a one-click button that navigates to the exact settings page/control; tips whose feature has no navigable destination (a keyboard shortcut or a mid-turn composer control) omit 'action' and render body only. Loaded by kiro_crew.tips._load_curated_tips; the seven string fields are validated like generated tips, and 'action' is validated separately by _sanitize_tip_action (kind must be 'route'; route must be an internal path).",
+  "_comment": "Hand-authored, action-first feature tips for features native to Kiro Crew (keyboard shortcuts, Settings toggles, config keys) that have no docs/*.md entry and so can never surface through the doc-scan catalog. Each tip's body ends with the exact thing to do. An optional 'action' object ({kind:'route', label, route}) renders a one-click button that navigates to the exact settings page/control; tips whose feature has no navigable destination (a keyboard shortcut or a mid-turn composer control) omit 'action' and render body only. A curated tip that wants a 'learn more' doc link MUST use 'doc_link' (rendering-only), never 'doc': 'doc' is the tip's dismissal identity, and a curated tip claiming a catalog-owned doc there would suppress the catalog's own tip for that doc on dismissal. Loaded by kiro_crew.tips._load_curated_tips; the string fields are validated like generated tips, and 'action' is validated separately by _sanitize_tip_action (kind must be 'route'; route must be an internal path).",
   "tips": [
     {
       "id": "split-view",
@@ -67,6 +67,7 @@
       "body": "`agent.max_subagents` caps concurrent subagents. **0 = auto-size** to your machine's memory and CPU; pin a number with `kirocrew config set agent.max_subagents 4`.",
       "why": "",
       "doc": "",
+      "doc_link": "dynamic-subagent-sizing.md",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open Subagent config", "route": "/settings?tab=overview" }
     },
@@ -86,6 +87,7 @@
       "body": "A scheduled job can run a shell `command` or a Python `script` directly — no model, zero tokens. Ideal for polling, cleanup, and health checks.",
       "why": "",
       "doc": "",
+      "doc_link": "cron-and-scheduling.md",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "New scheduled job", "route": "/schedule" }
     },
@@ -156,6 +158,7 @@
       "body": "Let Kiro Crew draft a reusable skill whenever a finished session contains a multi-step procedure worth repeating. Enable **Auto-generate skills from sessions** in **Settings › Skills** — drafts wait in a review queue and never go live without your approval. Off by default.",
       "why": "",
       "doc": "",
+      "doc_link": "skills.md",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open Skills settings", "route": "/settings?tab=skills&highlight=key:skills.auto_create_from_sessions" }
     },

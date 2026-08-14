@@ -114,6 +114,45 @@ describe('TipCard (single-line strip)', () => {
     }
   })
 
+  it('renders the Learn more link from doc_link when doc is empty (dismissal-identity split)', () => {
+    // A curated tip links a doc it does not own for dismissal purposes:
+    // doc="" keeps the dismissal path inert, doc_link restores the link.
+    renderWithQuery(
+      <TipCard
+        tip={{ ...mockTip, doc: '', doc_link: 'dynamic-subagent-sizing.md' }}
+        onDismiss={onDismiss}
+      />,
+    )
+    const link = screen.getByRole('link', { name: /learn more/i }) as HTMLAnchorElement
+    expect(link.href).toBe(
+      'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/dynamic-subagent-sizing.md',
+    )
+  })
+
+  it('prefers doc_link over doc and applies the same filename validation to it', () => {
+    // When both are set, the rendering-only field wins.
+    renderWithQuery(
+      <TipCard
+        tip={{ ...mockTip, doc: 'cron-and-scheduling.md', doc_link: 'skills.md' }}
+        onDismiss={onDismiss}
+      />,
+    )
+    const preferred = screen.getByRole('link', { name: /learn more/i }) as HTMLAnchorElement
+    expect(preferred.href).toBe(
+      'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/skills.md',
+    )
+  })
+
+  it('omits the Learn more link when doc_link is present but invalid (no silent doc fallback)', () => {
+    for (const doc_link of ['../secrets/keys.md', 'https://evil.example/x.md']) {
+      const { unmount } = renderWithQuery(
+        <TipCard tip={{ ...mockTip, doc: '', doc_link }} onDismiss={onDismiss} />,
+      )
+      expect(screen.queryByRole('link', { name: /learn more/i })).toBeNull()
+      unmount()
+    }
+  })
+
   it('"Turn off tips" opts out permanently (same action as the Settings toggle) and hides the card', async () => {
     const { api: mockApi } = await import('../api/client')
     renderWithQuery(
