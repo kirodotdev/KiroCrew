@@ -1930,10 +1930,13 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         raise
     queue_id = body.get("queue_id")
     if queue_id:
-        for i, item in enumerate(slot._queue):
-            if item.get("queue_id") == queue_id:
-                slot._queue.insert(0, slot._queue.pop(i))
-                break
+        # Wire-side field is `queue_id`; stored items carry `id` (the key
+        # queue_append/queue_insert write and every *_by_id helper matches).
+        # The previous inline loop compared item.get("queue_id"), which is
+        # None on every production item — a silent no-op that made the
+        # "run this next" click land on whatever happened to be at the
+        # front of the queue instead of the selected message.
+        slot.queue_promote_by_id(queue_id)
 
     # Stop current turn but preserve the queue so dequeue loop fires
     # (soft_pending already claimed above, before the request-body await)

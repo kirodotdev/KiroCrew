@@ -92,7 +92,7 @@ class TestChatSlotInterrupt:
         mock_task = MagicMock()
         mock_task.done.return_value = False
         slot.task = mock_task
-        slot._queue = [{"queue_id": "q1", "content": "hello"}]
+        slot.queue_append("hello")
         state = _mock_state(slot)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
@@ -115,22 +115,43 @@ class TestChatSlotInterrupt:
         mock_task = MagicMock()
         mock_task.done.return_value = False
         slot.task = mock_task
-        slot._queue = [
-            {"queue_id": "q1", "content": "first"},
-            {"queue_id": "q2", "content": "second"},
-            {"queue_id": "q3", "content": "third"},
-        ]
+        # Seed through the REAL production path (queue_append -> {"id": ...}),
+        # not a hand-built dict. The original fixture used {"queue_id": ...},
+        # a shape that never occurs in production, which let the handler's
+        # wrong-key match (item.get("queue_id")) pass this test while being a
+        # silent no-op on real queues.
+        q1 = slot.queue_append("first")
+        q2 = slot.queue_append("second")
+        q3 = slot.queue_append("third")
         state = _mock_state(slot)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/test/interrupt",
-                json={"queue_id": "q2"},
+                json={"queue_id": q2},
             )
             assert resp.status == 200
             # q2 should now be at front
-            assert slot._queue[0]["queue_id"] == "q2"
-            assert slot._queue[1]["queue_id"] == "q1"
-            assert slot._queue[2]["queue_id"] == "q3"
+            assert slot._queue[0]["id"] == q2
+            assert slot._queue[1]["id"] == q1
+            assert slot._queue[2]["id"] == q3
+
+    @pytest.mark.asyncio
+    async def test_interrupt_with_unknown_queue_id_preserves_order(self, _patch_sel):
+        """An unknown queue_id must not reorder anything (and must not 500)."""
+        slot = _ChatSlot("test")
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        slot.task = mock_task
+        q1 = slot.queue_append("first")
+        q2 = slot.queue_append("second")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/interrupt",
+                json={"queue_id": "does-not-exist"},
+            )
+            assert resp.status == 200
+            assert [i["id"] for i in slot._queue] == [q1, q2]
 
     @pytest.mark.asyncio
     async def test_interrupt_sets_stop_state_to_soft_pending(self, _patch_sel):
@@ -138,7 +159,7 @@ class TestChatSlotInterrupt:
         mock_task = MagicMock()
         mock_task.done.return_value = False
         slot.task = mock_task
-        slot._queue = [{"queue_id": "q1", "content": "msg"}]
+        slot.queue_append("msg")
         state = _mock_state(slot)
         async with TestClient(TestServer(_make_app(state))) as client:
             await client.post(
@@ -159,7 +180,7 @@ class TestChatSlotInterrupt:
         mock_task = MagicMock()
         mock_task.done.return_value = False
         slot.task = mock_task
-        slot._queue = [{"queue_id": "q1", "content": "msg"}]
+        slot.queue_append("msg")
 
         # Simulate a pending approval future (agent waiting for permission)
         loop = asyncio.get_running_loop()

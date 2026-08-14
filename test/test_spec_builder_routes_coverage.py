@@ -2088,7 +2088,7 @@ class TestTeardownWorkerSlot:
     @pytest.mark.asyncio
     async def test_the_slot_is_popped_queued_work_dropped_and_the_turn_cancelled(self):
         slot = _Slot("spec-builder-demo", running=True)
-        slot._queue = ["next prompt"]
+        slot._queue = [{"id": "q1", "content": "next prompt"}]
         slot._pending_synthesis = True
         task = mock.Mock()
         task.cancel = mock.Mock()
@@ -2167,7 +2167,7 @@ class TestHaltActiveTurn:
     @pytest.mark.asyncio
     async def test_the_turn_is_stopped_cooperatively_then_cancelled(self):
         slot = _Slot("spec-builder-demo", running=True)
-        slot._queue = ["next"]
+        slot._queue = [{"id": "q1", "content": "next"}]
         task = mock.Mock()
         task.done.return_value = False
         slot.task = task  # type: ignore[assignment]

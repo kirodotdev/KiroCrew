@@ -141,7 +141,7 @@ class TestInterruptHandlerIdempotent:
         slot._stop_state = "soft_pending"
         slot._stop_event_id = "stop-xyz"
         slot.running = True
-        slot._queue = [{"queue_id": "q1", "content": "hello"}]
+        slot._queue = [{"id": "q1", "content": "hello"}]
 
         state = _FakeState(slot)
         app = web.Application()
@@ -502,7 +502,7 @@ class TestStopCancelsTheSessionTheTurnRunsOn:
         slot = _FakeSlot()
         slot.linked_session_key = "slack:1786000000.1"
         # /interrupt is only reachable with something queued to promote.
-        slot._queue = [{"queue_id": "q1", "content": "next"}]
+        slot._queue = [{"id": "q1", "content": "next"}]
         state = _FakeState(slot)
 
         request = self._request(state)

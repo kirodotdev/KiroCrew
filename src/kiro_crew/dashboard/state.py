@@ -1760,6 +1760,21 @@ class _ChatSlot:
                 return True
         return False
 
+    def queue_promote_by_id(self, queue_id: str) -> bool:
+        """Move a queue item to the front by ID. Returns True if found.
+
+        Used by the interrupt endpoint's "run this next" path: the promoted
+        item is what the dequeue loop picks up after the current turn stops.
+        Like every ``*_by_id`` helper, this matches the storage key (``id``)
+        that :meth:`queue_append` / :meth:`queue_insert` write — callers
+        translate the wire-side ``queue_id`` field to it at the boundary.
+        """
+        for i, item in enumerate(self._queue):
+            if item["id"] == queue_id:
+                self._queue.insert(0, self._queue.pop(i))
+                return True
+        return False
+
     @property
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
