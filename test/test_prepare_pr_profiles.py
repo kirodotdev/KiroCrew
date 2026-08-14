@@ -287,6 +287,9 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "python": "covered by the scripts/ scan and the pytest gate",
         "python3": "covered by the scripts/ scan and the pytest gate",
         "unshare": "namespace wrapper around the pytest gate",
+        # Diagnostic only: the blob-reconcile step in frontend-coverage-merge
+        # always exits 0 and never changes a job verdict, so it is not a gate.
+        "node": "runs the diagnostic frontend-blob-reconcile step, which never gates",
     }
     tools = set(re.findall(r"(?m)^\s*run: ([a-z][a-z0-9_-]+) ", run_text))
     tool_missing = sorted(

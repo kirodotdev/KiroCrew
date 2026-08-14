@@ -1192,7 +1192,11 @@ jobs:
             # than SHARD_COUNT leaves some shards with no files, so
             # --passWithNoTests keeps an empty shard green (a legitimately empty
             # slice, not a lost suite).
-            npx vitest run --reporter=blob --passWithNoTests \
+            # blob alone prints no verdict (it only writes the artifact), so a
+            # failing shard's log would end at "exit code 1" with no FAIL line
+            # or summary; the second reporter keeps a human-readable verdict in
+            # this job's own log.
+            npx vitest run --reporter=blob --reporter=default --passWithNoTests \
               --shard=${{ matrix.shard }}/"$SHARD_COUNT" "${TARGETS[@]}"
           else
             # --reporter=blob stores results + per-shard coverage under
@@ -1200,7 +1204,11 @@ jobs:
             # the four shards back into one report and the merged cobertura the
             # Coverage Gate reads. Coverage is emitted per shard so the merge
             # can union it -- a single shard covers only the files it ran.
-            npx vitest run --coverage --reporter=blob \
+            # blob alone prints no verdict (it only writes the artifact), so a
+            # failing shard's log would end at "exit code 1" with no FAIL line
+            # or summary; the second reporter keeps a human-readable verdict in
+            # this job's own log.
+            npx vitest run --coverage --reporter=blob --reporter=default \
               --shard=${{ matrix.shard }}/"$SHARD_COUNT"
           fi
 
@@ -1250,6 +1258,7 @@ jobs:
           merge-multiple: true
 
       - name: Merge reports and coverage
+        id: merge
         working-directory: website
         # --merge-reports stitches the per-shard blobs back into one result set
         # WITHOUT re-running tests; --coverage unions the per-shard coverage and
@@ -1258,6 +1267,23 @@ jobs:
         # already consumes. A failed shard makes this exit non-zero, surfacing
         # the failure here too.
         run: npx vitest --merge-reports --coverage
+
+      - name: Reconcile shard verdicts against blob results
+        # Runs even when the merge step failed -- that is the case it exists
+        # for. A shard (or the merge) can exit non-zero without naming a
+        # failing test anywhere: a worker killed mid-run (the worker-OOM mode
+        # documented in website/vite.config.ts) fails the job while every test
+        # in the blob reads "pass". This step decodes the downloaded blobs,
+        # prints every failing test and unhandled runner error by name, and
+        # states the contradiction explicitly when a red verdict has no failing
+        # test behind it. Diagnostic only: it always exits 0 and never changes
+        # the job's verdict.
+        if: ${{ !cancelled() }}
+        working-directory: website
+        env:
+          FRONTEND_TEST_RESULT: ${{ needs.frontend-test.result }}
+          MERGE_RESULT: ${{ steps.merge.outcome }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/frontend-blob-reconcile.mjs" .vitest-reports
 
       - name: Upload merged coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
