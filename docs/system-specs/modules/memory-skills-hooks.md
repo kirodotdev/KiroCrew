@@ -952,9 +952,11 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 
 **Startup behavior**: gateway calls `_init_mcp_discovery()` which runs `discover_servers_to_sync()` + `sync_to_agent_config()` to auto-add new servers from mcp.json, then logs all configured servers. Discovery/sync failures are caught independently so `list_servers()` always runs. Additionally, `server.py` fires `_bg_mcp_probe()` as a background task at startup to populate the probe cache.
 
-**sync_to_agent_config()**: registers servers via `kiro-cli mcp add` in parallel (all Popen spawned at once, then waited), followed by a single config patch pass for `tools`/`allowedTools`. Atomic write (tmp + rename) prevents corrupted config. Checks returncode, logs stderr on failure, separate timeout handling. Falls back to direct JSON edit if kiro-cli unavailable.
+**sync_to_agent_config()**: delegates entirely to `install_agent()` — the single authoritative merge that reads all source files, resolves commands, normalizes each spec's `env` through `env.emit_env()` (a declared `PATH` is expanded to the full effective one), and atomically writes the agent config. There is deliberately no `kiro-cli mcp add` subprocess: it was an unsynchronized second writer of the same file whose output the rebuild overwrote moments later.
 
-**On-demand discovery** (dashboard): same `discover_servers_to_sync()` + `sync_to_agent_config()` triggered by "Discover & Sync" button.
+**sync_discovered_servers()**: the one serialized discover→write entry point (`discover` + agent-config rebuild + Claude Code sidecar) shared by `POST /api/mcp/sync` and the sessions-restart pre-sync. A module mutex serializes concurrent callers, closing the read-modify-write race the two handlers used to have.
+
+**On-demand discovery** (dashboard): `sync_discovered_servers()` triggered by "Discover & Sync" button.
 
 **Command divergence** (`_commands_diverged`): an existing server is only re-synced when its `mcp.json` command differs from the one recorded in the agent config. The two legitimately differ in spelling because `agent._resolve_command` stores the `shutil.which` result while `mcp.json` keeps the bare name, so the comparison folds path resolution:
 
@@ -962,11 +964,11 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 - On Windows the keys are `normcase`+`normpath` folded (paths are case-insensitive and accept either separator), and a trailing `PATHEXT` suffix is stripped from the **rooted side only** — `shutil.which("npx")` returns `...\npx.CMD`, which would otherwise read as divergent from `npx` on every cycle and re-sync + reset every session at each startup. Stripping both sides would wrongly collapse distinct executables (`foo.bat` vs `foo.cmd`).
 - A leading separator with no drive letter (`/usr/bin/srv`) counts as rooted on Windows even though `ntpath.isabs` rejects it, so an `mcp.json` authored on macOS/Linux is read identically on every host.
 
-**Probing**: spawns each MCP server, sends JSON-RPC `initialize` + `tools/list` handshake, reports status + tool names. 30-second timeout, 1MB stdout buffer (an MCP server's responses exceed the default 64KB). Cleanup via `finally` block (no zombie processes). Results cached in `handlers.py` with 10-min TTL; GET `/api/mcp/probe` returns cached results non-blocking, POST `/api/mcp/probe` forces a fresh probe and updates cache.
+**Probing**: spawns each MCP server, sends JSON-RPC `initialize` + `tools/list` handshake, reports status + tool names. **Both calls must succeed for `ok`** — an initialize that answers and a tools/list that does not is a server no session can get a tool out of, so it reports as an error rather than certifying an unusable server. Each result carries `probedAt` (wall-clock) and `probeMode` (`handshake`, or `declared` for a managed server served from its in-process declaration) so the UI can say when and how the status was established. 30-second timeout, 1MB stdout buffer (an MCP server's responses exceed the default 64KB). Cleanup via `finally` block (no zombie processes). Results cached in `handlers.py` with 10-min TTL; GET `/api/mcp/probe` returns cached results non-blocking, POST `/api/mcp/probe` forces a fresh probe and updates cache.
 
 **Enable/Disable**: `POST /api/mcp/toggle` adds/removes `@name` from `tools` and `allowedTools` arrays in installed config (`~/.kiro/agents/kirocrew.json`). Does NOT modify `agents/defaults.json`. Disabled servers stay in `mcpServers` but kiro-cli won't load their tools.
 
-**Sync**: `POST /api/mcp/sync` uses `kiro-cli mcp add --agent kirocrew --force` to properly register new servers with kiro-cli. Falls back to direct JSON edit if kiro-cli unavailable. After sync, all active sessions are reset so kiro-cli picks up the new config (~30s).
+**Sync**: `POST /api/mcp/sync` runs `sync_discovered_servers()` off the event loop, then applies OAuth hints to the kiro-global file and resets all active sessions so kiro-cli picks up the new config (~30s).
 
 **Dashboard workflow**: ① Probe All → ② Enable/Disable → ③ Apply & Restart Sessions.
 

@@ -661,3 +661,256 @@ class TestGitBuildInfo:
         monkeypatch.setattr("kiro_crew.env.subprocess.run", _boom)
         assert env.git_build_info() == ("", "")
         env.git_build_info.cache_clear()
+
+
+class TestDedupPath:
+    def test_keeps_first_occurrence_order(self) -> None:
+        raw = os.pathsep.join(["/a", "/b", "/a", "/c", "/b"])
+        assert env_mod.dedup_path(raw).split(os.pathsep) == ["/a", "/b", "/c"]
+
+    def test_drops_empty_entries(self) -> None:
+        raw = os.pathsep.join(["", "/a", "", "/b"])
+        assert env_mod.dedup_path(raw).split(os.pathsep) == ["/a", "/b"]
+
+    def test_dedup_keys_on_normalized_form(self) -> None:
+        """Two spellings of one directory collapse; the first is emitted as-is."""
+        raw = os.pathsep.join(["/usr/bin/", "/usr/bin", "/usr/./bin"])
+        assert env_mod.dedup_path(raw) == "/usr/bin/"
+
+    def test_empty_input_is_empty(self) -> None:
+        assert env_mod.dedup_path("") == ""
+
+
+class TestSpecEnvPath:
+    """A spec's env.PATH must expand to a PATH the child can actually use."""
+
+    def test_spec_entries_come_first(self, monkeypatch) -> None:
+        """A spec that pins a toolchain must not be shadowed by the augmentation."""
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        entries = env_mod.spec_env_path("/opt/shims").split(os.pathsep)
+        assert entries[0] == "/opt/shims"
+
+    def test_multiple_spec_entries_keep_their_order(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        declared = os.pathsep.join(["/opt/first", "/opt/second"])
+        entries = env_mod.spec_env_path(declared).split(os.pathsep)
+        assert entries[:2] == ["/opt/first", "/opt/second"]
+
+    def test_inherited_path_is_retained(self, monkeypatch) -> None:
+        """The whole point: the fragment does not become the child's ONLY PATH."""
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/sbin"]))
+        entries = env_mod.spec_env_path("/opt/shims").split(os.pathsep)
+        assert "/usr/bin" in entries
+        assert "/sbin" in entries
+
+    def test_result_is_deduped(self, monkeypatch) -> None:
+        """A fragment already present in PATH must not be emitted twice."""
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/opt/shims"]))
+        entries = env_mod.spec_env_path("/opt/shims").split(os.pathsep)
+        assert entries.count("/opt/shims") == 1
+
+    def test_idempotent(self, monkeypatch) -> None:
+        """Re-expanding an already-expanded value is a no-op.
+
+        install_agent rewrites the agent config on every start, so a
+        non-idempotent expansion would grow PATH without bound.
+        """
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        once = env_mod.spec_env_path("/opt/shims")
+        assert env_mod.spec_env_path(once) == once
+        assert env_mod.spec_env_path(env_mod.spec_env_path(once)) == once
+
+    def test_empty_fragment_still_yields_usable_path(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        assert "/usr/bin" in env_mod.spec_env_path("").split(os.pathsep)
+
+    def test_entries_are_unique(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        entries = env_mod.spec_env_path("/opt/a" + os.pathsep + "/opt/a").split(os.pathsep)
+        assert len(entries) == len(set(entries))
+
+    def test_relative_entries_are_dropped(self, monkeypatch) -> None:
+        """A relative entry resolves against the CHILD's cwd, from the front."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        declared = os.pathsep.join(["bin", "./tools", "/opt/real"])
+        entries = env_mod.spec_env_path(declared).split(os.pathsep)
+        assert entries[0] == "/opt/real"
+        assert "bin" not in entries
+        assert "./tools" not in entries
+
+    def test_nul_entry_is_dropped(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        entries = env_mod.spec_env_path("/opt/a\0b").split(os.pathsep)
+        assert "/opt/a\0b" not in entries
+
+    def test_non_string_degrades_to_no_override(self, monkeypatch) -> None:
+        """Runs per candidate per server per rebuild — must not raise.
+
+        One malformed value in any config file would otherwise turn a single bad
+        entry into a failed gateway start.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        expected = env_mod.spec_env_path("")
+        for bad in (None, 5, ["/opt/a", "/opt/b"], {"PATH": "/opt/a"}):
+            assert env_mod.spec_env_path(bad) == expected  # type: ignore[arg-type]
+
+    def test_trailing_separator_spelling_is_not_duplicated(self, monkeypatch) -> None:
+        """normpath-keyed dedup: /usr/bin/ and /usr/bin are one directory."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        entries = env_mod.spec_env_path("/usr/bin/").split(os.pathsep)
+        assert entries.count("/usr/bin") + entries.count("/usr/bin/") == 1
+
+
+class TestEmitEnv:
+    """emit_env is the single normalization point for every emitted spec env."""
+
+    def test_path_is_expanded(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"PATH": "/opt/shims", "TOKEN": "x"})
+        entries = out["PATH"].split(os.pathsep)
+        assert entries[0] == "/opt/shims"
+        assert "/usr/bin" in entries
+        assert out["TOKEN"] == "x"
+
+    def test_env_without_path_passes_through_equal(self, monkeypatch) -> None:
+        src = {"API_KEY": "k", "MODE": "prod"}
+        assert env_mod.emit_env(src) == src
+
+    def test_returns_a_new_dict(self) -> None:
+        """Sources are reached through shallow copies — never mutate through."""
+        src = {"PATH": "/opt/shims"}
+        out = env_mod.emit_env(src)
+        assert out is not src
+        assert src["PATH"] == "/opt/shims"
+
+    def test_malformed_path_passes_through_verbatim(self) -> None:
+        """A config error must stay visible, not hide behind a working PATH."""
+        for bad in (["/opt/a"], 5, None):
+            src = {"PATH": bad, "K": "v"}
+            out = env_mod.emit_env(src)  # type: ignore[arg-type]
+            assert out["PATH"] == bad
+            assert out["K"] == "v"
+
+    def test_empty_string_path_expands_like_the_probe(self, monkeypatch) -> None:
+        """``{"PATH": ""}`` must not emit an empty PATH while the probe and the
+        command resolver expand it — that IS the probe/session divergence."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"PATH": ""})
+        assert out["PATH"] == env_mod.spec_env_path("")
+        assert "/usr/bin" in out["PATH"].split(os.pathsep)
+
+    def test_idempotent(self, monkeypatch) -> None:
+        """install_agent rewrites the config every start — re-emitting must not grow."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        once = env_mod.emit_env({"PATH": "/opt/shims"})
+        twice = env_mod.emit_env(once)
+        assert twice == once
+
+    def test_windows_path_spelling_is_canonicalized(self, monkeypatch) -> None:
+        """A Windows-authored spec says ``Path``; the expanded value is emitted
+        under the canonical ``PATH`` so the session gets the same variable the
+        probe pins. Emitting ``Path`` on POSIX would set a junk variable and
+        leave the real search path unpinned — the probe/session split again."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"Path": "/opt/shims", "K": "v"})
+        assert "Path" not in out, "the alternate-case spelling must not survive"
+        entries = out["PATH"].split(os.pathsep)
+        assert entries[0] == "/opt/shims"
+        assert "/usr/bin" in entries
+        assert out["K"] == "v"
+
+    def test_both_spellings_collapse_to_canonical_path(self, monkeypatch) -> None:
+        """Both spellings present is ambiguous: the exact key wins and the
+        alternate is dropped, so no consumer sees two competing search paths."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"PATH": "/opt/exact", "Path": "/opt/other"})
+        assert "Path" not in out
+        assert out["PATH"].split(os.pathsep)[0] == "/opt/exact"
+
+    def test_malformed_alternate_case_passes_through_verbatim(self) -> None:
+        """A malformed value keeps the author's spelling: the config error must
+        stay visible rather than being reshaped into a canonical-looking key."""
+        out = env_mod.emit_env({"Path": ["/opt/a"], "K": "v"})  # type: ignore[dict-item]
+        assert out == {"Path": ["/opt/a"], "K": "v"}
+
+
+class TestSpecPathKey:
+    """The shared PATH-key lookup all three spec readers use."""
+
+    def test_exact_match(self) -> None:
+        assert env_mod.spec_path_key({"PATH": "/x"}) == "PATH"
+
+    def test_case_insensitive_match_returns_authored_spelling(self) -> None:
+        assert env_mod.spec_path_key({"Path": "/x"}) == "Path"
+        assert env_mod.spec_path_key({"path": "/x"}) == "path"
+
+    def test_absent(self) -> None:
+        assert env_mod.spec_path_key({"TOKEN": "t"}) is None
+
+    def test_exact_preferred_when_both_present(self) -> None:
+        assert env_mod.spec_path_key({"Path": "/a", "PATH": "/b"}) == "PATH"
+
+
+class TestSanitizeSpecEnv:
+    """Loader injection keys must never ride a spec env into a launcher's
+    environment — they execute in every ELF binary in the spawn chain (the
+    sandbox wrapper included), before confinement exists."""
+
+    def test_loader_keys_are_dropped(self) -> None:
+        out = env_mod.sanitize_spec_env(
+            [
+                ("LD_PRELOAD", "/tmp/evil.so"),
+                ("LD_LIBRARY_PATH", "/tmp"),
+                ("LD_AUDIT", "/tmp/audit.so"),
+                ("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
+                ("API_TOKEN", "sekret"),
+                ("PATH", "/opt/only"),
+            ]
+        )
+        assert out == {"API_TOKEN": "sekret", "PATH": "/opt/only"}
+
+    def test_python_env_is_dropped(self) -> None:
+        """PYTHON* is a launcher-execution channel here, not a server setting.
+
+        Kiro Crew's Linux sandbox launcher is itself a Python process
+        (``[sys.executable, <generated script>, *argv]``), started with the env
+        handed to ``Popen`` — so a declared ``PYTHONPATH`` carrying
+        ``sitecustomize.py`` executes at interpreter startup, before ``unshare``
+        and before the target is exec'd: arbitrary code OUTSIDE the sandbox.
+        """
+        out = env_mod.sanitize_spec_env(
+            [
+                ("PYTHONPATH", "/srv/lib"),
+                ("PYTHONSTARTUP", "/srv/rc.py"),
+                ("PYTHONHOME", "/srv"),
+                ("TOKEN", "t"),
+            ]
+        )
+        assert out == {"TOKEN": "t"}
+
+    def test_benign_env_passes_untouched(self) -> None:
+        pairs = [("TOKEN", "t"), ("MODE", "prod"), ("LANG", "C")]
+        assert env_mod.sanitize_spec_env(pairs) == dict(pairs)
+
+    def test_matching_is_case_insensitive(self) -> None:
+        """Windows env vars are case-insensitive: ``ld_preload`` reaches the
+        loader exactly like ``LD_PRELOAD`` on a case-insensitive lookup, so a
+        lowercase spelling must not slip through the filter."""
+        out = env_mod.sanitize_spec_env(
+            [("Ld_Preload", "/tmp/evil.so"), ("dyld_x", "y"), ("OK", "1")]
+        )
+        assert out == {"OK": "1"}
+
+    def test_emit_env_does_not_sanitize(self, monkeypatch) -> None:
+        """The denylist guards OUR launcher, not the emitted config.
+
+        kiro-cli spawns the server itself with no Python launcher of ours in the
+        chain, so the emitted spec keeps a declared PYTHONPATH — a legitimate
+        way to configure a Python MCP server. Pinned so a future change cannot
+        quietly extend the launcher guard into the emit path and break those
+        servers in sessions.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"PYTHONPATH": "/srv/lib", "LD_PRELOAD": "/x.so"})
+        assert out["PYTHONPATH"] == "/srv/lib"
+        assert out["LD_PRELOAD"] == "/x.so"

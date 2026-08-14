@@ -9167,6 +9167,7 @@
         "globals": "Globais",
         "kiro": "Kiro",
         "kirocrew": "Kiro Crew",
+        "last_probed": "Última verificação",
         "mcp_servers_count": "Servidores MCP ({{count}})",
         "name": "Nome",
         "no_matching_servers": "Nenhum servidor correspondente",
@@ -9183,11 +9184,13 @@
         "probe_mcp_servers": "Testar servidores MCP",
         "servers_scope_tip": "Servidores MCP no Kiro Crew e nas suas globais interativas de {{provider}}/Kiro. O selo Kiro Crew mostra se ele será carregado nas sessões do Kiro Crew; o selo Globais mostra se está compartilhado com a sua global interativa do Kiro. Clique para alternar e depois Aplicar.",
         "status": "Status",
+        "tool_list_read_from_the_package_s_declaration_th": "A lista de ferramentas foi lida da declaração do pacote; o servidor não foi iniciado para verificar se arranca.",
         "tools": "Ferramentas",
         "tools_2": "ferramentas",
         "undo": "Desfazer",
         "uninstall": "Desinstalar",
-        "unknown": "Desconhecido"
+        "unknown": "Desconhecido",
+        "unverified": "não verificado"
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

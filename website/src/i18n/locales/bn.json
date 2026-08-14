@@ -9056,6 +9056,7 @@
         "globals": "গ্লোবাল",
         "kiro": "Kiro",
         "kirocrew": "Kiro Crew",
+        "last_probed": "সর্বশেষ যাচাই",
         "mcp_servers_count": "MCP সার্ভার ({{count}})",
         "name": "নাম",
         "no_matching_servers": "মিলে যাওয়া কোনো সার্ভার নেই",
@@ -9071,11 +9072,13 @@
         "probe_mcp_servers": "MCP সার্ভার প্রোব করুন",
         "servers_scope_tip": "Kiro Crew এবং আপনার ইন্টারঅ্যাক্টিভ {{provider}}/Kiro গ্লোবালে থাকা MCP সার্ভার। Kiro Crew ব্যাজ দেখায় এটি Kiro Crew সেশনে লোড হবে কি না; গ্লোবাল ব্যাজ দেখায় এটি আপনার ইন্টারঅ্যাক্টিভ Kiro গ্লোবালে শেয়ার করা আছে কি না। টগল করতে ক্লিক করুন, তারপর প্রয়োগ করুন।",
         "status": "স্ট্যাটাস",
+        "tool_list_read_from_the_package_s_declaration_th": "টুলের তালিকা প্যাকেজের ঘোষণা থেকে পড়া হয়েছে; সার্ভারটি চালু হয় কিনা যাচাই করতে এটি চালানো হয়নি।",
         "tools": "টুল",
         "tools_2": "টুল",
         "undo": "আনডু",
         "uninstall": "আনইনস্টল",
-        "unknown": "অজানা"
+        "unknown": "অজানা",
+        "unverified": "যাচাই করা হয়নি"
       },
       "memoryGraphTab": {
         "all_count": "সব ({{count}})",

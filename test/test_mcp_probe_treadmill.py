@@ -424,7 +424,7 @@ class TestMcpHeaderRedaction:
         )
         disc._cache_probe(server)
         try:
-            status, tools, error = disc._get_cached("rotating")
+            status, tools, error, *_rest = disc._get_cached("rotating")
             assert status == "error"
             assert old_credential not in error
             assert MCP_REDACTED_HEADER_VALUE in error

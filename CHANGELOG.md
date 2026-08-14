@@ -47,6 +47,47 @@ All notable changes to KiroCrew are documented in this file.
   path was ever taken. The public default admits everything, so an ordinary install
   is unchanged.
 
+- **An MCP server that declares `env.PATH` no longer loses its inherited PATH.**
+  A spec's `env` is applied per key, so naming one directory to add — a Node
+  version manager's shim dir, say — replaced the child's PATH instead of
+  extending it, leaving the server with only that one directory. A launcher that
+  execs a sibling binary then died with "not found" for a binary that was
+  plainly installed, while the dashboard probe — which merged rather than
+  replaced — reported the same server healthy, so nothing in the UI
+  distinguished it from a working server. The full effective PATH (the spec's
+  own entries first, deduped) now backs the probe, command resolution, and the
+  value written into the agent config, so "probes healthy" and "works in a
+  session" can no longer disagree.
+
+- **Every emitted MCP config surface now goes through one env normalization
+  point (`env.emit_env`).** The agent config, the kiro-global entries the sync
+  creates, and the Claude Code `~/.mcp.json` sidecar all expand a declared
+  `env.PATH` the same way, so a server can no longer work under one consumer
+  and die under another. The cosmetic `kiro-cli mcp add` subprocess inside the
+  sync — an unsynchronized second writer whose output the rebuild overwrote —
+  is removed, and the discover→write sequence is a single mutex-serialized
+  entry point (`sync_discovered_servers`) shared by the sync endpoint, the
+  restart pre-sync, and the config watcher, closing their read-modify-write
+  race.
+
+- **The Online badge now means "tools usable", dated.** A probe whose
+  `initialize` succeeds but whose `tools/list` fails reports an error instead
+  of `ok` with an empty list; every probe result carries `probedAt` so the
+  dashboard can show when a status was established instead of presenting a
+  cached one as current; and a managed server served from its in-process
+  declaration is marked `declared` — the tool list is correct, but nothing
+  verified the server can start — instead of rendering identically to a
+  handshake-proven server.
+
+- **Apply & Restart now really mounts a newly installed server, and says so
+  honestly when it cannot.** The restart path runs the one serialized
+  discover→write entry point and reconciles the consumed agent config
+  unconditionally, so an edit that produces an empty discovery delta (a
+  `disabled: true` flip, a changed `env`) is still written out instead of
+  being skipped as "nothing new". A reconcile that FAILS is reported through
+  `mcp_sync_ok` on the restart response rather than being dressed up as a
+  successful apply.
+
 - **A lesson from a previous embedding-model generation could no longer get
   silently deleted or offered as a false contradiction.** `write_lesson`'s
   semantic dedup and `find_contradiction_candidates` compared raw embeddings

@@ -10,6 +10,12 @@ import McpBrowserModal from '../../components/McpBrowserModal'
 import McpCustomServerModal from '../../components/McpCustomServerModal'
 import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
+import { fmtDateTime, fmtTime } from '../../i18n/format'
+
+/** Same calendar day as now — the boundary where a bare time stops being honest. */
+function isToday(epochSecs: number): boolean {
+  return new Date(epochSecs * 1000).toDateString() === new Date().toDateString()
+}
 import SortableHeader from '../../components/SortableHeader'
 import { connectionProviderForServer } from '../connections/registry'
 
@@ -407,6 +413,22 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                   <Badge variant={s.status === 'ok' ? 'ok' : s.status === 'error' ? 'err' : 'warn'}>
                     {s.status === 'ok' ? i18nT('pages.overview.mcpTab.online') : s.status === 'error' ? i18nT('pages.overview.mcpTab.error') : s.status === 'outdated' ? i18nT('pages.overview.mcpTab.outdated') : s.status === 'disabled' ? i18nT('pages.overview.mcpTab.disabled') : i18nT('pages.overview.mcpTab.unknown')}
                   </Badge>
+                  {/* "unverified": the tool list is the package's own static declaration —
+                      nothing verified the server can start. Distinct from a handshake-
+                      proven Online so the two cannot be read as the same green. */}
+                  {s.probeMode === 'declared' && s.status === 'ok' && (
+                    <span className="ml-1.5 text-[11px] text-warn" title={i18nT('pages.overview.mcpTab.tool_list_read_from_the_package_s_declaration_th')}>{i18nT('pages.overview.mcpTab.unverified')}</span>
+                  )}
+                  {!!s.probedAt && (
+                    /* nowrap: the column is narrow enough that "Last probed: 7:47 PM"
+                       wraps to three lines and triples every row's height. */
+                    <div
+                      className="text-[11px] text-muted mt-0.5 whitespace-nowrap"
+                      title={i18nT('pages.overview.mcpTab.last_probed')}
+                    >
+                      {i18nT('pages.overview.mcpTab.last_probed')}: {isToday(s.probedAt) ? fmtTime(s.probedAt * 1000) : fmtDateTime(s.probedAt * 1000)}
+                    </div>
+                  )}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full">
                   {s.status === 'error' && s.error ? <span className="text-danger text-[12px]"><AlertTriangle className="lucide-inline" /> {s.error}</span> : s.tools?.length ? (<div>

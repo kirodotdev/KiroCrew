@@ -31,11 +31,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.history import SEARCH_MIN_CHARS, _archive_dir, is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
-from kiro_crew.mcp_discovery import (
-    discover_servers_to_sync,
-    register_servers_for_cc,
-    sync_to_agent_config,
-)
+from kiro_crew.mcp_discovery import sync_discovered_servers
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     configured_sandbox_mode,
@@ -1733,26 +1729,26 @@ async def api_sessions_restart(request: web.Request) -> web.Response:
     installed servers (e.g. via AIM) are picked up on restart.
     """
     # Sync MCP servers before restarting so new installs take effect.
-    # Run in thread — discover/sync do blocking file I/O and subprocess calls.
-    # Cap at 30s so a hung kiro-cli subprocess doesn't stall the restart.
+    # Run in thread — the sync does blocking file I/O. Cap at 30s so a hung
+    # rebuild doesn't stall the restart. sync_discovered_servers serializes
+    # against the /api/mcp/sync handler's run of the same sequence.
     synced = 0
+    sync_ok = True
     try:
-
-        async def _sync() -> int:
-            to_sync = await asyncio.to_thread(discover_servers_to_sync)
-            if to_sync:
-                ok: bool = await asyncio.to_thread(sync_to_agent_config, to_sync)
-                # Register for CC unconditionally (CC uses its own .mcp.json)
-                await asyncio.to_thread(register_servers_for_cc, to_sync)
-                if ok:
-                    return len(to_sync)
-            return 0
-
-        synced = await asyncio.wait_for(_sync(), timeout=30)
+        to_sync = await asyncio.wait_for(
+            asyncio.to_thread(sync_discovered_servers), timeout=30
+        )
+        synced = len(to_sync)
     except Exception:
+        # The restart still proceeds (it applies whatever IS on disk), but the
+        # response says the reconcile failed rather than reporting a success
+        # the on-disk config does not back.
+        sync_ok = False
         logger.warning("MCP server sync failed before restart", exc_info=True)
     count = await _reset_all_sessions(request)
-    return web.json_response({"ok": True, "sessions_reset": count, "mcp_synced": synced})
+    return web.json_response(
+        {"ok": True, "sessions_reset": count, "mcp_synced": synced, "mcp_sync_ok": sync_ok}
+    )
 
 
 async def api_session_archive_list(request: web.Request) -> web.Response:

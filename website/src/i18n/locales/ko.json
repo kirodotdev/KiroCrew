@@ -8945,6 +8945,7 @@
         "globals": "전역 설정",
         "kiro": "Kiro",
         "kirocrew": "Kiro Crew",
+        "last_probed": "마지막 프로브",
         "mcp_servers_count": "MCP 서버 ({{count}})",
         "name": "이름",
         "no_matching_servers": "일치하는 서버 없음",
@@ -8959,11 +8960,13 @@
         "probe_mcp_servers": "MCP 서버 탐색",
         "servers_scope_tip": "Kiro Crew와 대화형 {{provider}}/Kiro 전역 설정 전반의 MCP 서버입니다. Kiro Crew 배지는 Kiro Crew 세션에서 로드되는지를, 전역 배지는 대화형 Kiro 전역 설정과 공유되는지를 나타냅니다. 클릭해 전환한 뒤 적용하세요.",
         "status": "상태",
+        "tool_list_read_from_the_package_s_declaration_th": "도구 목록은 패키지의 선언에서 읽었습니다. 서버가 실제로 시작되는지 확인하지 않았습니다.",
         "tools": "도구",
         "tools_2": "도구",
         "undo": "실행 취소",
         "uninstall": "제거",
-        "unknown": "알 수 없음"
+        "unknown": "알 수 없음",
+        "unverified": "미검증"
       },
       "memoryGraphTab": {
         "all_count": "전체 ({{count}})",

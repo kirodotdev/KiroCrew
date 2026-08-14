@@ -9056,6 +9056,7 @@
         "globals": "ग्लोबल्स",
         "kiro": "Kiro",
         "kirocrew": "Kiro Crew",
+        "last_probed": "पिछली जाँच",
         "mcp_servers_count": "MCP सर्वर ({{count}})",
         "name": "नाम",
         "no_matching_servers": "कोई मेल खाता सर्वर नहीं",
@@ -9071,11 +9072,13 @@
         "probe_mcp_servers": "MCP सर्वर जाँचें",
         "servers_scope_tip": "Kiro Crew और इंटरैक्टिव {{provider}}/Kiro ग्लोबल्स में मौजूद MCP सर्वर। Kiro Crew बैज दिखाता है कि यह Kiro Crew सेशन में लोड होगा या नहीं; ग्लोबल्स बैज दिखाता है कि यह इंटरैक्टिव Kiro ग्लोबल में साझा है या नहीं। टॉगल करने के लिए क्लिक करें, फिर लागू करें।",
         "status": "स्थिति",
+        "tool_list_read_from_the_package_s_declaration_th": "टूल सूची पैकेज की घोषणा से पढ़ी गई है; सर्वर के शुरू होने की पुष्टि के लिए उसे चलाया नहीं गया।",
         "tools": "टूल",
         "tools_2": "टूल",
         "undo": "अनडू",
         "uninstall": "अनइंस्टॉल करें",
-        "unknown": "अज्ञात"
+        "unknown": "अज्ञात",
+        "unverified": "असत्यापित"
       },
       "memoryGraphTab": {
         "all_count": "सभी ({{count}})",

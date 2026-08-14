@@ -56,7 +56,7 @@ from kiro_crew.config.paths import (
     isolated_agents_dir,
     kiro_agents_dir,
 )
-from kiro_crew.env import augmented_path
+from kiro_crew.env import emit_env, spec_env_path, spec_path_key
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
 from kiro_crew.mcp_provenance import without_marker
 from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
@@ -2450,11 +2450,10 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         even when the file is fine.
 
         Searches the server's own env.PATH first, then the same augmented
-        PATH the MCP probe uses (mcp_discovery.probe_server →
-        env.augmented_path). Sharing augmented_path — instead of a hand-built
-        dir list — keeps agent-config-build resolution and probe resolution
-        from diverging: a divergence would let a server probe healthy on
-        the dashboard while being silently dropped from the generated agent
+        PATH the MCP probe uses — both via :func:`spec_env_path`, which is
+        also the value emitted into the spec, so resolution, the probe and the
+        launched child all agree. A divergence would let a server probe healthy
+        on the dashboard while being silently dropped from the generated agent
         config ("command not found: kirocrew"). augmented_path
         covers ~/.aim/mcp-servers and ~/.toolbox/bin and appends the running
         interpreter's console-scripts dir
@@ -2465,9 +2464,15 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             return None
         if os.path.isabs(cmd) and os.path.isfile(cmd) and os.access(cmd, os.X_OK):
             return cmd
-        env_path = (env or {}).get("PATH", "")
-        base = os.pathsep.join(filter(None, [env_path, os.environ.get("PATH", "")]))
-        return shutil.which(cmd, path=augmented_path(base))
+        # Case-insensitive PATH key: a Windows-authored spec says "Path", and
+        # resolving against a DIFFERENT path than the emitted spec carries would
+        # reopen the probe/session split from the other side.
+        _env = env or {}
+        _key = spec_path_key(_env)
+        _declared = _env.get(_key, "") if _key else ""
+        return shutil.which(
+            cmd, path=spec_env_path(_declared if isinstance(_declared, str) else "")
+        )
 
     valid_servers: dict[str, Any] = {}
     # The store is keyed by its own RAW name, but ``name`` below iterates the
@@ -2600,6 +2605,15 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
                     merged["args"] = chosen["args"]
                 if "env" in chosen:
                     merged["env"] = chosen["env"]
+            # A declared env.PATH replaces the child's PATH rather than
+            # extending it, so emit the full effective one via the shared
+            # normalization point (see emit_env / spec_env_path). emit_env
+            # returns a fresh dict: ``dict(spec)`` is shallow, so the env dict
+            # here is still the source config's own and must not be mutated
+            # through.
+            spec_env = merged.get("env")
+            if isinstance(spec_env, dict):
+                merged["env"] = emit_env(spec_env)
             valid_servers[name] = merged
         elif not had_any_command:
             # No candidate defined a command at all — distinct from a command

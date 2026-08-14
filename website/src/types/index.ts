@@ -428,6 +428,12 @@ export interface McpServer {
   headers?: Record<string, string>
   status: string; error?: string; tools?: string[]
   source: string; enabled: boolean; disabledTools?: string[]
+  /** How status/tools were established: "handshake" (real spawn + tools/list)
+   *  or "declared" (managed server's static declaration — nothing verified it
+   *  can start). Absent on older runtimes. */
+  probeMode?: string
+  /** Wall-clock seconds of the probe that produced `status`; 0/absent = never probed. */
+  probedAt?: number
   presence?: McpScopePresence
   /** Optional status-enrichment fields supplied by newer runtimes. */
   accountLabel?: string

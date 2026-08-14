@@ -583,6 +583,29 @@ class TestServerDetail:
         }
         assert sandbox.synced == [("srv", True, False)]
 
+    @pytest.mark.asyncio
+    async def test_put_expands_a_declared_env_path(
+        self, sandbox: SimpleNamespace, monkeypatch
+    ) -> None:
+        """The global file is consumed by the ACP runtime (per-key env), so a
+        registered PATH fragment must be emitted complete. See env.emit_env."""
+        import os
+
+        monkeypatch.setenv("PATH", "/usr/bin")
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(
+                {"command": "node", "env": {"PATH": "/opt/shims", "K": "v"}},
+                match_info={"name": "srv"},
+                method="PUT",
+            )
+        )
+        assert resp.status == 200
+        written = _read_global(sandbox)["srv"]["env"]
+        entries = written["PATH"].split(os.pathsep)
+        assert entries[0] == "/opt/shims", "caller-authored entries stay first"
+        assert "/usr/bin" in entries, "inherited PATH must survive the override"
+        assert written["K"] == "v"
+
 
 # ── GET /api/mcp/active ─────────────────────────────────────────────────
 

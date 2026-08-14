@@ -838,6 +838,41 @@ class TestMCPRegistration:
         data = json.loads(mcp_path.read_text(encoding="utf-8"))
         assert "test-app:my-mcp" in data["mcpServers"]
 
+    def test_stdio_declared_env_path_is_expanded(self, tmp_path, app_env, monkeypatch):
+        """This file is consumed by kiro-cli (per-key env), so an app manifest
+        naming a PATH fragment must be emitted complete. See env.emit_env."""
+        import os
+
+        import kiro_crew.apps.bridges as bmod
+
+        mcp_path = tmp_path / "mcp.json"
+        monkeypatch.setattr(bmod, "_mcp_json_path", lambda: mcp_path)
+        monkeypatch.setenv("PATH", "/usr/bin")
+
+        src = _make_app_source(
+            tmp_path,
+            mcpServers={
+                "my-mcp": {
+                    "command": "/opt/bin/tool",
+                    "env": {"PATH": "/opt/shims", "TOKEN": "t"},
+                },
+            },
+        )
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        registered = _register_mcp_servers("test-app", manifest)
+        assert registered == ["test-app:my-mcp"]
+
+        written = json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"][
+            "test-app:my-mcp"
+        ]["env"]
+        entries = written["PATH"].split(os.pathsep)
+        assert entries[0] == "/opt/shims", "manifest-authored entries stay first"
+        assert "/usr/bin" in entries, "inherited PATH must survive the override"
+        assert written["TOKEN"] == "t"
+
     def test_http_mcp_url_port_rewritten_to_live_backend_port(self, tmp_path, app_env, monkeypatch):
         # An app with backend.port:"auto" gets a free port at spawn time (9100, else
         # 9101, …). The manifest's mcpServers url carries an illustrative fixed port.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1436,3 +1437,111 @@ class TestCapabilityInstallOffloadsTheLockedSync:
         from kiro_crew.dashboard.handlers import mcp_discover
 
         self._assert_offloaded(mcp_discover._install_via_capability)
+
+
+class TestCcSidecarEnvEmission:
+    """The sidecar is a consumed surface — a declared PATH must be complete."""
+
+    def test_stdio_env_path_is_expanded_on_write(self, tmp_path, monkeypatch):
+        from kiro_crew import mcp_discovery as md
+
+        monkeypatch.setenv("PATH", "/usr/bin")
+        srv = md.McpServerInfo(
+            name="tooling",
+            command="/opt/bin/tooling",
+            args=["--stdio"],
+            env={"PATH": "/opt/shims", "TOKEN": "t"},
+            source="discovered",
+        )
+        sidecar = tmp_path / "cc.json"
+        assert md.register_servers_for_cc([srv], mcp_json_path=sidecar) is True
+
+        written = json.loads(sidecar.read_text())["mcpServers"]["tooling"]
+        entries = written["env"]["PATH"].split(os.pathsep)
+        assert entries[0] == "/opt/shims", "spec-authored entries stay first"
+        assert "/usr/bin" in entries, "inherited PATH must survive the override"
+        assert written["env"]["TOKEN"] == "t"
+
+    def test_source_env_object_is_not_mutated(self, tmp_path, monkeypatch):
+        from kiro_crew import mcp_discovery as md
+
+        monkeypatch.setenv("PATH", "/usr/bin")
+        source_env = {"PATH": "/opt/shims"}
+        srv = md.McpServerInfo(
+            name="tooling", command="/opt/bin/tooling", env=source_env, source="discovered"
+        )
+        md.register_servers_for_cc([srv], mcp_json_path=tmp_path / "cc.json")
+        assert source_env == {"PATH": "/opt/shims"}, "emit must not write back into the source"
+
+
+class TestSyncDiscoveredServers:
+    """The one serialized discover→write entry point both handlers share."""
+
+    def test_runs_full_sequence_when_servers_found(self):
+        from unittest.mock import patch
+
+        from kiro_crew import mcp_discovery as md
+
+        fake = md.McpServerInfo(name="srv", command="x")
+        with (
+            patch.object(md, "discover_servers_to_sync", return_value=[fake]) as disc,
+            patch.object(md, "sync_to_agent_config") as sync,
+            patch.object(md, "register_servers_for_cc") as cc,
+        ):
+            out = md.sync_discovered_servers()
+        assert out == [fake]
+        disc.assert_called_once()
+        sync.assert_called_once_with([fake])
+        cc.assert_called_once_with([fake])
+
+    def test_empty_delta_still_reconciles(self):
+        """No new/diverged servers is NOT "nothing to do": a source entry
+        gaining ``disabled: true`` yields an empty delta but must still remove
+        the server from the agent config — install_agent() is the idempotent
+        reconciler, so it runs unconditionally. The additive-only sidecar
+        write is the one thing skipped."""
+        from unittest.mock import patch
+
+        from kiro_crew import mcp_discovery as md
+
+        with (
+            patch.object(md, "discover_servers_to_sync", return_value=[]),
+            patch.object(md, "sync_to_agent_config") as sync,
+            patch.object(md, "register_servers_for_cc") as cc,
+        ):
+            out = md.sync_discovered_servers()
+        assert out == []
+        sync.assert_called_once_with([])
+        cc.assert_not_called()
+
+    def test_concurrent_callers_serialize(self):
+        """Two threads running the sequence must not interleave — the mutex is
+        the fix for the two-handler read-modify-write race."""
+        import threading
+        from unittest.mock import patch
+
+        from kiro_crew import mcp_discovery as md
+
+        active = []
+        overlap = []
+        gate = threading.Barrier(2, timeout=5)
+
+        def slow_discover():
+            if active:
+                overlap.append(True)
+            active.append(1)
+            import time as _t
+
+            _t.sleep(0.05)
+            active.pop()
+            return []
+
+        def run():
+            gate.wait()
+            md.sync_discovered_servers()
+
+        with patch.object(md, "discover_servers_to_sync", side_effect=slow_discover):
+            t1, t2 = threading.Thread(target=run), threading.Thread(target=run)
+            t1.start(), t2.start()
+            t1.join(), t2.join()
+        assert not overlap, "the sync mutex must serialize concurrent callers"

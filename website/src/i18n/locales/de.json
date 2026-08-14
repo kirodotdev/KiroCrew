@@ -9056,6 +9056,7 @@
         "globals": "Globale Werte",
         "kiro": "Kiro",
         "kirocrew": "Kiro Crew",
+        "last_probed": "Zuletzt geprüft",
         "mcp_servers_count": "MCP-Server ({{count}})",
         "name": "Name",
         "no_matching_servers": "Keine passenden Server",
@@ -9071,11 +9072,13 @@
         "probe_mcp_servers": "MCP-Server prüfen",
         "servers_scope_tip": "MCP-Server aus Kiro Crew und Ihren interaktiven {{provider}}/Kiro-Globals. Das Kiro Crew-Badge zeigt, ob der Server in Kiro Crew-Sitzungen geladen wird; das Badge „Globale Werte“ zeigt, ob er für Ihr interaktives Kiro-Global freigegeben ist. Zum Umschalten klicken, dann „Anwenden“.",
         "status": "Status",
+        "tool_list_read_from_the_package_s_declaration_th": "Die Tool-Liste stammt aus der Deklaration des Pakets; der Server wurde nicht gestartet, um seinen Start zu verifizieren.",
         "tools": "Werkzeuge",
         "tools_2": "Werkzeuge",
         "undo": "Rückgängig",
         "uninstall": "Deinstallieren",
-        "unknown": "Unbekannt"
+        "unknown": "Unbekannt",
+        "unverified": "ungeprüft"
       },
       "memoryGraphTab": {
         "all_count": "Alle ({{count}})",

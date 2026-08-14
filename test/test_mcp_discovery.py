@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -892,6 +893,48 @@ class TestDiscoverNew:
         assert result[0].name == "srv"
         assert result[0].env == {"KEY": "val"}
 
+    def test_discover_skips_existing_with_expanded_path(self, tmp_path, monkeypatch) -> None:
+        """An expanded env.PATH in the agent config is not a divergence.
+
+        install_agent writes the effective PATH while mcp.json keeps the
+        fragment the user authored — the same resolved-vs-authored asymmetry
+        ``_commands_diverged`` already absorbs for commands. Comparing the raw
+        strings would flag every synced server on every refresh, re-syncing
+        forever.
+        """
+        from kiro_crew.env import spec_env_path
+
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        expanded = spec_env_path("/opt/shims")
+        cfg = {"mcpServers": {"srv": {"command": "a", "env": {"PATH": expanded}}}}
+        (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(
+            json.dumps({"mcpServers": {"srv": {"command": "a", "env": {"PATH": "/opt/shims"}}}})
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        assert discover_servers_to_sync() == []
+
+    def test_discover_flags_changed_path_fragment(self, tmp_path, monkeypatch) -> None:
+        """A genuinely edited env.PATH still triggers a re-sync."""
+        from kiro_crew.env import spec_env_path
+
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        cfg = {"mcpServers": {"srv": {"command": "a", "env": {"PATH": spec_env_path("/opt/old")}}}}
+        (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(
+            json.dumps({"mcpServers": {"srv": {"command": "a", "env": {"PATH": "/opt/new"}}}})
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        result = discover_servers_to_sync()
+        assert len(result) == 1
+        assert result[0].env == {"PATH": "/opt/new"}
+
     def test_discover_skips_existing_with_identical_env(self, tmp_path, monkeypatch) -> None:
         """Existing servers with identical env are not flagged for sync."""
         agent_dir = tmp_path / "agents"
@@ -1102,8 +1145,14 @@ class TestCommandsDiverged:
 
 
 class TestSyncToAgentConfig:
-    def test_sync_uses_kiro_cli(self, tmp_path, monkeypatch) -> None:
-        """sync_to_agent_config calls kiro-cli mcp add --agent kirocrew for new servers."""
+    def test_sync_never_launches_kiro_cli(self, tmp_path, monkeypatch) -> None:
+        """sync_to_agent_config launches no subprocess, even with kiro-cli on PATH.
+
+        The ``kiro-cli mcp add`` side channel was an unsynchronized second
+        writer of the agent config whose output ``install_agent()`` rewrote
+        moments later; the sync is install_agent() alone now, so a reappearing
+        Popen here is a regression to the two-writer design.
+        """
         calls: list[list[str]] = []
 
         def mock_which(x: str, **kw: object) -> str | None:
@@ -1127,18 +1176,17 @@ class TestSyncToAgentConfig:
         config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps({"mcpServers": {}, "tools": [], "allowedTools": []}))
 
+        install_called = []
         monkeypatch.setattr(
             "kiro_crew.agent.install_agent",
-            lambda **kw: config_path,
+            lambda **kw: install_called.append(True) or config_path,
         )
 
         new_srv = McpServerInfo(name="new-srv", command="b", args=["--x"])
         ok = sync_to_agent_config([new_srv])
         assert ok is True
-        assert len(calls) == 1
-        assert "--agent" in calls[0]
-        assert "kirocrew" in calls[0]
-        assert "new-srv" in calls[0]
+        assert install_called, "install_agent() is the one write path"
+        assert calls == [], "no subprocess may be launched by the sync"
 
     def test_sync_fallback_writes_json(self, tmp_path, monkeypatch) -> None:
         """Without kiro-cli, delegates to install_agent() for config merge."""
@@ -1209,8 +1257,8 @@ class TestSyncToAgentConfig:
         assert ok is True
         assert install_called
 
-    def test_sync_remote_server_skips_kiro_cli(self, tmp_path, monkeypatch) -> None:
-        """Remote servers skip kiro-cli mcp add (no command to register)."""
+    def test_sync_mixed_servers_launch_nothing(self, tmp_path, monkeypatch) -> None:
+        """A mixed remote+local set syncs through install_agent() with no subprocess."""
         calls: list[list[str]] = []
 
         def mock_which(x: str, **kw: object) -> str | None:
@@ -1234,18 +1282,17 @@ class TestSyncToAgentConfig:
         config_path = kiro_dir / "kirocrew.json"
         config_path.write_text(json.dumps({"mcpServers": {}, "tools": [], "allowedTools": []}))
 
+        install_called = []
         monkeypatch.setattr(
             "kiro_crew.agent.install_agent",
-            lambda **kw: config_path,
+            lambda **kw: install_called.append(True) or config_path,
         )
 
         remote = McpServerInfo(name="deepwiki", url="https://mcp.deepwiki.com/mcp")
         local = McpServerInfo(name="local-srv", command="some-cmd")
-        sync_to_agent_config([remote, local])
-
-        # Only local new server gets kiro-cli registration
-        assert len(calls) == 1
-        assert "local-srv" in calls[0]
+        assert sync_to_agent_config([remote, local]) is True
+        assert install_called
+        assert calls == []
 
     def test_sync_merges_env_for_existing_local_server(self, tmp_path, monkeypatch) -> None:
         """Existing server env changes are handled by install_agent() re-merge."""
@@ -1430,20 +1477,25 @@ class TestProbeCache:
         _clear_cache()
 
     def test_cache_miss_returns_unknown(self) -> None:
-        status, tools, error = _get_cached("nonexistent")
+        status, tools, error, probed_at, probe_mode = _get_cached("nonexistent")
         assert status == "unknown"
         assert tools == []
         assert error == ""
+        assert probed_at == 0.0
+        assert probe_mode == "handshake"
 
     def test_cache_hit_within_ttl(self) -> None:
         server = McpServerInfo(
             name="test-srv", command="x", status="ok", tools=["t1", "t2"], error=""
         )
+        before = time.time()
         _cache_probe(server)
-        status, tools, error = _get_cached("test-srv")
+        status, tools, error, probed_at, probe_mode = _get_cached("test-srv")
         assert status == "ok"
         assert tools == ["t1", "t2"]
         assert error == ""
+        assert probed_at >= before
+        assert probe_mode == "handshake"
 
     def test_cache_expired_returns_outdated_with_tools(self, monkeypatch) -> None:
         server = McpServerInfo(
@@ -1452,19 +1504,31 @@ class TestProbeCache:
         _cache_probe(server)
         # Simulate expiry by backdating probed_at
         _probe_cache["test-srv"].probed_at = time.monotonic() - 2000
-        status, tools, error = _get_cached("test-srv")
+        status, tools, error, probed_at, _mode = _get_cached("test-srv")
         assert status == "outdated"
         assert tools == ["t1", "t2"]
         assert error == ""
+        # WHEN it was last true survives expiry — that is the whole value of
+        # an "outdated" row.
+        assert probed_at > 0
 
     def test_cache_error_preserved(self) -> None:
         server = McpServerInfo(
             name="err-srv", command="x", status="error", tools=[], error="timeout"
         )
         _cache_probe(server)
-        status, tools, error = _get_cached("err-srv")
+        status, tools, error, _at, _mode = _get_cached("err-srv")
         assert status == "error"
         assert error == "timeout"
+
+    def test_cache_preserves_declared_probe_mode(self) -> None:
+        """The in-process fallback's "declared" mode survives the cache round trip."""
+        server = McpServerInfo(
+            name="managed-srv", command="x", status="ok", tools=["t"], probe_mode="declared"
+        )
+        _cache_probe(server)
+        *_rest, probe_mode = _get_cached("managed-srv")
+        assert probe_mode == "declared"
 
     def test_list_servers_merges_cache(self, tmp_path, monkeypatch) -> None:
         agent_dir = tmp_path / "agents"
@@ -1546,9 +1610,16 @@ class TestProbeRemote:
         init_resp = MagicMock()
         init_resp.status = 200
         init_resp.content_type = "application/json"
+        init_resp.headers = {}
         init_resp.json = AsyncMock(return_value={"jsonrpc": "2.0", "id": 1, "result": {}})
         init_resp.__aenter__ = AsyncMock(return_value=init_resp)
         init_resp.__aexit__ = AsyncMock(return_value=False)
+
+        # notifications/initialized gets a body-less accept.
+        notif_resp = MagicMock()
+        notif_resp.status = 202
+        notif_resp.__aenter__ = AsyncMock(return_value=notif_resp)
+        notif_resp.__aexit__ = AsyncMock(return_value=False)
 
         tools_resp = MagicMock()
         tools_resp.status = 200
@@ -1564,7 +1635,7 @@ class TestProbeRemote:
         tools_resp.__aexit__ = AsyncMock(return_value=False)
 
         mock_session = MagicMock()
-        mock_session.post = MagicMock(side_effect=[init_resp, tools_resp])
+        mock_session.post = MagicMock(side_effect=[init_resp, notif_resp, tools_resp])
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -1573,6 +1644,50 @@ class TestProbeRemote:
 
         assert result.status == "ok"
         assert result.tools == ["search", "read"]
+        # Lifecycle order: initialize, notifications/initialized, tools/list.
+        methods = [c.kwargs["json"].get("method") for c in mock_session.post.call_args_list]
+        assert methods == ["initialize", "notifications/initialized", "tools/list"]
+
+    @pytest.mark.asyncio
+    async def test_probe_remote_carries_the_session_id(self) -> None:
+        """A stateful server's Mcp-Session-Id must ride every follow-up request,
+        or a HEALTHY server renders errored when it rejects the sessionless
+        tools/list."""
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        init_resp = MagicMock()
+        init_resp.status = 200
+        init_resp.content_type = "application/json"
+        init_resp.headers = {"Mcp-Session-Id": "sess-42"}
+        init_resp.json = AsyncMock(return_value={"jsonrpc": "2.0", "id": 1, "result": {}})
+        init_resp.__aenter__ = AsyncMock(return_value=init_resp)
+        init_resp.__aexit__ = AsyncMock(return_value=False)
+
+        notif_resp = MagicMock()
+        notif_resp.status = 202
+        notif_resp.__aenter__ = AsyncMock(return_value=notif_resp)
+        notif_resp.__aexit__ = AsyncMock(return_value=False)
+
+        tools_resp = MagicMock()
+        tools_resp.status = 200
+        tools_resp.content_type = "application/json"
+        tools_resp.json = AsyncMock(
+            return_value={"jsonrpc": "2.0", "id": 2, "result": {"tools": []}}
+        )
+        tools_resp.__aenter__ = AsyncMock(return_value=tools_resp)
+        tools_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(side_effect=[init_resp, notif_resp, tools_resp])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "ok"
+        for call in mock_session.post.call_args_list[1:]:
+            assert call.kwargs["headers"].get("Mcp-Session-Id") == "sess-42"
 
     @pytest.mark.asyncio
     async def test_probe_remote_http_error(self) -> None:
@@ -1731,7 +1846,7 @@ class TestProbeServerConsentGate:
         with patch("kiro_crew.mcp_discovery.shutil.which", return_value="/bin/true"):
             await probe_server(disabled)
 
-        status, tools, _ = _get_cached("was-ok")
+        status, tools, *_rest = _get_cached("was-ok")
         assert status == "ok"
         assert tools == ["alpha", "beta"]
 
@@ -1846,6 +1961,39 @@ class TestProbeServerProcessCleanup:
 
         # Should not raise — stdin None is handled gracefully
         proc.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_probe_spawns_with_the_expanded_path(self, monkeypatch) -> None:
+        """The probe's child gets the same PATH the emitted config carries.
+
+        Pinning the ``env`` kwarg is the only way to prove the probe and
+        ``install_agent`` agree — a divergence here is what let a server report
+        healthy on the dashboard and fail in a session.
+        """
+        from kiro_crew.env import spec_env_path
+
+        monkeypatch.setenv("PATH", "/usr/bin")
+        proc = self._make_mock_proc()
+        server = McpServerInfo(name="test", command="echo", env={"PATH": "/opt/shims"})
+        captured: dict = {}
+
+        def _spawn(*argv, **kw):  # noqa: ANN002, ANN003 - test shim
+            captured.update(kw)
+            return proc
+
+        with (
+            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", side_effect=_spawn),
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
+        ):
+            proc.stdout = AsyncMock()
+            proc.stdout.readline = AsyncMock(return_value=b"")
+            await probe_server(server)
+
+        spawned = captured["env"]["PATH"]
+        assert spawned == spec_env_path("/opt/shims")
+        entries = spawned.split(os.pathsep)
+        assert entries[0] == "/opt/shims"
+        assert "/usr/bin" in entries
 
 
 class TestInstallAgentRemote:
@@ -2512,7 +2660,12 @@ class TestProbeStdioMalformedResponse:
         assert result.error == "boom"
 
     def test_tools_list_non_dict_does_not_crash(self, monkeypatch) -> None:
-        """A tools/list response that parses to a bare string yields no tools."""
+        """A tools/list response that parses to a bare string is a failed probe.
+
+        The reader yields no response object for it (only dicts carrying an
+        ``id`` count), so the probe reports the tools/list failure instead of
+        certifying a server no session can get a tool out of.
+        """
         server = McpServerInfo(name="srv", command="srv")
         init_line = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n"
         list_line = json.dumps("unexpected-string").encode() + b"\n"
@@ -2525,8 +2678,28 @@ class TestProbeStdioMalformedResponse:
         ):
             result = asyncio.run(probe_server(server))
 
-        assert result.status == "ok"
+        assert result.status == "error"
+        assert "tools/list" in result.error
         assert result.tools == []
+
+    def test_tools_list_missing_tools_key_is_an_error(self, monkeypatch) -> None:
+        """A dict result WITHOUT a tools list is malformed, not a tool-less
+        server — green-with-zero-tools would certify a server whose one
+        required answer didn't parse."""
+        server = McpServerInfo(name="srv", command="srv")
+        init_line = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n"
+        list_line = json.dumps({"jsonrpc": "2.0", "id": 2, "result": {}}).encode() + b"\n"
+        proc = self._make_proc(init_line, list_line)
+
+        monkeypatch.setattr("shutil.which", lambda cmd, path=None: "/usr/bin/srv")
+        with patch(
+            "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ):
+            result = asyncio.run(probe_server(server))
+
+        assert result.status == "error"
+        assert "malformed" in result.error
 
 
 def _make_stream(lines: list[bytes]) -> asyncio.StreamReader:

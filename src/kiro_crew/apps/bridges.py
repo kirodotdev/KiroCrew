@@ -48,6 +48,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.cron_script import resolve_script_path
+from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
@@ -2083,6 +2084,13 @@ def _register_mcp_servers(
                 if isinstance(cfg, dict):
                     cfg = resolve_stdio_command(cfg, app_root=app_dir(app_name))
                     _schedule_unresolvable_warning(app_name, server_name, cfg)
+                    # This file is consumed by kiro-cli, which applies a declared
+                    # env per key — an app manifest naming a PATH fragment would
+                    # hand its server that fragment as the WHOLE PATH. Emit
+                    # through the shared normalization point (env.emit_env).
+                    env = cfg.get("env")
+                    if isinstance(env, dict):
+                        cfg = {**cfg, "env": emit_env(env)}
             servers[namespaced] = cfg
             registered.append(namespaced)
         # LAST governance pass before this map hits disk. This file IS read by

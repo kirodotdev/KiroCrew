@@ -86,9 +86,20 @@ same server's spec from the other sources in priority order (kirocrew, then
 kiro-global, then provider-global) before dropping it. When it falls back to a
 different source it adopts that source's `command`, `args` and `env` **as a
 unit**, so one source's command is never paired with another's arguments.
-Resolution uses the same `augmented_path()` the probe uses, so a server cannot
-probe healthy on the dashboard while being silently dropped from the agent
-config.
+Resolution, the dashboard probe, and the `env.PATH` written into the agent
+config all go through the same `env.spec_env_path()`, so a server cannot probe
+healthy on the dashboard while being silently dropped from the agent config —
+or launched from it with a PATH the probe never validated.
+
+A spec's `env` is applied per key by the consumer that spawns the server, so a
+declared `PATH` **replaces** the child's inherited one rather than extending it.
+A spec that names one directory to add would therefore hand the server a PATH
+holding only that directory. `spec_env_path()` expands a declared `env.PATH`
+into the full effective PATH — the spec's own entries first, then the augmented
+inherited PATH, deduped — before it is written out. Consequence to know about:
+the emitted value is a snapshot of the rebuild-time environment, so it encodes
+this host's directories (mise data dir, installed Node version bins, the
+running interpreter's bin) and is not portable to another machine.
 
 ### `includeMcpJson` is pinned false
 
@@ -184,10 +195,22 @@ Probes run from `POST /api/mcp/probe`:
 - **stdio** servers are spawned and driven through an MCP `initialize` handshake
   followed by `tools/list`.
 - **HTTP** servers get the same two JSON-RPC calls over POST.
+- **Both calls must succeed for `ok`.** An initialize that answers and a
+  `tools/list` that does not (no response, an error reply, a non-200) is a
+  server no session can get a tool out of — the badge certifies "tools usable",
+  so that combination reports as an error naming `tools/list`, not as `ok` with
+  an empty list.
+- Every result carries **`probedAt`** (wall-clock seconds of the probe that
+  produced the status) and **`probeMode`** (`handshake` for a real round trip,
+  `declared` for the managed in-process fallback below). Both ride the cache
+  into the API payload, so the UI can say *when* a status was true — the caches
+  legitimately serve results up to their TTL, and an undated "Online" reads as
+  "now".
 - Timeout is `dashboard.mcp_probe_timeout_secs` (default 15s;
   `_PROBE_TIMEOUT_SECS` is the fallback if config is not loaded yet). Results
   are cached for `_PROBE_TTL_SECS` (1800s), after which status reads as
-  "outdated".
+  "outdated" — with `probedAt` preserved, because *when it was last true* is
+  the most useful thing an outdated row can say.
 - The handshake response is kept, not just the tool names: advertised
   `capabilities`, the `protocolVersion` the server ANSWERED with, `serverInfo`,
   and per-tool `annotations`. These feed the shareability verdict (below); the
@@ -241,7 +264,10 @@ Probes run from `POST /api/mcp/probe`:
     - The substitution is logged at **WARNING**, once per server: `ok` here means
       "this package declares these tools", not "the server answered", and the
       default log level is WARNING, so at info it would be invisible on exactly the
-      hosts where it always happens. Third-party servers have no declaration to
+      hosts where it always happens. The result also carries
+      `probeMode: "declared"` into the cache and the API payload, so the
+      dashboard renders the substitution instead of an indistinguishable green
+      badge. Third-party servers have no declaration to
       read and keep the honest `mcp_probe_sandbox_unavailable` error.
     - Modules are imported **lazily** (they pull in the validation/artifacts graph,
       which cannot be imported at `mcp_discovery` import time). Any failure returns
@@ -306,7 +332,10 @@ remove`, hand-edits) are picked up naturally.
 
 Apply does **not** restart sessions. Scope changes take effect at the next
 session spawn; the header's Apply & Restart calls `POST /api/sessions/restart`
-to drain the warm pool of pre-spawned processes carrying the old config.
+to drain the warm pool of pre-spawned processes carrying the old config, so a
+freshly installed server is mounted on the next session rather than the one
+after it. The response carries `mcp_sync_ok`: a reconcile that FAILED is
+reported rather than dressed up as a successful apply.
 
 ## How app agents reach MCP servers
 

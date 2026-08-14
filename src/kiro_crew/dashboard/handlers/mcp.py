@@ -20,6 +20,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, _resolve_stub_servers
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.env import emit_env
 from kiro_crew.mcp_discovery import (
     _MANAGED_SERVER_NAMES,
     probe_metadata,
@@ -755,19 +756,17 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     3. Resets all sessions so changes take effect.
     """
     from kiro_crew.mcp_discovery import (  # noqa: F811
-        discover_servers_to_sync,
         kirocrew_managed_names,
-        register_servers_for_cc,
-        sync_to_agent_config,
+        sync_discovered_servers,
     )
 
-    to_sync = discover_servers_to_sync()
-    synced = 0
+    # One serialized discover→write pass (agent config + CC sidecar), off the
+    # event loop — the sync is blocking file I/O, and sync_discovered_servers'
+    # mutex is what keeps this handler and the sessions-restart pre-sync from
+    # interleaving their read-modify-writes of the same files.
+    to_sync = await asyncio.to_thread(sync_discovered_servers)
+    synced = len(to_sync)
     if to_sync:
-        ok = sync_to_agent_config(to_sync)
-        if ok:
-            synced = len(to_sync)
-        register_servers_for_cc(to_sync)
         # Also add to global mcp.json (what ACP actually reads)
         async with _get_mcp_lock():
             try:
@@ -875,7 +874,14 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
                     if s.args:
                         entry["args"] = s.args
                     if s.env:
-                        entry["env"] = s.env
+                        # This file is consumed directly by the ACP runtime,
+                        # which applies a declared env per key — emit through
+                        # the shared normalization point (env.emit_env) so a
+                        # declared PATH is complete. Create-only: an entry the
+                        # user authored here is never rewritten, so their text
+                        # stays theirs. Off the event loop: the PATH expansion
+                        # scans Node-manager directories on a cold cache.
+                        entry["env"] = await asyncio.to_thread(emit_env, s.env)
                     # Create-only here, as on the base ref, so there is no rewrite
                     # to gate -- but the entry is still ours, and marking it now is
                     # what lets a later slice re-sync it without guessing.
@@ -1198,7 +1204,16 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     if body.get("args"):
         entry["args"] = body["args"]
     if body.get("env"):
-        entry["env"] = body["env"]
+        # This file is consumed directly by the ACP runtime (declared env is
+        # applied per key), and this caller is programmatic (App Kit), not a
+        # user hand-authoring their own file — emit through the shared
+        # normalization point so a declared PATH is complete. Off the event
+        # loop: emit_env's PATH expansion scans Node-manager directories on a
+        # cold cache. See env.emit_env.
+        if isinstance(body["env"], dict):
+            entry["env"] = await asyncio.to_thread(emit_env, body["env"])
+        else:
+            entry["env"] = body["env"]
 
     # Write to global mcp.json
     async with _get_mcp_lock():

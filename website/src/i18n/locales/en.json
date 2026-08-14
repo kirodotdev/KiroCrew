@@ -6121,6 +6121,7 @@
         "globals": "Globals",
         "kiro": "Kiro",
         "kirocrew": "Kiro Crew",
+        "last_probed": "Last probed",
         "name": "Name",
         "no_matching_servers": "No matching servers",
         "no_mcp_servers_configured": "No MCP servers configured",
@@ -6128,10 +6129,12 @@
         "pending_change_other": "{{count}} pending changes",
         "probe_mcp_servers": "Probe MCP servers",
         "status": "Status",
+        "tool_list_read_from_the_package_s_declaration_th": "Tool list read from the package's declaration; the server was not spawned to verify it starts.",
         "tools": "Tools",
         "tools_2": "tools",
         "undo": "Undo",
-        "uninstall": "Uninstall"
+        "uninstall": "Uninstall",
+        "unverified": "unverified"
       },
       "memoryGraphTab": {
         "loading_graph_data": "Loading graph data…",

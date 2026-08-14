@@ -8945,6 +8945,7 @@
         "globals": "全局配置",
         "kiro": "Kiro",
         "kirocrew": "Kiro Crew",
+        "last_probed": "上次探测",
         "mcp_servers_count": "MCP 服务器（{{count}}）",
         "name": "名称",
         "no_matching_servers": "无匹配的服务器",
@@ -8959,11 +8960,13 @@
         "probe_mcp_servers": "探测 MCP 服务器",
         "servers_scope_tip": "Kiro Crew 与你的交互式 {{provider}}/Kiro 全局配置中的 MCP 服务器。Kiro Crew 徽章表示它是否会在 Kiro Crew 会话中加载；全局配置徽章表示它是否已共享到你的交互式 Kiro 全局配置。点击切换，然后应用更改。",
         "status": "状态",
+        "tool_list_read_from_the_package_s_declaration_th": "工具列表读取自软件包自身的声明；未实际启动服务器验证其可运行。",
         "tools": "工具",
         "tools_2": "个工具",
         "undo": "撤销",
         "uninstall": "卸载",
-        "unknown": "未知"
+        "unknown": "未知",
+        "unverified": "未验证"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",
