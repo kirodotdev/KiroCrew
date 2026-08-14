@@ -11157,6 +11157,7 @@
         "anyone_who_messages_the_bot": "Cualquiera que escriba al bot",
         "connect_via_qr": "Conectar mediante QR",
         "connected": "Conectado",
+        "created_for_you_when_you_turn_this_on_if_it_does": "Se crea al activar esta opción, si todavía no existe.",
         "could_not_reach_the_wechat_login_service": "No se pudo contactar con el servicio de inicio de sesión de WeChat.",
         "could_not_start_the_login_flow": "No se pudo iniciar el flujo de inicio de sesión.",
         "enable_the_wechat_channel": "Activar el canal de WeChat",

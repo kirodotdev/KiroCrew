@@ -11037,6 +11037,7 @@
         "anyone_who_messages_the_bot": "बॉट को संदेश भेजने वाला कोई भी व्यक्ति",
         "connect_via_qr": "QR से कनेक्ट करें",
         "connected": "कनेक्टेड",
+        "created_for_you_when_you_turn_this_on_if_it_does": "इसे चालू करने पर यह बन जाता है, अगर पहले से मौजूद न हो।",
         "could_not_reach_the_wechat_login_service": "WeChat लॉगिन सेवा तक नहीं पहुँच सके।",
         "could_not_start_the_login_flow": "लॉगिन फ़्लो शुरू नहीं कर सके।",
         "enable_the_wechat_channel": "WeChat चैनल सक्षम करें",

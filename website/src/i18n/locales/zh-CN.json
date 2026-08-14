@@ -10916,6 +10916,7 @@
         "anyone_who_messages_the_bot": "任何向机器人发消息的人",
         "connect_via_qr": "通过二维码连接",
         "connected": "已连接",
+        "created_for_you_when_you_turn_this_on_if_it_does": "开启此功能时若不存在会自动创建。",
         "could_not_reach_the_wechat_login_service": "无法连接微信登录服务。",
         "could_not_start_the_login_flow": "无法启动登录流程。",
         "enable_the_wechat_channel": "启用微信渠道",

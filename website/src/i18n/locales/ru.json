@@ -11277,6 +11277,7 @@
         "anyone_who_messages_the_bot": "Любой, кто напишет боту",
         "connect_via_qr": "Подключиться по QR",
         "connected": "Подключено",
+        "created_for_you_when_you_turn_this_on_if_it_does": "Создаётся при включении этой настройки, если её ещё нет.",
         "could_not_reach_the_wechat_login_service": "Не удалось связаться со службой входа WeChat.",
         "could_not_start_the_login_flow": "Не удалось начать вход.",
         "enable_the_wechat_channel": "Включить канал WeChat",

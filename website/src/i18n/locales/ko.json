@@ -10916,6 +10916,7 @@
         "anyone_who_messages_the_bot": "봇에 메시지를 보내는 누구나",
         "connect_via_qr": "QR로 연결",
         "connected": "연결됨",
+        "created_for_you_when_you_turn_this_on_if_it_does": "이 설정을 켤 때 폴더가 아직 없으면 새로 만들어집니다.",
         "could_not_reach_the_wechat_login_service": "WeChat 로그인 서비스에 연결할 수 없습니다.",
         "could_not_start_the_login_flow": "로그인 절차를 시작할 수 없습니다.",
         "enable_the_wechat_channel": "WeChat 채널 사용",

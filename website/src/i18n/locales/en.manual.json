@@ -3975,6 +3975,7 @@
         "connect_via_qr": "Connect via QR",
         "could_not_reach_the_wechat_login_service": "Could not reach the WeChat login service.",
         "could_not_start_the_login_flow": "Could not start the login flow.",
+        "created_for_you_when_you_turn_this_on_if_it_does": "Created for you when you turn this on, if it does not exist yet.",
         "scanned_confirm_in_wechat": "Scanned — confirm in WeChat",
         "sign_in_again": "Sign in again",
         "waiting_for_scan": "Waiting for scan…"

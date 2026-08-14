@@ -11036,6 +11036,7 @@
         "anyone_who_messages_the_bot": "Jeder, der dem Bot schreibt",
         "connect_via_qr": "Per QR-Code verbinden",
         "connected": "Verbunden",
+        "created_for_you_when_you_turn_this_on_if_it_does": "Wird beim Aktivieren dieser Einstellung angelegt, falls er noch nicht existiert.",
         "could_not_reach_the_wechat_login_service": "Der WeChat-Anmeldedienst war nicht erreichbar.",
         "could_not_start_the_login_flow": "Der Anmeldevorgang konnte nicht gestartet werden.",
         "enable_the_wechat_channel": "Den WeChat-Kanal aktivieren",

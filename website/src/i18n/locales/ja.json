@@ -10916,6 +10916,7 @@
         "anyone_who_messages_the_bot": "ボットにメッセージを送信した誰でも",
         "connect_via_qr": "QRコードで接続",
         "connected": "接続されました",
+        "created_for_you_when_you_turn_this_on_if_it_does": "この設定をオンにしたときに、まだ存在しなければ作成されます。",
         "could_not_reach_the_wechat_login_service": "WeChat ログインサービスに到達できませんでした。",
         "could_not_start_the_login_flow": "ログインフローを開始できませんでした。",
         "enable_the_wechat_channel": "WeChat チャネルを有効化",

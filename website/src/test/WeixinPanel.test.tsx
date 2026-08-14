@@ -227,6 +227,193 @@ describe('WeixinPanel — session folder', () => {
     await waitFor(() => expect(save).toHaveBeenLastCalledWith({ session_folder: 'Team chat' }))
   })
 
+  it("describes the folder as created on turn-on, not on a save this panel doesn't have", async () => {
+    // The shared botChannelPanel copy says "when you save these settings" —
+    // accurate on the six panels with a Save button, a phantom instruction on
+    // this one, where everything persists on change.
+    vi.spyOn(api, 'saveWeixinConfig').mockResolvedValue({ ...CONFIG })
+    renderWithProviders(<WeixinPanel />)
+
+    fireEvent.click(await screen.findByRole('switch', FOLDER_SWITCH))
+    await screen.findByLabelText('Folder name')
+
+    expect(
+      screen.getByText('Created for you when you turn this on, if it does not exist yet.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/when you save these settings/i)).not.toBeInTheDocument()
+  })
+
+  it('confirms a committed rename with a transient "Saved." next to the field', async () => {
+    // Without this, blur / Enter succeeds invisibly: no Save button was
+    // pressed, so nothing else on the panel acknowledges the commit.
+    const save = vi.spyOn(api, 'saveWeixinConfig').mockResolvedValue({ ...CONFIG })
+    renderWithProviders(<WeixinPanel />)
+
+    fireEvent.click(await screen.findByRole('switch', FOLDER_SWITCH))
+    const input = await screen.findByLabelText('Folder name')
+    // The toggle's own save must not raise the confirmation — flipping the
+    // switch is its own feedback, and "Saved." appearing before any rename
+    // would teach users the field self-saves per keystroke.
+    expect(screen.queryByTestId('weixin-session-folder-saved')).not.toBeInTheDocument()
+
+    fireEvent.change(input, { target: { value: 'Team chat' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith({ session_folder: 'Team chat' }))
+
+    const confirmation = await screen.findByTestId('weixin-session-folder-saved')
+    expect(confirmation).toHaveTextContent('Saved.')
+  })
+
+  it('withholds and clears the confirmation when the commit fails', async () => {
+    // A "Saved." check next to a rejection error would read as the failed
+    // value having been saved.
+    let stored = 'WeChat'
+    vi.spyOn(api, 'getWeixinConfig').mockImplementation(async () => ({
+      ...CONFIG,
+      session_folder: stored,
+    }))
+    const save = vi.spyOn(api, 'saveWeixinConfig').mockImplementation(async patch => {
+      if (typeof patch.session_folder === 'string' && patch.session_folder.includes('/')) {
+        throw new Error('Folder name cannot contain "/"')
+      }
+      if (typeof patch.session_folder === 'string') stored = patch.session_folder
+      return { ...CONFIG }
+    })
+    renderWithProviders(<WeixinPanel />)
+
+    const input = await screen.findByLabelText('Folder name')
+    // A good rename first, so a confirmation is up when the bad one fails.
+    fireEvent.change(input, { target: { value: 'Team chat' } })
+    fireEvent.blur(input)
+    await screen.findByTestId('weixin-session-folder-saved')
+
+    fireEvent.change(input, { target: { value: 'bad/name' } })
+    fireEvent.blur(input)
+
+    await screen.findByTestId('weixin-session-folder-error')
+    expect(screen.queryByTestId('weixin-session-folder-saved')).not.toBeInTheDocument()
+    expect(save).toHaveBeenLastCalledWith({ session_folder: 'bad/name' })
+  })
+
+  it('ignores a slow commit that resolves after a newer one was rejected', async () => {
+    // Each blur fires its own request, so completions can land out of order: a
+    // delayed rename resolving after a newer rename was rejected must not paint
+    // "Saved." next to the rejection — that asserts the failed draft was stored.
+    vi.spyOn(api, 'getWeixinConfig').mockResolvedValue({ ...CONFIG, session_folder: 'WeChat' })
+    let resolveSlow!: () => void
+    const slow = new Promise<{ ok: boolean }>(res => {
+      resolveSlow = () => res({ ok: true })
+    })
+    const save = vi
+      .spyOn(api, 'saveWeixinConfig')
+      .mockImplementationOnce(() => slow as never)
+      .mockImplementationOnce(async () => {
+        throw new Error('Folder name cannot contain "/"')
+      })
+    renderWithProviders(<WeixinPanel />)
+
+    const input = await screen.findByLabelText('Folder name')
+    fireEvent.change(input, { target: { value: 'Team chat' } })
+    fireEvent.blur(input)
+    fireEvent.change(input, { target: { value: 'bad/name' } })
+    fireEvent.blur(input)
+    await screen.findByTestId('weixin-session-folder-error')
+    expect(save).toHaveBeenCalledTimes(2)
+
+    resolveSlow()
+    // Flush the stale completion's microtasks, then assert it was discarded:
+    // the error stays, the confirmation never appears.
+    await waitFor(() =>
+      expect(screen.queryByTestId('weixin-session-folder-saved')).not.toBeInTheDocument(),
+    )
+    expect(screen.getByTestId('weixin-session-folder-error')).toBeInTheDocument()
+  })
+
+  it('shows the rejection even when another control saves in the same gesture', async () => {
+    // Clicking any other control is what blurs the name field, so an invalid
+    // rename and that control's own save land back to back. The newer,
+    // unrelated save must not swallow the rename's rejection — the field would
+    // silently keep a name the server refused.
+    vi.spyOn(api, 'getWeixinConfig').mockResolvedValue({ ...CONFIG, session_folder: 'WeChat' })
+    const save = vi.spyOn(api, 'saveWeixinConfig').mockImplementation(async patch => {
+      if (typeof patch.session_folder === 'string' && patch.session_folder.includes('/')) {
+        throw new Error('Folder name cannot contain "/"')
+      }
+      return { ...CONFIG }
+    })
+    renderWithProviders(<WeixinPanel />)
+
+    const input = await screen.findByLabelText('Folder name')
+    fireEvent.change(input, { target: { value: 'bad/name' } })
+    // The blur commit and the unrelated control's save fire in one gesture.
+    fireEvent.blur(input)
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable the WeChat channel' }))
+
+    await screen.findByTestId('weixin-session-folder-error')
+    expect(save).toHaveBeenCalledWith({ session_folder: 'bad/name' })
+    expect(save).toHaveBeenCalledWith({ enabled: false })
+    expect(screen.queryByTestId('weixin-session-folder-saved')).not.toBeInTheDocument()
+  })
+
+  it("keeps the rejection when the other control's save resolves after it", async () => {
+    // The two requests race with no ordering guarantee. When the unrelated
+    // control's SUCCESS lands after the rename's rejection, it must not clear
+    // an error it did not produce — pinned deterministically by holding the
+    // orthogonal save open until the rejection is on screen.
+    vi.spyOn(api, 'getWeixinConfig').mockResolvedValue({ ...CONFIG, session_folder: 'WeChat' })
+    let resolveOrthogonal!: () => void
+    const orthogonal = new Promise<{ ok: boolean }>(res => {
+      resolveOrthogonal = () => res({ ok: true })
+    })
+    vi.spyOn(api, 'saveWeixinConfig').mockImplementation(patch => {
+      if ('enabled' in patch) return orthogonal as never
+      return Promise.reject(new Error('Folder name cannot contain "/"')) as never
+    })
+    renderWithProviders(<WeixinPanel />)
+
+    const input = await screen.findByLabelText('Folder name')
+    fireEvent.change(input, { target: { value: 'bad/name' } })
+    fireEvent.blur(input)
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable the WeChat channel' }))
+    await screen.findByTestId('weixin-session-folder-error')
+
+    resolveOrthogonal()
+    // Flush the orthogonal completion, then assert it left the rejection alone.
+    await waitFor(() =>
+      expect(screen.queryByTestId('weixin-session-folder-saved')).not.toBeInTheDocument(),
+    )
+    expect(screen.getByTestId('weixin-session-folder-error')).toBeInTheDocument()
+  })
+
+  it('does not resurface a stale confirmation after the setting is toggled off and on', async () => {
+    // The confirmation unmounts with the field when the setting is switched
+    // off; if the flag survived, the next turn-on would repaint "Saved." while
+    // the last completed write was the off-patch that cleared the name.
+    let stored = 'WeChat'
+    vi.spyOn(api, 'getWeixinConfig').mockImplementation(async () => ({
+      ...CONFIG,
+      session_folder: stored,
+    }))
+    vi.spyOn(api, 'saveWeixinConfig').mockImplementation(async patch => {
+      if (typeof patch.session_folder === 'string') stored = patch.session_folder
+      return { ...CONFIG }
+    })
+    renderWithProviders(<WeixinPanel />)
+
+    const input = await screen.findByLabelText('Folder name')
+    fireEvent.change(input, { target: { value: 'Team chat' } })
+    fireEvent.blur(input)
+    await screen.findByTestId('weixin-session-folder-saved')
+
+    const toggle = screen.getByRole('switch', FOLDER_SWITCH)
+    fireEvent.click(toggle) // off — unmounts the field and the confirmation
+    await waitFor(() => expect(screen.queryByLabelText('Folder name')).not.toBeInTheDocument())
+    fireEvent.click(toggle) // back on, within the confirmation's display window
+
+    await screen.findByLabelText('Folder name')
+    expect(screen.queryByTestId('weixin-session-folder-saved')).not.toBeInTheDocument()
+  })
+
   it('keeps a custom name when the setting is switched off and back on', async () => {
     // Off persists "" (the backend encodes off as an empty name), so the panel
     // must hold the name locally across that round trip.
