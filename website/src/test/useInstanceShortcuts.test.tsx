@@ -50,6 +50,7 @@ const hostModel = (over: Partial<HostModel> = {}): HostModel => ({
   self: null,
   macInset: false,
   electron: true,
+  expanded: false,
   ...over,
 })
 

@@ -21,6 +21,7 @@ const model = (over: Partial<HostModel> = {}): HostModel => ({
   self: null,
   macInset: false,
   electron: true,
+  expanded: false,
   ...over,
 })
 
@@ -66,6 +67,31 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     })
     const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
     expect(container.querySelector('[aria-label="Remote crews"]')).toBeNull()
+  })
+
+  it('honors the relayed pin: expanded model renders the chip row, not the dropdown', async () => {
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: [], unread: {}, host: model({ expanded: true }) },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    // Expanded: crews are always-visible chips (buttons), so there is no
+    // "Switch crew" dropdown trigger to open.
+    expect(screen.queryByRole('button', { name: /Switch crew/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Cloud One/ })).toBeTruthy()
+  })
+
+  it('relays a pin toggle up to the parent instead of writing its own store', async () => {
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: [], unread: {}, host: model({ expanded: true }) },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    // The pin is pressed (expanded); clicking it asks the parent to collapse.
+    await userEvent.click(screen.getByRole('button', { name: /Collapse|Show all/i }))
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'mc-set-expanded', expanded: false }),
+      '*',
+    )
   })
 })
 
