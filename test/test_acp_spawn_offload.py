@@ -5,7 +5,7 @@ scales with the ``/tmp`` entry count (``_resolve_ssh_auth_sock`` globs
 ``/tmp/ssh-*/agent.*`` + stats each match; ``resolve_krb5_ccname`` lstat/stats
 ``/tmp/krb5cc_<uid>``) plus a ``mkdir`` of the work dir. None of these may run
 on the asyncio event loop: a blocking call there stalls every other task,
-including the watchdog heartbeat. These tests pin three contracts:
+including the watchdog heartbeat. These tests pin four contracts:
 
 1. ``AcpClient._spawn`` runs both env resolvers and the work-dir mkdir on a
    non-loop thread (one bundled thread hop for the resolvers).
@@ -16,6 +16,10 @@ including the watchdog heartbeat. These tests pin three contracts:
    re-enters ``_spawn`` first.)
 3. ``AcpRuntime.spawn`` runs its mkdir and ``resolve_krb5_ccname`` on a
    non-loop thread.
+4. ``AcpClient._spawn`` runs the PID-file tracking writes (``_track_pid``,
+   ``_track_session_pid``) on a non-loop thread — each takes an exclusive
+   file lock and writes under it, so an on-loop call serializes concurrent
+   spawns behind the lock with the waiter holding the loop.
 """
 
 from __future__ import annotations
@@ -164,6 +168,61 @@ class TestClientSpawnOffLoop:
             assert t is not loop_thread, "inject_xdist_auto_cap ran on the loop thread"
         for t in mkdir_threads:
             assert t is not loop_thread, "mkdir ran on the loop thread:\n" + "\n".join(mkdir_stacks)
+
+
+class TestClientSpawnPidTrackingOffLoop:
+    @pytest.mark.asyncio
+    async def test_pid_tracking_runs_off_loop(self, tmp_path) -> None:
+        """_track_pid / _track_session_pid take an exclusive file lock and
+        write under it; ensure_ready awaits _spawn from the loop, so an
+        on-loop tracker blocks every task while the lock is contended."""
+        loop_thread = threading.current_thread()
+        track_threads: list[threading.Thread] = []
+        session_track_threads: list[threading.Thread] = []
+
+        client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.returncode = None
+
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch.object(client_mod, "ensure_agent_materialized"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/kiro-cli", "acp"], None),
+            ),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ),
+            patch(
+                "kiro_crew.session._track_pid",
+                side_effect=lambda pid: track_threads.append(threading.current_thread()),
+            ),
+            patch(
+                "kiro_crew.session._track_session_pid",
+                side_effect=lambda pid: session_track_threads.append(
+                    threading.current_thread()
+                ),
+            ),
+            # PID 12345 may be a real host process; an empty scan keeps the
+            # early-descendant branch (and its own tracking write) out of
+            # this test's observations.
+            patch.object(client_mod, "_get_child_pids", return_value=[]),
+        ):
+            await client._spawn()
+
+        await _stop_stderr_drain(client)
+
+        assert track_threads, "_track_pid must run during _spawn"
+        assert session_track_threads, "_track_session_pid must run during _spawn"
+        for t in track_threads:
+            assert t is not loop_thread, "_track_pid ran on the loop thread"
+        for t in session_track_threads:
+            assert t is not loop_thread, "_track_session_pid ran on the loop thread"
 
 
 class TestEnsureReadyWorkDir:

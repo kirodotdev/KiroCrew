@@ -2671,10 +2671,17 @@ class AcpClient:
             _track_session_pid,
         )
 
-        _track_pid(self._pid)
-        _track_session_pid(self._pid)  # separate file for startup cleanup
-        await asyncio.sleep(0.3)
+        # The PID-file trackers each take an exclusive file lock and do a
+        # read-modify-append under it — blocking syscalls that must not run
+        # on the event loop: ensure_ready() awaits _spawn() from the loop on
+        # every cold start, so a contended or wedged lock holder here would
+        # stall every task including the liveness heartbeat. Ride the same
+        # executor as the descendant scans below.
         _loop = asyncio.get_running_loop()
+        await _loop.run_in_executor(subprocess_executor(), _track_pid, self._pid)
+        # Separate file for startup cleanup.
+        await _loop.run_in_executor(subprocess_executor(), _track_session_pid, self._pid)
+        await asyncio.sleep(0.3)
         early_descendants = await _loop.run_in_executor(
             subprocess_executor(), _get_child_pids, self._pid
         )
@@ -2682,7 +2689,9 @@ class AcpClient:
             self._child_pids = await _loop.run_in_executor(
                 subprocess_executor(), _capture_child_records, early_descendants
             )
-            _track_child_pids(self._child_pids, parent_pid=self._pid or 0)
+            await _loop.run_in_executor(
+                subprocess_executor(), _track_child_pids, self._child_pids, self._pid or 0
+            )
             logger.info("Early tracking %d descendants of PID %d", len(self._child_pids), self._pid)
 
         if self._process.stderr:

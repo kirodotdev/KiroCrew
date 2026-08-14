@@ -117,9 +117,10 @@ def _pid_start_token(pid: int) -> str | None:
 
     Thin delegate to ``platform_compat.get_process_start_id``, which is
     in-process on every platform (``/proc`` read on Linux, ``libproc`` ctypes on
-    macOS) — deliberately NOT ``ps``, so this is safe to call from the asyncio
-    event loop via ``_track_session_pid`` at spawn time
-    (``AUTOSDE: no-blocking-call-on-event-loop``).
+    macOS) — deliberately NOT ``ps``, so the token lookup itself is non-blocking
+    and safe to call from the asyncio event loop. (Whether an enclosing tracker
+    may run on the loop is governed by that tracker's exclusive file lock, not
+    by this lookup — see ``AUTOSDE: no-blocking-call-on-event-loop``.)
 
     Returns ``None`` when identity cannot be determined (Windows, or a process
     we may not introspect). Callers MUST treat ``None`` as "unknown", never as a
